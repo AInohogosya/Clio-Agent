@@ -253,7 +253,9 @@ class TogetherLLMClient(BaseLLM):
                 context_window=128_000,
                 max_output_tokens=32_768,
                 supports_vision=False,
+                supports_streaming=True,
                 description="High performance open model"
             ),
         ]
+        return models
 

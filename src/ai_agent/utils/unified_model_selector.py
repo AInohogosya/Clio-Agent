@@ -357,8 +357,8 @@ class ScrollingModelSelector:
     - Yellow highlighting for selection
     - Synchronization with config.yaml
     """
-    
-    def __init__(self, provider: str):
+
+    def __init__(self, provider: str, preselect_model: Optional[str] = None):
         self.provider = provider
         self.provider_info = PROVIDER_MODELS.get(provider, {})
         self.models = self.provider_info.get("models", [])
@@ -366,6 +366,14 @@ class ScrollingModelSelector:
         self.scroll_offset = 0
         self.filter_text = ""
         self.filtered_indices = []
+
+        # If a model is pre-selected from config, highlight it
+        if preselect_model:
+            for i, m in enumerate(self.models):
+                if m["id"] == preselect_model:
+                    self.current_index = i
+                    self.scroll_offset = max(0, i - 2)
+                    break
         
     def _get_filtered_models(self) -> List[int]:
         """Get indices of models matching the filter text"""
@@ -750,24 +758,34 @@ def select_provider_and_model() -> Tuple[Optional[str], Optional[str]]:
     """
     Main entry point for provider and model selection.
     Returns (provider, model) tuple or (None, None) if cancelled.
+    Reads current config to pre-highlight the saved model.
     """
-    # Select provider
+    # Read current config to pre-select
+    current_provider, current_model = get_current_config()
+
+    # Select provider (pre-select if config has one)
     provider_selector = ProviderSelector()
+    if current_provider:
+        for i, (key, _) in enumerate(provider_selector.providers):
+            if key == current_provider:
+                provider_selector.current_index = i
+                break
     selected_provider = provider_selector.show()
-    
+
     if not selected_provider:
         return None, None
-    
-    # Select model for the chosen provider
-    model_selector = ScrollingModelSelector(selected_provider)
+
+    # Select model for the chosen provider, pre-selecting the saved model
+    preselect_model = current_model if selected_provider == current_provider else None
+    model_selector = ScrollingModelSelector(selected_provider, preselect_model=preselect_model)
     selected_model = model_selector.show()
-    
+
     if not selected_model:
         return None, None
-    
+
     # Sync to config.yaml
     sync_selection_to_config(selected_provider, selected_model)
-    
+
     return selected_provider, selected_model
 
 

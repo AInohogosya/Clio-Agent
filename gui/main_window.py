@@ -791,26 +791,15 @@ class SettingsPage(QWidget):
 
     def _populate_models(self, provider):
         self.model_combo.clear()
-        models = {
-            "ollama": ["llama3.2", "llama3.2:1b", "qwen2.5:7b", "deepseek-r1", "codellama", "mistral", "phi3"],
-            "google": ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-pro", "gemini-1.5-flash"],
-            "openai": ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "o3", "o4-mini", "o3-mini"],
-            "anthropic": ["claude-sonnet-4-20250514", "claude-opus-4-20250514", "claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022"],
-            "groq": ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "mixtral-8x7b-32768", "gemma2-9b-it"],
-            "deepseek": ["deepseek-chat", "deepseek-coder", "deepseek-reasoner"],
-            "mistral": ["mistral-large-latest", "mistral-medium-latest", "mistral-small-latest", "codestral-latest"],
-            "xai": ["grok-4-0709", "grok-4-fast", "grok-3", "grok-3-mini"],
-            "meta": ["llama-4-scout-17b-16e-instruct", "llama-4-maverick-17b-128e-instruct"],
-            "cohere": ["command-r-plus", "command-r", "command"],
-            "openrouter": ["openai/gpt-4o", "anthropic/claude-sonnet-4", "google/gemini-2.5-pro", "deepseek/deepseek-r1"],
-            "together": ["meta-llama/Llama-4-Scout-17B-16E-Instruct", "deepseek-ai/DeepSeek-R1"],
-            "minimax": ["MiniMax-Text-01", "MiniMax-M2.5", "abab6.5s"],
-            "zhipuai": ["glm-4-plus", "glm-4", "glm-4-air", "glm-4-flash"],
-            "microsoft": ["gpt-4o", "gpt-4o-mini", "gpt-4", "o3-mini"],
-            "amazon": ["anthropic.claude-sonnet-4-20250514-v1:0", "anthropic.claude-opus-4-20250514-v1:0", "amazon.nova-pro-v1:0"],
-        }
-        for model in models.get(provider, []):
-            self.model_combo.addItem(model)
+        try:
+            from src.ai_agent.utils.unified_model_selector import PROVIDER_MODELS
+            provider_info = PROVIDER_MODELS.get(provider, {})
+            for m in provider_info.get("models", []):
+                self.model_combo.addItem(m["id"])
+        except Exception:
+            pass
+        if self.model_combo.count() == 0:
+            self.model_combo.addItem("(no models available — select provider first)")
 
     def _on_provider_changed(self, index):
         provider = self.provider_combo.itemData(index)

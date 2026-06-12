@@ -321,6 +321,7 @@ class ConfigManager:
                 user=UserConfig(**self._raw_config.get("user", {})),
                 platform=self._raw_config.get("platform", {}),
                 custom=self._raw_config.get("custom", {}),
+                custom_system_prompt=self._raw_config.get("custom_system_prompt", ""),
             )
         except Exception as e:
             raise ConfigurationError(

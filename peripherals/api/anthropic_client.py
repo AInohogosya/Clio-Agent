@@ -179,15 +179,14 @@ class AnthropicLLMClient(BaseLLM):
         model_id = model or self.default_model
         anthropic_config = self._convert_config(config)
         
-        response = self._client.messages.stream(
+        with self._client.messages.stream(
             model=model_id,
             messages=[{"role": "user", "content": prompt}],
             **anthropic_config
-        )
-        
-        for event in response:
-            if event.type == "content_block_delta" and event.delta.type == "text_delta":
-                yield event.delta.text
+        ) as stream:
+            for event in stream:
+                if event.type == "content_block_delta" and event.delta.type == "text_delta":
+                    yield event.delta.text
 
     def list_models(self) -> List[ModelInfo]:
         """Return empty list - model validation happens at API call time"""

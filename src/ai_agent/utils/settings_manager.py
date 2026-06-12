@@ -14,7 +14,7 @@ from ..utils.logger import get_logger
 
 @dataclass
 class APISettings:
-    """API settings data structure"""
+    """API settings data structure - no hardcoded defaults, all empty until user sets them"""
     google_api_key: Optional[str] = None
     groq_api_key: Optional[str] = None
     openai_api_key: Optional[str] = None
@@ -31,23 +31,23 @@ class APISettings:
     minimax_api_key: Optional[str] = None
     zhipuai_api_key: Optional[str] = None
     openrouter_api_key: Optional[str] = None
-    preferred_provider: str = "ollama"  # Must be explicitly set by user
-    google_model: str = "gemini-3.1-pro-preview"
-    groq_model: str = "llama-3.3-70b-versatile"
-    openai_model: str = "gpt-5.4"
-    anthropic_model: str = "claude-opus-4-6-20260219"
-    xai_model: str = "grok-4.1"
-    meta_model: str = "llama-4-scout-17b-16e-instruct"
-    mistral_model: str = "mistral-large-latest"
-    microsoft_model: str = "gpt-5.4"
-    amazon_model: str = "anthropic.claude-opus-4-6-20260219-v1:0"
-    cohere_model: str = "command-r-plus"
-    deepseek_model: str = "deepseek-chat"
-    together_model: str = "meta-llama/Llama-4-Scout-17B-16E-Instruct"
-    minimax_model: str = "MiniMax-Text-01"
-    zhipuai_model: str = "glm-5"
-    openrouter_model: str = "openai/gpt-4o-mini"
-    ollama_model: str = "qwen3.5:2b"
+    preferred_provider: str = ""  # Must be explicitly set by user
+    google_model: str = ""
+    groq_model: str = ""
+    openai_model: str = ""
+    anthropic_model: str = ""
+    xai_model: str = ""
+    meta_model: str = ""
+    mistral_model: str = ""
+    microsoft_model: str = ""
+    amazon_model: str = ""
+    cohere_model: str = ""
+    deepseek_model: str = ""
+    together_model: str = ""
+    minimax_model: str = ""
+    zhipuai_model: str = ""
+    openrouter_model: str = ""
+    ollama_model: str = ""
 
 
 class SettingsManager:

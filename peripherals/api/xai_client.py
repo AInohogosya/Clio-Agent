@@ -110,9 +110,6 @@ class XAILLMClient(BaseLLM):
         if config.stop_sequences:
             xai_config["stop"] = config.stop_sequences
         
-        if config.system_instruction:
-            xai_config["messages"] = [{"role": "system", "content": config.system_instruction}]
-        
         if config.response_format == ResponseFormat.JSON:
             xai_config["response_format"] = {"type": "json_object"}
         

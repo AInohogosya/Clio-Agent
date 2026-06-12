@@ -238,6 +238,7 @@ class GroqLLMClient(BaseLLM):
                 context_window=128_000,
                 max_output_tokens=32_768,
                 supports_vision=False,
+                supports_streaming=True,
                 description="Production high performance with 128K context"
             ),
             ModelInfo(
@@ -247,6 +248,7 @@ class GroqLLMClient(BaseLLM):
                 context_window=128_000,
                 max_output_tokens=32_768,
                 supports_vision=False,
+                supports_streaming=True,
                 description="Fast, efficient for simple tasks"
             ),
             ModelInfo(
@@ -268,6 +270,7 @@ class GroqLLMClient(BaseLLM):
                 context_window=128_000,
                 max_output_tokens=32_768,
                 supports_vision=False,
+                supports_streaming=True,
                 description="DEPRECATED: Use openai/gpt-oss-120b instead (shut down March 2026)"
             ),
             ModelInfo(
@@ -277,6 +280,7 @@ class GroqLLMClient(BaseLLM):
                 context_window=256_000,
                 max_output_tokens=32_768,
                 supports_vision=False,
+                supports_streaming=True,
                 description="DEPRECATED: Use openai/gpt-oss-120b instead (shut down April 2026)"
             ),
             ModelInfo(
@@ -286,6 +290,7 @@ class GroqLLMClient(BaseLLM):
                 context_window=8_192,
                 max_output_tokens=8_192,
                 supports_vision=False,
+                supports_streaming=True,
                 description="DEPRECATED: Use llama-3.1-8b-instant instead (shut down October 2025)"
             ),
         ]
