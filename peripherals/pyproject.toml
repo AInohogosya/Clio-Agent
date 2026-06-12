@@ -1,0 +1,127 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vexis-cli"
+version = "3.0.0"
+description = "Autonomous loop AI-powered terminal automation system"
+readme = "README.md"
+license = "MIT"
+authors = [
+    {name = "AInohogosya"}
+]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Automation",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+keywords = ["ai", "automation", "cli", "terminal", "command-line"]
+requires-python = ">=3.8"
+dependencies = [
+    "Pillow>=10.0.0",
+    "requests>=2.31.0",
+    "numpy>=1.24.0",
+    "structlog>=23.0.0",
+    "rich>=13.0.0",
+    "psutil>=5.9.0",
+    "PyYAML>=6.0.0",
+    "pluggy>=1.0.0",
+    "ollama>=0.1.0",
+    "openai>=1.0.0",
+    "groq>=0.5.0",
+    "python-telegram-bot>=21.0.0",
+    "pyautogui>=0.9.54; sys_platform=='darwin'",
+    "pyobjc-framework-Cocoa>=9.0; sys_platform=='darwin'",
+    "pywin32>=306; sys_platform=='win32'",
+    "python-xlib>=0.33; sys_platform=='linux'",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "pytest-asyncio>=0.21.0",
+    "black>=23.0.0",
+    "mypy>=1.0.0",
+    "flake8>=6.0.0",
+]
+cloud = [
+    "anthropic>=0.25.0",
+    "google-genai>=0.3.0",
+    "mistralai>=0.1.0",
+    "boto3>=1.34.0",
+    "cohere>=5.0.0",
+]
+all = [
+    "vexis-cli[dev,cloud]",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py", "*_test.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "-v",
+    "--tb=short",
+    "--strict-markers",
+    "--cov=src",
+    "--cov-report=term-missing",
+    "--cov-report=html:htmlcov",
+]
+markers = [
+    "unit: Unit tests",
+    "integration: Integration tests",
+    "e2e: End-to-end tests",
+    "slow: Slow tests",
+]
+
+[tool.coverage.run]
+source = ["src"]
+omit = [
+    "*/tests/*",
+    "*/test_*",
+    "*/__pycache__/*",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+]
+
+
+[project.scripts]
+"vexis-cli" = "ai_agent.user_interface.five_phase_app:main"
+"vexis-cli-enhanced" = "ai_agent.user_interface.five_phase_app:main"
+
+[project.urls]
+Homepage = "https://github.com/vexis-project/VEXIS-CLI"
+Repository = "https://github.com/vexis-project/VEXIS-CLI"
+"Bug Reports" = "https://github.com/vexis-project/VEXIS-CLI/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+ai_agent = [
+    "config/*.yaml",
+    "config/*.json", 
+    "templates/*.txt",
+    "scripts/*.sh",
+    "scripts/*.ps1",
+]

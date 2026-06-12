@@ -1,0 +1,126 @@
+# VEXIS-CLI Configuration
+# Copy this file to config.yaml and customize as needed.
+
+# AI Provider Configuration
+api:
+  # Primary provider: ollama, groq, google, openai, anthropic, xai, meta,
+  # mistral, microsoft, amazon, cohere, deepseek, together, minimax, zhipuai, openrouter
+  preferred_provider: "ollama"
+
+  # API Keys (set via environment variables or here)
+  api_keys:
+    google: ""
+    groq: ""
+    openai: ""
+    anthropic: ""
+    xai: ""
+    meta: ""
+    mistral: ""
+    microsoft: ""
+    cohere: ""
+    deepseek: ""
+    together: ""
+    minimax: ""
+    zhipuai: ""
+    openrouter: ""
+
+  # Ollama (local) settings
+  local_endpoint: "http://localhost:11434"
+  local_model: "llama3.2:3b"
+
+  # Model configurations
+  models:
+    ollama: "llama3.2:3b"
+    google: "gemini-3.1-pro-preview"
+    groq: "llama-3.3-70b-versatile"
+    openai: "gpt-4o"
+    anthropic: "claude-opus-4-6-20260219"
+    xai: "grok-4.1"
+    meta: "llama-4-scout-17b-16e-instruct"
+    mistral: "mistral-large-latest"
+    microsoft: "gpt-4o"
+    amazon: "anthropic.claude-opus-4-6-20260219-v1:0"
+    cohere: "command-r-plus"
+    deepseek: "deepseek-chat"
+    together: "meta-llama/Llama-4-Scout-17B-16E-Instruct"
+    minimax: "MiniMax-Text-01"
+    zhipuai: "glm-5"
+    openrouter: "openai/gpt-oss-120b"
+
+  # Timeout settings
+  timeout: 131400
+  max_retries: 7
+
+# Execution Configuration
+execution:
+  mode: "auto"              # "auto", "normal", or "telegram"
+  safety_mode: true
+  dry_run: false
+  verify_commands: true
+  command_timeout: 1800     # seconds per command batch (30 minutes)
+  task_timeout: 7200        # seconds per task (2 hours)
+  max_iterations: 500       # max autonomous iterations
+  auto_recovery: true
+  show_thought_log: true    # Print agent's real-time thought/activity log to terminal
+
+# Engine Configuration
+engine:
+  max_iterations: 500
+
+# Logging Configuration
+logging:
+  level: "INFO"
+  file: "vexis.log"
+  json_format: false
+  console: true
+
+# Cache Configuration
+cache:
+  enabled: true
+  max_size: 1000
+  ttl: 3600
+  persist_to_disk: true
+
+# Cost Management
+cost:
+  daily_budget: null
+  monthly_budget: null
+  per_request_budget: null
+  warning_threshold: 0.8
+  critical_threshold: 0.95
+
+# Performance Configuration
+performance:
+  max_concurrent_tasks: 1
+  memory_limit_mb: 1024
+
+# User Preferences
+user:
+  name: ""
+  preferred_style: "detailed"
+  auto_confirm: false
+  show_progress: true
+
+# Telegram Configuration
+telegram:
+  enabled: false
+  bot_token: ""             # Telegram bot token from @BotFather
+  bot_username: ""          # Telegram bot username (without @)
+  api_id: 0                 # Telegram API ID (for user account)
+  api_hash: ""              # Telegram API hash (for user account)
+  session_name: "vexis_telegram"
+
+  # User account information (optional, for user-mode Telegram)
+  phone_number: ""          # Your phone number with country code
+  user_id: 0                # Your Telegram user ID
+
+  # Authorization
+  authorized_users: []      # List of authorized Telegram user IDs
+  allowed_user_ids: []      # Alias for authorized_users
+
+  # Feature settings
+  enable_input_listener: true
+  max_history_length: 50
+
+# Custom System Prompt (injected into the autonomous loop system prompt)
+custom_system_prompt: ""

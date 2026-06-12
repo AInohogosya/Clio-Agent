@@ -1,0 +1,31 @@
+# Core dependencies for VEXIS-CLI
+Pillow>=10.0.0
+requests>=2.31.0
+numpy>=1.24.0
+structlog>=23.0.0
+rich>=13.0.0
+psutil>=5.9.0
+
+# YAML configuration support
+PyYAML>=6.0.0
+
+# Plugin system
+pluggy>=1.0.0
+
+# Local model integration
+ollama>=0.1.0
+
+# Cloud provider SDKs (core)
+openai>=1.0.0                    # OpenAI, xAI, Meta, Together (OpenAI-compatible)
+
+# Fast inference providers
+groq>=0.5.0                       # Groq
+
+# Telegram bot integration
+python-telegram-bot>=21.0.0
+
+# Platform-specific dependencies
+pyautogui>=0.9.54; sys_platform=='darwin'
+pyobjc-framework-Cocoa>=9.0; sys_platform=='darwin'
+pywin32>=306; sys_platform=='win32'
+python-xlib>=0.33; sys_platform=='linux'

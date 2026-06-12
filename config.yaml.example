@@ -1,0 +1,114 @@
+# VEXIS-CLI Configuration Template
+# Copy this file to `config.yaml` and fill in your values.
+# NEVER commit `config.yaml` — it contains secrets.
+
+api:
+  preferred_provider: "openrouter"
+
+  api_keys:
+    google: "YOUR_GOOGLE_API_KEY"
+    groq: "YOUR_GROQ_API_KEY"
+    openai: "YOUR_OPENAI_API_KEY"
+    anthropic: "YOUR_ANTHROPIC_API_KEY"
+    xai: "YOUR_XAI_API_KEY"
+    meta: "YOUR_META_API_KEY"
+    mistral: "YOUR_MISTRAL_API_KEY"
+    microsoft: "YOUR_MICROSOFT_API_KEY"
+    cohere: "YOUR_COHERE_API_KEY"
+    deepseek: "YOUR_DEEPSEEK_API_KEY"
+    together: "YOUR_TOGETHER_API_KEY"
+    minimax: "YOUR_MINIMAX_API_KEY"
+    zhipuai: "YOUR_ZHIPUAI_API_KEY"
+    openrouter: "YOUR_OPENROUTER_API_KEY"
+
+  # Local Ollama endpoint (optional)
+  local_endpoint: "http://localhost:11434"
+  local_model: "llama3.2:3b"
+
+  # Model selection per provider
+  models:
+    ollama: "llama3.2:3b"
+    google: "gemini-3.1-pro-preview"
+    groq: "llama-3.3-70b-versatile"
+    openai: "gpt-4o"
+    anthropic: "claude-3.5-sonnet-20241022"
+    xai: "grok-2"
+    meta: "llama-3.1-70b-instruct"
+    mistral: "mistral-large-latest"
+    microsoft: "gpt-4o"
+    amazon: "anthropic.claude-3-5-sonnet-20241022-v2:0"
+    cohere: "command-r-plus"
+    deepseek: "deepseek-chat"
+    together: "meta-llama/Llama-3.1-70B-Instruct-Turbo"
+    minimax: "minimax-text-01"
+    zhipuai: "glm-4"
+    openrouter: "openai/gpt-oss-120b"
+
+  timeout: 131400
+  max_retries: 7
+
+security:
+  enable_command_blocking: false
+  enable_confirmation_prompts: false
+  enable_sudo_warning: false
+  enable_shell_pipe_warning: false
+  enable_sandbox: true
+
+execution:
+  safety_mode: true
+  dry_run: false
+  verify_commands: true
+  command_timeout: 30
+  task_timeout: 2700
+  max_iterations: 500
+  auto_recovery: true
+
+logging:
+  level: "INFO"            # DEBUG, INFO, WARNING, ERROR
+  file: "vexis.log"
+  json_format: false
+  console: true
+
+cache:
+  enabled: true
+  max_size: 1000
+  ttl: 3600
+  persist_to_disk: true
+
+cost:
+  daily_budget: null       # Set a number (e.g. 5.0) to enable
+  monthly_budget: null
+  per_request_budget: null
+  warning_threshold: 0.8
+  critical_threshold: 0.95
+
+performance:
+  max_concurrent_tasks: 1
+  memory_limit_mb: 1024
+
+user:
+  name: "Your Name"
+  preferred_style: "detailed"   # concise, detailed, minimal
+  auto_confirm: false
+  show_progress: true
+
+telegram:
+  enabled: true
+  bot_token: "YOUR_TELEGRAM_BOT_TOKEN"
+  bot_username: "your_bot_username"
+  api_id: "YOUR_TELEGRAM_API_ID"
+  api_hash: "YOUR_TELEGRAM_API_HASH"
+  session_name: "vexis_telegram"
+  contacts:
+    - name: "Contact Name"
+      phone: "+1234567890"        # optional
+      telegram: "@username"       # optional
+  authorized_users: []
+  output_recipients: []
+  enable_input_listener: true
+  send_phase2_end_updates: true
+
+# Custom System Prompts (NEW in v2.2)
+# Custom prompts that users can freely configure and include in system prompts
+custom_system_prompt: ""      # Custom prompt to inject into Phase 1 system prompt only
+                              # Leave empty to disable. This applies only to Phase 1.

@@ -1,0 +1,9 @@
+# Optional Cloud Provider SDKs for VEXIS-CLI
+# Install with: pip install -r requirements-optional.txt
+
+# Additional Cloud Provider SDKs
+anthropic>=0.25.0                 # Anthropic Claude
+google-genai>=0.3.0               # Google Gemini
+mistralai>=0.1.0                  # Mistral AI
+boto3>=1.34.0                     # Amazon Bedrock
+cohere>=5.0.0                     # Cohere
