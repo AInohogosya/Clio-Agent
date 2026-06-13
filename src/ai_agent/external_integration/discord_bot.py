@@ -189,6 +189,9 @@ class DiscordBotManager:
         self._current_tasks: Dict[int, RunningDiscordTask] = {}
         self._task_lock = asyncio.Lock()
 
+        # Map user_id -> channel_id so queue_message(user_id, msg) works
+        self._user_channel_map: Dict[int, int] = {}
+
         # Discord client
         self.client: Optional[commands.Bot] = None
 
@@ -346,6 +349,9 @@ class DiscordBotManager:
         if not getattr(self, "_boot_user_id", None):
             self._boot_user_id = user_id
 
+        # Track the channel this user messaged from
+        self._user_channel_map[user_id] = message.channel.id
+
         # Add user message to conversation history
         history = self.get_conversation_history(user_id)
         history.add_message("user", user_message)
@@ -365,11 +371,11 @@ class DiscordBotManager:
         await self._cancel_user_task(user_id)
 
         # When message_callback is None (autonomous loop mode), the agent
-        # handles replies via telegram() commands.
+        # handles replies via discord() commands.
         if self.message_callback is None:
             self.logger.info(
                 f"No message_callback set; autonomous loop will handle "
-                f"user {user_id}'s message via telegram() commands."
+                f"user {user_id}'s message via discord() commands."
             )
             try:
                 await self.process_message_queue()
@@ -509,10 +515,15 @@ class DiscordBotManager:
         return False
 
     def queue_message(self, channel_id: int, message: str):
-        """Queue a message to be sent. Synchronous, callable from any context."""
+        """Queue a message to be sent. Synchronous, callable from any context.
+
+        channel_id is treated as a user_id — the actual Discord channel
+        is looked up from the _user_channel_map.
+        """
+        actual_channel = self._user_channel_map.get(channel_id, channel_id)
         with self._queue_lock:
-            self.message_queue.append(QueuedDiscordMessage(channel_id=channel_id, message=message))
-        self.logger.info(f"Message queued for channel {channel_id}")
+            self.message_queue.append(QueuedDiscordMessage(channel_id=actual_channel, message=message))
+        self.logger.info(f"Message queued for channel {actual_channel} (user {channel_id})")
 
     async def process_message_queue(self):
         """Process currently-sendable queued messages."""

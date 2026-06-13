@@ -344,6 +344,7 @@ class AutonomousContext:
     current_phase: LoopPhase = LoopPhase.THINKING
     conversation_history: Optional[ConversationHistory] = None
     telegram_mode: bool = False
+    discord_mode: bool = False
     telegram_user_id: Optional[int] = None
     cancel_event: Optional[threading.Event] = None
     cancelled: bool = False
@@ -766,6 +767,7 @@ class AutonomousLoopEngine:
                 "compressed_context": compressed,
                 "timestamp": time.time(),
                 "telegram_mode": ctx.telegram_mode,
+                "discord_mode": ctx.discord_mode,
                 "telegram_user_id": ctx.telegram_user_id,
                 "auxiliary": {
                     "git_diff": aux.get("git_diff", ""),
@@ -811,6 +813,7 @@ class AutonomousLoopEngine:
     def execute_instruction(self, user_prompt: str,
                             conversation_history: Optional[ConversationHistory] = None,
                             telegram_mode: bool = False,
+                            discord_mode: bool = False,
                             telegram_user_id: Optional[int] = None,
                             cancel_event: Optional[threading.Event] = None
                             ) -> AutonomousContext:
@@ -824,9 +827,10 @@ class AutonomousLoopEngine:
         Args:
             user_prompt:   Initial seed for the agent's thinking.  May be
                            empty — the agent will decide what to do on its own.
-            conversation_history: Conversation history for Telegram mode
+            conversation_history: Conversation history for messaging mode
             telegram_mode: Whether running in Telegram mode
-            telegram_user_id: Telegram user ID for sending messages
+            discord_mode: Whether running in Discord mode
+            telegram_user_id: User ID for sending messages
             cancel_event:  Threading event used for cancellation
 
         Returns:
@@ -878,14 +882,22 @@ class AutonomousLoopEngine:
         if self._saved_ctx_block:
             _wake_up = ""
             if self._resuming_from_sleep:
+                if discord_mode:
+                    _wake_cmd = "discord(\U0001f44b Woke up from sleep. Resuming work immediately.)"
+                    _mode_hint = "Discord"
+                    _mode_cmd = "discord()"
+                else:
+                    _wake_cmd = "telegram(\U0001f44b Woke up from sleep. Resuming work immediately.)"
+                    _mode_hint = "Telegram"
+                    _mode_cmd = "telegram()"
                 _wake_up = (
                     "## WAKE-UP NOTIFICATION (MANDATORY)\n"
                     "You just woke up from a sleep restart. "
                     "Your VERY FIRST action MUST be:\n"
-                    "  telegram(\U0001f44b Woke up from sleep. Resuming work immediately.)\n"
+                    f"  {_wake_cmd}\n"
                     "After sending that message, continue with the work below.\n"
-                    "IMPORTANT: You are in Telegram mode. Send progress updates via telegram() "
-                    "every 5-10 iterations. NEVER go more than 10 iterations without telegram().\n\n"
+                    f"IMPORTANT: You are in {_mode_hint} mode. Send progress updates via {_mode_cmd} "
+                    f"every 5-10 iterations. NEVER go more than 10 iterations without {_mode_cmd}.\n\n"
                 )
             user_prompt = (
                 f"{_wake_up}"
@@ -911,6 +923,7 @@ class AutonomousLoopEngine:
             execution_log=_restored_log,
             conversation_history=conversation_history,
             telegram_mode=telegram_mode,
+            discord_mode=discord_mode,
             telegram_user_id=telegram_user_id,
             cancel_event=cancel_event or threading.Event(),
             metadata={
@@ -918,6 +931,7 @@ class AutonomousLoopEngine:
                 "restart_provider": self.model_runner.provider or "",
                 "restart_model": self.model_runner.model or "",
                 "restart_telegram_mode": True if telegram_mode else False,
+                "restart_discord_mode": True if discord_mode else False,
                 "restart_telegram_user_id": telegram_user_id,
             },
         )
@@ -961,10 +975,14 @@ class AutonomousLoopEngine:
                         _wake_msg = (
                             "\U0001f44b Woke up from sleep. Resuming work immediately."
                         )
-                        self._exec_telegram(ctx, _wake_msg)
-                        self.logger.info("Forced wake-up telegram sent after sleep restart")
+                        if ctx.discord_mode:
+                            self._exec_discord(ctx, _wake_msg)
+                            self.logger.info("Forced wake-up discord message sent after sleep restart")
+                        elif ctx.telegram_mode:
+                            self._exec_telegram(ctx, _wake_msg)
+                            self.logger.info("Forced wake-up telegram sent after sleep restart")
                     except Exception as _e:
-                        self.logger.warning(f"Failed to send wake-up telegram: {_e}")
+                        self.logger.warning(f"Failed to send wake-up message: {_e}")
 
                 # --- Forced sleep when iteration threshold is exceeded ---
                 if (
@@ -1353,9 +1371,14 @@ class AutonomousLoopEngine:
             loop_warning = loop_msg
 
         # ── Mode context banner ──
-        mode_banner = "📱 TELEGRAM MODE"
+        if ctx.discord_mode:
+            mode_banner = "💬 DISCORD MODE"
+        elif ctx.telegram_mode:
+            mode_banner = "📱 TELEGRAM MODE"
+        else:
+            mode_banner = "🖥️  LOCAL MODE"
 
-        # Telegram-specific instructions (only in Telegram mode)
+        # Messaging-specific instructions (Telegram or Discord mode)
         telegram_section = ""
         if ctx.telegram_mode:
             telegram_section = (
@@ -1364,6 +1387,15 @@ class AutonomousLoopEngine:
                 "\"[telegram sent]\" entry, reply with telegram() as your first command.\n"
                 "2. thinking() is NEVER visible to the user. telegram() is the ONLY way reach them.\n"
                 "3. Send progress updates every 5-10 iterations. NEVER go >10 iterations without telegram().\n"
+            )
+        discord_section = ""
+        if ctx.discord_mode:
+            discord_section = (
+                "\n## DISCORD MESSAGE RULES\n"
+                "1. When a user message appears in the Execution Log without a subsequent "
+                "\"[discord sent]\" entry, reply with discord() as your first command.\n"
+                "2. thinking() is NEVER visible to the user. discord() is the ONLY way reach them.\n"
+                "3. Send progress updates every 5-10 iterations. NEVER go >10 iterations without discord().\n"
             )
 
         # Self-directed instructions: when no instruction was given, the agent
@@ -1403,7 +1435,8 @@ class AutonomousLoopEngine:
                 "2. VERIFY it matches the current state.\n"
                 "3. CONTINUE from where you left off — do NOT re-introduce\n"
                 "   yourself or re-explain capabilities.\n"
-                "4. If context is missing/incomplete, note it via telegram()\n"
+                "4. If context is missing/incomplete, note it via "
+                "telegram()/discord()\n"
                 "   then continue with available information.\n"
             )
 
@@ -1446,11 +1479,14 @@ class AutonomousLoopEngine:
             f"OTHER COMMANDS:\n"
             f"  command(<shell>)   — Fallback for complex shell operations\n"
             f"  thinking(<text>)   — Internal note (invisible to user, max 1/turn)\n"
-            f"  telegram(<text>)   — ONLY way to reach user in Telegram mode"
+            f"  telegram(<text>)   — Send message via Telegram"
             f"{' (ACTIVE)' if ctx.telegram_mode else ''}\n"
+            f"  discord(<text>)    — Send message via Discord"
+            f"{' (ACTIVE)' if ctx.discord_mode else ''}\n"
             f"  sleep              — Compress & restart (auto at {self.NOTIFICATION_THRESHOLD} log lines)\n"
             f"  exit               — Save & shut down\n"
             f"{telegram_section}"
+            f"{discord_section}"
             f"{self_directed_section}"
             f"{resume_section}\n"
             f"## EXECUTION LOG (your memory)\n"
@@ -1499,6 +1535,9 @@ class AutonomousLoopEngine:
     )
     _CMD_TELEGRAM = re.compile(
         r'^telegram\((.*?)\)\s*$', re.DOTALL
+    )
+    _CMD_DISCORD = re.compile(
+        r'^discord\((.*?)\)\s*$', re.DOTALL
     )
     _CMD_TELEGRAM_LOG = re.compile(
         r'^Telegram_log\((\d+)\)\s*$', re.DOTALL
@@ -1674,8 +1713,8 @@ class AutonomousLoopEngine:
         """Try to match a single command line.
 
         Returns (type, arg) or None.  Supports both the traditional
-        command()/thinking()/telegram() syntax and direct tool calls
-        like read(path="...") / glob(pattern="...").
+        command()/thinking()/telegram()/discord() syntax and direct tool
+        calls like read(path="...") / glob(pattern="...").
         """
         m = self._CMD_COMMAND.match(line)
         if m:
@@ -1686,6 +1725,9 @@ class AutonomousLoopEngine:
         m = self._CMD_TELEGRAM.match(line)
         if m:
             return ("telegram", m.group(1).strip())
+        m = self._CMD_DISCORD.match(line)
+        if m:
+            return ("discord", m.group(1).strip())
         m = self._CMD_TELEGRAM_LOG.match(line)
         if m:
             return ("telegram_log", m.group(1).strip())
@@ -1768,6 +1810,8 @@ class AutonomousLoopEngine:
                 self._exec_thinking(ctx, arg)
             elif cmd_type == "telegram":
                 self._exec_telegram(ctx, arg)
+            elif cmd_type == "discord":
+                self._exec_discord(ctx, arg)
             elif cmd_type == "telegram_log":
                 self._exec_telegram_log(ctx, arg)
             elif cmd_type == "parallel":
@@ -2001,9 +2045,13 @@ class AutonomousLoopEngine:
             if user_id is not None and self.discord_bot and not getattr(self.discord_bot, "_boot_user_id", None):
                 self.discord_bot._boot_user_id = user_id
             self._append_log(ctx, entry)
+            if ctx.discord_mode:
+                _cmd_hint = "discord()"
+            else:
+                _cmd_hint = "telegram()"
             self._append_log(
                 ctx,
-                "⚠️  Please reply to this message using the telegram() command! "
+                f"⚠️  Please reply to this message using the {_cmd_hint} command! "
                 "Unless there's a very good reason not to. "
                 "Whenever possible, send an initial acknowledgement (e.g. "
                 "'Got it, working on it…') before carrying out instructions "
@@ -2101,6 +2149,42 @@ class AutonomousLoopEngine:
                 "Message lost: " + content[:200]
             )
             self._append_log(ctx, "[telegram dropped - no user] " + content[:200])
+
+    def _exec_discord(self, ctx: AutonomousContext, content: str) -> None:
+        """Send a message via Discord (only in Discord mode)."""
+        if not ctx.discord_mode:
+            self.logger.warning(
+                "discord() command invoked but not in Discord mode – ignoring"
+            )
+            return
+        target_user = ctx.telegram_user_id
+        if target_user is None:
+            target_user = getattr(self, "_telegram_boot_user_id", None)
+        if target_user is None and self.discord_bot:
+            target_user = getattr(self.discord_bot, "_boot_user_id", None)
+        if self.discord_bot and target_user:
+            try:
+                self.discord_bot.queue_message(target_user, content)
+                import asyncio as _asyncio
+                try:
+                    loop = _asyncio.get_running_loop()
+                    _asyncio.ensure_future(
+                        self.discord_bot.process_message_queue()
+                    )
+                except RuntimeError:
+                    pass
+                self._term_log.telegram(content)
+                log_entry = "[discord sent] " + content[:200]
+                self._append_log(ctx, log_entry)
+            except Exception as e:
+                self.logger.warning("Failed to queue Discord message: " + str(e))
+                self._append_log(ctx, "[discord error] " + str(e))
+        else:
+            self.logger.warning(
+                "discord() called but no bot configured or no user id available. "
+                "Message lost: " + content[:200]
+            )
+            self._append_log(ctx, "[discord dropped - no user] " + content[:200])
 
     def _exec_telegram_log(self, ctx: AutonomousContext, arg: str) -> None:
         """Display recent conversation history from the active messaging bot."""
@@ -2275,6 +2359,8 @@ class AutonomousLoopEngine:
                 self._exec_thinking(ctx, ca)
             elif ct == "telegram":
                 self._exec_telegram(ctx, ca)
+            elif ct == "discord":
+                self._exec_discord(ctx, ca)
 
     # ------------------------------------------------------------------ #
     #  Sleep workflow                                                    #
@@ -2614,6 +2700,7 @@ class AutonomousLoopEngine:
             "compressed_context": compressed,
             "timestamp": time.time(),
             "telegram_mode": ctx.telegram_mode,
+            "discord_mode": ctx.discord_mode,
             "telegram_user_id": ctx.telegram_user_id,
             "restart_provider": ctx.metadata.get("restart_provider", ""),
             "restart_model": ctx.metadata.get("restart_model", ""),
@@ -2697,10 +2784,16 @@ class AutonomousLoopEngine:
         provider = ctx.metadata.get("restart_provider", "")
         model = ctx.metadata.get("restart_model", "")
         telegram_mode = ctx.metadata.get("restart_telegram_mode", False)
+        discord_mode = ctx.metadata.get("restart_discord_mode", False)
         telegram_user_id = ctx.metadata.get("restart_telegram_user_id", None)
 
         # Determine the mode string for the restarted process
-        mode = "telegram" if telegram_mode else "normal"
+        if discord_mode:
+            mode = "discord"
+        elif telegram_mode:
+            mode = "telegram"
+        else:
+            mode = "normal"
 
         # Store provider/model/mode in env for the restarted process
         os.environ["VEXIS_RESTART_MODE"] = mode
@@ -2722,6 +2815,7 @@ class AutonomousLoopEngine:
                 data["restart_model"] = model
                 data["restart_mode"] = mode
                 data["restart_telegram_mode"] = telegram_mode
+                data["restart_discord_mode"] = discord_mode
                 data["restart_telegram_user_id"] = telegram_user_id
                 state_file.write_text(
                     _json.dumps(data, indent=2, ensure_ascii=False),
@@ -2989,14 +3083,25 @@ class AutonomousLoopEngine:
             )
 
     def _notify_telegram_error(self, ctx: AutonomousContext, error: str, is_recovery: bool = False) -> None:
-        """Send an error/recovery notification to the Telegram user."""
+        """Send an error/recovery notification to the user via the active bot."""
         # Update resilience engine's Telegram reference
         if ctx.telegram_user_id:
             self._resilience.set_telegram_user_id(ctx.telegram_user_id)
 
-        # Use resilience engine for notification (handles both bot and callback)
         icon = "✅" if is_recovery else "❌"
-        self._resilience.notify_telegram(f"{icon} {error}", is_error=not is_recovery)
+        notification = f"{icon} {error}"
+
+        # Route to the correct bot based on active mode
+        active_bot = self.discord_bot if ctx.discord_mode else self.telegram_bot
+        if active_bot and ctx.telegram_user_id:
+            try:
+                active_bot.queue_message(ctx.telegram_user_id, notification)
+                return
+            except Exception:
+                pass
+
+        # Fallback to resilience engine
+        self._resilience.notify_telegram(notification, is_error=not is_recovery)
 
     @staticmethod
     def _restore_terminal_history_log() -> list:
@@ -3143,25 +3248,18 @@ class _TerminalLogSink:
     Real-time terminal log stream that always prints to stderr so that
     the agent's thinking/execution activity is visible to the user
     regardless of where command stdout is directed.
-    """
 
-    # ANSI colour helpers (no external dependency)
-    _RESET  = "\033[0m"
-    _BOLD   = "\033[1m"
-    _DIM    = "\033[2m"
-    _CYAN   = "\033[36m"
-    _GREEN  = "\033[32m"
-    _YELLOW = "\033[33m"
-    _RED    = "\033[31m"
-    _PURPLE = "\033[35m"
-    _GRAY   = "\033[90m"
+    Now backed by Rich for beautiful output with shimmer effects,
+    gradient panels, and smooth animations.
+    """
 
     def __init__(self, enabled: bool = True):
         self._enabled = enabled and self._stderr_is_tty()
-
-    # ------------------------------------------------------------------ #
-    #  Internal helpers                                                  #
-    # ------------------------------------------------------------------ #
+        if self._enabled:
+            from ..utils.rich_console import StyledLogSink
+            self._styled = StyledLogSink(enabled=True)
+        else:
+            self._styled = None
 
     @staticmethod
     def _stderr_is_tty() -> bool:
@@ -3170,146 +3268,61 @@ class _TerminalLogSink:
         except Exception:
             return False
 
-    def _write(self, text: str) -> None:
-        if not self._enabled:
-            return
-        try:
-            sys.stderr.write(text)
-            sys.stderr.flush()
-        except Exception:
-            pass
-
-    def _ts(self) -> str:
-        return time.strftime("%H:%M:%S", time.localtime())
-
-    # ------------------------------------------------------------------ #
-    #  Public logging methods                                            #
-    # ------------------------------------------------------------------ #
-
     def phase(self, iteration: int, phase_name: str) -> None:
-        """Log the start of a loop phase."""
-        self._write(
-            f"{self._DIM}{self._GRAY}[{self._ts()}]{self._RESET}  "
-            f"{self._BOLD}{self._CYAN}━━━ Iteration {iteration} ━ {phase_name} "
-            f"━━━{self._RESET}\n"
-        )
+        if self._styled:
+            self._styled.phase(iteration, phase_name)
 
     def thinking(self, text: str) -> None:
-        """Log an internal thought from the agent."""
-        for line in text.strip().splitlines():
-            self._write(
-                f"{self._DIM}{self._GRAY}[{self._ts()}]{self._RESET}  "
-                f"{self._PURPLE}💭 {line}{self._RESET}\n"
-            )
+        if self._styled:
+            self._styled.thinking(text)
 
     def command(self, cmd: str) -> None:
-        """Log a shell command being executed."""
-        self._write(
-            f"{self._DIM}{self._GRAY}[{self._ts()}]{self._RESET}  "
-            f"{self._YELLOW}❯ {cmd}{self._RESET}\n"
-        )
+        if self._styled:
+            self._styled.command(cmd)
 
     def command_result(self, return_code: int, stdout: str, stderr: str) -> None:
-        """Log the result of a shell command."""
-        colour = self._GREEN if return_code == 0 else self._RED
-        label  = "✓" if return_code == 0 else "✗"
-        self._write(
-            f"{self._DIM}{self._GRAY}[{self._ts()}]{self._RESET}  "
-            f"{colour}{label} exit={return_code}{self._RESET}\n"
-        )
-        if stdout.strip():
-            for line in stdout.strip().splitlines():
-                self._write(
-                    f"{self._DIM}{self._GRAY}[{self._ts()}]{self._RESET}  "
-                    f"{self._GRAY}  < {line}{self._RESET}\n"
-                )
-        if stderr.strip():
-            for line in stderr.strip().splitlines():
-                self._write(
-                    f"{self._DIM}{self._GRAY}[{self._ts()}]{self._RESET}  "
-                    f"{self._RED}  < {line}{self._RESET}\n"
-                )
+        if self._styled:
+            self._styled.command_result(return_code, stdout, stderr)
 
     def model_request(self, iteration: int, model: str, provider: str) -> None:
-        """Log that we are querying the model."""
-        self._write(
-            f"{self._DIM}{self._GRAY}[{self._ts()}]{self._RESET}  "
-            f"{self._CYAN}🤖 → {provider}/{model}{self._RESET}\n"
-        )
+        if self._styled:
+            self._styled.model_request(iteration, model, provider)
 
     def model_response(self, iteration: int, output_length: int, latency: float = 0) -> None:
-        """Log that we received a model response."""
-        self._write(
-            f"{self._DIM}{self._GRAY}[{self._ts()}]{self._RESET}  "
-            f"{self._CYAN}🤖 ← {output_length} chars"
-            f"{f' ({latency:.1f}s)' if latency > 0 else ''}{self._RESET}\n"
-        )
+        if self._styled:
+            self._styled.model_response(iteration, output_length, latency)
 
     def telegram(self, content: str) -> None:
-        """Log a Telegram message being sent."""
-        self._write(
-            f"{self._DIM}{self._GRAY}[{self._ts()}]{self._RESET}  "
-            f"{self._CYAN}📨 {content[:120]}{self._RESET}\n"
-        )
+        if self._styled:
+            self._styled.telegram(content)
 
     def task_done(self, success: bool, iterations: int, duration: float) -> None:
-        """Log final task status. (Deprecated — kept for compatibility.)"""
-        colour = self._GREEN if success else self._RED
-        icon   = "✅" if success else "❌"
-        self._write(
-            f"\n{self._BOLD}{colour}{icon} Task "
-            f"{('completed' if success else 'failed')} "
-            f"in {iterations} iteration(s), "
-            f"{duration:.1f}s{self._RESET}\n"
-        )
+        if self._styled:
+            self._styled.task_done(success, iterations, duration)
 
     def error(self, text: str) -> None:
-        """Log an error."""
-        self._write(
-            f"{self._DIM}{self._GRAY}[{self._ts()}]{self._RESET}  "
-            f"{self._RED}❌ {text}{self._RESET}\n"
-        )
+        if self._styled:
+            self._styled.error(text)
 
     def cancelled(self) -> None:
-        self._write(
-            f"\n{self._YELLOW}⚠ Cancelled by user request{self._RESET}\n"
-        )
+        if self._styled:
+            self._styled.cancelled()
 
     def parallel_start(self, count: int) -> None:
-        """Log the start of a parallel batch."""
-        self._write(
-            f"{self._DIM}{self._GRAY}[{self._ts()}]{self._RESET}  "
-            f"{self._BOLD}{self._YELLOW}⇅ parallel batch: {count} tasks{self._RESET}\n"
-        )
+        if self._styled:
+            self._styled.parallel_start(count)
 
     def parallel_result(self, result) -> None:
-        """Log the aggregated result of a parallel batch."""
-        if result.all_succeeded:
-            colour = self._GREEN
-            icon = "✓"
-        else:
-            colour = self._RED
-            icon = "✗"
-        fail = getattr(result, 'fail_count', 0)
-        self._write(
-            f"{self._DIM}{self._GRAY}[{self._ts()}]{self._RESET}  "
-            f"{colour}{icon} parallel done: {result.success_count} ok, "
-            f"{fail} failed, "
-            f"{result.total_duration_ms:.0f}ms{self._RESET}\n"
-        )
+        if self._styled:
+            self._styled.parallel_result(result)
 
     def separator(self) -> None:
-        self._write(
-            f"{self._DIM}{self._GRAY}{'─' * 52}{self._RESET}\n"
-        )
+        if self._styled:
+            self._styled.separator()
 
     def context(self, text: str) -> None:
-        """Log a context block from the .context/ folder."""
-        for line in text.strip().splitlines():
-            self._write(
-                f"{self._DIM}{self._GRAY}[{self._ts()}]{self._RESET}  "
-                f"{self._YELLOW}📂 {line}{self._RESET}\n"
-            )
+        if self._styled:
+            self._styled.context(text)
 
 
 class _PipelineCancelledError(Exception):

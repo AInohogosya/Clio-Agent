@@ -123,6 +123,7 @@ class AutonomousAIAgent:
     def run_autonomous_boot(self, options: Dict[str, Any],
                             conversation_history=None,
                             telegram_bot=None,
+                            discord_bot=None,
                             initial_instruction: str = None) -> int:
         """Run the agent in perpetual autonomous mode.
 
@@ -151,12 +152,15 @@ class AutonomousAIAgent:
 
             self._apply_runtime_options(options)
 
+            _discord_mode = discord_bot is not None
+            _telegram_mode = telegram_bot is not None or (not _discord_mode)
             execute_kwargs = {
                 "conversation_history": conversation_history,
-                "telegram_mode": True,
+                "telegram_mode": _telegram_mode,
+                "discord_mode": _discord_mode,
                 "telegram_user_id": getattr(
-                    telegram_bot, "_boot_user_id", None
-                ) if telegram_bot else None,
+                    discord_bot if _discord_mode else telegram_bot, "_boot_user_id", None
+                ) if (telegram_bot or discord_bot) else None,
             }
 
             ctx = self.engine.execute_instruction(

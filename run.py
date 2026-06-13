@@ -23,6 +23,18 @@ import time
 from pathlib import Path
 from typing import Optional
 
+# Ensure src directory is in sys.path so ai_agent can be imported
+_project_root_for_path = Path(__file__).parent.resolve()
+_src_path = str(_project_root_for_path / "src")
+if _src_path not in sys.path:
+    sys.path.insert(0, _src_path)
+
+# Rich console for beautiful CLI output
+from ai_agent.utils.rich_console import (
+    get_console, Theme, status_panel, gradient_text,
+    ShimmerLoader, StreamingPrinter
+)
+
 # Project root & context directory
 _PROJECT_ROOT = Path(__file__).parent.resolve()
 _CONTEXT_DIR = _PROJECT_ROOT / ".context"
@@ -262,73 +274,127 @@ def get_venv_python_path():
 
 
 def show_help():
-    print("Clio-Agent AI Agent Runner")
-    print("=" * 50)
-    print("Usage: Clio-Agent [options]")
-    print()
-    print("The agent is fully autonomous — no instruction needed.")
-    print("It observes, explores, and acts on its own.")
-    print()
-    print("This command automatically handles:")
-    print("  • Virtual environment creation and management")
-    print("  • Dependency installation")
-    print("  • Model selection (14 AI providers with model options)")
-    print("    - Local: Ollama (privacy-focused)")
-    print("    - Cloud: OpenAI, Anthropic, Google, xAI, Meta, Groq, DeepSeek, Together, Microsoft, Mistral, Amazon, Cohere, MiniMax")
-    print("  • Cross-platform compatibility")
-    print("  • Self-bootstrapping")
-    print("  • Environment detection and adaptive execution")
-    print()
-    print("Model Options:")
-    print("  🦊 Ollama: Local models (privacy-focused) - Stable")
-    print("  🌐 Google: Gemini models (enterprise-grade) - Stable")
-    print("  🤖 OpenAI: GPT models (advanced capabilities) - Beta")
-    print("  🧠 Anthropic: Claude models (strong reasoning) - Beta")
-    print("  🚀 xAI: Grok models (real-time knowledge) - Beta")
-    print("  🦙 Meta: Llama models (via Meta API) - Beta")
-    print("  ⚡ Groq: Fast inference (Llama/Mixtral) - Beta")
-    print("  🔍 DeepSeek: Advanced reasoning models - Beta")
-    print("  🤝 Together AI: Open-source model hosting - Beta")
-    print("  ☁️ Microsoft: GPT models via Azure - Beta")
-    print("  🌍 Mistral AI: Multilingual models - Beta")
-    print("  🏭 Amazon Bedrock: Titan/Nova models via AWS - Beta")
-    print("  🏢 Cohere: Command models for enterprise - Beta")
-    print("  🚀 MiniMax: M2-series models for productivity - Beta")
-    print()
-    print("Environment Commands:")
-    print("  --check, -c         Run environment check and show recommendations")
-    print("  --fix               Run environment check and auto-fix issues")
-    print("  --install-sdks      Install missing AI provider SDKs")
-    print("  --sdk-status        Show AI provider SDK installation status")
-    print()
-    print("Examples:")
-    print("  Clio-Agent                              # Start autonomous agent (no instruction)")
-    print("  Clio-Agent \"Take a screenshot\"")
-    print("  Clio-Agent \"Open a web browser and search for AI\"")
-    print("  Clio-Agent --check")
-    print("  Clio-Agent --install-sdks")
-    print()
-    print("Options:")
-    print("  --help, -h          Show this help message")
-    print("  --watchdog          Enable watchdog supervisor (auto-restart on crash)")
-    print("  --supervisor        Enable eternal supervisor (maximum resilience)")
-    print("  --health-check      Run a self-diagnostic and exit")
-    print("  --debug             Enable debug mode")
-    print("  --no-prompt         Use saved provider preference without prompting")
-    print("  --setting           Force interactive provider/model selection menu")
-    print("  --sleep             Compress context and restart immediately")
-    print("  --self-heal         Enable enhanced self-healing mode")
-    print("  --telegram          Run in Telegram bot mode")
-    print("  --discord           Run in Discord bot mode")
-    print()
-    print("SDK Management:")
-    print("  clio-agent --sdk-status                  # Show SDK status")
-    print("  clio-agent --install-sdks                # Install all missing SDKs")
-    print()
-    print("Virtual Environment:")
-    print("  Automatically creates and uses './venv' directory")
-    print("  All dependencies are isolated within the virtual environment")
-    print("  No manual setup required - just run and go!")
+    """Display beautiful help page using Rich."""
+    from rich.rule import Rule
+    from rich.table import Table
+    from rich.panel import Panel
+    from rich.align import Align
+    console = get_console()
+    console.print()
+    console.print(gradient_text("◆ Clio-Agent AI Agent Runner"))
+    console.print()
+    console.print(Rule(style=Theme.BORDER_SUBTLE))
+    console.print(f"[bold {Theme.ACCENT}]Usage:[/] Clio-Agent [options]")
+    console.print()
+    console.print(f"[bold {Theme.TEXT_PRIMARY}]The agent is fully autonomous — no instruction needed.[/]")
+    console.print(f"[{Theme.TEXT_SECONDARY}]It observes, explores, and acts on its own.[/]")
+    console.print()
+
+    # Features table
+    table = Table(
+        show_header=False, box=None, padding=(0, 2), expand=True,
+        border_style=Theme.BORDER,
+    )
+    table.add_column("icon", width=4)
+    table.add_column("desc", style=Theme.TEXT_SECONDARY)
+    features = [
+        ("⚙️ ", "Virtual environment creation and management"),
+        ("📦", "Dependency installation"),
+        ("🤖", "Model selection (16 AI providers with model options)"),
+        ("🌐", "Cross-platform compatibility"),
+        ("🔄", "Self-bootstrapping"),
+        ("🔍", "Environment detection and adaptive execution"),
+    ]
+    for icon, desc in features:
+        table.add_row(icon, desc)
+    console.print(Panel(table, title="Auto-Handled", border_style=Theme.ACCENT, padding=(1, 2)))
+
+    # Model options
+    console.print()
+    console.print(f"[bold {Theme.ACCENT}]Model Options:[/]")
+    providers = [
+        ("🦊", "Ollama", "Local models (privacy-focused)", "Stable"),
+        ("🌐", "Google", "Gemini models (enterprise-grade)", "Stable"),
+        ("🤖", "OpenAI", "GPT models (advanced capabilities)", "Beta"),
+        ("🧠", "Anthropic", "Claude models (strong reasoning)", "Beta"),
+        ("🚀", "xAI", "Grok models (real-time knowledge)", "Beta"),
+        ("🦙", "Meta", "Llama models (via Meta API)", "Beta"),
+        ("⚡", "Groq", "Fast inference (Llama/Mixtral)", "Beta"),
+        ("🔍", "DeepSeek", "Advanced reasoning models", "Beta"),
+        ("🤝", "Together AI", "Open-source model hosting", "Beta"),
+        ("☁️ ", "Microsoft", "GPT models via Azure", "Beta"),
+        ("🌍", "Mistral AI", "Multilingual models", "Beta"),
+        ("🏭", "Amazon Bedrock", "Titan/Nova models via AWS", "Beta"),
+        ("🏢", "Cohere", "Command models for enterprise", "Beta"),
+        ("🚀", "MiniMax", "M2-series models for productivity", "Beta"),
+    ]
+    prov_table = Table(
+        show_header=False, box=None, padding=(0, 1), expand=True,
+    )
+    prov_table.add_column("icon", width=3)
+    prov_table.add_column("name", width=18, style=f"bold {Theme.TEXT_PRIMARY}")
+    prov_table.add_column("desc", width=40, style=Theme.TEXT_SECONDARY)
+    prov_table.add_column("status", width=8, style=Theme.SUCCESS)
+    for icon, name, desc, status in providers:
+        prov_table.add_row(icon, name, desc, status)
+    console.print(Panel(prov_table, border_style=Theme.BORDER, padding=(1, 2)))
+
+    # Environment commands
+    console.print()
+    console.print(f"[bold {Theme.ACCENT}]Environment Commands:[/]")
+    env_table = Table(show_header=False, box=None, padding=(0, 2))
+    env_table.add_column("cmd", width=22, style=f"bold {Theme.INFO}")
+    env_table.add_column("desc", style=Theme.TEXT_SECONDARY)
+    env_cmds = [
+        ("--check, -c", "Run environment check and show recommendations"),
+        ("--fix", "Run environment check and auto-fix issues"),
+        ("--install-sdks", "Install missing AI provider SDKs"),
+        ("--sdk-status", "Show AI provider SDK installation status"),
+    ]
+    for cmd, desc in env_cmds:
+        env_table.add_row(cmd, desc)
+    console.print(env_table)
+
+    console.print()
+    console.print(f"[bold {Theme.ACCENT}]Options:[/]")
+    opt_table = Table(show_header=False, box=None, padding=(0, 2))
+    opt_table.add_column("opt", width=22, style=f"bold {Theme.INFO}")
+    opt_table.add_column("desc", style=Theme.TEXT_SECONDARY)
+    opts = [
+        ("--help, -h", "Show this help message"),
+        ("--health-check", "Run a self-diagnostic and exit"),
+        ("--debug", "Enable debug mode"),
+        ("--no-prompt", "Use saved provider preference without prompting"),
+        ("--setting", "Force interactive provider/model selection menu"),
+        ("--sleep", "Compress context and restart immediately"),
+        ("--self-heal", "Enable enhanced self-healing mode"),
+        ("--telegram", "Run in Telegram bot mode"),
+        ("--discord", "Run in Discord bot mode"),
+        ("--watchdog", "Enable watchdog supervisor (auto-restart on crash)"),
+        ("--supervisor", "Enable eternal supervisor (maximum resilience)"),
+    ]
+    for opt, desc in opts:
+        opt_table.add_row(opt, desc)
+    console.print(opt_table)
+
+    # Examples
+    console.print()
+    console.print(f"[bold {Theme.ACCENT}]Examples:[/]")
+    examples = [
+        ("Clio-Agent", "# Start autonomous agent"),
+        ('Clio-Agent "Take a screenshot"', "# Run a specific task"),
+        ("Clio-Agent --check", "# Check environment"),
+        ("Clio-Agent --install-sdks", "# Install SDKs"),
+    ]
+    for cmd, comment in examples:
+        console.print(f"  [{Theme.ACCENT}]$[/] [bold white]{cmd}[/] [{Theme.TEXT_TERTIARY}]{comment}[/]")
+
+    console.print()
+    console.print(Rule(style=Theme.BORDER_SUBTLE))
+    console.print(
+        f"[{Theme.TEXT_TERTIARY}]v3.0 • pip install -e .  •  Clio-Agent to launch[/]"
+    )
+    console.print()
 
 
 def check_ollama_login_with_fallback():
@@ -462,12 +528,12 @@ def select_google_model():
 
 
 def show_config_summary(provider, model=None):
-    from ai_agent.utils.interactive_menu import Colors
+    from rich.panel import Panel
+    from rich.table import Table
     from ai_agent.utils.settings_manager import get_settings_manager
     settings_manager = get_settings_manager()
-    print(f"\n{Colors.BOLD}{Colors.BRIGHT_CYAN}{'\u2500' * 50}{Colors.RESET}")
-    print(f"{Colors.BOLD}{Colors.BRIGHT_GREEN}\u2713 Configuration Complete{Colors.RESET}")
-    print(f"{Colors.BOLD}{Colors.BRIGHT_CYAN}{'\u2500' * 50}{Colors.RESET}")
+    console = get_console()
+
     provider_info = {
         "ollama": ("Ollama (Local)", settings_manager.get_ollama_model()),
         "google": ("Google Gemini", model or settings_manager.get_google_model()),
@@ -486,16 +552,33 @@ def show_config_summary(provider, model=None):
         "zhipuai": ("ZhipuAI", model or settings_manager.get_zhipuai_model()),
         "openrouter": ("OpenRouter", model or settings_manager.get_openrouter_model()),
     }
+
+    table = Table(show_header=False, box=None, padding=(0, 2))
+    table.add_column("key", style=Theme.TEXT_SECONDARY, min_width=14)
+    table.add_column("value", style="bold white")
+
     if provider in provider_info:
         provider_name, model_name = provider_info[provider]
-        print(f"{Colors.WHITE}  Provider: {Colors.BRIGHT_YELLOW}{provider_name}{Colors.RESET}")
+        table.add_row("Provider", provider_name)
         if model_name:
             display_model = format_model_display_name(provider, model_name)
-            print(f"{Colors.WHITE}  Model:    {Colors.BRIGHT_YELLOW}{display_model}{Colors.RESET}")
+            table.add_row("Model", display_model)
     else:
-        print(f"{Colors.WHITE}  Provider: {Colors.BRIGHT_YELLOW}Unknown Provider{Colors.RESET}")
-        print(f"{Colors.WHITE}  Model:    {Colors.BRIGHT_YELLOW}{model or 'Unknown'}{Colors.RESET}")
-    print(f"{Colors.BOLD}{Colors.BRIGHT_CYAN}{'\u2500' * 50}{Colors.RESET}\n")
+        table.add_row("Provider", "Unknown")
+        table.add_row("Model", model or "Unknown")
+
+    console.print()
+    console.print(
+        Panel(
+            table,
+            title=f"[bold {Theme.SUCCESS}]Configuration Complete[/]",
+            border_style=Theme.SUCCESS,
+            padding=(1, 3),
+        )
+    )
+    console.print()
+
+
 
 
 def format_model_display_name(provider, model):
@@ -761,63 +844,96 @@ def _reset_config_yaml():
 
 
 def _run_health_check():
+    """Beautiful health check using Rich panels."""
     import platform as _plat
     import shutil as _shutil
-    print("=" * 60)
-    print("\U0001fa7a Clio Agent Self-Diagnostic")
-    print("=" * 60)
-    print(f"Python:    {sys.version}")
-    print(f"Platform:  {_plat.system()} {_plat.release()} ({_plat.machine()})")
-    print(f"PID:       {os.getpid()}")
+    from rich.panel import Panel
+    from rich.align import Align
+    console = get_console()
+
+    console.print()
+    console.print(
+        Panel(
+            Align.center("[bold]🩺 Clio Agent Self-Diagnostic[/]"),
+            border_style=Theme.ACCENT,
+            padding=(1, 4),
+        )
+    )
+
+    rows = [
+        ("Python", sys.version.split()[0]),
+        ("Platform", f"{_plat.system()} {_plat.release()} ({_plat.machine()})"),
+        ("PID", str(os.getpid())),
+    ]
+    console.print(status_panel("System", rows, border_color=Theme.ACCENT))
+
+    # Disk
     try:
         _usage = _shutil.disk_usage(str(Path(__file__).parent))
         _free = _usage.free / (1024 ** 3)
         _total = _usage.total / (1024 ** 3)
         _pct = (_usage.used / _usage.total) * 100
-        _status = "\u2705" if _free > 5 else ("\u26a0\ufe0f " if _free > 1 else "\u274c")
-        print(f"Disk:      {_status} {_free:.1f}GB free / {_total:.1f}GB total ({_pct:.0f}% used)")
+        if _free > 5:
+            dcolor = Theme.SUCCESS
+            dicon = "✅"
+        elif _free > 1:
+            dcolor = Theme.WARNING
+            dicon = "⚠️ "
+        else:
+            dcolor = Theme.ERROR
+            dicon = "❌"
+        drows = [
+            ("Status", f"{dicon} {_free:.1f} GB free / {_total:.1f} GB total"),
+            ("Usage", f"{_pct:.0f}% used"),
+        ]
+        console.print(status_panel("Disk", drows, border_color=dcolor))
     except Exception as e:
-        print(f"Disk:      \u274c Error: {e}")
+        console.print(status_panel("Disk", [("Error", str(e))], border_color=Theme.ERROR))
+
+    # Memory
     try:
         import psutil as _ps
         _mem = _ps.virtual_memory()
-        _status = "\u2705" if _mem.percent < 85 else ("\u26a0\ufe0f " if _mem.percent < 95 else "\u274c")
-        print(f"Memory:    {_status} {_mem.available / (1024**3):.1f}GB available ({_mem.percent:.0f}% used)")
+        _free_gb = _mem.available / (1024 ** 3)
+        _used_pct = _mem.percent
+        if _used_pct < 85:
+            mcolor = Theme.SUCCESS
+            micon = "✅"
+        elif _used_pct < 95:
+            mcolor = Theme.WARNING
+            micon = "⚠️ "
+        else:
+            mcolor = Theme.ERROR
+            micon = "❌"
+        mrows = [
+            ("Status", f"{micon} {_free_gb:.1f} GB available"),
+            ("Usage", f"{_used_pct:.0f}% used"),
+        ]
+        console.print(status_panel("Memory", mrows, border_color=mcolor))
     except Exception:
-        print("Memory:    \u26a0\ufe0f psutil not available")
-    _in_venv = (hasattr(sys, 'real_prefix') or (hasattr(sys, 'base_prefix') and sys.base_prefix != sys.prefix) or os.getenv('VIRTUAL_ENV') is not None)
-    print(f"Venv:      {'\u2705' if _in_venv else '\u274c'} {'Yes' if _in_venv else 'No'}")
-    _ctx_dir = Path(__file__).parent / ".context"
-    _sleep_state = _ctx_dir / "sleep_state.json"
-    _exit_state = _ctx_dir / "exit_state.json"
-    print(f"Sleep:     {'\u2705' if _sleep_state.exists() else '\u2014  (no sleep_state.json)'}")
-    print(f"Exit:      {'\u2705' if _exit_state.exists() else '\u2014  (no exit_state.json)'}")
-    _hb = _ctx_dir / "watchdog_heartbeat.json"
-    if _hb.exists():
-        try:
-            import json as _json
-            _data = _json.loads(_hb.read_text())
-            _age = time.time() - _data.get("timestamp", 0)
-            _status = "\u2705" if _age < 600 else "\u26a0\ufe0f "
-            print(f"Heartbeat: {_status} last beat {_age:.0f}s ago (PID {_data.get('pid', '?')})")
-        except Exception:
-            print("Heartbeat: \u26a0\ufe0f  corrupt file")
-    else:
-        print("Heartbeat: \u2014  (no heartbeat file)")
-    _rc = _ctx_dir / "watchdog_restarts.json"
-    if _rc.exists():
-        try:
-            import json as _json
-            _data = _json.loads(_rc.read_text())
-            _count = _data.get("count", 0)
-            _status = "\u2705" if _count < 5 else "\u26a0\ufe0f "
-            print(f"Restarts:  {_status} {_count} in current window")
-        except Exception:
-            print("Restarts:  \u26a0\ufe0f  corrupt counter")
-    else:
-        print("Restarts:  \u2014  (no restart counter)")
-    print("=" * 60)
+        console.print(status_panel("Memory", [("Status", "⚠️  psutil not available")], border_color=Theme.WARNING))
 
+    # Venv
+    _in_venv = (
+        hasattr(sys, 'real_prefix')
+        or (hasattr(sys, 'base_prefix') and sys.base_prefix != sys.prefix)
+        or os.getenv('VIRTUAL_ENV') is not None
+    )
+    vcolor = Theme.SUCCESS if _in_venv else Theme.ERROR
+    vrows = [("Virtual Env", "✅ Yes" if _in_venv else "❌ No")]
+    console.print(status_panel("Environment", vrows, border_color=vcolor))
+
+    # Context files
+    _ctx_dir = Path(__file__).parent / ".context"
+    ctx_rows = []
+    for label, fname in [("Sleep", "sleep_state.json"), ("Exit", "exit_state.json"), ("Heartbeat", "watchdog_heartbeat.json")]:
+        fpath = _ctx_dir / fname
+        if fpath.exists():
+            ctx_rows.append((label, f"✅ {fname}"))
+        else:
+            ctx_rows.append((label, f"— (no {fname})"))
+    console.print(status_panel("Context Files", ctx_rows, border_color=Theme.INFO))
+    console.print()
 
 # ── Forward declarations for the functions we kept from the original run.py ──
 # These are the large model-selection functions that were in the original run.py.
@@ -1457,7 +1573,13 @@ def main():
             print(f"\u274c Failed: {e}")
         sys.exit(0)
 
-    selected_mode = "telegram"
+    selected_mode = os.getenv(RESTART_MODE_ENV, "") or "telegram"
+    if "--discord" in sys.argv:
+        sys.argv.remove("--discord")
+        selected_mode = "discord"
+    elif "--telegram" in sys.argv:
+        sys.argv.remove("--telegram")
+        selected_mode = "telegram"
     force_reconfigure = "--setting" in sys.argv
     if force_reconfigure:
         _reset_config_yaml()
@@ -1508,7 +1630,7 @@ def main():
         print("\U0001f504 Restarting with current settings...")
         restart_with_current_settings(selected_mode, selected_provider, selected_model, debug_mode)
 
-    print(f"\nClio Agent starting in Telegram mode...")
+    print(f"\nClio Agent starting in {selected_mode.capitalize()} mode...")
     max_iterations = 0
     if "--max-iterations" in sys.argv:
         try:
@@ -1524,28 +1646,44 @@ def main():
         from ai_agent.external_integration.discord_bot import create_discord_bot
 
         telegram_bot = None
-        config_path = current_dir / "config.yaml"
-        try:
-            telegram_bot = create_telegram_bot(str(config_path) if config_path.exists() else None)
-        except Exception:
-            telegram_bot = None
-        if telegram_bot:
-            print("\u2713 Telegram bot initialized")
-
         discord_bot = None
-        try:
-            discord_bot = create_discord_bot(str(config_path) if config_path.exists() else None)
-        except Exception:
-            discord_bot = None
-        if discord_bot:
-            print("\u2713 Discord bot initialized")
+        config_path = current_dir / "config.yaml"
+
+        if selected_mode == "discord":
+            try:
+                discord_bot = create_discord_bot(str(config_path) if config_path.exists() else None)
+            except Exception:
+                discord_bot = None
+            if discord_bot:
+                print("\u2713 Discord bot initialized")
+            # Also try Telegram as secondary
+            try:
+                telegram_bot = create_telegram_bot(str(config_path) if config_path.exists() else None)
+            except Exception:
+                telegram_bot = None
+            if telegram_bot:
+                print("\u2713 Telegram bot initialized (secondary)")
+        else:
+            try:
+                telegram_bot = create_telegram_bot(str(config_path) if config_path.exists() else None)
+            except Exception:
+                telegram_bot = None
+            if telegram_bot:
+                print("\u2713 Telegram bot initialized")
+            # Also try Discord as secondary
+            try:
+                discord_bot = create_discord_bot(str(config_path) if config_path.exists() else None)
+            except Exception:
+                discord_bot = None
+            if discord_bot:
+                print("\u2713 Discord bot initialized (secondary)")
 
         active_bot = discord_bot or telegram_bot
 
         agent = AutonomousAIAgent(
             provider=selected_provider, model=selected_model,
             config_path=str(config_path) if config_path.exists() else None,
-            telegram_bot=active_bot, discord_bot=discord_bot,
+            telegram_bot=telegram_bot, discord_bot=discord_bot,
         )
 
         command_timeout = 1800
@@ -1562,10 +1700,11 @@ def main():
             pass
 
         options = {"debug": debug_mode, "command_timeout": command_timeout, "task_timeout": task_timeout, "self_heal": _self_heal_mode}
-        os.environ['VEXIS_TELEGRAM_MODE'] = 'true'
+        os.environ['VEXIS_TELEGRAM_MODE'] = 'true' if selected_mode == 'telegram' else 'false'
+        os.environ['VEXIS_DISCORD_MODE'] = 'true' if selected_mode == 'discord' else 'false'
 
         if active_bot:
-            bot_label = "Discord" if discord_bot else "Telegram"
+            bot_label = "Discord" if selected_mode == "discord" else "Telegram"
             print(f"\n\U0001f4f1 Starting {bot_label} bot mode...")
             active_bot.set_message_callback(None)
 
@@ -1584,7 +1723,8 @@ def main():
                 try:
                     agent.run_autonomous_boot(
                         options, conversation_history=shared_history,
-                        telegram_bot=active_bot, initial_instruction=instruction,
+                        telegram_bot=telegram_bot, discord_bot=discord_bot,
+                        initial_instruction=instruction,
                     )
                 except KeyboardInterrupt:
                     pass
@@ -1592,10 +1732,11 @@ def main():
             agent_thread = _th.Thread(target=_run_agent, daemon=True)
             agent_thread.start()
 
-            telegram_thread = None
+            secondary_thread = None
             if discord_bot and telegram_bot:
-                telegram_thread = _th.Thread(target=lambda: telegram_bot.start_bot(), daemon=True)
-                telegram_thread.start()
+                secondary_bot = telegram_bot if selected_mode == "discord" else discord_bot
+                secondary_thread = _th.Thread(target=lambda: secondary_bot.start_bot(), daemon=True)
+                secondary_thread.start()
 
             try:
                 active_bot.start_bot()
@@ -1608,14 +1749,17 @@ def main():
                 except Exception:
                     pass
                 active_bot.stop_bot()
-                if telegram_thread:
-                    telegram_bot.stop_bot()
+                if secondary_thread:
+                    secondary_bot.stop_bot()
                 print("Bot stopped.")
                 sys.exit(0)
         else:
             print("\n\U0001f916 Running in autonomous mode...")
             try:
-                agent.run_autonomous_boot(options, telegram_bot=None, initial_instruction=instruction)
+                agent.run_autonomous_boot(
+                    options, telegram_bot=telegram_bot, discord_bot=discord_bot,
+                    initial_instruction=instruction,
+                )
             except KeyboardInterrupt:
                 print("\n\nStopping agent...")
                 try:

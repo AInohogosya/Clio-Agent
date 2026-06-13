@@ -115,6 +115,10 @@ discord:
   allowed_user_ids: []
   max_history_length: 50
   bot_name: "VEXIS Agent"
+  # Optional: restrict to specific guilds (servers)
+  # allowed_guild_ids: []
+  # Optional: restrict to specific channels
+  # allowed_channel_ids: []
 
 # Custom System Prompts (NEW in v2.2)
 # Custom prompts that users can freely configure and include in system prompts

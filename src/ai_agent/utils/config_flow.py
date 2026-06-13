@@ -798,6 +798,12 @@ MESSAGING_APPS = {
         "description": "Telegram bot via BotFather",
         "fields": ["bot_username", "bot_name", "bot_token"],
     },
+    "discord": {
+        "name": "Discord",
+        "icon": "D",
+        "description": "Discord bot via Developer Portal",
+        "fields": ["bot_name", "bot_token"],
+    },
     "none": {
         "name": "None (CLI only)",
         "icon": "X",
@@ -810,7 +816,7 @@ MESSAGING_APPS = {
 def select_messaging_app(stdscr=None) -> Optional[str]:
     """Let user select a messaging app. Returns app key or None."""
     items = []
-    for key in ["telegram", "none"]:
+    for key in ["telegram", "discord", "none"]:
         app = MESSAGING_APPS[key]
         items.append({"id": key, "icon": app["icon"], "name": app["name"], "description": app["description"]})
 
@@ -913,6 +919,112 @@ def _input_telegram_config(stdscr, existing=None):
             return None
 
 
+def _input_discord_config(stdscr, existing=None):
+    """Curses-based Discord config input. Returns dict with bot_name, bot_token or None."""
+    curses.curs_set(1)
+    _setup_colors()
+
+    fields = [
+        ("bot_name", "Bot Name", "Display name for your bot"),
+        ("bot_token", "Bot Token", "Token from Discord Developer Portal"),
+    ]
+    if existing:
+        values = {
+            "bot_name": existing.get("bot_name", ""),
+            "bot_token": existing.get("bot_token", ""),
+        }
+    else:
+        values = {"bot_name": "", "bot_token": ""}
+    current_field = 0
+    error_msg = ""
+
+    while True:
+        stdscr.clear()
+        max_y, max_x = stdscr.getmaxyx()
+
+        stdscr.addstr(0, 0, "Discord Bot Configuration", _attr(COLOR_TITLE, True))
+        stdscr.addstr(1, 0, "=" * min(50, max_x - 1), _attr(COLOR_TITLE))
+        stdscr.addstr(2, 0, "Enter your Discord bot details (from Developer Portal):", _attr(COLOR_NORMAL))
+
+        if error_msg:
+            stdscr.addstr(4, 0, error_msg[:max_x - 1], _attr(COLOR_ERROR))
+
+        start_y = 6 if error_msg else 5
+        for i, (key, label, hint) in enumerate(fields):
+            y = start_y + i * 3
+            if y >= max_y - 4:
+                break
+            sel = (i == current_field)
+            prefix = ">>> " if sel else "    "
+            line = "%s%s:" % (prefix, label)
+            stdscr.addstr(y, 0, line, _attr(COLOR_HIGHLIGHT, True) if sel else _attr(COLOR_NORMAL))
+            val_display = values[key] if key != "bot_token" else ("*" * len(values[key]) if values[key] else "")
+            stdscr.addstr(y, 20, val_display, _attr(COLOR_NORMAL))
+            stdscr.addstr(y + 1, 4, hint, _attr(COLOR_FOOTER))
+
+        all_filled = all(values[k].strip() for k, _, _ in fields)
+        if all_filled:
+            footer = "Enter/Tab:Confirm  Up/Down:Navigate  Esc:Back  Ctrl+C:Quit"
+        elif current_field < len(fields) - 1:
+            footer = "Enter:Next field  Up/Down:Navigate  Esc:Cancel  Ctrl+C:Quit"
+        else:
+            footer = "Enter:Confirm  Up/Down:Navigate  Esc:Cancel  Ctrl+C:Quit"
+        stdscr.addstr(max_y - 1, 0, footer[:max_x - 1], _attr(COLOR_FOOTER))
+        stdscr.refresh()
+
+        ch = stdscr.getch()
+        if ch == 27:
+            return None
+        elif ch == 3:
+            return None
+        elif ch in (10, 13, 9):
+            if current_field < len(fields) - 1:
+                current_field += 1
+            else:
+                if not values["bot_token"].strip():
+                    error_msg = "Bot token is required."
+                    continue
+                return values
+        elif ch == curses.KEY_UP and current_field > 0:
+            current_field -= 1
+        elif ch == curses.KEY_DOWN and current_field < len(fields) - 1:
+            current_field += 1
+        elif ch == curses.KEY_BACKSPACE or ch == 127 or ch == 8:
+            key = fields[current_field][0]
+            values[key] = values[key][:-1]
+            error_msg = ""
+        elif 32 <= ch <= 126:
+            key = fields[current_field][0]
+            values[key] += chr(ch)
+            error_msg = ""
+        elif ch in (ord('q'), ord('Q')):
+            return None
+
+
+def get_discord_config(stdscr=None) -> Optional[Dict[str, str]]:
+    """Get Discord config from user. Returns dict or None."""
+    config_path = Path(__file__).parent.parent.parent.parent / "config.yaml"
+    existing = {}
+    try:
+        if config_path.exists():
+            import yaml as _yaml
+            with open(config_path, 'r') as f:
+                config = _yaml.safe_load(f) or {}
+            dc = config.get('discord', {})
+            if dc.get('bot_token'):
+                existing = {
+                    "bot_name": dc.get("bot_name", ""),
+                    "bot_token": dc.get("bot_token", ""),
+                }
+    except Exception:
+        pass
+
+    if stdscr:
+        return _input_discord_config(stdscr, existing=existing)
+    else:
+        return curses.wrapper(lambda s: _input_discord_config(s, existing=existing))
+
+
 def get_telegram_config(stdscr=None) -> Optional[Dict[str, str]]:
     """Get Telegram config from user. Returns dict or None."""
     # Check config.yaml for existing values
@@ -939,7 +1051,7 @@ def get_telegram_config(stdscr=None) -> Optional[Dict[str, str]]:
         return curses.wrapper(lambda s: _input_telegram_config(s, existing=existing))
 
 
-def _save_messaging_config_to_yaml(app_key: str, telegram_config: Optional[Dict[str, str]] = None):
+def _save_messaging_config_to_yaml(app_key: str, app_config: Optional[Dict[str, str]] = None):
     """Save messaging app configuration to config.yaml."""
     import yaml as _yaml
 
@@ -955,14 +1067,23 @@ def _save_messaging_config_to_yaml(app_key: str, telegram_config: Optional[Dict[
 
     if 'telegram' not in config:
         config['telegram'] = {}
+    if 'discord' not in config:
+        config['discord'] = {}
 
-    if app_key == "telegram" and telegram_config:
+    if app_key == "telegram" and app_config:
         config['telegram']['enabled'] = True
-        config['telegram']['bot_username'] = telegram_config.get("bot_username", "")
-        config['telegram']['bot_name'] = telegram_config.get("bot_name", "")
-        config['telegram']['bot_token'] = telegram_config.get("bot_token", "")
+        config['telegram']['bot_username'] = app_config.get("bot_username", "")
+        config['telegram']['bot_name'] = app_config.get("bot_name", "")
+        config['telegram']['bot_token'] = app_config.get("bot_token", "")
     else:
         config['telegram']['enabled'] = False
+
+    if app_key == "discord" and app_config:
+        config['discord']['enabled'] = True
+        config['discord']['bot_name'] = app_config.get("bot_name", "")
+        config['discord']['bot_token'] = app_config.get("bot_token", "")
+    else:
+        config['discord']['enabled'] = False
 
     with open(config_path, 'w') as f:
         _yaml.dump(config, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
@@ -1047,16 +1168,21 @@ def _configure_flow_curses(stdscr) -> Tuple[Optional[str], Optional[str], Option
                 selected = None
                 break
 
-            # Step 6: Get Telegram config if selected
-            telegram_config = None
+            # Step 6: Get messaging app config if selected
+            app_config = None
             if messaging_app == "telegram":
-                telegram_config = get_telegram_config(stdscr)
-                if telegram_config is None:
+                app_config = get_telegram_config(stdscr)
+                if app_config is None:
+                    # Go back to messaging app selection, not the entire flow
+                    continue
+            elif messaging_app == "discord":
+                app_config = get_discord_config(stdscr)
+                if app_config is None:
                     # Go back to messaging app selection, not the entire flow
                     continue
 
-                # Save messaging config to config.yaml
-                _save_messaging_config_to_yaml(messaging_app, telegram_config)
+            # Save messaging config to config.yaml
+            _save_messaging_config_to_yaml(messaging_app, app_config)
 
             # Successfully got messaging config (or chose "None")
             return provider_key, selected, api_key
