@@ -301,3 +301,4 @@ cnofig.yaml
 # Otto agent runtime data (ignore everything except .keep)
 .otto/*
 !.otto/.keep
+.otto

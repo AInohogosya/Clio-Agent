@@ -2383,6 +2383,26 @@ def main():
                 telegram_bot.stop_bot()
                 print("Bot stopped.")
                 sys.exit(0)
+        else:
+            # No Telegram bot — run the agent directly in autonomous mode
+            print("\n🤖 Running in autonomous mode (no Telegram bot)...")
+            print("Press Ctrl+C to stop.")
+            try:
+                agent.run_autonomous_boot(
+                    options,
+                    telegram_bot=None,
+                    initial_instruction=instruction,
+                )
+            except KeyboardInterrupt:
+                print("\n\nStopping agent...")
+                try:
+                    _ctx = getattr(agent.engine, "_current_context", None)
+                    if _ctx is not None:
+                        _pr = Path(__file__).parent.resolve()
+                        agent.engine._handle_exit(_ctx, fast=True, project_root=_pr)
+                except Exception:
+                    pass
+                print("Agent stopped.")
 
 
     except ImportError as e:
