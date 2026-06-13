@@ -76,10 +76,10 @@ logging:
 
 # Cache Configuration
 cache:
-  enabled: true
-  max_size: 1000
-  ttl: 3600
-  persist_to_disk: true
+  enabled: false
+  max_size: 0
+  ttl: 0
+  persist_to_disk: false
 
 # Cost Management
 cost:

@@ -139,10 +139,10 @@ class ExecutionConfig:
 @dataclass
 class CacheConfig:
     """Cache configuration"""
-    enabled: bool = True
+    enabled: bool = False
     max_size: int = 1000
     ttl: int = 3600
-    persist_to_disk: bool = True
+    persist_to_disk: bool = False
 
 
 @dataclass

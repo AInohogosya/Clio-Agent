@@ -132,36 +132,11 @@ class PromptCache:
         Returns:
             Cached response or None if not found/expired
         """
-        key = self._generate_key(prompt, model, provider, task_type, temperature, max_tokens)
-        
+        # Feature permanently disabled — always miss
         with self.lock:
-            entry = self.cache.get(key)
-            
-            if entry is None:
-                self.stats.misses += 1
-                self._update_hit_rate()
-                return None
-            
-            if entry.is_expired():
-                self.logger.debug(f"Cache entry expired for key {key[:16]}...")
-                del self.cache[key]
-                self.stats.evictions += 1
-                self.stats.misses += 1
-                self._update_hit_rate()
-                return None
-            
-            # Cache hit
-            entry.touch()
-            self.stats.hits += 1
+            self.stats.misses += 1
             self._update_hit_rate()
-            
-            self.logger.debug(
-                f"Cache hit for key {key[:16]}...",
-                access_count=entry.access_count,
-                age_seconds=time.time() - entry.timestamp
-            )
-            
-            return entry.response
+        return None
     
     def put(
         self,
@@ -177,37 +152,8 @@ class PromptCache:
         """
         Store response in cache
         """
-        key = self._generate_key(prompt, model, provider, task_type, temperature, max_tokens)
-        
-        with self.lock:
-            # Check if we need to evict entries
-            if len(self.cache) >= self.max_size:
-                self._evict_lru()
-            
-            # Create new entry
-            entry = CacheEntry(
-                prompt_hash=key,
-                response=response,
-                model=model,
-                provider=provider,
-                task_type=task_type,
-                timestamp=time.time(),
-                ttl=ttl or self.default_ttl,
-                last_accessed=time.time()
-            )
-            
-            self.cache[key] = entry
-            self.stats.total_entries = len(self.cache)
-            
-            self.logger.debug(
-                f"Cached response for key {key[:16]}...",
-                ttl=ttl or self.default_ttl,
-                cache_size=len(self.cache)
-            )
-            
-            # Persist to disk if enabled
-            if self.persist_to_disk:
-                self._save_to_disk()
+        # Feature permanently disabled — never store
+        pass
     
     def _evict_lru(self):
         """Evict least recently used entry"""
@@ -393,15 +339,18 @@ def get_prompt_cache(
     default_ttl: int = 3600,
     persist_to_disk: bool = True
 ) -> PromptCache:
-    """Get global prompt cache instance"""
+    """Get global prompt cache instance (feature permanently disabled)"""
     global _global_cache
     
     if _global_cache is None:
-        _global_cache = PromptCache(
-            max_size=max_size,
-            default_ttl=default_ttl,
-            persist_to_disk=persist_to_disk
-        )
+        _global_cache = PromptCache.__new__(PromptCache)
+        _global_cache.cache = {}
+        _global_cache.stats = CacheStats()
+        _global_cache.lock = Lock()
+        _global_cache.max_size = 0
+        _global_cache.default_ttl = 0
+        _global_cache.persist_to_disk = False
+        _global_cache.cache_dir = Path.home() / ".vexis" / "cache"
     
     return _global_cache
 

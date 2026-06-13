@@ -279,6 +279,7 @@ CONTEXT COMPRESSION TIPS (for when YOU trigger sleep):
   - Graceful degradation on persistent failures
 """
 
+import hashlib
 import os
 import random
 import re
@@ -316,6 +317,18 @@ class LoopPhase(Enum):
     SLEEPING = "sleeping"
     EXITING = "exiting"
     FAILED = "failed"
+
+
+class IdleState(Enum):
+    """Idle state machine for detecting and handling repetitive behavior.
+
+    ACTIVE  — Normal operation: the agent thinks and executes freely.
+    IDLE  — Content-free / repetitive iterations detected. The agent
+              enters a lightweight wait loop instead of calling the model.
+              Exits immediately when new user input arrives.
+    """
+    ACTIVE = "active"
+    IDLE = "idle"
 
 
 @dataclass
@@ -483,6 +496,18 @@ class AutonomousLoopEngine:
         self._loop_warning_active = False  # True when loop detected
         self._auto_save_thread = None
         self._auto_save_running = False
+
+        # ── Idle state machine ─────────────────────────────────────
+        # Detects repetitive/content-free iterations and transitions
+        # into a clean idle loop instead of forcing model calls.
+        self._idle_state: IdleState = IdleState.ACTIVE
+        # Consecutive iterations with no command()/tool_call()/telegram()
+        # or with identical model output (exact repetition).
+        self._empty_iterations: int = 0
+        # Max empty iterations before entering idle (prevents infinite loops)
+        self._max_empty_iterations: int = 5
+        # MD5 digest of the last model output for repetition detection
+        self._previous_output_digest: str = ""
 
         self.logger.info("Autonomous Loop Engine initialized with enhanced resilience")
 
@@ -913,6 +938,15 @@ class AutonomousLoopEngine:
         try:
             while True:
                 self._raise_if_cancelled(ctx)
+
+                # --- Idle state check: skip model call, enter wait loop ---
+                if self._idle_state == IdleState.IDLE:
+                    self._enter_idle_loop(ctx)
+                    # _enter_idle_loop returns only when woken by new input
+                    # or after full sleep.  In either case, restart the
+                    # iteration fresh.
+                    continue
+
                 ctx.iteration_count += 1
 
                 # --- Write heartbeat for supervisor monitoring ---
@@ -1002,6 +1036,9 @@ class AutonomousLoopEngine:
                         self._append_log(ctx, f"[parse error] {e}")
                         continue
 
+
+                # --- Detect empty/repetitive iterations (idle state) ---
+                self._detect_empty_iteration(ctx, think_output, commands)
 
                 # Check for sleep / exit first (they control the loop)
                 if any(cmd[0] == "exit" for cmd in commands):
@@ -1131,6 +1168,134 @@ class AutonomousLoopEngine:
         # Keep only the last N commands
         if len(self._recent_commands) > self._loop_detection_window * 3:
             self._recent_commands = self._recent_commands[-self._loop_detection_window * 2:]
+
+    # ------------------------------------------------------------------ #
+    #  Idle State Machine — stop infinite loops when no real work       #
+    # ------------------------------------------------------------------ #
+
+    def _detect_empty_iteration(self, ctx: AutonomousContext,
+                                 model_output: str,
+                                 commands: List[Tuple[str, str]]) -> None:
+        """
+        Detect iterations where no meaningful work was done and increment
+        the empty-iteration counter.  Transitions to IDLE state when the
+        threshold is exceeded, preventing repeated model calls that produce
+        the same useless output.
+
+        An iteration is "empty" when:
+          - No command() / tool_call() / telegram() was emitted, OR
+          - The model output is byte-for-byte identical to the previous one
+            (exact repetition, e.g. re-reading the same file).
+        """
+        # Check for meaningful commands
+        has_real_work = any(
+            c[0] in ("command", "tool_call", "telegram") for c in commands
+        )
+
+        # Check for identical model output (exact repetition)
+        digest = hashlib.md5((model_output or "").encode()).hexdigest()
+        is_repeat = (digest == self._previous_output_digest)
+        self._previous_output_digest = digest
+
+        if not has_real_work or is_repeat:
+            self._empty_iterations += 1
+            self.logger.info(
+                "Empty iteration detected",
+                iteration=ctx.iteration_count,
+                has_real_work=has_real_work,
+                is_repeat=is_repeat,
+                consecutive_empty=self._empty_iterations,
+            )
+        else:
+            self._empty_iterations = 0
+
+        # Transition to IDLE state when threshold is exceeded
+        if self._empty_iterations >= self._max_empty_iterations:
+            if self._idle_state == IdleState.ACTIVE:
+                self._idle_state = IdleState.IDLE
+                self._auto_save_context(ctx)
+                warning = (
+                    f"[SYSTEM] Idle state activated — {self._empty_iterations} "
+                    "consecutive iterations with no meaningful work. "
+                    "Pausing model calls. Awaiting new user input to wake up."
+                )
+                self._append_log(ctx, warning)
+                self._term_log.separator()
+                self._term_log.thinking(
+                    f"🛑 Idle for {self._empty_iterations} consecutive iterations — "
+                    "entering idle. No model calls until new input arrives."
+                )
+                if ctx.telegram_mode:
+                    self._exec_telegram(
+                        ctx,
+                        "🛑 Entering idle — no new input or meaningful work. "
+                        "Send me a message to wake me up.",
+                    )
+
+    def _enter_idle_loop(self, ctx: AutonomousContext) -> None:
+        """
+        Lightweight idle loop that polls _new_message_event instead of
+        calling the LLM.  This prevents repeated model calls when the
+        agent has no real work and would otherwise loop forever.
+
+        Transition back to ACTIVE on any of:
+          - A new user message arrives (_new_message_event set)
+          - Cancel event is set
+          - Periodic auto-save triggers (every ~30 s)
+          - After 5+ minutes idle, a full sleep/restart is executed
+            to free resources.
+
+        This loop runs inside the main ``while True`` in
+        execute_instruction().  When it returns, the outer loop
+        ``continue`` starts a fresh iteration in ACTIVE state.
+        """
+        idle_iters = 0
+
+        while self._idle_state == IdleState.IDLE:
+            self._raise_if_cancelled(ctx)
+
+            # Wait for new-message event with a longer poll interval (5 s)
+            woke = self._new_message_event.wait(timeout=5.0)
+
+            if woke:
+                self._new_message_event.clear()
+                self._exit_idle_state(ctx)
+                self._term_log.thinking(
+                    "✅ New input received — exiting idle state."
+                )
+                return
+
+            idle_iters += 1
+
+            # Periodic auto-save every ~30 s
+            if idle_iters % 6 == 0:
+                self._auto_save_context(ctx)
+
+            # After 5+ minutes idle, do a full sleep/restart
+            if idle_iters >= 60:  # 60 × 5 s ≈ 5 minutes
+                self._term_log.thinking(
+                    "⏰ Idle for 5+ minutes — executing sleep to free resources."
+                )
+                self._handle_sleep(ctx)
+                return  # Only reached if _handle_sleep fails
+
+        # Idle state was reset externally — just return
+        self._exit_idle_state(ctx)
+
+    def _exit_idle_state(self, ctx: AutonomousContext) -> None:
+        """Reset all idle-related counters and return to ACTIVE operation."""
+        self._idle_state = IdleState.ACTIVE
+        self._empty_iterations = 0
+        self._previous_output_digest = ""
+        self._loop_warning_active = False
+        self._recent_commands.clear()
+        self._term_log.thinking(
+            "✅ Idle state cleared — resuming active operation."
+        )
+        self._append_log(
+            ctx,
+            "[SYSTEM] Idle state cleared — resuming active operation.",
+        )
 
     def _run_thinking(self, ctx: AutonomousContext) -> str:
         """Send current context to the model and get its decision."""
@@ -1847,6 +2012,13 @@ class AutonomousLoopEngine:
             # Signal the main loop so it wakes up immediately and enters
             # the THINKING phase on the next iteration.
             self._new_message_event.set()
+
+            # Wake from idle if agent is currently in idle wait loop
+            if self._idle_state == IdleState.IDLE:
+                self._exit_idle_state(ctx)
+                self._term_log.thinking(
+                    "✅ User message received — waking from idle."
+                )
         else:
             timestamp = time.strftime("%H:%M:%S", time.localtime())
             try:

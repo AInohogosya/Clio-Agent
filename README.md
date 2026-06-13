@@ -53,10 +53,22 @@ Two ways to talk to it: directly in the terminal, or remotely via **Telegram bot
 ```bash
 git clone https://github.com/AInohogosya/VEXIS-CLI.git
 cd VEXIS-CLI
-python3 run.py "list all files in the current directory"
+pip install -e .
 ```
 
-On first run, `run.py` will:
+After installation, invoke the agent from **any directory**:
+
+```bash
+Clio-Agent "list all files in the current directory"
+```
+
+Or use the lowercase alias:
+
+```bash
+clio-agent "list all files in the current directory"
+```
+
+On first run, `Clio-Agent` will:
 
 1. Create a Python virtual environment (`venv/`)
 2. Install all dependencies automatically
@@ -88,7 +100,8 @@ git clone https://github.com/AInohogosya/VEXIS-CLI.git
 cd VEXIS-CLI
 ```
 
-No manual dependency installation is needed — `run.py` handles everything on first launch.
+The `pip install -e .` step installs the `Clio-Agent` and `clio-agent` commands globally.
+All agent dependencies (venv, packages) are handled automatically on first launch.
 
 ---
 
@@ -98,7 +111,7 @@ No manual dependency installation is needed — `run.py` handles everything on f
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                    main() — run.py                          │
+│                    main() — Clio-Agent                      │
 │  venv bootstrap → dependency install → provider selection    │
 │                          │                                   │
 │                          ▼                                   │
@@ -250,35 +263,35 @@ The interactive setup (`--setting` or first run) shows a provider selection menu
 
 ```bash
 # Basic — starts Telegram bot mode with interactive setup
-python3 run.py
+Clio-Agent
 
 # Run with an initial instruction
-python3 run.py "set up a Python project with tests"
+Clio-Agent "set up a Python project with tests"
 
 # Skip interactive prompts, use saved config
-python3 run.py --no-prompt
+Clio-Agent --no-prompt
 
 # Force reconfiguration of provider/model
-python3 run.py --setting
+Clio-Agent --setting
 
 # Run under eternal supervisor (auto-restart on crash)
-python3 run.py --supervisor
+Clio-Agent --supervisor
 
 # Enable enhanced self-healing
-python3 run.py --self-heal
+Clio-Agent --self-heal
 
 # Self-diagnostic
-python3 run.py --health-check
+Clio-Agent --health-check
 
 # Environment check
-python3 run.py --check
-python3 run.py --fix
+Clio-Agent --check
+Clio-Agent --fix
 
 # Max iterations (0 = unlimited)
-python3 run.py --max-iterations 1000
+Clio-Agent --max-iterations 1000
 
 # Debug mode (verbose logging)
-python3 run.py --debug
+Clio-Agent --debug
 ```
 
 ### Telegram Mode
@@ -289,7 +302,7 @@ python3 run.py --debug
 #   telegram.bot_token: "YOUR_BOT_TOKEN"
 #   telegram.allowed_user_ids: [123456789]
 
-python3 run.py  # auto-detects Telegram mode from config
+Clio-Agent  # auto-detects Telegram mode from config
 ```
 
 Send instructions to your bot from Telegram — the agent executes them on your machine and replies back. Supports `/start`, `/restart`, `/help` commands. The bot uses message queuing with retry, and the agent has a full anti-duplication protocol to avoid double-replies.
@@ -414,7 +427,7 @@ docker/
 ### "No AI provider configured"
 Run without `--no-prompt` to get the interactive setup:
 ```bash
-python3 run.py
+Clio-Agent
 ```
 
 ### Ollama not detected
@@ -427,7 +440,7 @@ ollama pull llama3.2:3b
 ### Virtual environment issues
 ```bash
 rm -rf venv
-python3 run.py  # recreates automatically
+Clio-Agent  # recreates automatically
 ```
 
 ### Agent doesn't resume after Ctrl+C
@@ -435,7 +448,7 @@ Check `.context/` for `exit_state.json` or `sleep_state.json`. Use the `exit` co
 
 ### Environment health check
 ```bash
-python3 run.py --health-check
+Clio-Agent --health-check
 ```
 
 ---
