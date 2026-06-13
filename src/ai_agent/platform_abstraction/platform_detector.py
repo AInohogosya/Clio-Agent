@@ -141,19 +141,21 @@ class PlatformDetector:
                 
             elif system == "Linux":
                 # Linux - try to get distribution info
+                distro = ""
+                version_id = ""
                 try:
                     with open("/etc/os-release", "r") as f:
-                        content = f.read()
-                        for line in content.split("\n"):
+                        os_release_content = f.read()
+                        for line in os_release_content.split("\n"):
                             if line.startswith("ID="):
                                 distro = line.split("=")[1].strip('"')
                             elif line.startswith("VERSION_ID="):
                                 version_id = line.split("=")[1].strip('"')
-                        return distro, version_id
-                except (FileNotFoundError, KeyError):
+                except (FileNotFoundError, KeyError, PermissionError):
                     pass
-                return "linux", release
-                
+                if not distro:
+                    distro = "linux"
+                return distro, version_id
             else:
                 # Fallback for other systems
                 return system.lower(), release

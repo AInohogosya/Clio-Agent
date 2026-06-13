@@ -21,28 +21,28 @@ try:
 except ImportError:
     raise ImportError("PIL (Pillow) is required for Google API provider")
 
-from .vision_api_client import APIRequest, APIResponse, BaseAPIProvider
+from .vision_api_client import APIRequest, APIResponse
 from ..utils.exceptions import APIError, ValidationError
 from ..utils.logger import get_logger
 
 
-class GoogleProvider(BaseAPIProvider):
+class GoogleProvider:
     """Google Gemini API provider"""
-    
+
     def __init__(self, config: Dict[str, Any]):
-        super().__init__(config)
         self.api_key = config.get("google_api_key")
+        self.timeout = config.get("timeout", 120)
         self._model_name = "gemini-3-flash-preview"
         self.endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{self._model_name}:generateContent"
-        
+
     @property
     def name(self) -> str:
         return "google"
-    
+
     @property
     def default_model(self) -> str:
         return "gemini-3-flash-preview"
-    
+
     def analyze_image(self, request: APIRequest) -> APIResponse:
         """Analyze image using Google Gemini API"""
         if not self.api_key:
@@ -53,13 +53,13 @@ class GoogleProvider(BaseAPIProvider):
                 provider=self.name,
                 error="Google API key not configured"
             )
-        
+
         try:
             # Prepare the request payload for Google Gemini API
             # Add unique identifier at the beginning to bypass caching
             unique_id = str(uuid.uuid4())
             unique_prompt = f"Unique Request ID: {unique_id}\n\n{request.prompt}"
-            
+
             payload = {
                 "contents": [{
                     "parts": [
@@ -71,7 +71,7 @@ class GoogleProvider(BaseAPIProvider):
                     "maxOutputTokens": request.max_tokens,
                 }
             }
-            
+
             # Add image if provided
             if request.image_data:
                 # Convert image to base64
@@ -79,25 +79,25 @@ class GoogleProvider(BaseAPIProvider):
                 # Determine MIME type
                 image_format = request.image_format.lower()
                 mime_type = f"image/{image_format}" if image_format in ["jpeg", "jpg", "png", "webp", "gif"] else "image/png"
-                
+
                 payload["contents"][0]["parts"].append({
                     "inline_data": {
                         "mime_type": mime_type,
                         "data": image_base64
                     }
                 })
-            
+
             # Make API call
             url = f"{self.endpoint}?key={self.api_key}"
             headers = {"Content-Type": "application/json"}
-            
+
             response = requests.post(
                 url,
                 headers=headers,
                 json=payload,
                 timeout=self.timeout
             )
-            
+
             if response.status_code == 200:
                 result = response.json()
                 # Extract content from Gemini response format
@@ -109,12 +109,12 @@ class GoogleProvider(BaseAPIProvider):
                         for part in parts:
                             if "text" in part:
                                 content += part["text"]
-                
+
                 # Extract token usage if available
                 tokens_used = None
                 if "usageMetadata" in result:
                     tokens_used = result["usageMetadata"].get("totalTokenCount")
-                
+
                 return APIResponse(
                     success=True,
                     content=content,
@@ -132,7 +132,7 @@ class GoogleProvider(BaseAPIProvider):
                     provider=self.name,
                     error=error_msg,
                 )
-            
+
         except Exception as e:
             return APIResponse(
                 success=False,
@@ -141,7 +141,7 @@ class GoogleProvider(BaseAPIProvider):
                 provider=self.name,
                 error=str(e),
             )
-    
+
     def _calculate_cost(self, model: str, tokens: Optional[int] = None) -> Optional[float]:
         """Calculate cost for Google Gemini API"""
         # Pricing for Gemini 1.5 Flash (as of 2024)

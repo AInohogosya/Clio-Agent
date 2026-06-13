@@ -64,7 +64,7 @@ class TerminalSession:
     start_time: float
     entries: List[TerminalEntry] = field(default_factory=list)
     end_time: Optional[float] = None
-    current_working_directory: str = field(default_factory=lambda: str(Path("/")))
+    current_working_directory: str = field(default_factory=lambda: str(Path.cwd()))
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -449,7 +449,8 @@ class TerminalHistory:
         except subprocess.CalledProcessError as e:
             # This shouldn't happen with capture_output=True, but just in case
             self.logger.warning(f"CalledProcessError in command execution: {e}")
-            return e
+            from types import SimpleNamespace
+            return SimpleNamespace(returncode=e.returncode, stdout=e.stdout or '', stderr=e.stderr or '')
         except UnicodeDecodeError as e:
             self.logger.error(f"Unicode decode error in command output: {e}")
             # Retry via shell with encoding fallback

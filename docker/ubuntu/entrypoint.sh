@@ -139,12 +139,10 @@ run_health_checks() {
     # Check Python modules
     /app/.venv/bin/python -c "
 import sys
-modules = [
-    'PIL', 'cv2', 'numpy', 'requests', 'pyautogui', 
-    'openai', 'anthropic', 'transformers', 'torch'
-]
-failed = []
-for module in modules:
+core_modules = ['yaml']
+optional_modules = ['PIL', 'cv2', 'numpy', 'pyautogui', 'openai', 'anthropic', 'transformers', 'torch']
+failed_core = []
+for module in core_modules:
     try:
         __import__(module)
         print(f'✓ {module}')

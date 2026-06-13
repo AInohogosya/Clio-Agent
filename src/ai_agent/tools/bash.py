@@ -29,15 +29,38 @@ class BashInput(ToolInput):
 # Dangerous patterns that are always blocked (not configurable — these are
 # destructive operations that no agent should perform without explicit user
 # consent at the OS level).
+# SECURITY: Patterns use word-boundary anchors and cover multiple disk device
+# naming schemes (sd, hd, vd, nvme, xvd) to prevent bypass via alternate names.
 _BLOCKED_PATTERNS = [
-    re.compile(r"\brm\s+(-[rfRF]+\s+)+/?(\s|$)"),            # rm -rf /
-    re.compile(r"\brm\s+(-[rfRF]+\s+)+\*"),                    # rm -rf /*
-    re.compile(r"\brm\s+(-[rfRF]+\s+)+~"),                     # rm -rf ~
-    re.compile(r"\bdd\s+if=/dev/(zero|random)\s+of=/dev/"),   # dd destroy
-    re.compile(r">\s*/dev/sd"),                                 # overwrite disk
-    re.compile(r":\s*\(\s*\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*"),  # fork bomb
-    re.compile(r"\bmkfs\.[a-z]+\s+/dev/"),                    # format disk device
-    re.compile(r"\bmv\s+/\s+/dev/null"),                        # mv / /dev/null
+    # rm -rf /, rm -rf //, rm -rf /*, rm -rf ~, rm -rf $HOME
+    re.compile(r"\brm\s+-[rfRF]+(\s+-[rfRF]+)*\s+(/?/\s*|/?/\*|~|\$HOME|\$\{HOME\})"),
+    re.compile(r"\brm\s+-[rfRF]+(\s+-[rfRF]+)*\s+/?/\s*$"),
+    # dd destroy: dd if=/dev/(zero|random|urandom) of=/dev/(sd|hd|vd|nvme|xvd)
+    re.compile(
+        r"\bdd\s+.*if=/dev/(zero|random|urandom)\s+.*of=/dev/"
+        r"(sd[a-z]+|hd[a-z]+|vd[a-z]+|nvme[0-9]+n[0-9]+|xvd[a-z]+)"
+    ),
+    # Direct disk overwrite
+    re.compile(r">\s*/dev/(sd[a-z]+|hd[a-z]+|vd[a-z]+|nvme[0-9]+n[0-9]+|xvd[a-z]+)"),
+    # Fork bomb variants
+    re.compile(r"\(\s*\)\s*\{[^}]*\|[^}]*&[^}]*\}", re.IGNORECASE),
+    # mkfs on block devices
+    re.compile(
+        r"\bmkfs\.[a-z]+\s+/dev/"
+        r"(sd[a-z]+|hd[a-z]+|vd[a-z]+|nvme[0-9]+n[0-9]+|xvd[a-z]+)"
+    ),
+    # Move root to /dev/null or /dev/zero
+    re.compile(r"\bmv\s+(?:/?|\./|\.\.)\s*/(?:dev/(null|zero)|\.{0,2}$)"),
+    # chmod 777 on root or critical system dirs
+    re.compile(
+        r"\bchmod\s+(-[R]+\s+)?777\s+"
+        r"(?:/($|\s)|/(?:etc|usr|bin|sbin|lib|var)(?:/|$))"
+    ),
+    # shred on block devices
+    re.compile(
+        r"\bshred\s+(-[vnz]+\s+)*/dev/"
+        r"(sd[a-z]+|hd[a-z]+|vd[a-z]+|nvme[0-9]+n[0-9]+|xvd[a-z]+)"
+    ),
 ]
 
 
@@ -45,7 +68,7 @@ def _is_command_blocked(command: str) -> Optional[str]:
     """Return reason string if command matches a blocked pattern."""
     for pattern in _BLOCKED_PATTERNS:
         if pattern.search(command):
-            return f"Matched blocked pattern: {pattern.pattern}"
+            return "Matched blocked pattern: %s" % pattern.pattern
     return None
 
 
@@ -73,35 +96,39 @@ class BashTool(ToolExecutor):
             return ToolResult.fail(
                 error=ToolError(
                     code=ToolErrorCode.COMMAND_FAILED,
-                    message=f"Working directory does not exist: {cwd}",
+                    message="Working directory does not exist: %s" % cwd,
                 ),
                 tool_name=self.name,
             )
 
         timeout = max(0.1, input.timeout)
 
+        proc = None
         try:
-            proc = subprocess.run(
+            proc = subprocess.Popen(
                 input.command,
                 shell=True,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 cwd=str(cwd) if cwd else None,
             )
+            stdout_bytes, stderr_bytes = proc.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
+            if proc is not None:
+                proc.kill()
+                proc.wait()
             raise CommandTimeoutToolError(input.command, timeout)
 
-        stdout = proc.stdout or ""
-        stderr = proc.stderr or ""
+        stdout = stdout_bytes.decode("utf-8", errors="replace") if isinstance(stdout_bytes, bytes) else (stdout_bytes or "")
+        stderr = stderr_bytes.decode("utf-8", errors="replace") if isinstance(stderr_bytes, bytes) else (stderr_bytes or "")
         exit_code = proc.returncode
 
         output_parts = []
         if stdout:
             output_parts.append(stdout)
         if stderr:
-            output_parts.append(f"\n[stderr]\n{stderr}")
-        output_parts.append(f"\n[exit code: {exit_code}]")
+            output_parts.append("\n[stderr]\n%s" % stderr)
+        output_parts.append("\n[exit code: %d]" % exit_code)
         output = "".join(output_parts).strip()
 
         if exit_code != 0:

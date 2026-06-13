@@ -268,7 +268,6 @@ def _guess_package_name(cmd: str, system: str) -> str:
         "tmux": "tmux",
         "htop": "htop",
         "unzip": "unzip",
-        "zip": "zip",
         "tar": "tar",
         "rsync": "rsync",
         "ssh": "openssh-client",
@@ -280,7 +279,6 @@ def _guess_package_name(cmd: str, system: str) -> str:
         "code": "code",
         "vim": "vim",
         "nano": "nano",
-        "zip": "zip",
     }
     return mapping.get(cmd, cmd)
 
@@ -390,7 +388,7 @@ def emergency_disk_cleanup(target_free_gb: float = 2.0) -> Tuple[bool, str]:
                         pass
             else:
                 import shutil as _sh
-                for item in target.iterdir():
+                for item in list(target.iterdir()):
                     try:
                         if item.is_file():
                             freed_mb += item.stat().st_size / (1024 ** 2)
@@ -711,8 +709,7 @@ class ResilienceEngine:
                 # Notify Telegram on high-severity errors
                 if severity in (ErrorSeverity.HIGH, ErrorSeverity.CRITICAL):
                     self.notify_telegram(
-                        "\u26a0\ufe0f " + context_label + ": " + type(e).__name__ + ": " + str(e) + "\n"
-                        "Retrying in " + str(int(delay)) + "s (attempt " + str(attempt + 1) + "/" + str(self.config.max_retries) + ")"
+                        f"\u26a0\ufe0f {context_label}: {type(e).__name__}: {e}\nRetrying in {int(delay)}s (attempt {attempt + 1}/{self.config.max_retries})"
                     )
 
                 await asyncio.sleep(delay)
@@ -756,8 +753,7 @@ class ResilienceEngine:
 
                 if severity in (ErrorSeverity.HIGH, ErrorSeverity.CRITICAL):
                     self.notify_telegram(
-                        "\u26a0\ufe0f " + context_label + ": " + type(e).__name__ + ": " + str(e) + "\n"
-                        "Retrying in " + str(int(delay)) + "s (attempt " + str(attempt + 1) + "/" + str(self.config.max_retries) + ")"
+                        f"\u26a0\ufe0f {context_label}: {type(e).__name__}: {e}\nRetrying in {int(delay)}s (attempt {attempt + 1}/{self.config.max_retries})"
                     )
 
                 time.sleep(delay)
@@ -955,6 +951,7 @@ class ResilienceEngine:
         """Install sys.excepthook and threading.excepthook."""
         self._original_excepthook = sys.excepthook
         self._original_threading_excepthook = getattr(threading, "excepthook", None)
+        self._threading_excepthook_available = hasattr(threading, "excepthook")
 
         engine = self
 
@@ -994,7 +991,8 @@ class ResilienceEngine:
             _handle_exception(args.exc_type, args.exc_value, args.exc_traceback, args.thread)
 
         sys.excepthook = _custom_excepthook
-        threading.excepthook = _custom_threading_excepthook
+        if self._threading_excepthook_available:
+            threading.excepthook = _custom_threading_excepthook
 
     # -- Error logging -----------------------------------------------------
 

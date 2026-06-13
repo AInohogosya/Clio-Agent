@@ -370,7 +370,7 @@ class ModelRunner:
         if not (0.0 <= request.temperature <= 2.0):
             raise ValidationError("Invalid temperature", "temperature", request.temperature)
 
-        if request.task_type not in TaskType:
+        if not isinstance(request.task_type, TaskType):
             raise ValidationError("Invalid task type", "task_type", request.task_type)
 
         if request.timeout < 1 or request.timeout > 300:
@@ -450,7 +450,7 @@ class ModelRunner:
                 format_vars.setdefault(key, "")
             try:
                 return template.format(**format_vars)
-            except Exception:
+            except (KeyError, ValueError, IndexError):
                 return request.prompt
         except Exception as e:
             self.logger.error(f"Template formatting error: {e}")

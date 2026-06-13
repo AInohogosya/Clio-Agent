@@ -104,8 +104,17 @@ class AIAgentLogger:
             self.logger.addHandler(file_handler)
     
     def _setup_structlog(self):
-        """Setup structlog processor"""
-        structlog.configure(
+        """Setup structlog processor (no-op after first call)"""
+        _setup_structlog_once(self.enable_json)
+
+_structlog_configured = False
+
+def _setup_structlog_once(enable_json=False):
+    """Configure structlog exactly once (global, idempotent)."""
+    global _structlog_configured
+    if _structlog_configured:
+        return
+    structlog.configure(
             processors=[
                 structlog.stdlib.filter_by_level,
                 structlog.stdlib.add_logger_name,
@@ -115,7 +124,7 @@ class AIAgentLogger:
                 structlog.processors.StackInfoRenderer(),
                 structlog.processors.format_exc_info,
                 structlog.processors.UnicodeDecoder(),
-                structlog.processors.JSONRenderer() if self.enable_json else structlog.dev.ConsoleRenderer(),
+                structlog.processors.JSONRenderer() if enable_json else structlog.dev.ConsoleRenderer(),
             ],
             context_class=dict,
             logger_factory=structlog.stdlib.LoggerFactory(),

@@ -278,6 +278,10 @@ class SandboxManager:
             # Nsjail: more comprehensive sandboxing
             return f'nsjail -Mo --chroot {work_dir} --disable_proc --quiet -- {command}'
         
+        elif self.available_sandbox == "chroot":
+            # Basic chroot (requires root, limited but available on most Linux)
+            return f'sudo chroot {work_dir} /bin/sh -c "{command}"'
+        
         else:
             return command
     

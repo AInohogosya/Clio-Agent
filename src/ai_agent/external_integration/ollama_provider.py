@@ -67,9 +67,10 @@ class SimpleOllamaProvider:
                 import subprocess
                 result = subprocess.run(["ollama", "whoami"], capture_output=True, text=True, timeout=5)
                 is_signed_in = result.returncode == 0 and result.stdout.strip()
-            except (subprocess.SubprocessError, FileNotFoundError, TimeoutError):
+            except (subprocess.SubprocessError, FileNotFoundError):
                 is_signed_in = False
-            except Exception:
+            except Exception as _signin_exc:
+                self.logger.warning(f"Unexpected error checking Ollama sign-in status: {_signin_exc}")
                 is_signed_in = False
 
             if not is_signed_in:

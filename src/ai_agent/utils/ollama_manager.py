@@ -18,10 +18,6 @@ from .ollama_error_handler import handle_ollama_error
 class OllamaManager:
     """Manages Ollama models with validation and installation"""
     
-    def get_model_families(self):
-        """Get available model families with names and descriptions"""
-        return get_model_families()
-    
     def __init__(self):
         self.logger = get_logger("ollama_manager")
         self.endpoint = "http://localhost:11434"

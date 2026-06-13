@@ -227,7 +227,6 @@ class ConfigManager:
         self._raw_config = {
             "logging": {"level": "INFO", "console": True},
             "api": {"timeout": 30, "max_retries": 3},
-            "security": {"command_timeout": 1800},
             "performance": {"max_concurrent_tasks": 1},
             "engine": {"click_delay": 0.1, "typing_delay": 0.05},
         }
@@ -309,17 +308,22 @@ class ConfigManager:
             # Get API config dict
             api_config_dict = self._raw_config.get("api", {})
             
+            def _filter_dc_dict(dc_cls, raw):
+                import dataclasses
+                valid = {f.name for f in dataclasses.fields(dc_cls)}
+                return {k: v for k, v in raw.items() if k in valid}
+
             return Config(
-                logging=LoggingConfig(**self._raw_config.get("logging", {})),
-                api=APIConfig(**api_config_dict),
-                security=SecurityConfig(**self._raw_config.get("security", {})),
-                performance=PerformanceConfig(**self._raw_config.get("performance", {})),
-                engine=EngineConfig(**self._raw_config.get("engine", {})),
-                telegram=TelegramConfig(**self._raw_config.get("telegram", {})),
-                execution=ExecutionConfig(**self._raw_config.get("execution", {})),
-                cache=CacheConfig(**self._raw_config.get("cache", {})),
-                cost=CostConfig(**self._raw_config.get("cost", {})),
-                user=UserConfig(**self._raw_config.get("user", {})),
+                logging=LoggingConfig(**_filter_dc_dict(LoggingConfig, self._raw_config.get("logging", {}))),
+                api=APIConfig(**_filter_dc_dict(APIConfig, api_config_dict)),
+                security=SecurityConfig(**_filter_dc_dict(SecurityConfig, self._raw_config.get("security", {}))),
+                performance=PerformanceConfig(**_filter_dc_dict(PerformanceConfig, self._raw_config.get("performance", {}))),
+                engine=EngineConfig(**_filter_dc_dict(EngineConfig, self._raw_config.get("engine", {}))),
+                telegram=TelegramConfig(**_filter_dc_dict(TelegramConfig, self._raw_config.get("telegram", {}))),
+                execution=ExecutionConfig(**_filter_dc_dict(ExecutionConfig, self._raw_config.get("execution", {}))),
+                cache=CacheConfig(**_filter_dc_dict(CacheConfig, self._raw_config.get("cache", {}))),
+                cost=CostConfig(**_filter_dc_dict(CostConfig, self._raw_config.get("cost", {}))),
+                user=UserConfig(**_filter_dc_dict(UserConfig, self._raw_config.get("user", {}))),
                 platform=self._raw_config.get("platform", {}),
                 custom=self._raw_config.get("custom", {}),
                 custom_system_prompt=self._raw_config.get("custom_system_prompt", ""),

@@ -19,6 +19,7 @@ def get_os_context() -> str:
         machine = platform.machine()
 
         mem_info = ""
+        disk_info = ""
         try:
             import psutil
             mem = psutil.virtual_memory()
@@ -28,12 +29,6 @@ def get_os_context() -> str:
                 f", Memory: {total_gb:.1f}GB total, "
                 f"{available_gb:.1f}GB available"
             )
-        except Exception:
-            pass
-
-        disk_info = ""
-        try:
-            import psutil
             disk = psutil.disk_usage(str(Path.home()))
             free_gb = disk.free / (1024 ** 3)
             disk_info = f", Disk free: {free_gb:.1f}GB"

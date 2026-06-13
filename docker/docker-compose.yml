@@ -134,7 +134,7 @@ services:
     hostname: ai-agent-windows
     environment:
       - AI_AGENT_LOG_LEVEL=INFO
-      - SkipXvfb=true
+      - USE_XVFB=false
     volumes:
       - ./logs:/app/logs
       - ./screenshots:/app/screenshots
@@ -146,11 +146,7 @@ services:
       - ai-agent-network
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "powershell", "-Command", ".venv\\Scripts\\python.exe -c \"import ai_agent; print('healthy')\""]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
+      test: ["CMD", ".venv/bin/python", "-c", "import ai_agent; print('healthy')"]
 
   # Development environment with all tools
   ai-agent-dev:
