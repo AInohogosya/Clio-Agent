@@ -36,6 +36,76 @@ _src_path = str(_project_root_for_path / "src")
 if _src_path not in sys.path:
     sys.path.insert(0, _src_path)
 
+
+def _is_in_venv():
+    return (
+        hasattr(sys, 'real_prefix')
+        or (hasattr(sys, 'base_prefix') and sys.base_prefix != sys.prefix)
+        or os.getenv('VIRTUAL_ENV') is not None
+    )
+
+
+def _get_venv_python():
+    project_root = Path(__file__).parent
+    venv_path = project_root / "venv"
+    if not venv_path.exists():
+        return None
+    if platform.system() == "Windows":
+        python_exe = venv_path / "Scripts" / "python.exe"
+        if not python_exe.exists():
+            python_exe = venv_path / "Scripts" / "pythonw.exe"
+    else:
+        python_exe = venv_path / "bin" / "python"
+        if not python_exe.exists():
+            python_exe = venv_path / "bin" / "python3"
+    return str(python_exe) if python_exe.exists() else None
+
+
+def _auto_bootstrap_venv():
+    """Automatically create venv, install deps, and restart inside it if needed."""
+    if _is_in_venv():
+        return
+    project_root = Path(__file__).parent.resolve()
+    venv_python = _get_venv_python()
+    if venv_python:
+        try:
+            r = subprocess.run([venv_python, "--version"], capture_output=True, text=True, timeout=10)
+            if r.returncode == 0:
+                pip_r = subprocess.run([venv_python, "-m", "pip", "--version"], capture_output=True, text=True, timeout=10)
+                if pip_r.returncode == 0:
+                    print(f"Virtual environment found at {project_root / 'venv'}")
+                    return
+        except Exception:
+            pass
+    print("Bootstrapping virtual environment...")
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "venv", str(project_root / "venv")],
+            capture_output=True, text=True, timeout=120,
+        )
+        if result.returncode != 0:
+            print(f"Failed to create venv: {result.stderr.strip()}")
+            sys.exit(1)
+    except Exception as e:
+        print(f"Error creating venv: {e}")
+        sys.exit(1)
+    venv_python = _get_venv_python()
+    if not venv_python:
+        print("Could not find venv Python after creation")
+        sys.exit(1)
+    print("Upgrading pip...")
+    subprocess.run([venv_python, "-m", "pip", "install", "--upgrade", "pip"],
+                   capture_output=True, text=True, timeout=300)
+    print("Installing dependencies...")
+    subprocess.run([venv_python, "-m", "pip", "install", "-e", str(project_root)],
+                   capture_output=True, text=True, timeout=600)
+    print("Restarting in virtual environment...")
+    os.execv(venv_python, [venv_python, str(project_root / "run.py")] + sys.argv[1:])
+
+
+# Auto-bootstrap venv BEFORE any project imports
+_auto_bootstrap_venv()
+
 # Rich console for beautiful CLI output
 from ai_agent.utils.rich_console import (
     get_console, Theme, status_panel, gradient_text,
@@ -1524,29 +1594,9 @@ def main():
 
     if VENV_RESTART_FLAG in sys.argv:
         sys.argv.remove(VENV_RESTART_FLAG)
-        print("\u2713 Running in virtual environment")
-    else:
-        if not is_in_virtual_environment():
-            print("Not in virtual environment")
-            venv_python = get_venv_python_path()
-            if venv_python:
-                try:
-                    result = subprocess.run([venv_python, "--version"], capture_output=True, text=True, timeout=10)
-                    if result.returncode == 0:
-                        print("Virtual environment found, restarting...")
-                        restart_in_venv()
-                        return
-                except Exception:
-                    pass
-            if bootstrap_environment():
-                print("Restarting in new virtual environment...")
-                restart_in_venv()
-                return
-            else:
-                print("Failed to bootstrap environment")
-                sys.exit(1)
-        else:
-            print("\u2713 Already in virtual environment")
+    if not _is_in_venv():
+        print("ERROR: Not in virtual environment after bootstrap. Check your Python setup.")
+        sys.exit(1)
 
     _project_root = Path(__file__).parent.resolve()
 
