@@ -30,7 +30,7 @@ class AutonomousAIAgent:
     """
 
     def __init__(self, provider: str = None, model: str = None,
-                 config_path: Optional[str] = None, telegram_bot=None):
+                 config_path: Optional[str] = None, telegram_bot=None, discord_bot=None):
         self.config = (
             load_config(config_path, force_reload=bool(config_path))
             if config_path else load_config()
@@ -43,6 +43,7 @@ class AutonomousAIAgent:
             model=model,
             config=engine_config,
             telegram_bot=telegram_bot,
+            discord_bot=discord_bot,
         )
 
         signal.signal(signal.SIGINT, self._signal_handler)

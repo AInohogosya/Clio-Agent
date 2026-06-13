@@ -377,7 +377,8 @@ class AutonomousLoopEngine:
 
     def __init__(self, provider: str = None, model: str = None,
                  config: Optional[Dict[str, Any]] = None,
-                 telegram_bot: Optional[TelegramBotManager] = None):
+                 telegram_bot: Optional[TelegramBotManager] = None,
+                 discord_bot=None):
         self.config = config or {}
         self.logger = get_logger("autonomous_loop_engine")
 
@@ -391,6 +392,11 @@ class AutonomousLoopEngine:
         self.telegram_bot = telegram_bot
         if self.telegram_bot and self.telegram_bot.terminal_history is None:
             self.telegram_bot.terminal_history = self.terminal_history
+
+        # Discord bot manager
+        self.discord_bot = discord_bot
+        if self.discord_bot and self.discord_bot.terminal_history is None:
+            self.discord_bot.terminal_history = self.terminal_history
 
         # Configuration
         self.command_timeout = self.config.get("command_timeout", 1800)
@@ -444,6 +450,8 @@ class AutonomousLoopEngine:
         # Wire up Telegram notifications from resilience engine
         if self.telegram_bot:
             self._resilience.set_telegram_bot(self.telegram_bot)
+        if self.discord_bot:
+            self._resilience.set_telegram_bot(self.discord_bot)
 
         # Enhanced resilience tracking
         self._consecutive_errors = 0
@@ -1824,6 +1832,9 @@ class AutonomousLoopEngine:
                 ctx.telegram_user_id = user_id
             if user_id is not None:
                 self._telegram_boot_user_id = user_id
+            # Also update the discord bot's boot user id
+            if user_id is not None and self.discord_bot and not getattr(self.discord_bot, "_boot_user_id", None):
+                self.discord_bot._boot_user_id = user_id
             self._append_log(ctx, entry)
             self._append_log(
                 ctx,
@@ -1920,15 +1931,16 @@ class AutonomousLoopEngine:
             self._append_log(ctx, "[telegram dropped - no user] " + content[:200])
 
     def _exec_telegram_log(self, ctx: AutonomousContext, arg: str) -> None:
-        """Display recent Telegram conversation history (only in Telegram mode)."""
+        """Display recent conversation history from the active messaging bot."""
         if not ctx.telegram_mode:
             self.logger.warning(
                 "Telegram_log() command invoked but not in Telegram mode – ignoring"
             )
             return
 
-        if not self.telegram_bot:
-            self._append_log(ctx, "[Telegram_log error] No telegram bot configured")
+        active_bot = self.discord_bot or self.telegram_bot
+        if not active_bot:
+            self._append_log(ctx, "[Telegram_log error] No messaging bot configured")
             return
 
         try:
@@ -1942,14 +1954,14 @@ class AutonomousLoopEngine:
         target_user = ctx.telegram_user_id
         if target_user is None:
             target_user = getattr(self, "_telegram_boot_user_id", None)
-        if target_user is None and self.telegram_bot:
-            target_user = getattr(self.telegram_bot, "_boot_user_id", None)
+        if target_user is None and active_bot:
+            target_user = getattr(active_bot, "_boot_user_id", None)
 
         if target_user is None:
             self._append_log(ctx, "[Telegram_log error] No user ID available")
             return
 
-        history = self.telegram_bot.get_conversation_history(target_user)
+        history = active_bot.get_conversation_history(target_user)
         messages = history.get_history()
 
         if not messages:

@@ -108,6 +108,14 @@ telegram:
   enable_input_listener: true
   send_phase2_end_updates: true
 
+discord:
+  enabled: false
+  bot_token: "YOUR_DISCORD_BOT_TOKEN"
+  authorized_users: []
+  allowed_user_ids: []
+  max_history_length: 50
+  bot_name: "VEXIS Agent"
+
 # Custom System Prompts (NEW in v2.2)
 # Custom prompts that users can freely configure and include in system prompts
 custom_system_prompt: ""      # Custom prompt to inject into Phase 1 system prompt only

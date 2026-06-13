@@ -725,8 +725,10 @@ def show_help():
     print("  --debug             Enable debug mode")
     print("  --no-prompt         Use saved provider preference without prompting")
     print("  --setting           Force interactive provider/model selection menu")
+    print("  --sleep             Compress context and restart immediately")
     print("  --self-heal         Enable enhanced self-healing mode")
     print("  --telegram          Run in Telegram bot mode")
+    print("  --discord           Run in Discord bot mode")
     print()
     print("SDK Management:")
     print("  python3 peripherals/manage_sdks.py status          # Show SDK status")
@@ -1721,6 +1723,130 @@ def _startup_cleanup():
         pass
 
 
+def _reset_config_yaml():
+    """Reset config.yaml to a clean default state (used by --setting)."""
+    import yaml as _yaml
+
+    config_path = Path(__file__).parent.resolve() / "config.yaml"
+    clean = {
+        "api": {
+            "preferred_provider": "",
+            "api_keys": {
+                "google": "",
+                "groq": "",
+                "openai": "",
+                "anthropic": "",
+                "xai": "",
+                "meta": "",
+                "mistral": "",
+                "microsoft": "",
+                "cohere": "",
+                "deepseek": "",
+                "together": "",
+                "minimax": "",
+                "zhipuai": "",
+                "openrouter": "",
+            },
+            "local_endpoint": "http://localhost:11434",
+            "local_model": "llama3.2:3b",
+            "models": {
+                "ollama": "llama3.2:3b",
+                "google": "gemini-3.1-pro-preview",
+                "groq": "llama-3.3-70b-versatile",
+                "openai": "gpt-4o",
+                "anthropic": "claude-opus-4-6-20260219",
+                "xai": "grok-4.1",
+                "meta": "llama-4-scout-17b-16e-instruct",
+                "mistral": "mistral-large-latest",
+                "microsoft": "gpt-4o",
+                "amazon": "anthropic.claude-opus-4-6-20260219-v1:0",
+                "cohere": "command-r-plus",
+                "deepseek": "deepseek-chat",
+                "together": "meta-llama/Llama-4-Scout-17B-16E-Instruct",
+                "minimax": "MiniMax-Text-01",
+                "zhipuai": "glm-5",
+                "openrouter": "openrouter/owl-alpha",
+            },
+            "timeout": 120,
+            "max_retries": 3,
+        },
+        "security": {
+            "enable_command_blocking": False,
+            "enable_confirmation_prompts": False,
+            "enable_sudo_warning": False,
+            "enable_shell_pipe_warning": False,
+            "enable_sandbox": False,
+        },
+        "execution": {
+            "safety_mode": True,
+            "dry_run": False,
+            "verify_commands": True,
+            "command_timeout": 1800,
+            "task_timeout": 7200,
+            "max_iterations": 500,
+            "auto_recovery": True,
+            "show_thought_log": True,
+        },
+        "logging": {
+            "level": "INFO",
+            "file": "vexis.log",
+            "json_format": False,
+            "console": True,
+        },
+        "cache": {
+            "enabled": True,
+            "max_size": 1000,
+            "ttl": 3600,
+            "persist_to_disk": True,
+        },
+        "cost": {
+            "daily_budget": None,
+            "monthly_budget": None,
+            "per_request_budget": None,
+            "warning_threshold": 0.8,
+            "critical_threshold": 0.95,
+        },
+        "performance": {
+            "max_concurrent_tasks": 1,
+            "memory_limit_mb": 1024,
+        },
+        "user": {
+            "name": "",
+            "preferred_style": "detailed",
+            "auto_confirm": False,
+            "show_progress": True,
+        },
+        "telegram": {
+            "enabled": False,
+            "bot_token": "",
+            "bot_username": "",
+            "api_id": 0,
+            "api_hash": "",
+            "session_name": "vexis_telegram",
+            "authorized_users": [],
+            "allowed_user_ids": [],
+            "enable_input_listener": True,
+            "max_history_length": 50,
+            "bot_name": "VEXIS Agent",
+        },
+        "discord": {
+            "enabled": False,
+            "bot_token": "",
+            "authorized_users": [],
+            "allowed_user_ids": [],
+            "max_history_length": 50,
+            "bot_name": "VEXIS Agent",
+        },
+        "custom_system_prompt": "",
+    }
+    try:
+        with open(config_path, "w", encoding="utf-8") as f:
+            _yaml.dump(clean, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+        print("config.yaml has been reset to defaults.")
+    except Exception as e:
+        print(f"Could not reset config.yaml: {e}")
+
+
 def _run_health_check():
     """Run a self-diagnostic and print results."""
     import platform as _plat
@@ -1837,6 +1963,13 @@ def main():
             sys.exit(1)
         return
     
+    # Handle --sleep flag - compress context and restart
+    _sleep_requested = False
+    if "--sleep" in sys.argv:
+        sys.argv.remove("--sleep")
+        _sleep_requested = True
+        print("🛏 Sleep requested – will trigger sleep workflow on startup")
+
     # Handle --self-heal flag - enable enhanced self-healing mode
     _self_heal_mode = False
     if "--self-heal" in sys.argv:
@@ -2119,6 +2252,15 @@ def main():
         except (ValueError, IndexError):
             pass
 
+    # Handle --sleep: instruct the agent to sleep immediately
+    if _sleep_requested and not _resume_instruction:
+        instruction = (
+            "Execute sleep immediately. "
+            "Your very first command must be: sleep\n"
+            "Do nothing else - just execute sleep to compress context and restart."
+        )
+        print("Sleep instruction injected - agent will sleep on first iteration")
+    
     # Allow SDK management commands without instruction
     sdk_only_commands = ["--install-sdks", "--sdk-status"]
     if any(flag in sys.argv for flag in sdk_only_commands):
@@ -2159,6 +2301,10 @@ def main():
     
     # Check for --setting flag to force reconfiguration
     force_reconfigure = "--setting" in sys.argv
+
+    # When --setting is used, reset config.yaml to a clean state first
+    if force_reconfigure:
+        _reset_config_yaml()
     
     # Model selection - only prompt if not using --no-prompt flag, or if --setting is used
     selected_provider = os.getenv(RESTART_PROVIDER_ENV)
@@ -2272,6 +2418,7 @@ def main():
     try:
         from ai_agent.user_interface.five_phase_app import AutonomousAIAgent
         from ai_agent.external_integration.telegram_bot import create_telegram_bot
+        from ai_agent.external_integration.discord_bot import create_discord_bot
         
         # Create Telegram bot (optional — agent always runs in Telegram mode)
         telegram_bot = None
@@ -2282,8 +2429,20 @@ def main():
             telegram_bot = None
         if telegram_bot:
             print("✓ Telegram bot initialized")
-        else:
-            print("⚠️ Telegram bot not available — running in Telegram mode without bot")
+
+        # Create Discord bot (optional)
+        discord_bot = None
+        try:
+            discord_bot = create_discord_bot(str(config_path) if config_path.exists() else None)
+        except Exception:
+            discord_bot = None
+        if discord_bot:
+            print("✓ Discord bot initialized")
+
+        # Determine which bot to use: prefer Discord if both are available
+        active_bot = discord_bot or telegram_bot
+        if not active_bot:
+            print("⚠️ No messaging bot available — running in autonomous mode without bot")
         
         # Create agent with selected provider and model
         config_path = current_dir / "config.yaml"
@@ -2291,7 +2450,8 @@ def main():
             provider=selected_provider,
             model=selected_model,
             config_path=str(config_path) if config_path.exists() else None,
-            telegram_bot=telegram_bot
+            telegram_bot=active_bot,
+            discord_bot=discord_bot,
         )
         
         # Read timeouts from config.yaml so they are determined solely by the config file
@@ -2319,38 +2479,36 @@ def main():
         # Always set Telegram mode environment variable
         os.environ['VEXIS_TELEGRAM_MODE'] = 'true'
 
-        # Start the Telegram bot and handle messages
-        if telegram_bot:
-            print("\n📱 Starting Telegram bot mode...")
+        # Start the messaging bot(s) and handle messages
+        if active_bot:
+            bot_label = "Discord" if discord_bot else "Telegram"
+            print(f"\n📱 Starting {bot_label} bot mode...")
             print("Send commands to your bot to control the AI agent.")
             print("Press Ctrl+C to stop the bot.")
-            
-            # message_callback is not needed anymore: handle_message now
-            # spawns _handle_message_task directly, which calls telegram_bot.queue_message
-            # via the engine's telegram() command.  Keep it unset.
-            telegram_bot.set_message_callback(None)
 
-            def process_telegram_restart(user_id: int):
-                """Restart from Telegram after acknowledging the command."""
+            # message_callback is not needed: handle_message now spawns
+            # _handle_message_task directly, which calls queue_message
+            # via the engine's telegram() command.  Keep it unset.
+            active_bot.set_message_callback(None)
+
+            def process_restart(user_id: int):
+                """Restart from bot after acknowledging the command."""
                 restart_with_current_settings(selected_mode, selected_provider, selected_model, debug_mode, max_iterations)
 
-            telegram_bot.set_restart_callback(process_telegram_restart)
+            active_bot.set_restart_callback(process_restart)
 
-            # Create a shared conversation history so Telegram messages
+            # Create a shared conversation history so bot messages
             # are visible to the autonomous loop's thinking phase.
             from ai_agent.external_integration.telegram_bot import ConversationHistory
             shared_history = ConversationHistory(user_id=0, max_length=50)
-            # Register the shared history on the bot so that messages
-            # received via handle_history are stored in THIS object
-            # (the same one passed to the engine's thinking prompt).
-            telegram_bot.set_shared_conversation_history(shared_history)
+            active_bot.set_shared_conversation_history(shared_history)
 
-            # Wire up the message injection: when Telegram receives a
+            # Wire up the message injection: when the bot receives a
             # message, also push it into the engine's execution log.
-            telegram_bot.set_user_message_callback(agent.engine.add_user_message)
+            active_bot.set_user_message_callback(agent.engine.add_user_message)
 
             # Start the agent in autonomous boot on a background thread.
-            # The agent runs its own loop; Telegram messages feed into
+            # The agent runs its own loop; bot messages feed into
             # the log passively and the agent picks them up on its own.
             import threading as _th
 
@@ -2359,7 +2517,7 @@ def main():
                     agent.run_autonomous_boot(
                         options,
                         conversation_history=shared_history,
-                        telegram_bot=telegram_bot,
+                        telegram_bot=active_bot,
                         initial_instruction=instruction,
                     )
                 except KeyboardInterrupt:
@@ -2368,11 +2526,23 @@ def main():
             agent_thread = _th.Thread(target=_run_agent, daemon=True)
             agent_thread.start()
 
-            # Start the bot (blocking)
+            # If both Discord and Telegram are available, run Telegram in a
+            # background thread too so users on both platforms can interact.
+            telegram_thread = None
+            if discord_bot and telegram_bot:
+                def _run_telegram():
+                    try:
+                        telegram_bot.start_bot()
+                    except Exception:
+                        pass
+                telegram_thread = _th.Thread(target=_run_telegram, daemon=True)
+                telegram_thread.start()
+
+            # Start the active bot (blocking)
             try:
-                telegram_bot.start_bot()
+                active_bot.start_bot()
             except KeyboardInterrupt:
-                print("\n\nStopping Telegram bot...")
+                print(f"\n\nStopping {bot_label} bot...")
                 try:
                     _ctx = getattr(agent.engine, "_current_context", None)
                     if _ctx is not None:
@@ -2380,12 +2550,14 @@ def main():
                         agent.engine._handle_exit(_ctx, fast=True, project_root=_pr)
                 except Exception:
                     pass
-                telegram_bot.stop_bot()
+                active_bot.stop_bot()
+                if telegram_thread:
+                    telegram_bot.stop_bot()
                 print("Bot stopped.")
                 sys.exit(0)
         else:
-            # No Telegram bot — run the agent directly in autonomous mode
-            print("\n🤖 Running in autonomous mode (no Telegram bot)...")
+            # No messaging bot — run the agent directly in autonomous mode
+            print("\n🤖 Running in autonomous mode (no messaging bot)...")
             print("Press Ctrl+C to stop.")
             try:
                 agent.run_autonomous_boot(
