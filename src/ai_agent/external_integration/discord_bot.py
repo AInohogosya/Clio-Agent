@@ -187,7 +187,7 @@ class DiscordBotManager:
 
         # Track running tasks per user
         self._current_tasks: Dict[int, RunningDiscordTask] = {}
-        self._task_lock = asyncio.Lock()
+        self._task_lock: Optional[asyncio.Lock] = None
 
         # Map user_id -> channel_id so queue_message(user_id, msg) works
         self._user_channel_map: Dict[int, int] = {}
@@ -227,6 +227,11 @@ class DiscordBotManager:
     def set_shared_conversation_history(self, history: ConversationHistory):
         self.conversation_histories[history.user_id] = history
 
+    async def _get_task_lock(self) -> asyncio.Lock:
+        if self._task_lock is None:
+            self._task_lock = asyncio.Lock()
+        return self._task_lock
+
     def get_conversation_history(self, user_id: int) -> ConversationHistory:
         if user_id not in self.conversation_histories:
             self.conversation_histories[user_id] = ConversationHistory(
@@ -240,7 +245,7 @@ class DiscordBotManager:
             self.conversation_histories[user_id].clear()
             self.logger.info(f"Cleared conversation history for user {user_id}")
 
-    @retry_on_network_error(max_retries=10, initial_delay=1.0, backoff_factor=2.0)
+    @retry_on_network_error(max_retries=3, initial_delay=1.0, backoff_factor=2.0)
     async def _handle_start_command(self, ctx):
         """Handle /start command"""
         if not ctx.author:
@@ -261,7 +266,7 @@ class DiscordBotManager:
             "sending any message to avoid duplicate responses."
         )
 
-    @retry_on_network_error(max_retries=10, initial_delay=1.0, backoff_factor=2.0)
+    @retry_on_network_error(max_retries=3, initial_delay=1.0, backoff_factor=2.0)
     async def _handle_restart_command(self, ctx):
         """Handle /restart command"""
         if not ctx.author:
@@ -280,7 +285,7 @@ class DiscordBotManager:
         else:
             await ctx.send("Restart is not configured for this bot session.")
 
-    @retry_on_network_error(max_retries=10, initial_delay=1.0, backoff_factor=2.0)
+    @retry_on_network_error(max_retries=3, initial_delay=1.0, backoff_factor=2.0)
     async def _handle_help_command(self, ctx):
         """Handle /help command"""
         if not ctx.author:
@@ -314,13 +319,12 @@ class DiscordBotManager:
     async def _process_message_async(self, user_message: str, user_id: int,
                                       processing_msg, history, cancel_event: threading.Event) -> str:
         if self.message_callback:
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             if len(inspect.signature(self.message_callback).parameters) >= 3:
                 return await loop.run_in_executor(None, self.message_callback, user_message, user_id, cancel_event)
             return await loop.run_in_executor(None, self.message_callback, user_message, user_id)
         return "Message callback not set. Bot not properly configured."
 
-    @retry_on_network_error(max_retries=10, initial_delay=1.0, backoff_factor=2.0)
     async def _handle_message(self, message):
         """Handle incoming Discord messages: start a background task for AI processing."""
         if not message.author or message.author.bot:
@@ -394,7 +398,7 @@ class DiscordBotManager:
         task = asyncio.create_task(
             self._handle_message_task(user_id, user_message, processing_msg, history, cancel_event)
         )
-        async with self._task_lock:
+        async with await self._get_task_lock():
             self._current_tasks[user_id] = RunningDiscordTask(task=task, cancel_event=cancel_event)
 
     async def _handle_message_task(self, user_id: int, user_message: str,
@@ -427,7 +431,8 @@ class DiscordBotManager:
                             self.logger.error(f"Failed to send response as new message: {send_err}")
                 elif response is not None:
                     try:
-                        channel = self.client.get_channel(user_id)
+                        resolved_channel_id = self._user_channel_map.get(user_id, user_id)
+                        channel = self.client.get_channel(resolved_channel_id)
                         if channel:
                             await channel.send(response)
                     except Exception as send_err:
@@ -467,7 +472,7 @@ class DiscordBotManager:
                     pass
         finally:
             try:
-                async with self._task_lock:
+                async with await self._get_task_lock():
                     running = self._current_tasks.get(user_id)
                     if running and running.task == asyncio.current_task():
                         del self._current_tasks[user_id]
@@ -566,15 +571,6 @@ class DiscordBotManager:
             with self._queue_lock:
                 self.message_queue.append(queued_message)
 
-    async def _queue_flush_callback(self):
-        """Periodic callback to flush queued outbound messages."""
-        try:
-            messages_to_send = self._pop_sendable_messages()
-            for queued_message in messages_to_send:
-                await self._send_queued_message(queued_message)
-        except Exception as e:
-            self.logger.error(f"Error in queue flush callback: {e}")
-
     def _start_queue_processor(self):
         """Start a background thread for queue processing."""
         def queue_processor():
@@ -636,6 +632,9 @@ class DiscordBotManager:
                 intents.members = True
 
                 self.client = commands.Bot(command_prefix="!", intents=intents)
+
+                # Remove default help command before registering our own
+                self.client.remove_command("help")
 
                 # Register commands
                 self._setup_commands()

@@ -510,6 +510,40 @@ class AutonomousLoopEngine:
         # MD5 digest of the last model output for repetition detection
         self._previous_output_digest: str = ""
 
+        # ── Repetition breaker (code-level loop prevention) ────────
+        # Tracks action signatures across iterations. When the same
+        # action is repeated enough times consecutively, the engine
+        # *forces* a break instead of relying on prompt warnings that
+        # the LLM may ignore.
+        #
+        # Key differences from the prompt-based loop detection:
+        # 1. Covers ALL action types (read, write, edit, glob, grep,
+        #    bash, command, thinking, telegram) — not just command()
+        #    and tool_call().
+        # 2. Tracks consecutive repeats, not just frequency in a
+        #    sliding window.
+        # 3. Actually intervenes (forces sleep or injects a break)
+        #    rather than only injecting a prompt warning.
+        # 4. Survives user wake-up — persistent memory is NOT cleared
+        #    by _exit_idle_state, preventing relapse into the same loop.
+        self._action_history: List[str] = []  # signatures from recent iterations
+        self._max_action_history: int = 50  # how many iterations to keep
+        self._consecutive_same_action: int = 0  # how many times current sig repeated
+        self._last_action_signature: str = ""   # normalized sig of last iteration
+        # How many consecutive identical-action iterations trigger a forced break.
+        self._repetition_break_threshold: int = 3
+        # Persistent loop memory: records loop patterns that survived
+        # user wake-ups. Cleared only by sleep/restart, NOT by idle exit.
+        self._persistent_loop_patterns: Dict[str, int] = {}  # sig → count
+        # How many times a pattern must appear (across wake-ups) before
+        # we force a sleep even after user intervention.
+        self._persistent_loop_threshold: int = 6
+        # Previous iteration's action signature (for semantic dedup in idle detection)
+        self._prev_iteration_action_sig: str = ""
+        # Flag set when persistent loop breaker wants the model to sleep,
+        # and forces sleep on the next iteration if the model doesn't comply.
+        self._force_sleep_pending: bool = False
+
         self.logger.info("Autonomous Loop Engine initialized with enhanced resilience")
 
     def request_cancel(self) -> None:
@@ -1054,6 +1088,41 @@ class AutonomousLoopEngine:
                         self._append_log(ctx, f"[parse error] {e}")
                         continue
 
+                # --- Record action signature for repetition breaker ---
+                self._record_iteration_actions(commands)
+
+                # --- Repetition breaker: code-level loop intervention ---
+                break_msg = self._check_repetition_breaker(ctx)
+                if break_msg:
+                    self._append_log(ctx, break_msg)
+                    # If the breaker says to force sleep, give the model
+                    # one chance to execute sleep on its own next turn.
+                    # If it doesn't, we force it on the NEXT iteration.
+                    if "PERSISTENT LOOP" in break_msg:
+                        self.logger.warning("Persistent loop — will force sleep on next iteration if model doesn't")
+                        self._force_sleep_pending = True
+
+                # Check for forced sleep (persistent loop breaker from a
+                # PREVIOUS iteration — the model was given one chance but
+                # didn't execute sleep, so we force it now.)
+                if self._force_sleep_pending:
+                    # Did the model include sleep in its commands? If so,
+                    # let it proceed naturally — no need to force.
+                    if any(cmd[0] == "sleep" for cmd in commands):
+                        self._force_sleep_pending = False
+                        self.logger.info("Model executed sleep after persistent loop warning — no force needed")
+                    else:
+                        self._force_sleep_pending = False
+                        self.logger.warning("Force-sleep: model did not execute sleep after persistent loop warning")
+                        self._term_log.separator()
+                        self._term_log.error("🛑 Force-sleep: persistent loop not broken by model")
+                        self._notify_telegram_error(
+                            ctx,
+                            "🛑 Force-sleep: persistent loop detected that the model "
+                            "could not break. Compressing context and restarting."
+                        )
+                        self._handle_sleep(ctx)
+                        # _handle_sleep does os.execv — never reached
 
                 # --- Detect empty/repetitive iterations (idle state) ---
                 self._detect_empty_iteration(ctx, think_output, commands)
@@ -1188,6 +1257,144 @@ class AutonomousLoopEngine:
             self._recent_commands = self._recent_commands[-self._loop_detection_window * 2:]
 
     # ------------------------------------------------------------------ #
+    #  Repetition breaker — code-level loop prevention                   #
+    # ------------------------------------------------------------------ #
+
+    def _normalize_action_signature(self, commands: List[Tuple[str, str]]) -> str:
+        """Create a normalized signature from all commands in one iteration.
+
+        This captures the *set* of distinct action types and their primary
+        arguments, ignoring order and minor differences (e.g. thinking()
+        content).  Two iterations that read the same file, then run the
+        same bash command, produce the same signature even if the thinking()
+        text differs.
+
+        Format: sorted list of "type:primary_arg_hash" joined by "|".
+        """
+        parts: List[str] = []
+        for cmd_type, cmd_arg in commands:
+            # Skip sleep/exit — they're control commands, not actions
+            if cmd_type in ("sleep", "exit", "parallel"):
+                continue
+            # Normalize: for tool_call, extract the tool name and the
+            # primary argument (path/pattern/command) only
+            if cmd_type == "tool_call":
+                try:
+                    import json
+                    args = json.loads(cmd_arg)
+                    tool = args.get("__tool__", "")
+                    # Hash the primary argument so long content doesn't
+                    # make signatures incomparable
+                    primary_key = {"read": "path", "write": "path", "edit": "path",
+                                   "glob": "pattern", "grep": "pattern",
+                                   "bash": "command", "todo": "action",
+                                   "memo": "key"}.get(tool, "")
+                    primary_val = args.get(primary_key, "")
+                    sig_part = f"tool:{tool}:{hashlib.md5(primary_val.encode()).hexdigest()[:8]}"
+                except Exception:
+                    sig_part = f"tool:unknown:{hashlib.md5(cmd_arg.encode()).hexdigest()[:8]}"
+            elif cmd_type == "thinking":
+                # thinking() content varies — only count the type, not the content
+                sig_part = "thinking"
+            elif cmd_type in ("telegram", "discord"):
+                # messaging: only count type (content varies naturally)
+                sig_part = cmd_type
+            else:
+                # command(), etc. — hash the argument to normalize
+                sig_part = f"{cmd_type}:{hashlib.md5(cmd_arg.encode()).hexdigest()[:8]}"
+            parts.append(sig_part)
+        # Sort and join so order doesn't matter
+        parts.sort()
+        return "|".join(parts) if parts else "__empty__"
+
+    def _record_iteration_actions(self, commands: List[Tuple[str, str]]) -> None:
+        """Record the action signature for an iteration and update
+        repetition-breaker counters.  Called once per iteration AFTER
+        command parsing but BEFORE execution.
+        """
+        sig = self._normalize_action_signature(commands)
+
+        self._action_history.append(sig)
+        if len(self._action_history) > self._max_action_history:
+            self._action_history = self._action_history[-self._max_action_history:]
+
+        # Track consecutive identical iterations
+        if sig == self._last_action_signature and sig != "__empty__":
+            self._consecutive_same_action += 1
+        else:
+            self._consecutive_same_action = 0
+        self._last_action_signature = sig
+
+        # Update persistent loop memory (survives wake-ups)
+        if sig != "__empty__":
+            self._persistent_loop_patterns[sig] = (
+                self._persistent_loop_patterns.get(sig, 0) + 1
+            )
+            # Trim patterns that haven't been seen recently
+            if len(self._persistent_loop_patterns) > 20:
+                # Keep only patterns seen ≥2 times
+                self._persistent_loop_patterns = {
+                    k: v for k, v in self._persistent_loop_patterns.items()
+                    if v >= 2
+                }
+
+    def _check_repetition_breaker(self, ctx: AutonomousContext) -> Optional[str]:
+        """Check if the repetition breaker should intervene.
+
+        Returns a forced-instruction string that will be injected into
+        the execution log to break the loop, or None if no intervention
+        is needed.
+
+        Intervention levels:
+        1. Consecutive same action ≥ threshold: inject a SYSTEM break
+           message and force the model to do something different.
+        2. Persistent pattern ≥ persistent threshold: force a sleep
+           (the loop is deep-rooted and prompt-level intervention won't
+           work).
+        """
+        # Level 1: consecutive identical actions
+        if self._consecutive_same_action >= self._repetition_break_threshold:
+            self.logger.warning(
+                f"Repetition breaker: {self._consecutive_same_action} consecutive "
+                f"identical-action iterations (sig: {self._last_action_signature[:60]})"
+            )
+            # Reset the counter so we don't keep firing
+            self._consecutive_same_action = 0
+            self._last_action_signature = ""
+            return (
+                "[SYSTEM] 🚨 LOOP BREAKER ACTIVATED. You have repeated the "
+                "same action pattern for too many consecutive iterations. "
+                "You MUST now do something completely different. Pick one: "
+                "(a) Execute `sleep` to reset your context. "
+                "(b) Explore a NEW file or directory you haven't looked at. "
+                "(c) Run a NEW shell command unrelated to your current task. "
+                "(d) Send a telegram()/discord() update and change direction. "
+                "DO NOT repeat the previous action. This is a CODE-LEVEL "
+                "enforcement — ignoring this will trigger forced sleep."
+            )
+
+        # Level 2: persistent loop pattern across wake-ups
+        for sig, count in self._persistent_loop_patterns.items():
+            if count >= self._persistent_loop_threshold:
+                self.logger.warning(
+                    f"Persistent loop pattern detected: sig={sig[:60]} "
+                    f"appeared {count} times across wake-ups"
+                )
+                # Force a sleep — this loop is deeply rooted and the model
+                # will keep re-entering it even after user intervention.
+                self._persistent_loop_patterns.clear()
+                return (
+                    "[SYSTEM] 🛑 PERSISTENT LOOP DETECTED. The action pattern "
+                    f"`{sig[:80]}` has been repeated {count} times across "
+                    "multiple wake-ups. This indicates a deeply-rooted loop "
+                    "that prompt warnings cannot break. YOU MUST execute "
+                    "`sleep` immediately. This is NOT optional — the engine "
+                    "will force sleep on the next iteration if you don't."
+                )
+
+        return None
+
+    # ------------------------------------------------------------------ #
     #  Idle State Machine — stop infinite loops when no real work       #
     # ------------------------------------------------------------------ #
 
@@ -1200,14 +1407,18 @@ class AutonomousLoopEngine:
         threshold is exceeded, preventing repeated model calls that produce
         the same useless output.
 
-        An iteration is "empty" when:
-          - No command() / tool_call() / telegram() was emitted, OR
+        An iteration is "empty" when ANY of the following is true:
+          - No command() / tool_call() / telegram() / discord() was emitted
           - The model output is byte-for-byte identical to the previous one
-            (exact repetition, e.g. re-reading the same file).
+            (exact repetition)
+          - The action signature is semantically identical to the previous
+            one (same tool + same primary arg, even if thinking() text differs).
+            This catches the common case where the agent reads the same file
+            over and over with slightly different thinking() content.
         """
         # Check for meaningful commands
         has_real_work = any(
-            c[0] in ("command", "tool_call", "telegram") for c in commands
+            c[0] in ("command", "tool_call", "telegram", "discord") for c in commands
         )
 
         # Check for identical model output (exact repetition)
@@ -1215,13 +1426,22 @@ class AutonomousLoopEngine:
         is_repeat = (digest == self._previous_output_digest)
         self._previous_output_digest = digest
 
-        if not has_real_work or is_repeat:
+        # Check for semantically identical actions: same action signature
+        # means the agent is doing the same thing even if thinking() differs.
+        is_semantic_repeat = False
+        current_sig = self._last_action_signature  # set by _record_iteration_actions
+        if current_sig and current_sig == getattr(self, '_prev_iteration_action_sig', ''):
+            is_semantic_repeat = True
+        self._prev_iteration_action_sig = current_sig
+
+        if not has_real_work or is_repeat or is_semantic_repeat:
             self._empty_iterations += 1
             self.logger.info(
-                "Empty iteration detected",
+                "Empty/repetitive iteration detected",
                 iteration=ctx.iteration_count,
                 has_real_work=has_real_work,
                 is_repeat=is_repeat,
+                is_semantic_repeat=is_semantic_repeat,
                 consecutive_empty=self._empty_iterations,
             )
         else:
@@ -1301,12 +1521,23 @@ class AutonomousLoopEngine:
         self._exit_idle_state(ctx)
 
     def _exit_idle_state(self, ctx: AutonomousContext) -> None:
-        """Reset all idle-related counters and return to ACTIVE operation."""
+        """Reset idle-related counters and return to ACTIVE operation.
+
+        IMPORTANT: This does NOT clear the repetition-breaker state
+        (_action_history, _persistent_loop_patterns, _consecutive_same_action,
+        _last_action_signature).  These persist across user wake-ups so
+        that the agent cannot relapse into the same loop pattern after
+        intervention.  They are only cleared by sleep/restart.
+        """
         self._idle_state = IdleState.ACTIVE
         self._empty_iterations = 0
         self._previous_output_digest = ""
         self._loop_warning_active = False
         self._recent_commands.clear()
+        # NOTE: _action_history, _persistent_loop_patterns,
+        # _consecutive_same_action, _last_action_signature are
+        # intentionally NOT cleared here.  They carry loop-detection
+        # memory across user wake-ups, preventing relapse.
         self._term_log.thinking(
             "✅ Idle state cleared — resuming active operation."
         )
@@ -2400,6 +2631,14 @@ class AutonomousLoopEngine:
         # the next wake-up cycle.
         self._sleep_notification_shown = False
         self._forced_sleep_done = False
+
+        # Clear all repetition-breaker state — sleep/restart is the
+        # intended reset mechanism for loop detection.
+        self._action_history.clear()
+        self._consecutive_same_action = 0
+        self._last_action_signature = ""
+        self._persistent_loop_patterns.clear()
+        self._force_sleep_pending = False
 
         try:
             # 1. Collect auxiliary context
