@@ -108,6 +108,7 @@ class TelegramConfig:
     enabled: bool = False
     bot_token: str = ""
     bot_username: str = ""
+    bot_name: str = ""
     api_id: int = 0
     api_hash: str = ""
     session_name: str = ""

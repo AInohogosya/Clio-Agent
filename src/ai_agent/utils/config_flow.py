@@ -6,7 +6,9 @@ Flow:
 2. If cloud provider, user enters API key (or confirms existing one)
 3. Models are fetched LIVE from the provider's API
 4. User selects from the live model list, or chooses "Custom Model" to type any name
-5. Configuration is saved to settings & config.yaml
+5. User selects messaging app (Telegram or None)
+6. If Telegram selected, user enters bot username, bot name, and bot token
+7. Configuration is saved to settings & config.yaml
 
 Every provider includes a "Custom Model" option so users can enter any model name
 that the provider supports, even if it's not in the fetched list.
@@ -29,7 +31,6 @@ COLOR_FOOTER = 4
 COLOR_ERROR = 5
 COLOR_FILTER = 6
 
-
 def _setup_colors():
     if curses.has_colors():
         curses.start_color()
@@ -39,7 +40,6 @@ def _setup_colors():
         curses.init_pair(COLOR_FOOTER, curses.COLOR_YELLOW, curses.COLOR_BLACK)
         curses.init_pair(COLOR_ERROR, curses.COLOR_RED, curses.COLOR_BLACK)
         curses.init_pair(COLOR_FILTER, curses.COLOR_GREEN, curses.COLOR_BLACK)
-
 
 def _attr(pair, bold=False):
     if curses.has_colors():
@@ -529,7 +529,6 @@ def fetch_models_ollama() -> Optional[List[Dict]]:
     except Exception:
         return None
 
-
 def _model_desc(m) -> str:
     """Build a model description with context window and pricing."""
     parts = []
@@ -569,7 +568,6 @@ def _model_desc(m) -> str:
     if parts:
         return " ".join(parts)
     return getattr(m, "description", None) or mid
-
 
 def fetch_models_from_api(provider_key: str, api_key: str) -> Optional[List[Dict]]:
     """Fetch models from a cloud provider's API. Returns None on failure."""
@@ -700,7 +698,6 @@ def fetch_models_from_api(provider_key: str, api_key: str) -> Optional[List[Dict
             return [
                 {"id": "glm-4-plus", "name": "GLM-4 Plus", "description": "Strong general performance", "icon": "Z"},
                 {"id": "glm-4", "name": "GLM-4", "description": "Base model", "icon": "Z"},
-
                 {"id": "glm-4-air", "name": "GLM-4 Air", "description": "Lightweight", "icon": "Z"},
                 {"id": "glm-4-flash", "name": "GLM-4 Flash", "description": "Free tier", "icon": "Z"},
             ]
@@ -792,6 +789,186 @@ def check_ollama_status() -> Tuple[bool, str]:
 
 
 # ---------------------------------------------------------------------------
+# Messaging app selection
+# ---------------------------------------------------------------------------
+MESSAGING_APPS = {
+    "telegram": {
+        "name": "Telegram",
+        "icon": "T",
+        "description": "Telegram bot via BotFather",
+        "fields": ["bot_username", "bot_name", "bot_token"],
+    },
+    "none": {
+        "name": "None (CLI only)",
+        "icon": "X",
+        "description": "No messaging app, terminal only",
+        "fields": [],
+    },
+}
+
+
+def select_messaging_app(stdscr=None) -> Optional[str]:
+    """Let user select a messaging app. Returns app key or None."""
+    items = []
+    for key in ["telegram", "none"]:
+        app = MESSAGING_APPS[key]
+        items.append({"id": key, "icon": app["icon"], "name": app["name"], "description": app["description"]})
+
+    if stdscr:
+        idx = _scrolling_list(stdscr, items, "Select Messaging App", "Choose how you want to interact with the agent:")
+        return items[idx]["id"] if idx is not None else None
+    else:
+        return curses.wrapper(lambda s: select_messaging_app(s))
+
+
+def _input_telegram_config(stdscr, existing=None):
+    """Curses-based Telegram config input. Returns dict with bot_username, bot_name, bot_token or None."""
+    curses.curs_set(1)
+    _setup_colors()
+
+    fields = [
+        ("bot_username", "Bot Username", "Your bot's username (without @)"),
+        ("bot_name", "Bot Name", "Display name for your bot"),
+        ("bot_token", "Bot Token", "Token from @BotFather"),
+    ]
+    if existing:
+        values = {
+            "bot_username": existing.get("bot_username", ""),
+            "bot_name": existing.get("bot_name", ""),
+            "bot_token": existing.get("bot_token", ""),
+        }
+    else:
+        values = {"bot_username": "", "bot_name": "", "bot_token": ""}
+    current_field = 0
+    error_msg = ""
+
+    while True:
+        stdscr.clear()
+        max_y, max_x = stdscr.getmaxyx()
+
+        stdscr.addstr(0, 0, "Telegram Bot Configuration", _attr(COLOR_TITLE, True))
+        stdscr.addstr(1, 0, "=" * min(50, max_x - 1), _attr(COLOR_TITLE))
+        stdscr.addstr(2, 0, "Enter your Telegram bot details (from @BotFather):", _attr(COLOR_NORMAL))
+
+        if error_msg:
+            stdscr.addstr(4, 0, error_msg[:max_x - 1], _attr(COLOR_ERROR))
+
+        start_y = 6 if error_msg else 5
+        for i, (key, label, hint) in enumerate(fields):
+            y = start_y + i * 3
+            if y >= max_y - 4:
+                break
+            sel = (i == current_field)
+            prefix = ">>> " if sel else "    "
+            line = "%s%s:" % (prefix, label)
+            stdscr.addstr(y, 0, line, _attr(COLOR_HIGHLIGHT, True) if sel else _attr(COLOR_NORMAL))
+            val_display = values[key] if key != "bot_token" else ("*" * len(values[key]) if values[key] else "")
+            stdscr.addstr(y, 20, val_display, _attr(COLOR_NORMAL))
+            stdscr.addstr(y + 1, 4, hint, _attr(COLOR_FOOTER))
+
+        # Show contextual footer based on whether all fields are filled
+        all_filled = all(values[k].strip() for k, _, _ in fields)
+        if all_filled:
+            footer = "Enter/Tab:Confirm  Up/Down:Navigate  Esc:Back  Ctrl+C:Quit"
+        elif current_field < len(fields) - 1:
+            footer = "Enter:Next field  Up/Down:Navigate  Esc:Cancel  Ctrl+C:Quit"
+        else:
+            footer = "Enter:Confirm  Up/Down:Navigate  Esc:Cancel  Ctrl+C:Quit"
+        stdscr.addstr(max_y - 1, 0, footer[:max_x - 1], _attr(COLOR_FOOTER))
+        stdscr.refresh()
+
+        ch = stdscr.getch()
+        if ch == 27:
+            # Escape = cancel/go back
+            return None
+        elif ch == 3:
+            # Ctrl+C = quit without saving
+            return None
+        elif ch in (10, 13, 9):
+            # Enter or Tab: next field, or confirm if on last field
+            if current_field < len(fields) - 1:
+                current_field += 1
+            else:
+                # Validate all required fields
+                if not values["bot_token"].strip():
+                    error_msg = "Bot token is required."
+                    continue
+                if not values["bot_username"].strip():
+                    error_msg = "Bot username is required."
+                    continue
+                return values
+        elif ch == curses.KEY_UP and current_field > 0:
+            current_field -= 1
+        elif ch == curses.KEY_DOWN and current_field < len(fields) - 1:
+            current_field += 1
+        elif ch == curses.KEY_BACKSPACE or ch == 127 or ch == 8:
+            key = fields[current_field][0]
+            values[key] = values[key][:-1]
+            error_msg = ""
+        elif 32 <= ch <= 126:
+            key = fields[current_field][0]
+            values[key] += chr(ch)
+            error_msg = ""
+        elif ch in (ord('q'), ord('Q')):
+            return None
+
+
+def get_telegram_config(stdscr=None) -> Optional[Dict[str, str]]:
+    """Get Telegram config from user. Returns dict or None."""
+    # Check config.yaml for existing values
+    config_path = Path(__file__).parent.parent.parent.parent / "config.yaml"
+    existing = {}
+    try:
+        if config_path.exists():
+            import yaml as _yaml
+            with open(config_path, 'r') as f:
+                config = _yaml.safe_load(f) or {}
+            tg = config.get('telegram', {})
+            if tg.get('bot_token'):
+                existing = {
+                    "bot_username": tg.get("bot_username", ""),
+                    "bot_name": tg.get("bot_name", ""),
+                    "bot_token": tg.get("bot_token", ""),
+                }
+    except Exception:
+        pass
+
+    if stdscr:
+        return _input_telegram_config(stdscr, existing=existing)
+    else:
+        return curses.wrapper(lambda s: _input_telegram_config(s, existing=existing))
+
+
+def _save_messaging_config_to_yaml(app_key: str, telegram_config: Optional[Dict[str, str]] = None):
+    """Save messaging app configuration to config.yaml."""
+    import yaml as _yaml
+
+    config_path = Path(__file__).parent.parent.parent.parent / "config.yaml"
+
+    config = {}
+    if config_path.exists():
+        try:
+            with open(config_path, 'r') as f:
+                config = _yaml.safe_load(f) or {}
+        except Exception:
+            config = {}
+
+    if 'telegram' not in config:
+        config['telegram'] = {}
+
+    if app_key == "telegram" and telegram_config:
+        config['telegram']['enabled'] = True
+        config['telegram']['bot_username'] = telegram_config.get("bot_username", "")
+        config['telegram']['bot_name'] = telegram_config.get("bot_name", "")
+        config['telegram']['bot_token'] = telegram_config.get("bot_token", "")
+    else:
+        config['telegram']['enabled'] = False
+
+    with open(config_path, 'w') as f:
+        _yaml.dump(config, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+
+
+# ---------------------------------------------------------------------------
 # Main configuration flow
 # ---------------------------------------------------------------------------
 def configure_provider_and_model() -> Tuple[Optional[str], Optional[str], Optional[str]]:
@@ -862,7 +1039,27 @@ def _configure_flow_curses(stdscr) -> Tuple[Optional[str], Optional[str], Option
         if selected is None:
             continue
 
-        return provider_key, selected, api_key
+        # Step 5: Select messaging app
+        while True:
+            messaging_app = select_messaging_app(stdscr)
+            if messaging_app is None:
+                # Go back to model selection instead of restarting
+                selected = None
+                break
+
+            # Step 6: Get Telegram config if selected
+            telegram_config = None
+            if messaging_app == "telegram":
+                telegram_config = get_telegram_config(stdscr)
+                if telegram_config is None:
+                    # Go back to messaging app selection, not the entire flow
+                    continue
+
+                # Save messaging config to config.yaml
+                _save_messaging_config_to_yaml(messaging_app, telegram_config)
+
+            # Successfully got messaging config (or chose "None")
+            return provider_key, selected, api_key
 
 
 def _show_message(stdscr, text: str):
@@ -880,6 +1077,49 @@ def _show_message(stdscr, text: str):
 # ---------------------------------------------------------------------------
 # Config sync
 # ---------------------------------------------------------------------------
+def _save_to_config_yaml(provider: str, model: str, api_key: Optional[str] = None):
+    """Save configuration directly to config.yaml file."""
+    import yaml as _yaml
+
+    config_path = Path(__file__).parent.parent.parent.parent / "config.yaml"
+
+    # Load existing config or create new
+    config = {}
+    if config_path.exists():
+        try:
+            with open(config_path, 'r') as f:
+                config = _yaml.safe_load(f) or {}
+        except Exception:
+            config = {}
+
+    # Ensure api section exists
+    if 'api' not in config:
+        config['api'] = {}
+
+    # Set provider and model
+    config['api']['preferred_provider'] = provider
+
+    # Set model in models dict
+    if 'models' not in config['api']:
+        config['api']['models'] = {}
+    config['api']['models'][provider] = model
+
+    # Set API key if provided
+    if api_key and provider != "ollama":
+        if 'api_keys' not in config['api']:
+            config['api']['api_keys'] = {}
+        config['api']['api_keys'][provider] = api_key
+
+        # Also set environment variable
+        env_var = PROVIDER_API_KEY_ENV_VARS.get(provider)
+        if env_var:
+            os.environ[env_var] = api_key
+
+    # Write back to file
+    with open(config_path, 'w') as f:
+        _yaml.dump(config, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+
+
 def sync_selection_to_config(provider: str, model: str, api_key: Optional[str] = None):
     """Sync provider/model selection to settings manager and config.yaml."""
     try:
@@ -891,4 +1131,10 @@ def sync_selection_to_config(provider: str, model: str, api_key: Optional[str] =
         if api_key and provider != "ollama":
             mgr.set_api_key(provider, api_key)
     except Exception as e:
-        sys.stderr.write("Warning: could not sync config: %s\n" % e)
+        sys.stderr.write("Warning: could not sync settings: %s\n" % e)
+
+    # Always save to config.yaml
+    try:
+        _save_to_config_yaml(provider, model, api_key)
+    except Exception as e:
+        sys.stderr.write("Warning: could not save config.yaml: %s\n" % e)
