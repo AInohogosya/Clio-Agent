@@ -61,26 +61,36 @@ def _get_venv_python():
     return str(python_exe) if python_exe.exists() else None
 
 
-def _auto_bootstrap_venv():
-    """Automatically create venv, install deps, and restart inside it if needed."""
-    if _is_in_venv():
-        return
+def _resolve_venv_python():
+    """Return (venv_python_path, needs_install)."""
     project_root = Path(__file__).parent.resolve()
-    venv_python = _get_venv_python()
-    if venv_python:
-        try:
-            r = subprocess.run([venv_python, "--version"], capture_output=True, text=True, timeout=10)
-            if r.returncode == 0:
-                pip_r = subprocess.run([venv_python, "-m", "pip", "--version"], capture_output=True, text=True, timeout=10)
-                if pip_r.returncode == 0:
-                    print(f"Virtual environment found at {project_root / 'venv'}")
-                    return
-        except Exception:
-            pass
-    print("Bootstrapping virtual environment...")
+    venv_path = project_root / "venv"
+    if platform.system() == "Windows":
+        candidates = [venv_path / "Scripts" / "python.exe", venv_path / "Scripts" / "pythonw.exe"]
+    else:
+        candidates = [venv_path / "bin" / "python", venv_path / "bin" / "python3"]
+    for p in candidates:
+        if p.exists():
+            # Check that pip works inside this venv
+            try:
+                r = subprocess.run([str(p), "-m", "pip", "--version"],
+                                   capture_output=True, text=True, timeout=10)
+                if r.returncode == 0:
+                    return str(p), False
+            except Exception:
+                pass
+            return str(p), True  # venv exists but pip is broken
+    return None, False
+
+
+def _create_venv_and_install():
+    """Create a fresh venv, install deps, return venv python path."""
+    project_root = Path(__file__).parent.resolve()
+    venv_path = project_root / "venv"
+    print(f"Creating virtual environment at {venv_path} ...")
     try:
         result = subprocess.run(
-            [sys.executable, "-m", "venv", str(project_root / "venv")],
+            [sys.executable, "-m", "venv", str(venv_path)],
             capture_output=True, text=True, timeout=120,
         )
         if result.returncode != 0:
@@ -89,18 +99,46 @@ def _auto_bootstrap_venv():
     except Exception as e:
         print(f"Error creating venv: {e}")
         sys.exit(1)
-    venv_python = _get_venv_python()
+    v_env_python, needs_install = _resolve_venv_python()
     if not venv_python:
         print("Could not find venv Python after creation")
         sys.exit(1)
-    print("Upgrading pip...")
+    if needs_install:
+        print("Bootstrapping pip ...")
+        subprocess.run([venv_python, "-m", "ensurepip", "--upgrade"],
+                       capture_output=True, text=True, timeout=60)
+    print("Upgrading pip ...")
     subprocess.run([venv_python, "-m", "pip", "install", "--upgrade", "pip"],
                    capture_output=True, text=True, timeout=300)
-    print("Installing dependencies...")
-    subprocess.run([venv_python, "-m", "pip", "install", "-e", str(project_root)],
-                   capture_output=True, text=True, timeout=600)
-    print("Restarting in virtual environment...")
-    os.execv(venv_python, [venv_python, str(project_root / "run.py")] + sys.argv[1:])
+    print("Installing dependencies ...")
+    r = subprocess.run([venv_python, "-m", "pip", "install", "-e", str(project_root)],
+                      capture_output=True, text=True, timeout=600)
+    if r.returncode != 0:
+        print(f"pip install -e . failed (exit {r.returncode}): {r.stderr.strip()}")
+        print("Falling back to pyproject.toml only ...")
+        subprocess.run([venv_python, "-m", "pip", "install", str(project_root)],
+                       capture_output=True, text=True, timeout=600)
+    return venv_python
+
+
+def _auto_bootstrap_venv():
+    """Ensure we run inside the project venv, creating it if necessary."""
+    project_root = Path(__file__).parent.resolve()
+    run_py = str(project_root / "run.py")
+
+    venv_python, needs_install = _resolve_venv_python()
+    if venv_python:
+        # Check if current process IS the venv python
+        if os.path.samefile(sys.executable, venv_python):
+            return  # already running inside venv
+        # venv exists but we're running under system python → restart inside venv
+        print(f"Switching to virtual environment ({venv_python}) ...")
+        os.execv(venv_python, [venv_python, run_py] + sys.argv[1:])
+
+    # No valid venv → create one and restart inside it
+    venv_python = _create_venv_and_install()
+    print(f"Restarting in virtual environment ({venv_python}) ...")
+    os.execv(venv_python, [venv_python, run_py] + sys.argv[1:])
 
 
 # Auto-bootstrap venv BEFORE any project imports
