@@ -98,9 +98,13 @@ On first run, `Clio-Agent` will:
 ```bash
 git clone https://github.com/AInohogosya/VEXIS-CLI.git
 cd VEXIS-CLI
+pip install -e .
 ```
 
-The `pip install -e .` step installs the `Clio-Agent` and `clio-agent` commands globally.
+> **⚠️ `pip install -e .` is required.** Without it, the `clio-agent` / `Clio-Agent` commands will not be available in your PATH. Cloning the repository alone does not register the entry point.
+
+The `pip install -e .` step installs the `Clio-Agent` and `clio-agent` commands globally, so you can run the agent from **any directory**.
+
 All agent dependencies (venv, packages) are handled automatically on first launch.
 
 ---

@@ -16,6 +16,13 @@ This is the complete bootstrap entry point that handles:
 import sys
 import os
 import subprocess
+
+# Fix encoding issues on macOS / environments with surrogateescape
+if sys.stdout.encoding and sys.stdout.encoding.lower().startswith("utf") and sys.stdout.errors == "surrogateescape":
+    sys.stdout.reconfigure(errors="surrogatepass")
+if sys.stderr.encoding and sys.stderr.encoding.lower().startswith("utf") and sys.stderr.errors == "surrogateescape":
+    sys.stderr.reconfigure(errors="surrogatepass")
+os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 import platform
 import shutil
 import json as _json_mod
@@ -372,6 +379,7 @@ def show_help():
         ("--discord", "Run in Discord bot mode"),
         ("--watchdog", "Enable watchdog supervisor (auto-restart on crash)"),
         ("--supervisor", "Enable eternal supervisor (maximum resilience)"),
+        ("--install-global", "Install Clio-Agent globally (any directory)"),
     ]
     for opt, desc in opts:
         opt_table.add_row(opt, desc)
@@ -385,6 +393,7 @@ def show_help():
         ('Clio-Agent "Take a screenshot"', "# Run a specific task"),
         ("Clio-Agent --check", "# Check environment"),
         ("Clio-Agent --install-sdks", "# Install SDKs"),
+        ("Clio-Agent --install-global", "# Install globally (any dir)"),
     ]
     for cmd, comment in examples:
         console.print(f"  [{Theme.ACCENT}]$[/] [bold white]{cmd}[/] [{Theme.TEXT_TERTIARY}]{comment}[/]")
@@ -1304,9 +1313,172 @@ def bootstrap_environment():
     return True
 
 
+
+def _cmd_install_global():
+    """Install Clio-Agent globally so Clio-Agent and clio-agent work from any directory."""
+    import shutil
+    import site
+
+    project_root = Path(__file__).parent.resolve()
+    console = get_console()
+
+    console.print()
+    console.print(gradient_text("Clio-Agent Global Installer"))
+    console.print()
+
+    # Strategy A: pipx (preferred, isolated, works on all platforms)
+    pipx_path = shutil.which("pipx")
+    if pipx_path:
+        console.print("[bold]Strategy:[/] pipx (isolated, recommended)")
+        result = subprocess.run(
+            [pipx_path, "install", str(project_root)],
+            capture_output=False, text=True,
+        )
+        if result.returncode == 0:
+            console.print("[bold green]OK Installed via pipx[/]")
+            _post_install_hint(pipx_path)
+            return
+        console.print("[yellow]pipx install failed, trying alternative...[/]")
+
+    # Strategy B: pip install --break-system-packages
+    if not is_in_virtual_environment():
+        console.print("[bold]Strategy:[/] pip --break-system-packages")
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "install", "--break-system-packages",
+             "-e", str(project_root)],
+            capture_output=False, text=True,
+        )
+        if result.returncode == 0:
+            console.print("[bold green]OK Installed via pip --break-system-packages[/]")
+            _post_install_hint(None)
+            return
+        console.print("[yellow]pip --break-system-packages failed, trying alternative...[/]")
+
+    # Strategy C: pip install --user
+    console.print("[bold]Strategy:[/] pip --user")
+    result = subprocess.run(
+        [sys.executable, "-m", "pip", "install", "--user",
+         "-e", str(project_root)],
+        capture_output=False, text=True,
+    )
+    if result.returncode == 0:
+        console.print("[bold green]OK Installed via pip --user[/]")
+        _post_install_hint(None)
+        return
+    console.print("[yellow]pip --user failed, trying fallback...[/]")
+
+    # Strategy D: Manual PATH entry in shell config
+    console.print("[bold]Strategy:[/] Manual PATH configuration")
+    venv_python = get_venv_python_path()
+    venv_bin = str(Path(venv_python).parent) if venv_python else None
+    _add_to_shell_path(project_root, venv_bin)
+
+
+def _post_install_hint(pipx_path):
+    console = get_console()
+    console.print()
+    console.print("[bold green]OK Clio-Agent is now available globally![/]")
+    console.print()
+    console.print("[bold]Try it from any directory:[/]")
+    console.print("  [white]Clio-Agent --help[/]")
+    console.print("  [white]clio-agent --help[/]")
+    if pipx_path:
+        console.print()
+        console.print("[dim]Managed by pipx. To uninstall: pipx uninstall vexis-cli[/]")
+
+
+def _add_to_shell_path(project_root, venv_bin=None):
+    import site
+    console = get_console()
+
+    bin_dirs = []
+    if venv_bin:
+        bin_dirs.append(venv_bin)
+
+    user_base = site.getuserbase() if hasattr(site, "getuserbase") else None
+    if user_base:
+        for suffix in ("bin", "Scripts"):
+            p = Path(user_base) / suffix
+            if p.exists():
+                bin_dirs.append(str(p))
+
+    for p in site.getsitepackages():
+        for suffix in ("bin", "Scripts"):
+            d = Path(p).parent / suffix
+            if d.exists():
+                bin_dirs.append(str(d))
+
+    bin_dirs = list(dict.fromkeys(bin_dirs))
+    if not bin_dirs:
+        console.print("[red]Could not determine bin directory.[/]")
+        console.print("Add the following to your shell config manually:")
+        console.print(f'  export PATH="{project_root / "venv" / "bin"}:$PATH"')
+        return
+
+    home = Path.home()
+    shell_configs = []
+    shell = os.environ.get("SHELL", "")
+    if "zsh" in shell:
+        shell_configs.append(home / ".zshrc")
+    elif "bash" in shell:
+        for candidate in (".bashrc", ".bash_profile", ".profile"):
+            p = home / candidate
+            if p.exists():
+                shell_configs.append(p)
+                break
+        if not shell_configs:
+            shell_configs.append(home / ".bashrc")
+    shell_configs.append(home / ".profile")
+
+    seen = set()
+    unique = []
+    for p in shell_configs:
+        if str(p) not in seen:
+            seen.add(str(p))
+            unique.append(p)
+    shell_configs = unique
+
+    added_any = False
+    for bin_dir in bin_dirs:
+        path_line = f'export PATH="{bin_dir}:$PATH"'
+        for cfg in shell_configs:
+            if _append_to_file_if_missing(cfg, path_line):
+                console.print(f"[green]OK Added to {cfg}[/]")
+                added_any = True
+                break
+        if added_any:
+            break
+
+    if added_any:
+        console.print()
+        console.print("[bold green]OK PATH updated![/]")
+        console.print("[yellow]Restart your terminal or run:[/]")
+        console.print(f"  [white]source {shell_configs[0]}[/]")
+    else:
+        console.print("[yellow]Could not auto-update shell config.[/]")
+        console.print("Add this line to your shell config manually:")
+        console.print(f"  [white]{path_line}[/]")
+
+
+def _append_to_file_if_missing(filepath, line):
+    filepath = Path(filepath)
+    if filepath.exists():
+        existing = filepath.read_text(encoding="utf-8")
+        if line.strip() in existing:
+            return False
+    with open(filepath, "a", encoding="utf-8") as f:
+        f.write("\n# Clio-Agent\n{line}\n".format(line=line))
+    return True
+
+
 def main():
     if "--help" in sys.argv or "-h" in sys.argv:
         show_help()
+        sys.exit(0)
+
+    if "--install-global" in sys.argv:
+        sys.argv.remove("--install-global")
+        _cmd_install_global()
         sys.exit(0)
 
     _startup_cleanup()
@@ -1564,6 +1736,7 @@ def main():
             subprocess.run([sys.executable, str(current_dir / "peripherals" / "manage_sdks.py"), "install"], capture_output=False, text=True, cwd=current_dir)
         except Exception as e:
             print(f"\u274c Failed: {e}")
+        sys.exit(0)
 
     if "--sdk-status" in sys.argv:
         print("\U0001f50d Checking SDK status...")

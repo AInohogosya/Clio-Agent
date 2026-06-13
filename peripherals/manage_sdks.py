@@ -54,7 +54,7 @@ def install_sdks(providers=None, interactive=True):
     if providers is None:
         # Install all missing SDKs
         print("📦 Installing all missing SDKs...")
-        results = installer.install_missing_sdks(interactive=interactive)
+        results = installer.install_missing_sdks(list(PROVIDER_SDKS.keys()), interactive=interactive)
     else:
         # Install specific SDKs
         print(f"📦 Installing SDKs for: {', '.join(providers)}")

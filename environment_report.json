@@ -1,0 +1,49 @@
+{
+  "os_system": "Darwin",
+  "os_release": "25.5.0",
+  "os_version": "Darwin Kernel Version 25.5.0: Mon Apr 27 20:41:19 PDT 2026; root:xnu-12377.121.6~2/RELEASE_ARM64_T8122",
+  "os_machine": "arm64",
+  "python_version": "3.14.3",
+  "python_executable": "/opt/homebrew/opt/python@3.14/bin/python3.14",
+  "ollama_available": true,
+  "ollama_version": "0.30.8",
+  "ollama_has_signin": true,
+  "ollama_has_whoami": false,
+  "ollama_installed_models": [
+    "maternion/lfm2:8b-a1b",
+    "llama3.2:1b",
+    "qwen2.5:0.5b",
+    "gpt-oss:20b-cloud",
+    "llama3.2:3b",
+    "qwen3.5:cloud",
+    "glm-5:cloud",
+    "glm-5.1:cloud",
+    "qwen3.5:397b-cloud",
+    "llama3.2:latest"
+  ],
+  "ollama_cloud_models": [
+    "gpt-oss:20b-cloud",
+    "qwen3.5:cloud",
+    "glm-5:cloud",
+    "glm-5.1:cloud",
+    "qwen3.5:397b-cloud"
+  ],
+  "ollama_local_models": [
+    "maternion/lfm2:8b-a1b",
+    "llama3.2:1b",
+    "qwen2.5:0.5b",
+    "llama3.2:3b",
+    "llama3.2:latest"
+  ],
+  "has_venv_module": true,
+  "has_docker": true,
+  "has_git": true,
+  "has_curl": true,
+  "can_connect_to_ollama_com": true,
+  "can_connect_to_pypi": true,
+  "needs_ollama_update": false,
+  "can_use_cloud_models": false,
+  "recommended_provider": "ollama-local",
+  "warnings": [],
+  "suggestions": []
+}
