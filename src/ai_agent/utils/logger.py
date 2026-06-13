@@ -129,7 +129,7 @@ def _setup_structlog_once(enable_json=False):
             context_class=dict,
             logger_factory=structlog.stdlib.LoggerFactory(),
             wrapper_class=structlog.stdlib.BoundLogger,
-            cache_logger_on_first_use=True,
+            cache_logger_on_first_use=False,
         )
     
     def _sanitize_kwargs(self, message: str, kwargs: dict) -> dict:
