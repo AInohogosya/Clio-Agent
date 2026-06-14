@@ -854,15 +854,17 @@ def _input_telegram_config(stdscr, existing=None):
         ("bot_username", "Bot Username", "Your bot's username (without @)"),
         ("bot_name", "Bot Name", "Display name for your bot"),
         ("bot_token", "Bot Token", "Token from @BotFather"),
+        ("telegram_user_id", "Telegram User ID", "Your Telegram numeric user ID (e.g. 123456789)"),
     ]
     if existing:
         values = {
             "bot_username": existing.get("bot_username", ""),
             "bot_name": existing.get("bot_name", ""),
             "bot_token": existing.get("bot_token", ""),
+            "telegram_user_id": existing.get("telegram_user_id", ""),
         }
     else:
-        values = {"bot_username": "", "bot_name": "", "bot_token": ""}
+        values = {"bot_username": "", "bot_name": "", "bot_token": "", "telegram_user_id": ""}
     current_field = 0
     error_msg = ""
 
@@ -1059,6 +1061,7 @@ def get_telegram_config(stdscr=None) -> Optional[Dict[str, str]]:
                     "bot_username": tg.get("bot_username", ""),
                     "bot_name": tg.get("bot_name", ""),
                     "bot_token": tg.get("bot_token", ""),
+                    "telegram_user_id": tg.get("telegram_user_id", ""),
                 }
     except Exception:
         pass
@@ -1093,6 +1096,7 @@ def _save_messaging_config_to_yaml(app_key: str, app_config: Optional[Dict[str, 
         config['telegram']['bot_username'] = app_config.get("bot_username", "")
         config['telegram']['bot_name'] = app_config.get("bot_name", "")
         config['telegram']['bot_token'] = app_config.get("bot_token", "")
+        config['telegram']['telegram_user_id'] = app_config.get("telegram_user_id", "")
     else:
         config['telegram']['enabled'] = False
 

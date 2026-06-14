@@ -930,6 +930,17 @@ def create_telegram_bot(config_path: Optional[str] = None, terminal_history=None
             or []
         )
         allowed_user_ids = [int(uid) for uid in raw_allowed if uid is not None]
+
+        # Also add telegram_user_id if set (from yellow selection config flow)
+        raw_user_id = telegram_config.get('telegram_user_id', '')
+        if raw_user_id:
+            try:
+                uid = int(raw_user_id)
+                if uid not in allowed_user_ids:
+                    allowed_user_ids.append(uid)
+            except (ValueError, TypeError):
+                pass
+
         max_history_length = telegram_config.get('max_history_length', 50)
 
         return TelegramBotManager(
