@@ -21,6 +21,50 @@ try:
 except ImportError:
     TELEGRAM_AVAILABLE = False
 
+    # Stub classes so type annotations don't cause NameError at import time
+    class Update:  # type: ignore[no-redef]
+        """Stub for telegram.Update when python-telegram-bot is not installed."""
+        ALL_TYPES = []
+
+        def __init__(self):
+            self.effective_user = None
+            self.message = None
+
+    class _ContextTypesStub:  # type: ignore[no-redef]
+        """Stub for telegram.ext.ContextTypes when python-telegram-bot is not installed."""
+        DEFAULT_TYPE = None
+
+    ContextTypes = _ContextTypesStub()  # type: ignore[assignment]
+
+    class Application:  # type: ignore[no-redef]
+        """Stub for telegram.ext.Application when python-telegram-bot is not installed."""
+        @staticmethod
+        def builder():
+            return None
+
+    class CommandHandler:  # type: ignore[no-redef]
+        """Stub for telegram.ext.CommandHandler when python-telegram-bot is not installed."""
+        def __init__(self, *args, **kwargs):
+            pass
+
+    class MessageHandler:  # type: ignore[no-redef]
+        """Stub for telegram.ext.MessageHandler when python-telegram-bot is not installed."""
+        def __init__(self, *args, **kwargs):
+            pass
+
+    class _FiltersStub:  # type: ignore[no-redef]
+        """Stub for telegram.ext.filters when python-telegram-bot is not installed."""
+        TEXT = None
+        COMMAND = None
+
+        def __and__(self, other):
+            return None
+
+        def __invert__(self):
+            return None
+
+    filters = _FiltersStub()  # type: ignore[assignment]
+
 from ..utils.logger import get_logger
 from ..utils.config import load_config
 from ..utils.resilience_engine import get_resilience_engine, classify_api_error, ErrorSeverity, ResilienceConfig
