@@ -2544,6 +2544,9 @@ class AutonomousLoopEngine:
                 ctx.telegram_user_id = user_id
             if user_id is not None:
                 self._telegram_boot_user_id = user_id
+            # Also update the telegram bot's boot user id
+            if user_id is not None and self.telegram_bot and not getattr(self.telegram_bot, "_boot_user_id", None):
+                self.telegram_bot._boot_user_id = user_id
             # Also update the discord bot's boot user id
             if user_id is not None and self.discord_bot and not getattr(self.discord_bot, "_boot_user_id", None):
                 self.discord_bot._boot_user_id = user_id

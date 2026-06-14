@@ -448,6 +448,16 @@ class TelegramBotManager:
                 f"No message_callback set; autonomous loop will handle "
                 f"user {user_id}'s message via telegram() commands."
             )
+            # Send a quick acknowledgement so the user knows the message
+            # was received.  The agent's actual reply will come via
+            # telegram() commands on the next thinking iteration.
+            try:
+                await update.message.reply_text(
+                    "✅ Message received! The AI agent is processing your request.\n"
+                    "Reply will be sent shortly via the agent."
+                )
+            except Exception:
+                pass
             # Flush the message queue so any pending telegram() replies from
             # the agent are delivered immediately.
             try:
