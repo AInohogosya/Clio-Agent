@@ -61,8 +61,146 @@ def _get_venv_python():
     return str(python_exe) if python_exe.exists() else None
 
 
+# ── Core dependency contract used by the bootstrap ──────────────────────────
+# Maps the importable module name -> (pip package name, minimum version).
+# A minimum version of None means "any installed version is acceptable".
+# This is the single source of truth for the self-healing bootstrap: it is
+# used to detect missing packages (partial installs) AND outdated packages
+# (wrong-version installs), so only the components that actually need work
+# are touched.
+CORE_DEPENDENCIES = {
+    "structlog": ("structlog", "23.0.0"),
+    "rich": ("rich", "13.0.0"),
+    "yaml": ("PyYAML", "6.0.0"),
+    "requests": ("requests", "2.31.0"),
+    "pluggy": ("pluggy", "1.0.0"),
+    "psutil": ("psutil", "5.9.0"),
+    "ollama": ("ollama", "0.1.0"),
+    "openai": ("openai", "1.0.0"),
+}
+
+# Minimum Python version this project supports (keep in sync with pyproject).
+MIN_PYTHON = (3, 8)
+
+
+def _version_tuple(value):
+    """Parse a dotted version string into a comparable tuple of ints.
+
+    Non-numeric suffixes (e.g. '1.2.3rc1', '2.0.0.post1') are ignored so the
+    comparison stays robust across the many packaging conventions in the wild.
+    """
+    parts = []
+    for chunk in str(value).split("."):
+        num = ""
+        for ch in chunk:
+            if ch.isdigit():
+                num += ch
+            else:
+                break
+        if num == "":
+            break
+        parts.append(int(num))
+    return tuple(parts) if parts else (0,)
+
+
+def _inspect_venv_deps(venv_python):
+    """Inspect the venv and report which core deps are missing or outdated.
+
+    Returns (ok, missing, outdated):
+      ok       -> True when every core dependency is present and new enough.
+      missing  -> list of pip package names that are not importable at all.
+      outdated -> list of pip package names installed below the minimum version.
+
+    The probe runs *inside* the target interpreter so it reflects exactly what
+    the agent will see at runtime, regardless of host OS or Python build.
+    """
+    spec_json = _json_mod.dumps(CORE_DEPENDENCIES)
+    check_script = (
+        "import importlib.util, json, sys\n"
+        "try:\n"
+        "    from importlib.metadata import version as _v, PackageNotFoundError\n"
+        "except Exception:\n"
+        "    _v = None\n"
+        "    class PackageNotFoundError(Exception):\n"
+        "        pass\n"
+        "def _vt(s):\n"
+        "    out=[]\n"
+        "    for c in str(s).split('.'):\n"
+        "        n=''\n"
+        "        for ch in c:\n"
+        "            if ch.isdigit(): n+=ch\n"
+        "            else: break\n"
+        "        if n=='': break\n"
+        "        out.append(int(n))\n"
+        "    return tuple(out) if out else (0,)\n"
+        f"spec = json.loads('''{spec_json}''')\n"
+        "missing=[]; outdated=[]\n"
+        "for mod,(pkg,minv) in spec.items():\n"
+        "    if importlib.util.find_spec(mod) is None:\n"
+        "        missing.append(pkg); continue\n"
+        "    if minv and _v is not None:\n"
+        "        try:\n"
+        "            cur=_v(pkg)\n"
+        "            if _vt(cur) < _vt(minv): outdated.append(pkg)\n"
+        "        except PackageNotFoundError:\n"
+        "            pass\n"
+        "        except Exception:\n"
+        "            pass\n"
+        "print(json.dumps({'missing': missing, 'outdated': outdated}))\n"
+    )
+    try:
+        r = subprocess.run([venv_python, "-c", check_script],
+                           capture_output=True, text=True, timeout=30)
+        if r.returncode != 0:
+            return False, list({p for p, _ in CORE_DEPENDENCIES.values()}), []
+        data = _json_mod.loads(r.stdout.strip().splitlines()[-1])
+        missing = data.get("missing", [])
+        outdated = data.get("outdated", [])
+        return (not missing and not outdated), missing, outdated
+    except Exception:
+        return False, list({p for p, _ in CORE_DEPENDENCIES.values()}), []
+
+
+def _check_venv_deps(venv_python):
+    """Return True if all core dependencies are present and new enough."""
+    ok, _missing, _outdated = _inspect_venv_deps(venv_python)
+    return ok
+
+
+def _venv_python_is_healthy(venv_python):
+    """Return True if the venv interpreter actually runs and has a working pip.
+
+    Detects the common 'stale venv' failure where the base Python that created
+    the venv was upgraded or removed (very common with Homebrew/pyenv), leaving
+    a venv whose python symlink is dead. Such a venv must be rebuilt.
+    """
+    try:
+        ver = subprocess.run([venv_python, "-c",
+                              "import sys; print('%d.%d' % sys.version_info[:2])"],
+                             capture_output=True, text=True, timeout=15)
+        if ver.returncode != 0:
+            return False
+        try:
+            major, minor = (int(x) for x in ver.stdout.strip().split(".")[:2])
+            if (major, minor) < MIN_PYTHON:
+                print(f"Virtual environment uses Python {major}.{minor} "
+                      f"(< {MIN_PYTHON[0]}.{MIN_PYTHON[1]} required).")
+                return False
+        except Exception:
+            pass
+        pip = subprocess.run([venv_python, "-m", "pip", "--version"],
+                             capture_output=True, text=True, timeout=15)
+        return pip.returncode == 0
+    except Exception:
+        return False
+
+
 def _resolve_venv_python():
-    """Return (venv_python_path, needs_install, deps_ok)."""
+    """Return (venv_python_path, needs_install, deps_ok).
+
+    needs_install is True when the venv exists but pip is missing/broken.
+    deps_ok is True only when every core dependency is present and new enough.
+    """
     project_root = Path(__file__).parent.resolve()
     venv_path = project_root / "venv"
     if platform.system() == "Windows":
@@ -83,25 +221,104 @@ def _resolve_venv_python():
     return None, False, False
 
 
-def _check_venv_deps(venv_python):
-    """Return True if core dependencies are importable in the venv."""
-    check_script = (
-        "import importlib.util, sys; "
-        "ok = all(importlib.util.find_spec(n) is not None for n in ['structlog', 'rich', 'yaml', 'requests', 'pluggy']); "
-        "sys.exit(0 if ok else 1)"
-    )
+def _pip_install(venv_python, args, timeout=600):
+    """Run `pip install <args>` in the venv. Returns (ok, stderr)."""
     try:
-        r = subprocess.run([venv_python, "-c", check_script],
+        r = subprocess.run([venv_python, "-m", "pip", "install", *args],
+                           capture_output=True, text=True, timeout=timeout)
+        return r.returncode == 0, (r.stderr or "").strip()
+    except Exception as e:
+        return False, str(e)
+
+
+def _ensure_pip(venv_python):
+    """Make sure pip exists in the venv, bootstrapping it if necessary."""
+    try:
+        r = subprocess.run([venv_python, "-m", "pip", "--version"],
+                           capture_output=True, text=True, timeout=15)
+        if r.returncode == 0:
+            return True
+    except Exception:
+        pass
+    print("Bootstrapping pip (ensurepip) ...")
+    try:
+        subprocess.run([venv_python, "-m", "ensurepip", "--upgrade"],
+                       capture_output=True, text=True, timeout=120)
+    except Exception:
+        pass
+    try:
+        r = subprocess.run([venv_python, "-m", "pip", "--version"],
                            capture_output=True, text=True, timeout=15)
         return r.returncode == 0
     except Exception:
         return False
 
 
+def _repair_venv_deps(venv_python, project_root):
+    """Install missing and upgrade outdated core deps with minimal churn.
+
+    Strategy:
+      1. Try a single editable install (cheap, resolves the whole graph).
+      2. Re-inspect; if anything is still missing or outdated, install/upgrade
+         ONLY those specific packages (pinned to their minimum version) so we
+         never reinstall things that are already correct.
+    Returns True if the venv ends up satisfying the core contract.
+    """
+    ok, missing, outdated = _inspect_venv_deps(venv_python)
+    if ok:
+        return True
+    if missing:
+        print(f"Missing dependencies: {', '.join(missing)}")
+    if outdated:
+        print(f"Outdated dependencies (need upgrade): {', '.join(outdated)}")
+
+    # 1. Try the whole project first so version constraints resolve together.
+    print("Installing/updating project dependencies ...")
+    success, err = _pip_install(venv_python, ["-e", str(project_root)])
+    if not success:
+        print(f"Editable install failed: {err[:300]}")
+        print("Falling back to non-editable project install ...")
+        _pip_install(venv_python, [str(project_root)])
+
+    # 2. Only touch whatever is still wrong → install missing, upgrade outdated.
+    ok, missing, outdated = _inspect_venv_deps(venv_python)
+    if ok:
+        return True
+    for pkg in missing:
+        minv = _min_version_for(pkg)
+        spec = f"{pkg}>={minv}" if minv else pkg
+        print(f"Installing missing package: {spec}")
+        _pip_install(venv_python, [spec], timeout=300)
+    for pkg in outdated:
+        minv = _min_version_for(pkg)
+        spec = f"{pkg}>={minv}" if minv else pkg
+        print(f"Upgrading outdated package: {spec}")
+        _pip_install(venv_python, ["--upgrade", spec], timeout=300)
+
+    return _check_venv_deps(venv_python)
+
+
+def _min_version_for(pkg):
+    """Return the minimum version configured for a pip package name (or None)."""
+    for _mod, (name, minv) in CORE_DEPENDENCIES.items():
+        if name.lower() == pkg.lower():
+            return minv
+    return None
+
+
 def _create_venv_and_install():
     """Create a fresh venv, install deps, return venv python path."""
     project_root = Path(__file__).parent.resolve()
     venv_path = project_root / "venv"
+
+    # If a broken/stale venv directory exists, remove it before recreating.
+    if venv_path.exists():
+        print(f"Removing unusable virtual environment at {venv_path} ...")
+        try:
+            shutil.rmtree(venv_path)
+        except Exception as e:
+            print(f"Warning: could not remove old venv: {e}")
+
     print(f"Creating virtual environment at {venv_path} ...")
     try:
         result = subprocess.run(
@@ -109,35 +326,27 @@ def _create_venv_and_install():
             capture_output=True, text=True, timeout=120,
         )
         if result.returncode != 0:
-            print(f"Failed to create venv: {result.stderr.strip()}")
+            err = (result.stderr or result.stdout or "").strip()
+            print(f"Failed to create venv: {err}")
+            if "ensurepip" in err or "python3-venv" in err:
+                print(f"  Hint: sudo apt install python3.{sys.version_info.minor}-venv")
             sys.exit(1)
     except Exception as e:
         print(f"Error creating venv: {e}")
         sys.exit(1)
-    venv_python, needs_install, deps_ok = _resolve_venv_python()
+
+    venv_python, _needs_install, _deps_ok = _resolve_venv_python()
     if not venv_python:
         print("Could not find venv Python after creation")
         sys.exit(1)
-    if needs_install:
-        print("Bootstrapping pip ...")
-        subprocess.run([venv_python, "-m", "ensurepip", "--upgrade"],
-                       capture_output=True, text=True, timeout=60)
+
+    _ensure_pip(venv_python)
     print("Upgrading pip ...")
-    subprocess.run([venv_python, "-m", "pip", "install", "--upgrade", "pip"],
-                   capture_output=True, text=True, timeout=300)
-    print("Installing dependencies ...")
-    r = subprocess.run([venv_python, "-m", "pip", "install", "-e", str(project_root)],
-                      capture_output=True, text=True, timeout=600)
-    if r.returncode != 0:
-        print(f"pip install -e . failed (exit {r.returncode}): {r.stderr.strip()}")
-        print("Falling back to pyproject.toml only ...")
-        subprocess.run([venv_python, "-m", "pip", "install", str(project_root)],
-                       capture_output=True, text=True, timeout=600)
-    if not _check_venv_deps(venv_python):
-        print("WARNING: Core dependencies missing. Installing individually ...")
-        for pkg in ["structlog", "rich", "PyYAML", "requests", "pluggy", "ollama", "openai", "psutil", "anthropic", "google-genai", "mistralai", "cohere"]:
-            subprocess.run([venv_python, "-m", "pip", "install", pkg],
-                           capture_output=True, text=True, timeout=120)
+    _pip_install(venv_python, ["--upgrade", "pip", "setuptools", "wheel"], timeout=300)
+
+    if not _repair_venv_deps(venv_python, project_root):
+        print("WARNING: Some core dependencies could not be installed.")
+        print("         The agent may still run with reduced functionality.")
     return venv_python
 
 
@@ -147,6 +356,15 @@ def _auto_bootstrap_venv():
     run_py = str(project_root / "run.py")
 
     venv_python, needs_install, deps_ok = _resolve_venv_python()
+
+    # ── Detect a stale/broken venv (e.g. base Python upgraded or removed) ──
+    # If the interpreter is unusable, rebuild from scratch rather than fail.
+    if venv_python and not _venv_python_is_healthy(venv_python):
+        print("Existing virtual environment is unusable; rebuilding ...")
+        venv_python = _create_venv_and_install()
+        print(f"Restarting in virtual environment ({venv_python}) ...")
+        os.execv(venv_python, [venv_python, run_py] + sys.argv[1:])
+
     if venv_python and deps_ok:
         # Venv exists with deps — are we already inside it?
         # Robust comparison: try samefile first, fall back to realpath
@@ -165,25 +383,13 @@ def _auto_bootstrap_venv():
         os.execv(venv_python, [venv_python, run_py] + sys.argv[1:])
 
     if venv_python and not deps_ok:
-        # venv exists but deps missing → reinstall deps in-place
-        print(f"Virtual environment found but dependencies are missing. Reinstalling ...")
-        pip_check = subprocess.run([venv_python, "-m", "pip", "--version"],
-                                  capture_output=True, text=True, timeout=10)
-        if pip_check.returncode != 0:
-            print("Bootstrapping pip ...")
-            subprocess.run([venv_python, "-m", "ensurepip", "--upgrade"],
-                           capture_output=True, text=True, timeout=60)
-        print("Upgrading pip ...")
-        subprocess.run([venv_python, "-m", "pip", "install", "--upgrade", "pip"],
-                       capture_output=True, text=True, timeout=300)
-        print("Installing dependencies (including cloud provider SDKs) ...")
-        subprocess.run([venv_python, "-m", "pip", "install", "-e", str(project_root)],
-                       capture_output=True, text=True, timeout=600)
-        if not _check_venv_deps(venv_python):
-            print("Fallback: installing core packages individually ...")
-            for pkg in ["structlog", "rich", "PyYAML", "requests", "pluggy", "ollama", "openai", "psutil", "anthropic", "google-genai", "mistralai", "cohere"]:
-                subprocess.run([venv_python, "-m", "pip", "install", pkg],
-                               capture_output=True, text=True, timeout=120)
+        # venv exists but deps are missing or outdated → repair in place,
+        # touching only the components that actually need work.
+        print("Virtual environment found but dependencies need attention. Repairing ...")
+        _ensure_pip(venv_python)
+        _pip_install(venv_python, ["--upgrade", "pip"], timeout=300)
+        if not _repair_venv_deps(venv_python, project_root):
+            print("WARNING: Some core dependencies could not be installed; continuing anyway.")
         print(f"Restarting in virtual environment ({venv_python}) ...")
         os.execv(venv_python, [venv_python, run_py] + sys.argv[1:])
 

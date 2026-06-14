@@ -58,8 +58,9 @@ fi
 
 # ── Upgrade pip ──
 info "Upgrading pip..."
-"$VENV_PYTHON" -m pip install --upgrade pip --quiet
-ok "pip upgraded"
+"$VENV_PYTHON" -m ensurepip --upgrade >/dev/null 2>&1 || true
+"$VENV_PYTHON" -m pip install --upgrade pip setuptools wheel --quiet || warn "pip/setuptools upgrade had warnings (continuing)"
+ok "pip/setuptools/wheel upgraded"
 
 # ── Install dependencies ──
 info "Installing Clio Agent (with all AI provider SDKs)..."
