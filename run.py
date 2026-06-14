@@ -22,6 +22,14 @@ if sys.stdout.encoding and sys.stdout.encoding.lower().startswith("utf") and sys
     sys.stdout.reconfigure(errors="surrogatepass")
 if sys.stderr.encoding and sys.stderr.encoding.lower().startswith("utf") and sys.stderr.errors == "surrogateescape":
     sys.stderr.reconfigure(errors="surrogatepass")
+# Windows consoles may use cp1252 or cp65001; force UTF-8 where possible
+if sys.platform == "win32":
+    os.environ["PYTHONIOENCODING"] = "utf-8"
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 import platform
 import shutil
@@ -58,7 +66,16 @@ def _get_venv_python():
         python_exe = venv_path / "bin" / "python"
         if not python_exe.exists():
             python_exe = venv_path / "bin" / "python3"
-    return str(python_exe) if python_exe.exists() else None
+    if not python_exe.exists():
+        return None
+    # Resolve symlinks to find the real path (handles pyenv, Homebrew, etc.)
+    try:
+        resolved = python_exe.resolve()
+        if resolved.exists():
+            return str(resolved)
+    except (OSError, ValueError):
+        pass
+    return str(python_exe)
 
 
 # ── Core dependency contract used by the bootstrap ──────────────────────────
@@ -88,9 +105,16 @@ def _version_tuple(value):
 
     Non-numeric suffixes (e.g. '1.2.3rc1', '2.0.0.post1') are ignored so the
     comparison stays robust across the many packaging conventions in the wild.
+
+    Also strips local version identifiers (e.g. '1.0.0+git.abc123') and
+    dev markers (e.g. '1.0.0.dev0') so these don't break parsing.
     """
+    # Strip local version identifier (PEP 440): everything after '+'
+    raw = str(value).split("+")[0]
+    # Strip dev markers, pre/post release suffixes for comparison
+    raw = raw.split("-")[0]
     parts = []
-    for chunk in str(value).split("."):
+    for chunk in raw.split("."):
         num = ""
         for ch in chunk:
             if ch.isdigit():
@@ -124,15 +148,18 @@ def _inspect_venv_deps(venv_python):
         "    class PackageNotFoundError(Exception):\n"
         "        pass\n"
         "def _vt(s):\n"
+        "    raw = str(s).split('+')[0]\n"
+        "    raw = raw.split('-')[0]\n"
         "    out=[]\n"
-        "    for c in str(s).split('.'):\n"
+        "    for c in raw.split('.'):\n"
         "        n=''\n"
         "        for ch in c:\n"
-        "            if ch.isdigit(): n+=ch\n"
-        "            else: break\n"
+            "            if ch.isdigit(): n+=ch\n"
+            "            else: break\n"
         "        if n=='': break\n"
         "        out.append(int(n))\n"
         "    return tuple(out) if out else (0,)\n"
+
         f"spec = json.loads('''{spec_json}''')\n"
         "missing=[]; outdated=[]\n"
         "for mod,(pkg,minv) in spec.items():\n"
@@ -173,18 +200,31 @@ def _venv_python_is_healthy(venv_python):
     Detects the common 'stale venv' failure where the base Python that created
     the venv was upgraded or removed (very common with Homebrew/pyenv), leaving
     a venv whose python symlink is dead. Such a venv must be rebuilt.
+
+    Also handles cases where the venv python exists but is a symlink to
+    a now-missing interpreter (broken symlink returns FileNotFoundError).
     """
+    from pathlib import Path as _P
+    # First check: does the file actually exist (not a broken symlink)?
+    try:
+        if not _P(venv_python).exists():
+            return False
+    except OSError:
+        return False
     try:
         ver = subprocess.run([venv_python, "-c",
                               "import sys; print('%d.%d' % sys.version_info[:2])"],
                              capture_output=True, text=True, timeout=15)
         if ver.returncode != 0:
             return False
+        ver_str = ver.stdout.strip()
+        if "." not in ver_str:
+            return False
         try:
-            major, minor = (int(x) for x in ver.stdout.strip().split(".")[:2])
+            major, minor = (int(x) for x in ver_str.split(".")[:2])
             if (major, minor) < MIN_PYTHON:
-                print(f"Virtual environment uses Python {major}.{minor} "
-                      f"(< {MIN_PYTHON[0]}.{MIN_PYTHON[1]} required).")
+                print("Virtual environment uses Python %d.%d "
+                      "(< %d.%d required)." % (major, minor, MIN_PYTHON[0], MIN_PYTHON[1]))
                 return False
         except Exception:
             pass
@@ -201,6 +241,7 @@ def _resolve_venv_python():
     needs_install is True when the venv exists but pip is missing/broken.
     deps_ok is True only when every core dependency is present and new enough.
     """
+    from pathlib import Path as _P
     project_root = Path(__file__).parent.resolve()
     venv_path = project_root / "venv"
     if platform.system() == "Windows":
@@ -208,27 +249,66 @@ def _resolve_venv_python():
     else:
         candidates = [venv_path / "bin" / "python", venv_path / "bin" / "python3"]
     for p in candidates:
-        if p.exists():
-            try:
-                r = subprocess.run([str(p), "-m", "pip", "--version"],
-                                   capture_output=True, text=True, timeout=10)
-                if r.returncode == 0:
-                    deps_ok = _check_venv_deps(str(p))
-                    return str(p), False, deps_ok
-            except Exception:
-                pass
-            return str(p), True, False  # venv exists but pip is broken
+        try:
+            # Skip broken symlinks (symlink target doesn't exist)
+            rp = p.resolve()
+            if not rp.exists():
+                continue
+        except (OSError, ValueError):
+            if not p.exists():
+                continue
+            rp = p
+        try:
+            r = subprocess.run([str(rp), "-m", "pip", "--version"],
+                               capture_output=True, text=True, timeout=10)
+            if r.returncode == 0:
+                deps_ok = _check_venv_deps(str(rp))
+                return str(rp), False, deps_ok
+        except Exception:
+            pass
+        return str(rp), True, False  # venv exists but pip is broken
     return None, False, False
 
 
-def _pip_install(venv_python, args, timeout=600):
-    """Run `pip install <args>` in the venv. Returns (ok, stderr)."""
-    try:
-        r = subprocess.run([venv_python, "-m", "pip", "install", *args],
-                           capture_output=True, text=True, timeout=timeout)
-        return r.returncode == 0, (r.stderr or "").strip()
-    except Exception as e:
-        return False, str(e)
+def _pip_install(venv_python, args, timeout=600, retries=3):
+    """Run `pip install <args>` in the venv with retry logic for network failures.
+
+    Retries on common transient errors: timeouts, SSL errors, connection drops.
+    Returns (ok, stderr).
+    """
+    _TRANSIENT_ERRS = ("connectionerror", "timeout", "sslerror",
+                       "temporaryfailure", "retriableerror",
+                       "network", "proxyerror", "reset by peer",
+                       "connection reset", "broken pipe")
+    for attempt in range(1, retries + 1):
+        try:
+            r = subprocess.run([venv_python, "-m", "pip", "install", *args],
+                               capture_output=True, text=True, timeout=timeout)
+            if r.returncode == 0:
+                return True, ""
+            err_lower = (r.stderr or "").lower()
+            is_transient = any(e in err_lower for e in _TRANSIENT_ERRS)
+            if is_transient and attempt < retries:
+                delay = 2 * attempt
+                print("  pip attempt %d/%d failed (transient); retrying in %ds ..." % (attempt, retries, delay))
+                print("    Error: %s" % (r.stderr or "").strip()[:200])
+                time.sleep(delay)
+                continue
+            return False, (r.stderr or "").strip()
+        except subprocess.TimeoutExpired:
+            if attempt < retries:
+                delay = 2 * attempt
+                print("  pip attempt %d/%d timed out; retrying in %ds ..." % (attempt, retries, delay))
+                time.sleep(delay)
+                continue
+            return False, "pip timed out after %ds" % timeout
+        except Exception as e:
+            if attempt < retries:
+                delay = 2 * attempt
+                print("  pip attempt %d/%d errored (%s); retrying in %ds ..." % (attempt, retries, e, delay))
+                time.sleep(delay)
+                continue
+            return False, str(e)
 
 
 def _ensure_pip(venv_python):
@@ -276,9 +356,20 @@ def _repair_venv_deps(venv_python, project_root):
     print("Installing/updating project dependencies ...")
     success, err = _pip_install(venv_python, ["-e", str(project_root)])
     if not success:
-        print(f"Editable install failed: {err[:300]}")
+        print("Editable install failed: %s" % err[:300])
         print("Falling back to non-editable project install ...")
-        _pip_install(venv_python, [str(project_root)])
+        success, err = _pip_install(venv_python, [str(project_root)])
+        if not success:
+            # Platform-specific deps (pyobjc, pywin32, xlib) may fail on wrong OS.
+            # Install core deps individually as last resort, skipping failed ones.
+            print("Full project install failed: %s" % err[:300])
+            print("Falling back to installing core deps individually ...")
+            _pip_install(venv_python, ["--upgrade", "pip", "setuptools", "wheel"])
+            for _mod, (_pkg, _minv) in CORE_DEPENDENCIES.items():
+                _spec = "%s>=%s" % (_pkg, _minv) if _minv else _pkg
+                _pip_install(venv_python, [_spec])
+            # Try project with --no-deps to get the package registered
+            _pip_install(venv_python, ["--no-deps", str(project_root)])
 
     # 2. Only touch whatever is still wrong → install missing, upgrade outdated.
     ok, missing, outdated = _inspect_venv_deps(venv_python)
@@ -948,6 +1039,7 @@ def is_in_virtual_environment():
 
 
 def get_venv_python_path():
+    from pathlib import Path as _P
     project_root = Path(__file__).parent
     venv_path = project_root / VENV_DIR
     if not venv_path.exists():
@@ -960,7 +1052,16 @@ def get_venv_python_path():
         python_exe = venv_path / "bin" / "python"
         if not python_exe.exists():
             python_exe = venv_path / "bin" / "python3"
-    return str(python_exe) if python_exe.exists() else None
+    if not python_exe.exists():
+        return None
+    # Resolve symlinks to get real interpreter path
+    try:
+        resolved = python_exe.resolve()
+        if resolved.exists():
+            return str(resolved)
+    except (OSError, ValueError):
+        pass
+    return str(python_exe)
 
 
 def show_help():

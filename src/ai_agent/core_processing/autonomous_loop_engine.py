@@ -568,7 +568,7 @@ class AutonomousLoopEngine:
         # What to do when the idle loop has been running for 5+ minutes:
         #   "sleep"  — execute sleep/restart (default, resource-friendly)
         #   "fairy"  — invoke the Curiosity Fairy for a creative nudge
-        self._idle_behavior: str = self.config.get("idle_behavior", "sleep")
+        self._idle_behavior: str = self.config.get("idle_behavior", "fairy")
 
         self.logger.info("Autonomous Loop Engine initialized with enhanced resilience")
 
