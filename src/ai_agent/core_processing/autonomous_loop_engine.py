@@ -553,7 +553,7 @@ class AutonomousLoopEngine:
         self._force_sleep_pending: bool = False
 
         # ── Curiosity Fairy ──────────────────────────────────────────
-        # When the same model output is repeated this many consecutive
+        # When the same command signature is repeated this many consecutive
         # times, the Curiosity Fairy is invoked instead of forcing sleep.
         self._curiosity_fairy_threshold: int = 5
         # Consecutive iterations with byte-identical model output
@@ -1388,12 +1388,33 @@ class AutonomousLoopEngine:
         is needed.
 
         Intervention levels:
-        1. Consecutive same action ≥ threshold: inject a SYSTEM break
-           message and force the model to do something different.
+        0. Same command ≥ curiosity_fairy_threshold (5): invoke the Curiosity
+           Fairy to creatively suggest a new direction (fires first).
+        1. Consecutive same action ≥ repetition_break_threshold (3): inject a
+           SYSTEM break message and force the model to do something different.
         2. Persistent pattern ≥ persistent threshold: force a sleep
            (the loop is deep-rooted and prompt-level intervention won't
            work).
         """
+        # Level 0: same command signature repeated 5 times — Curiosity Fairy
+        # Checked BEFORE Level 1 so the fairy fires at 5 before the generic
+        # loop breaker at 3 can steal the show on repeated invocations.
+        if (self._consecutive_same_action >= self._curiosity_fairy_threshold
+                and not self._curiosity_fairy_invoked):
+            self.logger.warning(
+                f"Curiosity Fairy trigger: {self._consecutive_same_action} "
+                f"consecutive identical command signatures "
+                f"(sig: {self._last_action_signature[:60]})"
+            )
+            self._curiosity_fairy_invoked = True
+            return (
+                "[SYSTEM] 🧚 CURIOSITY FAIRY ACTIVATED. You have executed "
+                "the same command for "
+                f"{self._consecutive_same_action} consecutive iterations. "
+                "The Curiosity Fairy is being invoked to suggest a new direction. "
+                "A message from the Curiosity Fairy will appear in your execution log."
+            )
+
         # Level 1: consecutive identical actions
         if self._consecutive_same_action >= self._repetition_break_threshold:
             self.logger.warning(
@@ -1434,22 +1455,6 @@ class AutonomousLoopEngine:
                     "will force sleep on the next iteration if you don't."
                 )
 
-        # Level 3: identical model output repeated 5 times — Curiosity Fairy
-        if (self._consecutive_identical_outputs >= self._curiosity_fairy_threshold
-                and not self._curiosity_fairy_invoked):
-            self.logger.warning(
-                f"Curiosity Fairy trigger: {self._consecutive_identical_outputs} "
-                f"consecutive identical model outputs"
-            )
-            self._curiosity_fairy_invoked = True
-            return (
-                "[SYSTEM] 🧚 CURIOSITY FAIRY ACTIVATED. You have produced "
-                "identical output for "
-                f"{self._consecutive_identical_outputs} consecutive iterations. "
-                "The Curiosity Fairy is being invoked to suggest a new direction. "
-                "A message from the Curiosity Fairy will appear in your execution log."
-            )
-
         return None
 
     # ------------------------------------------------------------------ #
@@ -1458,9 +1463,9 @@ class AutonomousLoopEngine:
 
     def _invoke_curiosity_fairy(self, ctx: AutonomousContext) -> Optional[str]:
         """
-        Invoke the Curiosity Fairy to break a loop of identical outputs.
+        Invoke the Curiosity Fairy to break a loop of identical commands.
 
-        When the main agent produces the same output N times in a row,
+        When the agent executes the same command signature N times in a row,
         this method calls the same LLM with a specialized system prompt
         that asks it to suggest a new direction.  The suggestion is
         injected into the execution log as a synthetic user message so
@@ -1468,8 +1473,8 @@ class AutonomousLoopEngine:
 
         Returns the suggestion string on success, or None on failure.
         """
-        self.logger.info("Curiosity Fairy invoked — breaking output loop",
-                         consecutive=self._consecutive_identical_outputs)
+        self.logger.info("Curiosity Fairy invoked — breaking command loop",
+                         consecutive=self._consecutive_same_action)
 
         # Build a context summary from the execution log
         log_tail = "\n".join(ctx.execution_log[-80:]) if ctx.execution_log else "(empty log)"

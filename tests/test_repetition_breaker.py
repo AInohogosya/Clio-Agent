@@ -218,6 +218,37 @@ class TestCheckRepetitionBreaker(unittest.TestCase):
         result = self.engine._check_repetition_breaker(self.ctx)
         self.assertIsNone(result)
 
+    def test_curiosity_fairy_on_5_same_commands(self):
+        # Simulate 5 consecutive identical command signatures
+        self.engine._consecutive_same_action = 5
+        self.engine._last_action_signature = "tool:read:abc12345"
+        result = self.engine._check_repetition_breaker(self.ctx)
+        self.assertIsNotNone(result)
+        self.assertIn("CURIOSITY FAIRY ACTIVATED", result)
+        self.assertIn("same command", result)
+        self.assertTrue(self.engine._curiosity_fairy_invoked)
+
+    def test_no_curiosity_fairy_below_threshold(self):
+        # 4 consecutive same commands — below fairy threshold of 5
+        # Level 1 (threshold=3) fires its own intervention instead
+        self.engine._consecutive_same_action = 4
+        self.engine._last_action_signature = "tool:read:abc12345"
+        result = self.engine._check_repetition_breaker(self.ctx)
+        self.assertIsNotNone(result)
+        self.assertIn("LOOP BREAKER ACTIVATED", result)
+        self.assertNotIn("CURIOSITY FAIRY", result)
+        self.assertFalse(self.engine._curiosity_fairy_invoked)
+
+    def test_no_curiosity_fairy_if_already_invoked(self):
+        self.engine._consecutive_same_action = 5
+        self.engine._last_action_signature = "tool:read:abc12345"
+        self.engine._curiosity_fairy_invoked = True
+        result = self.engine._check_repetition_breaker(self.ctx)
+        # Fairy already invoked, so Level 1 fires instead (consecutive >= 3)
+        self.assertIsNotNone(result)
+        self.assertIn("LOOP BREAKER ACTIVATED", result)
+        self.assertNotIn("CURIOSITY FAIRY", result)
+
 
 class TestExitIdleState(unittest.TestCase):
     """Test that _exit_idle_state does NOT clear persistent loop memory."""
