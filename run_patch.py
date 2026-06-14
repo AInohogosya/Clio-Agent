@@ -4,6 +4,8 @@
 with open('run.py', 'r', encoding='utf-8') as f:
     content = f.read()
 
+patches_applied = 0
+
 # -- Patch 1: Replace _pip_install with retry logic --
 old_pip = (
     'def _pip_install(venv_python, args, timeout=600):\n'
@@ -58,9 +60,12 @@ new_pip = (
     '            return False, str(e)\n'
 )
 
-assert old_pip in content, "Could not find _pip_install"
-content = content.replace(old_pip, new_pip, 1)
-print("Patch 1: Replaced _pip_install with retry logic")
+if old_pip in content:
+    content = content.replace(old_pip, new_pip, 1)
+    patches_applied += 1
+    print("Patch 1: Replaced _pip_install with retry logic")
+else:
+    print("SKIP Patch 1: _pip_install not found (may already be patched)")
 
 # -- Patch 2: Fix _version_tuple to handle local/dev versions --
 old_vt = (
@@ -112,43 +117,46 @@ new_vt = (
     '    return tuple(parts) if parts else (0,)\n'
 )
 
-assert old_vt in content, "Could not find _version_tuple"
-content = content.replace(old_vt, new_vt, 1)
-print("Patch 2: Fixed _version_tuple for local/dev versions")
+if old_vt in content:
+    content = content.replace(old_vt, new_vt, 1)
+    patches_applied += 1
+    print("Patch 2: Fixed _version_tuple for local/dev versions")
+else:
+    print("SKIP Patch 2: _version_tuple not found (may already be patched)")
 
 # -- Patch 3: Fix _inspect_venv_deps subprocess _vt for edge cases --
-# The subprocess script uses \\n (escaped newlines in a Python string)
-old_sub_vt = (
-    '        "def _vt(s):\\\\n"\n'
-    '        "    out=[]\\\\n"\n'
-    '        "    for c in str(s).split(\'.\'):\\\\n"\n'
-    "        \"        n=''\\\\n\"\n"
-    '        "        for ch in c:\\\\n"\n'
-    '        "            if ch.isdigit(): n+=ch\\\\n"\n'
-    '        "            else: break\\\\n"\n'
-    "        \"        if n=='': break\\\\n\"\n"
-    '        "        out.append(int(n))\\\\n"\n'
-    '        "    return tuple(out) if out else (0,)\\\\n"\n'
-)
+# Use positional replacement since the escaped newlines are tricky
+start_marker = '"def _vt(s):\\n"'
+end_marker = '"    return tuple(out) if out else (0,)\\n"'
 
-new_sub_vt = (
-    '        "def _vt(s):\\\\n"\n'
-    '        "    raw = str(s).split(\'+\')[0]\\\\n"\n'
-    '        "    raw = raw.split(\'-\')[0]\\\\n"\n'
-    '        "    out=[]\\\\n"\n'
-    '        "    for c in raw.split(\'.\'):\\\\n"\n'
-    "        \"        n=''\\\\n\"\n"
-    '        "        for ch in c:\\\\n"\n'
-    '        "            if ch.isdigit(): n+=ch\\\\n"\n'
-    '        "            else: break\\\\n"\n'
-    "        \"        if n=='': break\\\\n\"\n"
-    '        "        out.append(int(n))\\\\n"\n'
-    '        "    return tuple(out) if out else (0,)\\\\n"\n'
-)
-
-assert old_sub_vt in content, "Could not find _inspect_venv_deps subprocess _vt"
-content = content.replace(old_sub_vt, new_sub_vt, 1)
-print("Patch 3: Fixed _inspect_venv_deps subprocess _vt for edge cases")
+start = content.find(start_marker)
+if start != -1:
+    end = content.find(end_marker)
+    if end != -1:
+        end += len(end_marker)
+        old_block = content[start:end]
+        # Build the replacement with same structure
+        new_block = (
+            '"def _vt(s):\\n"\n'
+            '        "    raw = str(s).split(\\'+\\')[0]\\n"\n'
+            '        "    raw = raw.split(\\'-\\')[0]\\n"\n'
+            '        "    out=[]\\n"\n'
+            '        "    for c in raw.split(\\'.\\'):\\n"\n'
+            "        \"        n=''\\n\"\n"
+            '        "        for ch in c:\\n"\n'
+            '        "            if ch.isdigit(): n+=ch\\n"\n'
+            '        "            else: break\\n"\n'
+            "        \"        if n=='': break\\n\"\n"
+            '        "        out.append(int(n))\\n"\n'
+            '        "    return tuple(out) if out else (0,)\\n"\n'
+        )
+        content = content[:start] + new_block + content[end:]
+        patches_applied += 1
+        print("Patch 3: Fixed _inspect_venv_deps subprocess _vt for edge cases")
+    else:
+        print("SKIP Patch 3: end marker not found")
+else:
+    print("SKIP Patch 3: start marker not found (may already be patched)")
 
 # -- Patch 4: Improve _venv_python_is_healthy --
 old_healthy = (
@@ -222,9 +230,12 @@ new_healthy = (
     '        return False\n'
 )
 
-assert old_healthy in content, "Could not find _venv_python_is_healthy"
-content = content.replace(old_healthy, new_healthy, 1)
-print("Patch 4: Improved _venv_python_is_healthy with broken symlink detection")
+if old_healthy in content:
+    content = content.replace(old_healthy, new_healthy, 1)
+    patches_applied += 1
+    print("Patch 4: Improved _venv_python_is_healthy with broken symlink detection")
+else:
+    print("SKIP Patch 4: _venv_python_is_healthy not found (may already be patched)")
 
 # -- Patch 5: Fix _repair_venv_deps fallback for platform deps --
 old_repair = (
@@ -258,9 +269,12 @@ new_repair = (
     '            _pip_install(venv_python, ["--no-deps", str(project_root)])\n'
 )
 
-assert old_repair in content, "Could not find _repair_venv_deps fallback"
-content = content.replace(old_repair, new_repair, 1)
-print("Patch 5: Improved _repair_venv_deps fallback for platform-specific dep failures")
+if old_repair in content:
+    content = content.replace(old_repair, new_repair, 1)
+    patches_applied += 1
+    print("Patch 5: Improved _repair_venv_deps fallback for platform-specific dep failures")
+else:
+    print("SKIP Patch 5: _repair_venv_deps fallback not found (may already be patched)")
 
 # -- Patch 6: Fix _get_venv_python to resolve symlinks --
 old_get = (
@@ -306,9 +320,12 @@ new_get = (
     '    return str(python_exe)\n'
 )
 
-assert old_get in content, "Could not find _get_venv_python"
-content = content.replace(old_get, new_get, 1)
-print("Patch 6: Fixed _get_venv_python to resolve symlinks")
+if old_get in content:
+    content = content.replace(old_get, new_get, 1)
+    patches_applied += 1
+    print("Patch 6: Fixed _get_venv_python to resolve symlinks")
+else:
+    print("SKIP Patch 6: _get_venv_python not found (may already be patched)")
 
 # -- Patch 7: Add Windows encoding fix --
 old_enc = (
@@ -337,9 +354,12 @@ new_enc = (
     'os.environ.setdefault("PYTHONIOENCODING", "utf-8")\n'
 )
 
-assert old_enc in content, "Could not find encoding setup"
-content = content.replace(old_enc, new_enc, 1)
-print("Patch 7: Added Windows encoding fix")
+if old_enc in content:
+    content = content.replace(old_enc, new_enc, 1)
+    patches_applied += 1
+    print("Patch 7: Added Windows encoding fix")
+else:
+    print("SKIP Patch 7: encoding setup not found (may already be patched)")
 
 # -- Patch 8: Fix _resolve_venv_python to detect symlink health --
 old_resolve = (
@@ -405,9 +425,12 @@ new_resolve = (
     '    return None, False, False\n'
 )
 
-assert old_resolve in content, "Could not find _resolve_venv_python"
-content = content.replace(old_resolve, new_resolve, 1)
-print("Patch 8: Fixed _resolve_venv_python to skip broken symlinks")
+if old_resolve in content:
+    content = content.replace(old_resolve, new_resolve, 1)
+    patches_applied += 1
+    print("Patch 8: Fixed _resolve_venv_python to skip broken symlinks")
+else:
+    print("SKIP Patch 8: _resolve_venv_python not found (may already be patched)")
 
 # -- Patch 9: Fix get_venv_python_path (public) for same symlink issue --
 old_pub = (
@@ -454,11 +477,14 @@ new_pub = (
     '    return str(python_exe)\n'
 )
 
-assert old_pub in content, "Could not find get_venv_python_path"
-content = content.replace(old_pub, new_pub, 1)
-print("Patch 9: Fixed get_venv_python_path to resolve symlinks")
+if old_pub in content:
+    content = content.replace(old_pub, new_pub, 1)
+    patches_applied += 1
+    print("Patch 9: Fixed get_venv_python_path to resolve symlinks")
+else:
+    print("SKIP Patch 9: get_venv_python_path not found (may already be patched)")
 
 # Write the modified content
 with open('run.py', 'w', encoding='utf-8') as f:
     f.write(content)
-print("\nAll 9 patches applied successfully!")
+print("\n%d patches applied successfully!" % patches_applied)
