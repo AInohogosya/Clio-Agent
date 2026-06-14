@@ -567,132 +567,322 @@ class ScrollingModelSelector:
 
 
 class ProviderSelector:
-    """Curses-based provider selector"""
-    
+    """Curses-based provider selector with advanced settings"""
+
+    # Special return values for the two extra menu items
+    ADVANCED_SETTINGS = "__advanced_settings__"
+    EXIT_SETTINGS = "__exit_settings__"
+
     def __init__(self):
         self.providers = list(PROVIDER_MODELS.items())
+        # Extra items appended after providers: advanced settings, exit
+        self.extra_items = [
+            ("advanced", "⚙️  Advanced Settings", "Tune idle behavior and other options"),
+            ("exit",     "✅ Exit Settings",      "Save and start the agent"),
+        ]
+        self.total_items = len(self.providers) + len(self.extra_items)
         self.current_index = 0
         self.scroll_offset = 0
-    
+
+    def _draw_items(self, stdscr, max_y, max_x, items_per_page, start_y, visible_start, visible_end):
+        """Draw provider rows plus extra menu items."""
+        for display_idx in range(visible_end - visible_start):
+            list_idx = visible_start + display_idx
+            if list_idx >= self.total_items:
+                break
+
+            y = start_y + (display_idx * 3)
+            if y >= max_y - 3:
+                break
+
+            is_selected = (list_idx == self.current_index)
+
+            if list_idx < len(self.providers):
+                # --- Provider row ---
+                provider_key, provider_info = self.providers[list_idx]
+                icon = provider_info.get("icon", "📋")
+                model_count = len(provider_info.get("models", []))
+                line1 = f"  {'▶' if is_selected else ' '} {icon} {provider_info['name']}"
+                line2 = f"     {provider_info['description']} • {model_count} models"
+            else:
+                # --- Extra menu item ---
+                extra_idx = list_idx - len(self.providers)
+                _, name, desc = self.extra_items[extra_idx]
+                line1 = f"  {'▶' if is_selected else ' '} {name}"
+                line2 = f"     {desc}"
+
+            if is_selected:
+                if len(line1) < max_x:
+                    stdscr.addstr(y, 0, line1,
+                                 curses.color_pair(COLOR_HIGHLIGHT) | curses.A_BOLD
+                                 if curses.has_colors() else curses.A_REVERSE)
+                if len(line2) < max_x:
+                    stdscr.addstr(y + 1, 0, line2,
+                                 curses.color_pair(COLOR_HIGHLIGHT)
+                                 if curses.has_colors() else curses.A_REVERSE)
+            else:
+                if len(line1) < max_x:
+                    stdscr.addstr(y, 0, line1,
+                                 curses.color_pair(COLOR_NORMAL)
+                                 if curses.has_colors() else curses.A_NORMAL)
+                if len(line2) < max_x:
+                    stdscr.addstr(y + 1, 0, line2,
+                                 curses.color_pair(COLOR_NORMAL)
+                                 if curses.has_colors() else curses.A_DIM)
+
+    def _handle_enter(self):
+        """Return the value for the currently selected item."""
+        if self.current_index < len(self.providers):
+            return self.providers[self.current_index][0]
+        extra_idx = self.current_index - len(self.providers)
+        action_key = self.extra_items[extra_idx][0]
+        if action_key == "advanced":
+            return self.ADVANCED_SETTINGS
+        elif action_key == "exit":
+            return self.EXIT_SETTINGS
+        return None
+
     def run(self, stdscr) -> Optional[str]:
-        """Run the provider selector"""
+        """Run the provider selector with advanced-settings / exit items."""
         curses.curs_set(0)
         stdscr.clear()
-        
+
         if curses.has_colors():
             curses.start_color()
             curses.init_pair(COLOR_TITLE, curses.COLOR_CYAN, curses.COLOR_BLACK)
             curses.init_pair(COLOR_HIGHLIGHT, curses.COLOR_BLACK, curses.COLOR_YELLOW)
             curses.init_pair(COLOR_NORMAL, curses.COLOR_WHITE, curses.COLOR_BLACK)
             curses.init_pair(COLOR_FOOTER, curses.COLOR_YELLOW, curses.COLOR_BLACK)
-        
+
         while True:
             stdscr.clear()
             max_y, max_x = stdscr.getmaxyx()
-            
-            # Calculate viewport
+
             header_height = 5
             footer_height = 3
             available_height = max_y - header_height - footer_height
             items_per_page = max(1, available_height // 3)
-            
+
             # Adjust scroll offset
             if self.current_index < self.scroll_offset:
                 self.scroll_offset = self.current_index
             elif self.current_index >= self.scroll_offset + items_per_page:
                 self.scroll_offset = self.current_index - items_per_page + 1
             self.scroll_offset = max(0, self.scroll_offset)
-            
+
             # Header
             title = "🔧 Select AI Provider"
-            stdscr.addstr(0, 0, title[:max_x-1], 
-                         curses.A_BOLD | curses.color_pair(COLOR_TITLE) if curses.has_colors() else curses.A_BOLD)
-            
+            stdscr.addstr(0, 0, title[:max_x-1],
+                         curses.A_BOLD | curses.color_pair(COLOR_TITLE)
+                         if curses.has_colors() else curses.A_BOLD)
+
             separator = "=" * min(50, max_x - 1)
-            stdscr.addstr(1, 0, separator, curses.color_pair(COLOR_TITLE) if curses.has_colors() else curses.A_DIM)
-            stdscr.addstr(2, 0, "Choose how you want to run AI models:"[:max_x-1], 
+            stdscr.addstr(1, 0, separator,
+                         curses.color_pair(COLOR_TITLE) if curses.has_colors() else curses.A_DIM)
+            stdscr.addstr(2, 0, "Choose how you want to run AI models:"[:max_x-1],
                          curses.color_pair(COLOR_NORMAL) if curses.has_colors() else curses.A_NORMAL)
-            stdscr.addstr(4, 0, "💡 ↑↓:Navigate • Enter:Select • Q:Quit"[:max_x-1],
+            stdscr.addstr(4, 0,
+                         "💡 ↑↓:Navigate • Enter:Select • Q:Quit"[:max_x-1],
                          curses.color_pair(COLOR_FOOTER) if curses.has_colors() else curses.A_DIM)
-            
-            # Draw visible items
+
+            # Draw items
             start_y = 6
             visible_start = self.scroll_offset
-            visible_end = min(self.scroll_offset + items_per_page, len(self.providers))
-            
-            for display_idx in range(visible_end - visible_start):
-                list_idx = visible_start + display_idx
-                if list_idx >= len(self.providers):
-                    break
-                    
-                provider_key, provider_info = self.providers[list_idx]
-                y = start_y + (display_idx * 3)
-                
-                if y >= max_y - 3:
-                    break
-                
-                is_selected = (list_idx == self.current_index)
-                icon = provider_info.get("icon", "📋")
-                model_count = len(provider_info.get("models", []))
-                
-                line1 = f"  {'▶' if is_selected else ' '} {icon} {provider_info['name']}"
-                line2 = f"     {provider_info['description']} • {model_count} models"
-                
-                if is_selected:
-                    if len(line1) < max_x:
-                        stdscr.addstr(y, 0, line1, 
-                                     curses.color_pair(COLOR_HIGHLIGHT) | curses.A_BOLD if curses.has_colors() else curses.A_REVERSE)
-                    if len(line2) < max_x:
-                        stdscr.addstr(y + 1, 0, line2, 
-                                     curses.color_pair(COLOR_HIGHLIGHT) if curses.has_colors() else curses.A_REVERSE)
-                else:
-                    if len(line1) < max_x:
-                        stdscr.addstr(y, 0, line1, 
-                                     curses.color_pair(COLOR_NORMAL) if curses.has_colors() else curses.A_NORMAL)
-                    if len(line2) < max_x:
-                        stdscr.addstr(y + 1, 0, line2, 
-                                     curses.color_pair(COLOR_NORMAL) if curses.has_colors() else curses.A_DIM)
-            
+            visible_end = min(self.scroll_offset + items_per_page, self.total_items)
+            self._draw_items(stdscr, max_y, max_x, items_per_page,
+                             start_y, visible_start, visible_end)
+
             # Scroll indicators
             if self.scroll_offset > 0:
-                stdscr.addstr(start_y - 1, 0, "  ▲ More above ▲", 
+                stdscr.addstr(start_y - 1, 0, "  ▲ More above ▲",
                              curses.color_pair(COLOR_FOOTER) if curses.has_colors() else curses.A_DIM)
-            if visible_end < len(self.providers):
+            if visible_end < self.total_items:
                 indicator_y = start_y + ((visible_end - visible_start) * 3)
                 if indicator_y < max_y - 3:
                     stdscr.addstr(indicator_y, 0, "  v More below v",
                                  curses.color_pair(COLOR_FOOTER) if curses.has_colors() else curses.A_DIM)
-            
+
             # Footer
             footer_y = max_y - 2
             if footer_y > start_y and footer_y < max_y:
-                stdscr.addstr(footer_y, 0, separator, curses.color_pair(COLOR_TITLE) if curses.has_colors() else curses.A_DIM)
-            
+                stdscr.addstr(footer_y, 0, separator,
+                             curses.color_pair(COLOR_TITLE) if curses.has_colors() else curses.A_DIM)
+
             stdscr.refresh()
-            
+
             key = stdscr.getch()
-            
+
             if key == curses.KEY_UP:
                 if self.current_index > 0:
                     self.current_index -= 1
             elif key == curses.KEY_DOWN:
-                if self.current_index < len(self.providers) - 1:
+                if self.current_index < self.total_items - 1:
                     self.current_index += 1
             elif key == curses.KEY_PPAGE:
                 self.current_index = max(0, self.current_index - items_per_page)
             elif key == curses.KEY_NPAGE:
-                self.current_index = min(len(self.providers) - 1, self.current_index + items_per_page)
+                self.current_index = min(self.total_items - 1, self.current_index + items_per_page)
             elif key == curses.KEY_HOME:
                 self.current_index = 0
             elif key == curses.KEY_END:
-                self.current_index = max(0, len(self.providers) - 1)
+                self.current_index = max(0, self.total_items - 1)
             elif key in [10, 13]:
-                return self.providers[self.current_index][0]
+                return self._handle_enter()
             elif key in [ord('q'), ord('Q'), 27]:
                 return None
-    
+
     def show(self) -> Optional[str]:
         """Show the provider selector"""
+        return curses.wrapper(self.run)
+
+
+class AdvancedSettingsMenu:
+    """Curses-based advanced settings menu.
+
+    Currently supports:
+      - idle_behavior: "sleep" (default) or "fairy"
+    """
+
+    IDLE_OPTIONS = [
+        ("sleep", "🛏  Sleep (default)",
+         "After 5+ min idle → sleep/restart to free resources"),
+        ("fairy", "🧚 Curiosity Fairy",
+         "After 5+ min idle → invoke the Curiosity Fairy for a creative nudge"),
+    ]
+
+    def __init__(self):
+        self.current_index = 0
+        self.scroll_offset = 0
+        # Load current value from config
+        config = load_config()
+        exec_cfg = config.get("execution", {})
+        current = exec_cfg.get("idle_behavior", "sleep")
+        # Pre-select the current value
+        for i, (key, _, _) in enumerate(self.IDLE_OPTIONS):
+            if key == current:
+                self.current_index = i
+                break
+
+    def _save_selection(self, value: str):
+        """Persist the selected idle_behavior to config.yaml."""
+        config = load_config()
+        if "execution" not in config:
+            config["execution"] = {}
+        config["execution"]["idle_behavior"] = value
+        save_config(config)
+
+    def run(self, stdscr) -> Optional[str]:
+        curses.curs_set(0)
+        stdscr.clear()
+
+        if curses.has_colors():
+            curses.start_color()
+            curses.init_pair(COLOR_TITLE, curses.COLOR_CYAN, curses.COLOR_BLACK)
+            curses.init_pair(COLOR_HIGHLIGHT, curses.COLOR_BLACK, curses.COLOR_YELLOW)
+            curses.init_pair(COLOR_NORMAL, curses.COLOR_WHITE, curses.COLOR_BLACK)
+            curses.init_pair(COLOR_FOOTER, curses.COLOR_YELLOW, curses.COLOR_BLACK)
+
+        while True:
+            stdscr.clear()
+            max_y, max_x = stdscr.getmaxyx()
+
+            header_height = 6
+            footer_height = 3
+            available_height = max_y - header_height - footer_height
+            items_per_page = max(1, available_height // 3)
+
+            if self.current_index < self.scroll_offset:
+                self.scroll_offset = self.current_index
+            elif self.current_index >= self.scroll_offset + items_per_page:
+                self.scroll_offset = self.current_index - items_per_page + 1
+            self.scroll_offset = max(0, self.scroll_offset)
+
+            # Header
+            title = "⚙️  Advanced Settings"
+            stdscr.addstr(0, 0, title[:max_x-1],
+                         curses.A_BOLD | curses.color_pair(COLOR_TITLE)
+                         if curses.has_colors() else curses.A_BOLD)
+
+            separator = "=" * min(50, max_x - 1)
+            stdscr.addstr(1, 0, separator,
+                         curses.color_pair(COLOR_TITLE) if curses.has_colors() else curses.A_DIM)
+            stdscr.addstr(2, 0, "Configure agent behavior:"[:max_x-1],
+                         curses.color_pair(COLOR_NORMAL) if curses.has_colors() else curses.A_NORMAL)
+            stdscr.addstr(3, 0, ""[:max_x-1])
+            stdscr.addstr(4, 0,
+                         "💡 ↑↓:Navigate • Enter:Save & Back • Q:Back without saving"[:max_x-1],
+                         curses.color_pair(COLOR_FOOTER) if curses.has_colors() else curses.A_DIM)
+
+            # Section label
+            start_y = 6
+            stdscr.addstr(start_y, 0, "  Idle Behavior (after 5+ minutes of inactivity):",
+                         curses.A_BOLD | curses.color_pair(COLOR_TITLE)
+                         if curses.has_colors() else curses.A_BOLD)
+
+            # Draw options
+            item_start = start_y + 2
+            visible_start = self.scroll_offset
+            visible_end = min(self.scroll_offset + items_per_page, len(self.IDLE_OPTIONS))
+
+            for display_idx in range(visible_end - visible_start):
+                list_idx = visible_start + display_idx
+                if list_idx >= len(self.IDLE_OPTIONS):
+                    break
+
+                y = item_start + (display_idx * 3)
+                if y >= max_y - 3:
+                    break
+
+                is_selected = (list_idx == self.current_index)
+                key, name, desc = self.IDLE_OPTIONS[list_idx]
+
+                line1 = f"  {'▶' if is_selected else ' '} {name}"
+                line2 = f"     {desc}"
+
+                if is_selected:
+                    if len(line1) < max_x:
+                        stdscr.addstr(y, 0, line1,
+                                     curses.color_pair(COLOR_HIGHLIGHT) | curses.A_BOLD
+                                     if curses.has_colors() else curses.A_REVERSE)
+                    if len(line2) < max_x:
+                        stdscr.addstr(y + 1, 0, line2,
+                                     curses.color_pair(COLOR_HIGHLIGHT)
+                                     if curses.has_colors() else curses.A_REVERSE)
+                else:
+                    if len(line1) < max_x:
+                        stdscr.addstr(y, 0, line1,
+                                     curses.color_pair(COLOR_NORMAL)
+                                     if curses.has_colors() else curses.A_NORMAL)
+                    if len(line2) < max_x:
+                        stdscr.addstr(y + 1, 0, line2,
+                                     curses.color_pair(COLOR_NORMAL)
+                                     if curses.has_colors() else curses.A_DIM)
+
+            # Footer
+            footer_y = max_y - 2
+            if footer_y > item_start and footer_y < max_y:
+                stdscr.addstr(footer_y, 0, separator,
+                             curses.color_pair(COLOR_TITLE) if curses.has_colors() else curses.A_DIM)
+
+            stdscr.refresh()
+
+            key = stdscr.getch()
+
+            if key == curses.KEY_UP:
+                if self.current_index > 0:
+                    self.current_index -= 1
+            elif key == curses.KEY_DOWN:
+                if self.current_index < len(self.IDLE_OPTIONS) - 1:
+                    self.current_index += 1
+            elif key in [10, 13]:
+                # Enter → save and return
+                selected_key = self.IDLE_OPTIONS[self.current_index][0]
+                self._save_selection(selected_key)
+                return selected_key
+            elif key in [ord('q'), ord('Q'), 27]:
+                return None
+
+    def show(self) -> Optional[str]:
         return curses.wrapper(self.run)
 
 
@@ -759,21 +949,42 @@ def select_provider_and_model() -> Tuple[Optional[str], Optional[str]]:
     Main entry point for provider and model selection.
     Returns (provider, model) tuple or (None, None) if cancelled.
     Reads current config to pre-highlight the saved model.
+
+    The provider selector includes two extra items at the bottom:
+      - Advanced Settings → configure idle behavior etc.
+      - Exit Settings     → save current config and start the agent
     """
     # Read current config to pre-select
     current_provider, current_model = get_current_config()
 
-    # Select provider (pre-select if config has one)
-    provider_selector = ProviderSelector()
-    if current_provider:
-        for i, (key, _) in enumerate(provider_selector.providers):
-            if key == current_provider:
-                provider_selector.current_index = i
-                break
-    selected_provider = provider_selector.show()
+    while True:
+        # Select provider (pre-select if config has one)
+        provider_selector = ProviderSelector()
+        if current_provider:
+            for i, (key, _) in enumerate(provider_selector.providers):
+                if key == current_provider:
+                    provider_selector.current_index = i
+                    break
+        selected = provider_selector.show()
 
-    if not selected_provider:
-        return None, None
+        if not selected:
+            return None, None
+
+        if selected == ProviderSelector.ADVANCED_SETTINGS:
+            # Open advanced settings sub-menu, then loop back to provider selector
+            advanced = AdvancedSettingsMenu()
+            advanced.show()
+            # After returning, re-enter the provider selector loop
+            # so the user can still pick a provider or exit
+            continue
+
+        if selected == ProviderSelector.EXIT_SETTINGS:
+            # User wants to exit settings and start the agent with current config
+            return current_provider, current_model
+
+        # Normal provider selected — proceed to model selection
+        selected_provider = selected
+        break
 
     # Select model for the chosen provider, pre-selecting the saved model
     preselect_model = current_model if selected_provider == current_provider else None

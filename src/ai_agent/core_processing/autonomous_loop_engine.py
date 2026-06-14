@@ -564,6 +564,12 @@ class AutonomousLoopEngine:
         # current loop (prevents re-invocation until the output changes).
         self._curiosity_fairy_invoked: bool = False
 
+        # ── Idle behavior ────────────────────────────────────────────
+        # What to do when the idle loop has been running for 5+ minutes:
+        #   "sleep"  — execute sleep/restart (default, resource-friendly)
+        #   "fairy"  — invoke the Curiosity Fairy for a creative nudge
+        self._idle_behavior: str = self.config.get("idle_behavior", "sleep")
+
         self.logger.info("Autonomous Loop Engine initialized with enhanced resilience")
 
     def request_cancel(self) -> None:
@@ -1680,8 +1686,9 @@ class AutonomousLoopEngine:
           - A new user message arrives (_new_message_event set)
           - Cancel event is set
           - Periodic auto-save triggers (every ~30 s)
-          - After 5+ minutes idle, a full sleep/restart is executed
-            to free resources.
+          - After 5+ minutes idle, the configured idle behavior is triggered:
+              "sleep" → full sleep/restart (default)
+              "fairy" → invoke the Curiosity Fairy for a creative nudge
 
         This loop runs inside the main ``while True`` in
         execute_instruction().  When it returns, the outer loop
@@ -1709,13 +1716,29 @@ class AutonomousLoopEngine:
             if idle_iters % 6 == 0:
                 self._auto_save_context(ctx)
 
-            # After 5+ minutes idle, do a full sleep/restart
+            # After 5+ minutes idle, trigger the configured idle behavior
             if idle_iters >= 60:  # 60 × 5 s ≈ 5 minutes
-                self._term_log.thinking(
-                    "⏰ Idle for 5+ minutes — executing sleep to free resources."
-                )
-                self._handle_sleep(ctx)
-                return  # Only reached if _handle_sleep fails
+                if self._idle_behavior == "fairy":
+                    self._term_log.thinking(
+                        "🧚 Idle for 5+ minutes — invoking the Curiosity Fairy."
+                    )
+                    self._curiosity_fairy_invoked = False  # reset so fairy can fire
+                    suggestion = self._invoke_curiosity_fairy(ctx)
+                    if suggestion:
+                        fairy_msg = (
+                            f"[Message from the Curiosity Fairy] "
+                            f"```\n{suggestion}\n```"
+                        )
+                        self._append_log(ctx, fairy_msg)
+                    # Return to ACTIVE state so the fairy's suggestion is processed
+                    self._exit_idle_state(ctx)
+                    return
+                else:
+                    self._term_log.thinking(
+                        "⏰ Idle for 5+ minutes — executing sleep to free resources."
+                    )
+                    self._handle_sleep(ctx)
+                    return  # Only reached if _handle_sleep fails
 
         # Idle state was reset externally — just return
         self._exit_idle_state(ctx)
