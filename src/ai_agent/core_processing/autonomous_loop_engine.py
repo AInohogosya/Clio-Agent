@@ -552,6 +552,18 @@ class AutonomousLoopEngine:
         # and forces sleep on the next iteration if the model doesn't comply.
         self._force_sleep_pending: bool = False
 
+        # ── Curiosity Fairy ──────────────────────────────────────────
+        # When the same model output is repeated this many consecutive
+        # times, the Curiosity Fairy is invoked instead of forcing sleep.
+        self._curiosity_fairy_threshold: int = 5
+        # Consecutive iterations with byte-identical model output
+        self._consecutive_identical_outputs: int = 0
+        # MD5 of the previous model output for exact-repetition detection
+        self._last_output_hash: str = ""
+        # Tracks whether the Curiosity Fairy was already invoked for the
+        # current loop (prevents re-invocation until the output changes).
+        self._curiosity_fairy_invoked: bool = False
+
         self.logger.info("Autonomous Loop Engine initialized with enhanced resilience")
 
     def request_cancel(self) -> None:
@@ -1096,6 +1108,15 @@ class AutonomousLoopEngine:
                         self._append_log(ctx, f"[parse error] {e}")
                         continue
 
+                # --- Track model output for identical-output detection ---
+                output_hash = hashlib.md5((think_output or "").encode()).hexdigest()
+                if output_hash == self._last_output_hash and (think_output or "").strip():
+                    self._consecutive_identical_outputs += 1
+                else:
+                    self._consecutive_identical_outputs = 0
+                    self._curiosity_fairy_invoked = False
+                self._last_output_hash = output_hash
+
                 # --- Record action signature for repetition breaker ---
                 self._record_iteration_actions(commands)
 
@@ -1109,6 +1130,19 @@ class AutonomousLoopEngine:
                     if "PERSISTENT LOOP" in break_msg:
                         self.logger.warning("Persistent loop — will force sleep on next iteration if model doesn't")
                         self._force_sleep_pending = True
+                    # If the Curiosity Fairy was invoked, call it now and
+                    # inject its suggestion into the execution log.
+                    if "CURIOSITY FAIRY ACTIVATED" in break_msg:
+                        suggestion = self._invoke_curiosity_fairy(ctx)
+                        if suggestion:
+                            fairy_msg = (
+                                f"[Message from the Curiosity Fairy] "
+                                f"```\n{suggestion}\n```"
+                            )
+                            self._append_log(ctx, fairy_msg)
+                            self._term_log.thinking(
+                                f"🧚 Curiosity Fairy suggests: {suggestion[:120]}"
+                            )
 
                 # Check for forced sleep (persistent loop breaker from a
                 # PREVIOUS iteration — the model was given one chance but
@@ -1400,7 +1434,160 @@ class AutonomousLoopEngine:
                     "will force sleep on the next iteration if you don't."
                 )
 
+        # Level 3: identical model output repeated 5 times — Curiosity Fairy
+        if (self._consecutive_identical_outputs >= self._curiosity_fairy_threshold
+                and not self._curiosity_fairy_invoked):
+            self.logger.warning(
+                f"Curiosity Fairy trigger: {self._consecutive_identical_outputs} "
+                f"consecutive identical model outputs"
+            )
+            self._curiosity_fairy_invoked = True
+            return (
+                "[SYSTEM] 🧚 CURIOSITY FAIRY ACTIVATED. You have produced "
+                "identical output for "
+                f"{self._consecutive_identical_outputs} consecutive iterations. "
+                "The Curiosity Fairy is being invoked to suggest a new direction. "
+                "A message from the Curiosity Fairy will appear in your execution log."
+            )
+
         return None
+
+    # ------------------------------------------------------------------ #
+    #  Curiosity Fairy — creative loop-breaker                          #
+    # ------------------------------------------------------------------ #
+
+    def _invoke_curiosity_fairy(self, ctx: AutonomousContext) -> Optional[str]:
+        """
+        Invoke the Curiosity Fairy to break a loop of identical outputs.
+
+        When the main agent produces the same output N times in a row,
+        this method calls the same LLM with a specialized system prompt
+        that asks it to suggest a new direction.  The suggestion is
+        injected into the execution log as a synthetic user message so
+        the main agent sees it on its next thinking phase.
+
+        Returns the suggestion string on success, or None on failure.
+        """
+        self.logger.info("Curiosity Fairy invoked — breaking output loop",
+                         consecutive=self._consecutive_identical_outputs)
+
+        # Build a context summary from the execution log
+        log_tail = "\n".join(ctx.execution_log[-80:]) if ctx.execution_log else "(empty log)"
+
+        # Analyze the log to determine the situation
+        has_goal = bool(ctx.current_goal and ctx.current_goal != "Self-directed: observe, explore, and act.")
+        recent_actions = [line for line in ctx.execution_log[-30:]
+                          if any(tag in line for tag in ("[thought]", "[telegram sent]", "$", "read(", "write(", "edit(", "glob(", "grep(", "bash("))]
+
+        # Build a contextual system prompt based on the situation
+        if has_goal:
+            # Agent has a specific objective — guide it to try a different approach
+            situation_analysis = (
+                f"The agent is working on: {ctx.current_goal}\n"
+                f"It has been repeating the same output for {self._consecutive_identical_outputs} consecutive iterations.\n"
+                f"Recent actions show it may be stuck checking the same files or running the same commands."
+            )
+            system_prompt = (
+                "You are the **Curiosity Fairy** — a creative muse for an autonomous AI agent.\n\n"
+                "The agent is STUCK in a loop, repeating the same output over and over.\n"
+                f"{situation_analysis}\n\n"
+                "Your job: suggest a CONCRETE next action that breaks the loop.\n\n"
+                "RULES:\n"
+                "1. Your suggestion must be DIFFERENT from what the agent has been doing.\n"
+                "2. Be SPECIFIC — name exact files to check, commands to run, or areas to explore.\n"
+                "3. If the agent keeps checking the same file, tell it to check a DIFFERENT file.\n"
+                "4. If the agent keeps running the same command, suggest a DIFFERENT approach.\n"
+                "5. If the agent seems stuck on one bug, suggest looking for OTHER bugs or trying a different fix strategy.\n"
+                "6. Output your suggestion as a SINGLE code block containing the exact command(s) to run.\n"
+                "7. Do NOT include explanations outside the code block.\n\n"
+                "Example output:\n"
+                "```\n"
+                "bash(find . -name '*.py' -newer /tmp/.X11-unix 2>/dev/null | head -20)\n"
+                "```\n\n"
+                "Think about what the agent has NOT tried yet, and suggest that."
+            )
+        else:
+            # No specific goal — encourage spontaneous curiosity-driven exploration
+            situation_analysis = (
+                "The agent has no specific user-assigned objective.\n"
+                "It has been producing identical outputs for "
+                f"{self._consecutive_identical_outputs} consecutive iterations.\n"
+                "It may be idle, confused, or spinning without purpose."
+            )
+            system_prompt = (
+                "You are the **Curiosity Fairy** — a creative muse for an autonomous AI agent.\n\n"
+                "The agent is STUCK in a loop with no clear objective.\n"
+                f"{situation_analysis}\n\n"
+                "Your job: suggest something INTERESTING and USEFUL for the agent to do next.\n\n"
+                "RULES:\n"
+                "1. Be CREATIVE — suggest something the agent would not think of on its own.\n"
+                "2. Be SPECIFIC — provide exact commands or file paths.\n"
+                "3. Good suggestions include:\n"
+                "   - Explore the filesystem: find interesting projects, check recent files\n"
+                "   - Look for bugs or improvements in the codebase\n"
+                "   - Check system health: disk space, memory, running processes\n"
+                "   - Read interesting source files and try to understand the codebase\n"
+                "   - Create something: write a small script, improve documentation\n"
+                "   - Check git status, recent commits, untracked files\n"
+                "   - Try something fun: ASCII art generator, a useful alias, a new tool\n"
+                "4. Output your suggestion as a SINGLE code block containing the exact command(s) to run.\n"
+                "5. Do NOT include explanations outside the code block.\n\n"
+                "Example output:\n"
+                "```\n"
+                "bash(ls -lt ~ | head -20)\n"
+                "```\n\n"
+                "Surprise us with something interesting!"
+            )
+
+        # Build the user prompt with context
+        user_prompt = (
+            "## Execution Log (last 80 lines)\n"
+            "```\n"
+            f"{log_tail}\n"
+            "```\n\n"
+            "## Recent Actions\n"
+            "```\n"
+            f"{chr(10).join(recent_actions[-10:]) if recent_actions else '(none)'}\n"
+            "```\n\n"
+            "Based on this context, what should the agent do next? "
+            "Output ONLY a code block with the suggested command(s)."
+        )
+
+        try:
+            request = ModelRequest(
+                task_type=TaskType.AUTONOMOUS_LOOP,
+                prompt=user_prompt,
+                max_tokens=512,
+                temperature=0.9,  # High temperature for creative suggestions
+            )
+            response = self.model_runner.run_model(request)
+
+            if not response.success or not response.content.strip():
+                self.logger.warning("Curiosity Fairy: model returned no useful output")
+                return None
+
+            # Extract code block from the response
+            content = response.content.strip()
+            code_blocks = re.findall(
+                r'```(?:[a-zA-Z]*)?\n(.*?)```', content, re.DOTALL
+            )
+            if code_blocks:
+                suggestion = code_blocks[0].strip()
+            else:
+                # No code block — use the raw content
+                suggestion = content.strip()
+
+            if not suggestion:
+                self.logger.warning("Curiosity Fairy: extracted suggestion is empty")
+                return None
+
+            self.logger.info("Curiosity Fairy generated suggestion",
+                             suggestion_length=len(suggestion))
+            return suggestion
+
+        except Exception as e:
+            self.logger.error(f"Curiosity Fairy invocation failed: {e}")
+            return None
 
     # ------------------------------------------------------------------ #
     #  Idle State Machine — stop infinite loops when no real work       #
@@ -1542,6 +1729,11 @@ class AutonomousLoopEngine:
         self._previous_output_digest = ""
         self._loop_warning_active = False
         self._recent_commands.clear()
+        # Reset Curiosity Fairy tracking on wake-up so it can fire again
+        # if the agent re-enters a loop after idle.
+        self._consecutive_identical_outputs = 0
+        self._last_output_hash = ""
+        self._curiosity_fairy_invoked = False
         # NOTE: _action_history, _persistent_loop_patterns,
         # _consecutive_same_action, _last_action_signature are
         # intentionally NOT cleared here.  They carry loop-detection
@@ -1797,6 +1989,9 @@ class AutonomousLoopEngine:
     _CMD_EXIT = re.compile(
         r'^exit\s*$'
     )
+    _CMD_CURIOSITY_FAIRY = re.compile(
+        r'^curiosity_fairy\s*$'
+    )
     _CMD_PARALLEL_BEGIN = re.compile(
         r'^parallel_begin\s*$'
     )
@@ -1926,6 +2121,8 @@ class AutonomousLoopEngine:
                     commands.append(("sleep", ""))
                 elif self._CMD_EXIT.match(match_line):
                     commands.append(("exit", ""))
+                elif self._CMD_CURIOSITY_FAIRY.match(match_line):
+                    commands.append(("curiosity_fairy", ""))
                 else:
                     matched = self._match_single_command(match_line)
                     if matched is not None:
@@ -2067,6 +2264,8 @@ class AutonomousLoopEngine:
                 self._exec_parallel(ctx, arg)
             elif cmd_type == "tool_call":
                 self._exec_tool_call(ctx, arg)
+            elif cmd_type == "curiosity_fairy":
+                self._exec_curiosity_fairy(ctx)
             # "sleep" and "exit" are handled at a higher level
 
     def _exec_command(self, ctx: AutonomousContext, command_str: str) -> None:
@@ -2521,6 +2720,35 @@ class AutonomousLoopEngine:
         self._append_log(ctx, log_entry)
         self.logger.info(f"Telegram_log displayed {len(recent_messages)} messages for user {target_user}")
 
+    def _exec_curiosity_fairy(self, ctx: AutonomousContext) -> None:
+        """
+        Execute the Curiosity Fairy command (voluntary invocation).
+
+        The model may emit ``curiosity_fairy`` on its own to request a
+        creative suggestion when it feels stuck.  This is the same logic
+        as the automatic invocation triggered by the repetition breaker.
+        """
+        self.logger.info("Curiosity Fairy invoked voluntarily by model")
+        self._term_log.separator()
+        self._term_log.thinking("🧚 Curiosity Fairy invoked — seeking inspiration...")
+        suggestion = self._invoke_curiosity_fairy(ctx)
+        if suggestion:
+            fairy_msg = (
+                f"[Message from the Curiosity Fairy] "
+                f"```\n{suggestion}\n```"
+            )
+            self._append_log(ctx, fairy_msg)
+            self._term_log.thinking(
+                f"🧚 Curiosity Fairy suggests: {suggestion[:120]}"
+            )
+            # Reset identical-output counter so the automatic trigger
+            # doesn't fire immediately after a voluntary invocation.
+            self._consecutive_identical_outputs = 0
+            self._curiosity_fairy_invoked = False
+        else:
+            self._term_log.error("🧚 Curiosity Fairy returned no suggestion")
+            self._append_log(ctx, "[Curiosity Fairy] No suggestion available.")
+
     def _exec_parallel(self, ctx: AutonomousContext, arg: str) -> None:
         """
         Execute a batch of commands in parallel.
@@ -2677,13 +2905,16 @@ class AutonomousLoopEngine:
         self._sleep_notification_shown = False
         self._forced_sleep_done = False
 
-        # Clear all repetition-breaker state — sleep/restart is the
-        # intended reset mechanism for loop detection.
+        # Clear all repetition-breaker and Curiosity Fairy state —
+        # sleep/restart is the intended reset mechanism for loop detection.
         self._action_history.clear()
         self._consecutive_same_action = 0
         self._last_action_signature = ""
         self._persistent_loop_patterns.clear()
         self._force_sleep_pending = False
+        self._consecutive_identical_outputs = 0
+        self._last_output_hash = ""
+        self._curiosity_fairy_invoked = False
 
         try:
             # 1. Collect auxiliary context

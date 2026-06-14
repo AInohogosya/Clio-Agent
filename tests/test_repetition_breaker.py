@@ -178,6 +178,10 @@ class TestCheckRepetitionBreaker(unittest.TestCase):
         self.engine._persistent_loop_threshold = 6
         self.engine._prev_iteration_action_sig = ""
         self.engine._force_sleep_pending = False
+        self.engine._consecutive_identical_outputs = 0
+        self.engine._last_output_hash = ""
+        self.engine._curiosity_fairy_invoked = False
+        self.engine._curiosity_fairy_threshold = 5
         self.engine.logger = MagicMock()
         # Minimal ctx for logging
         self.ctx = AutonomousContext(

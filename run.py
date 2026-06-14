@@ -149,7 +149,16 @@ def _auto_bootstrap_venv():
     venv_python, needs_install, deps_ok = _resolve_venv_python()
     if venv_python and deps_ok:
         # Venv exists with deps — are we already inside it?
-        if os.path.samefile(sys.executable, venv_python):
+        # Robust comparison: try samefile first, fall back to realpath
+        _already_in_venv = False
+        try:
+            _already_in_venv = os.path.samefile(sys.executable, venv_python)
+        except (OSError, ValueError):
+            try:
+                _already_in_venv = (os.path.realpath(sys.executable) == os.path.realpath(venv_python))
+            except (OSError, ValueError):
+                _already_in_venv = (os.path.abspath(sys.executable) == os.path.abspath(venv_python))
+        if _already_in_venv:
             return  # already running inside venv with deps
         # venv exists with deps but we're running under system python → restart
         print(f"Switching to virtual environment ({venv_python}) ...")
@@ -459,14 +468,56 @@ if "--auto-config" in sys.argv:
     sys.argv.remove("--auto-config")
     _auto_configure()
 
+# Handle --help/-h before venv bootstrap (no imports needed)
+if "--help" in sys.argv or "-h" in sys.argv:
+    print("Clio Agent - AI Agent Runner")
+    print()
+    print("Usage: python3 run.py [options]")
+    print()
+    print("Options:")
+    print("  --help, -h       Show this help message")
+    print("  --auto-config    Auto-detect provider and configure")
+    print("  --quick-setup    Interactive provider setup")
+    print("  --check, -c      Run environment check")
+    print("  --fix            Run environment check with auto-fix")
+    print("  --health-check   Run self-diagnostic")
+    print("  --debug          Enable debug mode")
+    print("  --no-prompt      Use saved provider without prompting")
+    print("  --setting        Force provider/model selection")
+    print("  --telegram       Run in Telegram bot mode")
+    print("  --discord        Run in Discord bot mode")
+    print("  --install-global Install Clio-Agent globally")
+    print("  --install-sdks   Install AI provider SDKs")
+    print("  --sdk-status     Show SDK installation status")
+    print()
+    sys.exit(0)
+
 # Auto-bootstrap venv BEFORE any project imports
 _auto_bootstrap_venv()
 
-# Rich console for beautiful CLI output
-from ai_agent.utils.rich_console import (
-    get_console, Theme, status_panel, gradient_text,
-    ShimmerLoader, StreamingPrinter
-)
+# Rich console for beautiful CLI output (with fallback)
+try:
+    from ai_agent.utils.rich_console import (
+        get_console, Theme, status_panel, gradient_text,
+        ShimmerLoader, StreamingPrinter
+    )
+except ImportError:
+    # Minimal fallback when rich_console is not available
+    class _FakeConsole:
+        def print(self, *args, **kwargs): print(*args)
+    def get_console(): return _FakeConsole()
+    class Theme:
+        ACCENT = TEXT_PRIMARY = TEXT_SECONDARY = TEXT_TERTIARY = INFO = SUCCESS = WARNING = ERROR = BORDER = BORDER_SUBTLE = ""
+    def status_panel(*a, **kw): return str(a)
+    def gradient_text(t): return t
+    class ShimmerLoader:
+        def __init__(self, *a, **kw): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+    class StreamingPrinter:
+        def __init__(self, *a, **kw): pass
+        def print(self, t): print(t)
+        def flush(self): pass
 
 # Project root & context directory
 _PROJECT_ROOT = Path(__file__).parent.resolve()
