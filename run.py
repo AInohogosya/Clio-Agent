@@ -436,8 +436,10 @@ def _create_venv_and_install():
     _pip_install(venv_python, ["--upgrade", "pip", "setuptools", "wheel"], timeout=300)
 
     if not _repair_venv_deps(venv_python, project_root):
-        print("WARNING: Some core dependencies could not be installed.")
-        print("         The agent may still run with reduced functionality.")
+        print("ERROR: Core dependencies could not be installed.")
+        print("       Activate the venv and run: pip install -e .")
+        print("       For all optional deps:  pip install -e \".[all]\"")
+        sys.exit(1)
     return venv_python
 
 
@@ -446,12 +448,28 @@ def _auto_bootstrap_venv():
     project_root = Path(__file__).parent.resolve()
     run_py = str(project_root / "run.py")
 
+    # Prevent infinite restart loops: cap the number of bootstrap attempts.
+    _bootstrap_count = int(os.environ.get("_CLIO_BOOTSTRAP_ATTEMPTS", "0"))
+    if _bootstrap_count >= 3:
+        print("ERROR: Bootstrap failed after 3 attempts. Please check your Python installation.")
+        print("  Try: rm -rf venv && python3 -m venv venv && source venv/bin/activate && pip install -e .")
+        sys.exit(1)
+    os.environ["_CLIO_BOOTSTRAP_ATTEMPTS"] = str(_bootstrap_count + 1)
+
     venv_python, needs_install, deps_ok = _resolve_venv_python()
 
     # ── Detect a stale/broken venv (e.g. base Python upgraded or removed) ──
     # If the interpreter is unusable, rebuild from scratch rather than fail.
     if venv_python and not _venv_python_is_healthy(venv_python):
         print("Existing virtual environment is unusable; rebuilding ...")
+        venv_python = _create_venv_and_install()
+        print(f"Restarting in virtual environment ({venv_python}) ...")
+        os.execv(venv_python, [venv_python, run_py] + sys.argv[1:])
+
+    if venv_python and needs_install:
+        # Venv exists but pip is broken -> recreate the venv entirely.
+        # Repairing pip in-place is unreliable and causes infinite restart loops.
+        print("Virtual environment has broken pip; recreating from scratch ...")
         venv_python = _create_venv_and_install()
         print(f"Restarting in virtual environment ({venv_python}) ...")
         os.execv(venv_python, [venv_python, run_py] + sys.argv[1:])
@@ -480,7 +498,9 @@ def _auto_bootstrap_venv():
         _ensure_pip(venv_python)
         _pip_install(venv_python, ["--upgrade", "pip"], timeout=300)
         if not _repair_venv_deps(venv_python, project_root):
-            print("WARNING: Some core dependencies could not be installed; continuing anyway.")
+            print("ERROR: Core dependencies could not be repaired.")
+            print("       Run: pip install -e \".[all]\"")
+            sys.exit(1)
         print(f"Restarting in virtual environment ({venv_python}) ...")
         os.execv(venv_python, [venv_python, run_py] + sys.argv[1:])
 
