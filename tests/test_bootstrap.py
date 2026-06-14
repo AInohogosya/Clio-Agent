@@ -196,22 +196,22 @@ def _resolve_venv_python():
         candidates = [venv_path / "bin" / "python", venv_path / "bin" / "python3"]
     for p in candidates:
         try:
-            rp = p.resolve()
-            if not rp.exists():
-                continue
-        except (OSError, ValueError):
             if not p.exists():
                 continue
-            rp = p
+        except (OSError, ValueError):
+            continue
+        # Use the symlink path directly, NOT the resolved path.
+        # The venv's bin/python knows it's in a venv and will use the venv's
+        # site-packages. Resolving to the system python breaks this mechanism.
         try:
-            r = subprocess.run([str(rp), "-m", "pip", "--version"],
+            r = subprocess.run([str(p), "-m", "pip", "--version"],
                                capture_output=True, text=True, timeout=10)
             if r.returncode == 0:
-                deps_ok = _check_venv_deps(str(rp))
-                return str(rp), False, deps_ok
+                deps_ok = _check_venv_deps(str(p))
+                return str(p), False, deps_ok
         except Exception:
             pass
-        return str(rp), True, False
+        return str(p), True, False
     return None, False, False
 
 

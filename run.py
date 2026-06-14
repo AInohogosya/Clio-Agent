@@ -68,13 +68,9 @@ def _get_venv_python():
             python_exe = venv_path / "bin" / "python3"
     if not python_exe.exists():
         return None
-    # Resolve symlinks to find the real path (handles pyenv, Homebrew, etc.)
-    try:
-        resolved = python_exe.resolve()
-        if resolved.exists():
-            return str(resolved)
-    except (OSError, ValueError):
-        pass
+    # Return the symlink path directly, NOT the resolved path.
+    # The venv's bin/python knows it's in a venv and will use the venv's
+    # site-packages. Resolving to the system python breaks this mechanism.
     return str(python_exe)
 
 
@@ -251,22 +247,23 @@ def _resolve_venv_python():
     for p in candidates:
         try:
             # Skip broken symlinks (symlink target doesn't exist)
-            rp = p.resolve()
-            if not rp.exists():
-                continue
-        except (OSError, ValueError):
             if not p.exists():
                 continue
-            rp = p
+        except (OSError, ValueError):
+            continue
+        # Use the symlink path directly, NOT the resolved path.
+        # The venv's bin/python knows it's in a venv and will use the venv's
+        # site-packages. Resolving to the system python (e.g. /usr/bin/python3.13)
+        # breaks this mechanism and causes "No module named pip" errors.
         try:
-            r = subprocess.run([str(rp), "-m", "pip", "--version"],
+            r = subprocess.run([str(p), "-m", "pip", "--version"],
                                capture_output=True, text=True, timeout=10)
             if r.returncode == 0:
-                deps_ok = _check_venv_deps(str(rp))
-                return str(rp), False, deps_ok
+                deps_ok = _check_venv_deps(str(p))
+                return str(p), False, deps_ok
         except Exception:
             pass
-        return str(rp), True, False  # venv exists but pip is broken
+        return str(p), True, False  # venv exists but pip is broken
     return None, False, False
 
 
@@ -1074,13 +1071,9 @@ def get_venv_python_path():
             python_exe = venv_path / "bin" / "python3"
     if not python_exe.exists():
         return None
-    # Resolve symlinks to get real interpreter path
-    try:
-        resolved = python_exe.resolve()
-        if resolved.exists():
-            return str(resolved)
-    except (OSError, ValueError):
-        pass
+    # Return the symlink path directly, NOT the resolved path.
+    # The venv's bin/python knows it's in a venv and will use the venv's
+    # site-packages. Resolving to the system python breaks this mechanism.
     return str(python_exe)
 
 
