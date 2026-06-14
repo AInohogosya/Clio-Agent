@@ -44,6 +44,25 @@ _src_path = str(_project_root_for_path / "src")
 if _src_path not in sys.path:
     sys.path.insert(0, _src_path)
 
+# ── Ensure external_integration/ is accessible as ai_agent.external_integration ──
+# The codebase uses relative imports like `from ..external_integration import ...`
+# inside src/ai_agent/, but external_integration/ lives at the project root.
+# We create a symlink (or copy on restricted platforms) so that the package
+# structure is correct at import time, BEFORE any ai_agent modules are loaded.
+_ext_src = _project_root_for_path / "src" / "ai_agent" / "external_integration"
+_ext_target = _project_root_for_path / "external_integration"
+if _ext_target.is_dir() and not _ext_src.exists():
+    try:
+        _ext_src.symlink_to(os.path.relpath(str(_ext_target), str(_ext_src.parent)))
+    except OSError:
+        # Symlinks unavailable (e.g. Windows without dev mode) — fall back to
+        # copying the directory tree.  This is a one-time setup cost.
+        try:
+            import shutil as _shutil
+            _shutil.copytree(str(_ext_target), str(_ext_src))
+        except Exception:
+            pass  # Will be handled by __init__.py's fallback
+
 
 def _is_in_venv():
     return (
@@ -244,17 +263,16 @@ def _resolve_venv_python():
         candidates = [venv_path / "Scripts" / "python.exe", venv_path / "Scripts" / "pythonw.exe"]
     else:
         candidates = [venv_path / "bin" / "python", venv_path / "bin" / "python3"]
+    # Collect any existing candidates (even broken ones) for fallback
+    existing = []
     for p in candidates:
         try:
-            # Skip broken symlinks (symlink target doesn't exist)
-            if not p.exists():
-                continue
+            if p.exists():
+                existing.append(p)
         except (OSError, ValueError):
-            continue
-        # Use the symlink path directly, NOT the resolved path.
-        # The venv's bin/python knows it's in a venv and will use the venv's
-        # site-packages. Resolving to the system python (e.g. /usr/bin/python3.13)
-        # breaks this mechanism and causes "No module named pip" errors.
+            pass
+    # Try each candidate for a healthy venv python with working pip
+    for p in existing:
         try:
             r = subprocess.run([str(p), "-m", "pip", "--version"],
                                capture_output=True, text=True, timeout=10)
@@ -263,7 +281,9 @@ def _resolve_venv_python():
                 return str(p), False, deps_ok
         except Exception:
             pass
-        return str(p), True, False  # venv exists but pip is broken
+    # No healthy candidate — return first existing one as broken
+    if existing:
+        return str(existing[0]), True, False
     return None, False, False
 
 
@@ -461,7 +481,11 @@ def _auto_bootstrap_venv():
         print("Existing virtual environment is unusable; rebuilding ...")
         venv_python = _create_venv_and_install()
         print(f"Restarting in virtual environment ({venv_python}) ...")
-        os.execv(venv_python, [venv_python, run_py] + sys.argv[1:])
+        try:
+            os.execv(venv_python, [venv_python, run_py] + sys.argv[1:])
+        except (OSError, Exception):
+            print("Warning: restart via execv failed. Running directly.")
+            return
 
     if venv_python and needs_install:
         # Venv exists but pip is broken -> recreate the venv entirely.
@@ -469,24 +493,27 @@ def _auto_bootstrap_venv():
         print("Virtual environment has broken pip; recreating from scratch ...")
         venv_python = _create_venv_and_install()
         print(f"Restarting in virtual environment ({venv_python}) ...")
-        os.execv(venv_python, [venv_python, run_py] + sys.argv[1:])
+        try:
+            os.execv(venv_python, [venv_python, run_py] + sys.argv[1:])
+        except (OSError, Exception):
+            print("Warning: restart via execv failed. Running directly.")
+            return
 
     if venv_python and deps_ok:
         # Venv exists with deps — are we already inside it?
-        # Robust comparison: try samefile first, fall back to realpath
-        _already_in_venv = False
-        try:
-            _already_in_venv = os.path.samefile(sys.executable, venv_python)
-        except (OSError, ValueError):
-            try:
-                _already_in_venv = (os.path.realpath(sys.executable) == os.path.realpath(venv_python))
-            except (OSError, ValueError):
-                _already_in_venv = (os.path.abspath(sys.executable) == os.path.abspath(venv_python))
-        if _already_in_venv:
+        # Use _is_in_venv() (which checks sys.prefix/sys.base_prefix/VIRTUAL_ENV)
+        # rather than os.path.samefile(), which resolves symlinks and produces
+        # false positives when venv/bin/python is a symlink to the system python.
+        if _is_in_venv():
             return  # already running inside venv with deps
         # venv exists with deps but we're running under system python → restart
         print(f"Switching to virtual environment ({venv_python}) ...")
-        os.execv(venv_python, [venv_python, run_py] + sys.argv[1:])
+        try:
+            os.execv(venv_python, [venv_python, run_py] + sys.argv[1:])
+        except (OSError, Exception) as _exec_err:
+            print(f"Warning: could not restart into venv ({_exec_err}). Running directly.")
+            # Fall back to running with current Python — install deps if needed
+            return
 
     if venv_python and not deps_ok:
         # venv exists but deps are missing or outdated → repair in place,
@@ -499,12 +526,20 @@ def _auto_bootstrap_venv():
             print("       Run: pip install -e \".[all]\"")
             sys.exit(1)
         print(f"Restarting in virtual environment ({venv_python}) ...")
-        os.execv(venv_python, [venv_python, run_py] + sys.argv[1:])
+        try:
+            os.execv(venv_python, [venv_python, run_py] + sys.argv[1:])
+        except (OSError, Exception):
+            print("Warning: restart via execv failed. Running directly.")
+            return
 
     # No valid venv at all → create one and restart inside it
     venv_python = _create_venv_and_install()
     print(f"Restarting in virtual environment ({venv_python}) ...")
-    os.execv(venv_python, [venv_python, run_py] + sys.argv[1:])
+    try:
+        os.execv(venv_python, [venv_python, run_py] + sys.argv[1:])
+    except (OSError, Exception):
+        print("Warning: restart via execv failed. Running directly.")
+        return
 
 
 def _auto_configure():
@@ -2323,8 +2358,26 @@ def main():
     if VENV_RESTART_FLAG in sys.argv:
         sys.argv.remove(VENV_RESTART_FLAG)
     if not _is_in_venv():
-        print("ERROR: Not in virtual environment after bootstrap. Check your Python setup.")
-        sys.exit(1)
+        print("WARNING: Not running inside a virtual environment.")
+        print("         Attempting to run directly — dependencies will be checked on first import.")
+        # Try to import core deps; if missing, install them in the current environment
+        _missing_deps = []
+        for _mod, (_pkg, _minv) in CORE_DEPENDENCIES.items():
+            try:
+                __import__(_mod)
+            except ImportError:
+                _missing_deps.append(_pkg)
+        if _missing_deps:
+            print(f"Installing missing core dependencies: {', '.join(_missing_deps)}")
+            for _pkg in _missing_deps:
+                try:
+                    subprocess.run(
+                        [sys.executable, "-m", "pip", "install", _pkg],
+                        capture_output=True, text=True, timeout=300,
+                    )
+                except Exception as _e:
+                    print(f"  Failed to install {_pkg}: {_e}")
+        print("Continuing without virtual environment...")
 
     _project_root = Path(__file__).parent.resolve()
 

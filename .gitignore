@@ -76,6 +76,9 @@ local_config.py
 
 # Context persistence (sleep / exit state)
 .context/
+# Auto-generated symlink — external_integration lives at project root
+# but is symlinked into the ai_agent package at runtime (see run.py / __init__.py)
+src/ai_agent/external_integration
 
 # API keys and secrets
 .env.local
