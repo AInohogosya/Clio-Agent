@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Standalone smoke test for Clio Agent — no external dependencies required.
-Uses only stdlib. Prints a clear PASS/FAIL summary.
+Uses only stdlib + yaml (for config checks). Prints a clear PASS/FAIL summary.
 
 Usage: python3 smoke_test.py
 """
@@ -114,7 +114,7 @@ if config_path.exists():
             check("config has 'execution' section", "execution" in raw)
             check("config has 'logging' section", "logging" in raw)
     except ImportError:
-        skip("config.yaml parsing", "yaml not installed (shouldn't happen if core imports passed)")
+        skip("config.yaml parsing", "yaml not installed")
     except Exception as e:
         check("config.yaml parsing", False, str(e))
 else:
@@ -186,7 +186,11 @@ in_venv = (
     or (hasattr(sys, "base_prefix") and sys.base_prefix != sys.prefix)
     or os.getenv("VIRTUAL_ENV") is not None
 )
-check("Running in virtual environment", in_venv)
+# Informational only — not a hard requirement (Homebrew, pyenv, conda are fine)
+if in_venv:
+    check("Running in virtual environment", True)
+else:
+    skip("Running in virtual environment", "using system/Homebrew Python is OK")
 
 venv_path = project_root / "venv"
 check("venv directory exists", venv_path.exists() and venv_path.is_dir())
