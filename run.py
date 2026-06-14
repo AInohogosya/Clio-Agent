@@ -62,7 +62,7 @@ def _get_venv_python():
 
 
 def _resolve_venv_python():
-    """Return (venv_python_path, needs_install)."""
+    """Return (venv_python_path, needs_install, deps_ok)."""
     project_root = Path(__file__).parent.resolve()
     venv_path = project_root / "venv"
     if platform.system() == "Windows":
@@ -71,16 +71,31 @@ def _resolve_venv_python():
         candidates = [venv_path / "bin" / "python", venv_path / "bin" / "python3"]
     for p in candidates:
         if p.exists():
-            # Check that pip works inside this venv
             try:
                 r = subprocess.run([str(p), "-m", "pip", "--version"],
                                    capture_output=True, text=True, timeout=10)
                 if r.returncode == 0:
-                    return str(p), False
+                    deps_ok = _check_venv_deps(str(p))
+                    return str(p), False, deps_ok
             except Exception:
                 pass
-            return str(p), True  # venv exists but pip is broken
-    return None, False
+            return str(p), True, False  # venv exists but pip is broken
+    return None, False, False
+
+
+def _check_venv_deps(venv_python):
+    """Return True if core dependencies are importable in the venv."""
+    check_script = (
+        "import importlib.util, sys; "
+        "ok = all(importlib.util.find_spec(n) is not None for n in ['structlog', 'rich', 'yaml', 'requests', 'pluggy']); "
+        "sys.exit(0 if ok else 1)"
+    )
+    try:
+        r = subprocess.run([venv_python, "-c", check_script],
+                           capture_output=True, text=True, timeout=15)
+        return r.returncode == 0
+    except Exception:
+        return False
 
 
 def _create_venv_and_install():
@@ -99,7 +114,7 @@ def _create_venv_and_install():
     except Exception as e:
         print(f"Error creating venv: {e}")
         sys.exit(1)
-    v_env_python, needs_install = _resolve_venv_python()
+    venv_python, needs_install, deps_ok = _resolve_venv_python()
     if not venv_python:
         print("Could not find venv Python after creation")
         sys.exit(1)
@@ -118,6 +133,11 @@ def _create_venv_and_install():
         print("Falling back to pyproject.toml only ...")
         subprocess.run([venv_python, "-m", "pip", "install", str(project_root)],
                        capture_output=True, text=True, timeout=600)
+    if not _check_venv_deps(venv_python):
+        print("WARNING: Core dependencies missing. Installing individually ...")
+        for pkg in ["structlog", "rich", "PyYAML", "requests", "pluggy", "ollama", "openai", "psutil", "anthropic", "google-genai", "mistralai", "cohere"]:
+            subprocess.run([venv_python, "-m", "pip", "install", pkg],
+                           capture_output=True, text=True, timeout=120)
     return venv_python
 
 
@@ -126,20 +146,318 @@ def _auto_bootstrap_venv():
     project_root = Path(__file__).parent.resolve()
     run_py = str(project_root / "run.py")
 
-    venv_python, needs_install = _resolve_venv_python()
-    if venv_python:
-        # Check if current process IS the venv python
+    venv_python, needs_install, deps_ok = _resolve_venv_python()
+    if venv_python and deps_ok:
+        # Venv exists with deps — are we already inside it?
         if os.path.samefile(sys.executable, venv_python):
-            return  # already running inside venv
-        # venv exists but we're running under system python → restart inside venv
+            return  # already running inside venv with deps
+        # venv exists with deps but we're running under system python → restart
         print(f"Switching to virtual environment ({venv_python}) ...")
         os.execv(venv_python, [venv_python, run_py] + sys.argv[1:])
 
-    # No valid venv → create one and restart inside it
+    if venv_python and not deps_ok:
+        # venv exists but deps missing → reinstall deps in-place
+        print(f"Virtual environment found but dependencies are missing. Reinstalling ...")
+        pip_check = subprocess.run([venv_python, "-m", "pip", "--version"],
+                                  capture_output=True, text=True, timeout=10)
+        if pip_check.returncode != 0:
+            print("Bootstrapping pip ...")
+            subprocess.run([venv_python, "-m", "ensurepip", "--upgrade"],
+                           capture_output=True, text=True, timeout=60)
+        print("Upgrading pip ...")
+        subprocess.run([venv_python, "-m", "pip", "install", "--upgrade", "pip"],
+                       capture_output=True, text=True, timeout=300)
+        print("Installing dependencies (including cloud provider SDKs) ...")
+        subprocess.run([venv_python, "-m", "pip", "install", "-e", str(project_root)],
+                       capture_output=True, text=True, timeout=600)
+        if not _check_venv_deps(venv_python):
+            print("Fallback: installing core packages individually ...")
+            for pkg in ["structlog", "rich", "PyYAML", "requests", "pluggy", "ollama", "openai", "psutil", "anthropic", "google-genai", "mistralai", "cohere"]:
+                subprocess.run([venv_python, "-m", "pip", "install", pkg],
+                               capture_output=True, text=True, timeout=120)
+        print(f"Restarting in virtual environment ({venv_python}) ...")
+        os.execv(venv_python, [venv_python, run_py] + sys.argv[1:])
+
+    # No valid venv at all → create one and restart inside it
     venv_python = _create_venv_and_install()
     print(f"Restarting in virtual environment ({venv_python}) ...")
     os.execv(venv_python, [venv_python, run_py] + sys.argv[1:])
 
+
+def _auto_configure():
+    """Non-interactive auto-configuration: detect the best available provider
+    and write config.yaml without any user interaction.
+    Runs BEFORE venv bootstrap, so it uses only stdlib (no project imports).
+
+    Detection priority:
+      1. If config.yaml already has a valid provider+model+key, do nothing.
+      2. If Ollama is installed and responding, use it (local, no key needed).
+      3. Scan environment variables for cloud provider API keys.
+      4. If nothing is found, write a minimal config and let the agent
+         prompt interactively on next run.
+    """
+    project_root = Path(__file__).parent.resolve()
+    config_path = project_root / "config.yaml"
+
+    # ── Resolve yaml (PyYAML may not be installed yet) ──
+    try:
+        import yaml as _yaml  # noqa: F401
+    except ImportError:
+        print("Installing PyYAML for config saving...")
+        import subprocess
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", "PyYAML"],
+            capture_output=True, text=True, timeout=120,
+        )
+        import yaml as _yaml  # noqa: F401
+    import yaml as _yaml
+
+    # ── Load existing config ──
+    config = {}
+    if config_path.exists():
+        try:
+            with open(config_path, "r", encoding="utf-8") as _f:
+                config = _yaml.safe_load(_f) or {}
+        except Exception:
+            config = {}
+
+    api_cfg = config.setdefault("api", {})
+    existing_provider = api_cfg.get("preferred_provider", "")
+    existing_keys = api_cfg.get("api_keys", {}) or {}
+    existing_models = api_cfg.get("models", {}) or {}
+
+    # ── Check if config is already valid ──
+    if existing_provider:
+        _prov_key = existing_keys.get(existing_provider, "")
+        _prov_model = existing_models.get(existing_provider, "")
+        if _prov_model and (existing_provider == "ollama" or _prov_key):
+            print(f"[auto-config] Config already valid: provider={existing_provider}, model={_prov_model}")
+            return  # nothing to do
+
+    provider = None
+    model = None
+    api_key = None
+
+    # ── 1. Try Ollama (local) ──
+    import shutil
+    ollama_path = shutil.which("ollama")
+    if ollama_path:
+        print("[auto-config] Ollama detected at:", ollama_path)
+        try:
+            import subprocess
+            _proc = subprocess.run(
+                ["ollama", "list"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if _proc.returncode == 0:
+                _lines = [
+                    l.strip() for l in _proc.stdout.strip().splitlines()
+                    if l.strip() and not l.strip().startswith("NAME")
+                ]
+                if _lines:
+                    model = _lines[0].split()[0]
+                else:
+                    model = "llama3.2:3b"
+                provider = "ollama"
+                print(f"[auto-config] Using Ollama with model: {model}")
+        except (subprocess.TimeoutExpired, FileNotFoundError, Exception) as _e:
+            print(f"[auto-config] Ollama check failed: {_e}")
+
+    # ── 2. Scan environment variables for cloud providers ──
+    if provider is None:
+        _CLOUD_PROVIDERS = [
+            ("openai",      "gpt-4o",                  "OPENAI_API_KEY"),
+            ("anthropic",   "claude-sonnet-4-20250514","ANTHROPIC_API_KEY"),
+            ("google",      "gemini-2.5-flash",        "GOOGLE_API_KEY"),
+            ("groq",        "llama-3.3-70b-versatile",  "GROQ_API_KEY"),
+            ("deepseek",    "deepseek-chat",           "DEEPSEEK_API_KEY"),
+            ("mistral",     "mistral-large-latest",     "MISTRAL_API_KEY"),
+            ("together",    "meta-llama/Llama-3.3-70B-Instruct-Turbo", "TOGETHER_API_KEY"),
+            ("openrouter",  "openrouter/auto",         "OPENROUTER_API_KEY"),
+            ("cohere",      "command-r-plus",          "COHERE_API_KEY"),
+            ("xai",         "grok-4.1",                "XAI_API_KEY"),
+            ("minimax",     "MiniMax-Text-01",         "MINIMAX_API_KEY"),
+            ("zhipuai",     "glm-5",                   "ZHIPUAI_API_KEY"),
+        ]
+        for _pk, _default_model, _env_var in _CLOUD_PROVIDERS:
+            _key = os.getenv(_env_var, "").strip()
+            if _key:
+                provider = _pk
+                model = existing_models.get(_pk, _default_model)
+                api_key = _key
+                os.environ[_env_var] = _key
+                print(f"[auto-config] Found {_pk} via env var {_env_var}")
+                break
+
+    # ── 3. Fallback: write minimal config so agent can prompt later ──
+    if provider is None:
+        provider = existing_provider or ""
+        model = ""
+        print("[auto-config] No provider auto-detected. Writing minimal config.")
+        print("[auto-config] Run Clio-Agent (without --auto-config) for interactive setup.")
+        print("[auto-config] Or set an API key env var (e.g. OPENAI_API_KEY=sk-...)")
+
+    # ── Write config ──
+    api_cfg["preferred_provider"] = provider
+    if model:
+        existing_models[provider] = model
+        api_cfg["models"] = existing_models
+    if api_key and provider != "ollama":
+        existing_keys[provider] = api_key
+        api_cfg["api_keys"] = existing_keys
+
+    with open(config_path, "w", encoding="utf-8") as _f:
+        _yaml.dump(config, _f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+
+    print(f"[auto-config] Config saved to {config_path}")
+    print(f"[auto-config]   Provider : {provider or '(none)'}")
+    print(f"[auto-config]   Model    : {model or '(none)'}")
+    if api_key:
+        print(f"[auto-config]   API Key  : *****{api_key[-4:]}")
+    print()
+
+
+def _quick_bootstrap_config():
+    """Interactive quick setup: detect Ollama or configure a cloud provider.
+    Runs BEFORE venv bootstrap, so it uses only stdlib (no project imports)."""
+    project_root = Path(__file__).parent.resolve()
+    config_path = project_root / "config.yaml"
+
+    print()
+    print("=" * 50)
+    print("  Clio Agent - Quick Setup")
+    print("=" * 50)
+    print()
+
+    # Resolve yaml (PyYAML may not be installed yet)
+    try:
+        import yaml as _yaml  # noqa: F401
+    except ImportError:
+        print("Installing PyYAML for config saving...")
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", "PyYAML"],
+            capture_output=True, text=True, timeout=120,
+        )
+        import yaml as _yaml  # noqa: F401
+    import yaml as _yaml
+
+    # ── Ollama detection ──
+    ollama_path = shutil.which("ollama")
+    if ollama_path:
+        print("Ollama detected at:", ollama_path)
+        provider = "ollama"
+        model = "llama3.2:3b"
+        api_key = None
+        print(f"  -> Using provider: Ollama, model: {model}")
+    else:
+        print("Ollama not found.")
+        print()
+        # Cloud provider list
+        _CLOUD_PROVIDERS = [
+            ("openai",      "OpenAI",       "gpt-4o",                  "OPENAI_API_KEY",           "https://platform.openai.com/api-keys"),
+            ("anthropic",   "Anthropic",     "claude-sonnet-4-20250514","ANTHROPIC_API_KEY",       "https://console.anthropic.com/settings/keys"),
+            ("google",      "Google Gemini","gemini-2.5-flash",        "GOOGLE_API_KEY",          "https://aistudio.google.com/app/apikey"),
+            ("groq",        "Groq",         "llama-3.3-70b-versatile",  "GROQ_API_KEY",            "https://console.groq.com/keys"),
+            ("deepseek",    "DeepSeek",     "deepseek-chat",           "DEEPSEEK_API_KEY",        "https://platform.deepseek.com/api_keys"),
+            ("mistral",     "Mistral AI",   "mistral-large-latest",     "MISTRAL_API_KEY",         "https://console.mistral.ai/api-keys"),
+            ("together",    "Together AI",  "meta-llama/Llama-3.3-70B-Instruct-Turbo", "TOGETHER_API_KEY", "https://api.together.ai/settings/api-keys"),
+            ("openrouter",  "OpenRouter",   "openrouter/auto",         "OPENROUTER_API_KEY",      "https://openrouter.ai/keys"),
+            ("cohere",      "Cohere",       "command-r-plus",          "COHERE_API_KEY",          "https://dashboard.cohere.com/api-keys"),
+            ("xai",         "xAI Grok",     "grok-4.1",                "XAI_API_KEY",             "https://x.ai/api"),
+            ("minimax",     "MiniMax",      "MiniMax-Text-01",         "MINIMAX_API_KEY",         "https://platform.minimaxi.com/user-center/basic-information/interface-key"),
+            ("zhipuai",     "ZhipuAI",      "glm-5",                   "ZHIPUAI_API_KEY",         "https://open.bigmodel.cn/usercenter/apikeys"),
+        ]
+        print("Available cloud providers:")
+        for i, (_pk, name, _mdl, _ek, _url) in enumerate(_CLOUD_PROVIDERS, 1):
+            print(f"  {i:2d}. {name}")
+        print()
+
+        # Select provider
+        while True:
+            try:
+                choice = input(f"Select a provider (1-{len(_CLOUD_PROVIDERS)}): ").strip()
+                idx = int(choice) - 1
+                if 0 <= idx < len(_CLOUD_PROVIDERS):
+                    break
+            except (ValueError, EOFError):
+                pass
+            print("Invalid choice, try again.")
+
+        pk, name, default_model, env_var, key_url = _CLOUD_PROVIDERS[idx]
+        provider = pk
+        model = default_model
+
+        # Check for existing env var
+        _existing_key = os.getenv(env_var, "").strip()
+        if _existing_key:
+            api_key = _existing_key
+            print(f"API key found in environment variable {env_var}.")
+        else:
+            # Ask for model override
+            _new_model = input(f"Model [{default_model}]: ").strip()
+            if _new_model:
+                model = _new_model
+            # Ask for API key
+            print(f"Set model to: {model}")
+            print(f"Get an API key from: {key_url}")
+            _new_key = input(f"Enter your {name} API key: ").strip()
+            api_key = _new_key if _new_key else None
+
+    # ── Build and save config ──
+    config = {}
+    if config_path.exists():
+        try:
+            with open(config_path, "r", encoding="utf-8") as _f:
+                config = _yaml.safe_load(_f) or {}
+        except Exception:
+            config = {}
+    if "api" not in config:
+        config["api"] = {}
+    config["api"]["preferred_provider"] = provider
+    if "models" not in config["api"]:
+        config["api"]["models"] = {}
+    config["api"]["models"][provider] = model
+    if api_key and provider != "ollama":
+        if "api_keys" not in config["api"]:
+            config["api"]["api_keys"] = {}
+        config["api"]["api_keys"][provider] = api_key
+
+        _env_map = {
+            "google": "GOOGLE_API_KEY", "groq": "GROQ_API_KEY",
+            "openai": "OPENAI_API_KEY", "anthropic": "ANTHROPIC_API_KEY",
+            "xai": "XAI_API_KEY", "meta": "META_API_KEY",
+            "mistral": "MISTRAL_API_KEY", "microsoft": "AZURE_OPENAI_API_KEY",
+            "cohere": "COHERE_API_KEY", "deepseek": "DEEPSEEK_API_KEY",
+            "together": "TOGETHER_API_KEY", "minimax": "MINIMAX_API_KEY",
+            "zhipuai": "ZHIPUAI_API_KEY", "openrouter": "OPENROUTER_API_KEY",
+        }
+        _ev = _env_map.get(provider)
+        if _ev:
+            os.environ[_ev] = api_key
+
+    with open(config_path, "w", encoding="utf-8") as _f:
+        _yaml.dump(config, _f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+
+    print()
+    print(f"Config saved to {config_path}")
+    print(f"  Provider : {provider}")
+    print(f"  Model    : {model}")
+    if api_key:
+        print(f"  API Key  : *****{api_key[-4:]}")
+    print()
+    print("Config saved! Starting setup...")
+    print()
+
+
+# Handle --quick-setup before venv bootstrap (needs no project imports)
+if "--quick-setup" in sys.argv:
+    sys.argv.remove("--quick-setup")
+    _quick_bootstrap_config()
+
+# Handle --auto-config before venv bootstrap (non-interactive auto-detection)
+if "--auto-config" in sys.argv:
+    sys.argv.remove("--auto-config")
+    _auto_configure()
 
 # Auto-bootstrap venv BEFORE any project imports
 _auto_bootstrap_venv()
@@ -488,6 +806,7 @@ def show_help():
         ("--watchdog", "Enable watchdog supervisor (auto-restart on crash)"),
         ("--supervisor", "Enable eternal supervisor (maximum resilience)"),
         ("--install-global", "Install Clio-Agent globally (any directory)"),
+        ("--auto-config", "Auto-detect provider and configure non-interactively"),
     ]
     for opt, desc in opts:
         opt_table.add_row(opt, desc)
@@ -497,6 +816,7 @@ def show_help():
     console.print()
     console.print(f"[bold {Theme.ACCENT}]Examples:[/]")
     examples = [
+        ("Clio-Agent --auto-config", "# Auto-configure and start agent"),
         ("Clio-Agent", "# Start autonomous agent"),
         ('Clio-Agent "Take a screenshot"', "# Run a specific task"),
         ("Clio-Agent --check", "# Check environment"),
@@ -1449,18 +1769,17 @@ def _cmd_install_global():
         console.print("[yellow]pipx install failed, trying alternative...[/]")
 
     # Strategy B: pip install --break-system-packages
-    if not is_in_virtual_environment():
-        console.print("[bold]Strategy:[/] pip --break-system-packages")
-        result = subprocess.run(
-            [sys.executable, "-m", "pip", "install", "--break-system-packages",
-             "-e", str(project_root)],
-            capture_output=False, text=True,
-        )
-        if result.returncode == 0:
-            console.print("[bold green]OK Installed via pip --break-system-packages[/]")
-            _post_install_hint(None)
-            return
-        console.print("[yellow]pip --break-system-packages failed, trying alternative...[/]")
+    console.print("[bold]Strategy:[/] pip --break-system-packages")
+    result = subprocess.run(
+        [sys.executable, "-m", "pip", "install", "--break-system-packages",
+         "-e", str(project_root)],
+        capture_output=False, text=True,
+    )
+    if result.returncode == 0:
+        console.print("[bold green]OK Installed via pip --break-system-packages[/]")
+        _post_install_hint(None)
+        return
+    console.print("[yellow]pip --break-system-packages failed, trying alternative...[/]")
 
     # Strategy C: pip install --user
     console.print("[bold]Strategy:[/] pip --user")
@@ -1775,6 +2094,19 @@ def main():
         pass
 
     _restore_restart_settings_from_env()
+    # Check for plaintext API keys in config.yaml
+    try:
+        import yaml as _yaml
+        _cfg_path = current_dir / "config.yaml"
+        if _cfg_path.exists():
+            with open(_cfg_path, 'r') as _f:
+                _cfg_check = _yaml.safe_load(_f) or {}
+            _keys = _cfg_check.get('api', {}).get('api_keys', {}) or {}
+            if any(v for v in _keys.values() if v):
+                from ai_agent.utils.interactive_menu import warning_message
+                warning_message("API keys stored in plaintext config.yaml - consider using env vars")
+    except Exception:
+        pass
     if USER_RESTART_FLAG in sys.argv:
         sys.argv.remove(USER_RESTART_FLAG)
         print("\u2713 Restarted with previous provider, model, and API settings")
@@ -1873,16 +2205,65 @@ def main():
             selected_provider = settings_manager.get_preferred_provider()
         if not selected_provider:
             if "--no-prompt" in sys.argv:
-                from ai_agent.utils.environment_detector import EnvironmentDetector
-                detector = EnvironmentDetector()
-                if detector._detect_ollama_available():
+                from ai_agent.utils.settings_manager import get_settings_manager
+                settings_manager = get_settings_manager()
+                _saved_ollama_model = settings_manager.get_ollama_model()
+                # Detect Ollama: check CLI in PATH and verify service responds
+                _ollama_available = False
+                if shutil.which("ollama"):
+                    try:
+                        _proc = subprocess.run(
+                            ["ollama", "list"],
+                            capture_output=True, text=True, timeout=10
+                        )
+                        if _proc.returncode == 0:
+                            _ollama_available = True
+                    except (subprocess.TimeoutExpired, FileNotFoundError):
+                        pass
+                if _ollama_available:
                     selected_provider = "ollama"
-                    from ai_agent.utils.settings_manager import get_settings_manager
-                    settings_manager = get_settings_manager()
-                    selected_model = settings_manager.get_ollama_model()
+                    selected_model = _saved_ollama_model
+                    if not selected_model:
+                        try:
+                            _proc = subprocess.run(
+                                ["ollama", "list"],
+                                capture_output=True, text=True, timeout=10
+                            )
+                            _lines = [l.strip() for l in _proc.stdout.strip().splitlines()
+                                      if l.strip() and not l.strip().startswith("NAME")]
+                            if _lines:
+                                selected_model = _lines[0].split()[0]
+                            else:
+                                selected_model = "llama3.2:3b"
+                        except Exception:
+                            selected_model = "llama3.2:3b"
+                    print(f"\n\u2139\ufe0f Auto-selected Ollama with model: {selected_model}")
                 else:
-                    print("\u274c No provider configured. Run Clio-Agent without --no-prompt to configure.")
-                    sys.exit(1)
+                    _cloud_providers = [
+                        ("openai", "OPENAI_API_KEY", "gpt-4o-mini"),
+                        ("anthropic", "ANTHROPIC_API_KEY", "claude-sonnet-4-20250514"),
+                        ("mistral", "MISTRAL_API_KEY", "mistral-large-latest"),
+                        ("together", "TOGETHER_API_KEY", "meta-llama/Llama-3.3-70B-Instruct-Turbo"),
+                        ("openrouter", "OPENROUTER_API_KEY", "openrouter/auto"),
+                        ("deepseek", "DEEPSEEK_API_KEY", "deepseek-chat"),
+                        ("groq", "GROQ_API_KEY", "llama-3.3-70b-versatile"),
+                        ("gemini", "GOOGLE_API_KEY", "gemini-2.0-flash"),
+                    ]
+                    _found = False
+                    for _pk, _ev, _dm in _cloud_providers:
+                        if os.environ.get(_ev, "").strip():
+                            selected_provider = _pk
+                            selected_model = _dm
+                            print(f"\n\u2139\ufe0f Auto-selected {_pk} from environment variable {_ev}")
+                            _found = True
+                            break
+                    if not _found:
+                        print("\n\u26a0\ufe0f No provider configured and Ollama is not available.")
+                        print("   Options:")
+                        print("   1. Install Ollama: curl -fsSL https://ollama.com/install.sh | sh")
+                        print("   2. Run 'Clio-Agent' (without --no-prompt) for interactive setup")
+                        print("   3. Set a provider via config.yaml or environment variables")
+                        sys.exit(1)
             else:
                 print("\u274c No provider configured. Run Clio-Agent without --no-prompt to configure.")
                 sys.exit(1)
@@ -1890,6 +2271,21 @@ def main():
     if _original_instruction and _original_instruction.strip() == "/restart":
         print("\U0001f504 Restarting with current settings...")
         restart_with_current_settings(selected_mode, selected_provider, selected_model, debug_mode)
+
+    try:
+        import yaml
+        _cfg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.yaml")
+        if os.path.exists(_cfg_path):
+            with open(_cfg_path, "r") as _cfg_f:
+                _cfg = yaml.safe_load(_cfg_f)
+            if _cfg and isinstance(_cfg, dict):
+                _api_cfg = _cfg.get("api", {})
+                if isinstance(_api_cfg, dict):
+                    _keys = [k for k, v in _api_cfg.get("api_keys", {}).items() if v]
+                    if _keys:
+                        print(f"\n\u26a0\ufe0f Security Notice: API keys detected in config.yaml for: {', '.join(_keys)}. Consider using environment variables instead.")
+    except Exception:
+        pass
 
     print(f"\nClio Agent starting in {selected_mode.capitalize()} mode...")
     max_iterations = 0

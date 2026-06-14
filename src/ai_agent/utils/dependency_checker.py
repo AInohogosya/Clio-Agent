@@ -30,8 +30,18 @@ class DependencyChecker:
             "numpy": "numpy>=1.24.0",
             "structlog": "structlog>=23.0.0",
             "rich": "rich>=13.0.0",
-            "yaml": "PyYAML>=6.0.0",  # yaml module imports as PyYAML package
-            "ollama": "ollama>=0.1.0",  # Ollama Python library
+            "yaml": "PyYAML>=6.0.0",
+            "ollama": "ollama>=0.1.0",
+            "psutil": "psutil>=5.9.0",
+            "pluggy": "pluggy>=1.0.0",
+            "openai": "openai>=1.0.0",
+            "groq": "groq>=0.5.0",
+            "anthropic": "anthropic>=0.25.0",
+            "google.genai": "google-genai>=0.3.0",
+            "mistralai": "mistralai>=0.1.0",
+            "cohere": "cohere>=5.0.0",
+            "telegram": "python-telegram-bot>=21.0.0",
+            "discord": "discord.py>=2.3.0",
         }
         
         # Conditional dependencies (only checked on specific platforms)

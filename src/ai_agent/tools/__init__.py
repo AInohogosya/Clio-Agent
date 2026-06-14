@@ -36,6 +36,7 @@ from .glob import GlobTool, GlobInput
 from .grep import GrepTool, GrepInput
 from .todo_list import ToDoListTool, ToDoListInput, clear_todo_list, get_todo_items
 from .memo import MemoTool, MemoInput, clear_memo_list, get_memo_items
+from .sub_agent import SubAgentTool, SubAgentInput
 
 
 def initialize_tool_registry(registry=None):
@@ -61,6 +62,7 @@ def initialize_tool_registry(registry=None):
     registry.register(GrepTool(permissions))
     registry.register(ToDoListTool(permissions))
     registry.register(MemoTool(permissions))
+    registry.register(SubAgentTool(permissions))
 
     return registry
 
@@ -107,5 +109,7 @@ __all__ = [
     "MemoInput",
     "clear_memo_list",
     "get_memo_items",
+    "SubAgentTool",
+    "SubAgentInput",
     "initialize_tool_registry",
 ]

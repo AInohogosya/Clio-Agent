@@ -308,6 +308,8 @@ from .context_manager import (
     get_context_summary,
     display_context_in_terminal,
 )
+from ..sub_agents.manager import SubAgentManager
+from ..sub_agents.registry import get_global_registry
 
 
 class LoopPhase(Enum):
@@ -411,6 +413,12 @@ class AutonomousLoopEngine:
         self.discord_bot = discord_bot
         if self.discord_bot and self.discord_bot.terminal_history is None:
             self.discord_bot.terminal_history = self.terminal_history
+
+        # Sub-agent manager — enables spawning specialized agents
+        self.sub_agent_manager = SubAgentManager(config=self.config)
+        # Auto-discover and register built-in sub-agents
+        registry = get_global_registry()
+        registry.discover()
 
         # Configuration
         self.command_timeout = self.config.get("command_timeout", 1800)
@@ -1716,6 +1724,16 @@ class AutonomousLoopEngine:
             f"{' (ACTIVE)' if ctx.discord_mode else ''}\n"
             f"  sleep              — Compress & restart (auto at {self.NOTIFICATION_THRESHOLD} log lines)\n"
             f"  exit               — Save & shut down\n"
+            f"\n"
+            f"SUB-AGENT DELEGATION (spawn specialized agents for complex tasks):\n"
+            f"  subagent(type=\"type\", task=\"task\")  — Spawn a sub-agent\n"
+            f"    Types: coder | research | review | architect\n"
+            f"    Architect agent: 6-phase design loop (Discovery\u2192Analysis\u2192Design\u2192\n"
+            f"    Critique\u2192Refinement\u2192Synthesis), produces ADRs & trade-off analysis\n"
+            f"  subagent_result(id=\"agent_id\")  — Get result from a completed sub-agent\n"
+            f"  subagent_list()                     — List all active sub-agents\n"
+            f"  subagent_kill(id=\"agent_id\")      — Kill a specific sub-agent\n"
+            f"  sub_agent_types()                   — List available sub-agent types\n"
             f"{telegram_section}"
             f"{discord_section}"
             f"{self_directed_section}"
@@ -1801,7 +1819,7 @@ class AutonomousLoopEngine:
     # Any matching line is converted to ("tool_call", json_dict).
     _DIRECT_TOOL_NAMES = frozenset({
         "read", "write", "edit", "bash", "glob", "grep",
-        "todo", "memo",
+        "todo", "memo", "subagent", "subagent_result", "subagent_list", "subagent_kill",
     })
 
     # ── Bullet / numbered list prefix stripper ──────────────────────────
@@ -2190,6 +2208,33 @@ class AutonomousLoopEngine:
                 pattern=args.get("pattern", args.get("arg0", "")),
                 path=args.get("path", "."),
             )
+        elif tool_name in ("subagent", "sub_agent"):
+            from ..tools.sub_agent import SubAgentInput
+            return SubAgentInput(
+                action="spawn",
+                agent_type=args.get("agent_type", args.get("type", "")),
+                task=args.get("task", args.get("instruction", "")),
+                max_iterations=int(args.get("max_iterations", args.get("iterations", "50"))),
+                timeout_seconds=int(args.get("timeout_seconds", args.get("timeout", "600"))),
+            )
+        elif tool_name == "subagent_result":
+            from ..tools.sub_agent import SubAgentInput
+            return SubAgentInput(
+                action="status",
+                agent_id=args.get("agent_id", args.get("id", "")),
+            )
+        elif tool_name == "subagent_kill":
+            from ..tools.sub_agent import SubAgentInput
+            return SubAgentInput(
+                action="kill",
+                agent_id=args.get("agent_id", args.get("id", "")),
+            )
+        elif tool_name == "subagent_list":
+            from ..tools.sub_agent import SubAgentInput
+            return SubAgentInput(action="list")
+        elif tool_name == "sub_agent_types":
+            from ..tools.sub_agent import SubAgentInput
+            return SubAgentInput(action="list_types")
         else:
             raise ValueError(f"Unsupported direct tool: {tool_name}")
 
@@ -3468,6 +3513,7 @@ def _get_or_create_loop_tool_registry():
         from ..tools.grep import GrepTool
         from ..tools.todo_list import ToDoListTool
         from ..tools.memo import MemoTool
+        from ..tools.sub_agent import SubAgentTool
 
         perms = PermissionSet()
         _loop_tool_registry = ToolRegistry()
@@ -3479,6 +3525,7 @@ def _get_or_create_loop_tool_registry():
         _loop_tool_registry.register(GrepTool(perms))
         _loop_tool_registry.register(ToDoListTool(perms))
         _loop_tool_registry.register(MemoTool(perms))
+        _loop_tool_registry.register(SubAgentTool(perms))
     return _loop_tool_registry
 
 

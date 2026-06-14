@@ -186,6 +186,24 @@ PROVIDER_API_KEY_ENV_VARS = {
 # Sentinel ID for the "Custom Model" option
 CUSTOM_MODEL_ID = "__custom_model__"
 
+_PROVIDER_SDK_PACKAGES = {
+    "google": "google-genai",
+    "openai": None,        # already in core deps
+    "anthropic": "anthropic",
+    "deepseek": None,      # uses openai SDK
+    "groq": "groq",
+    "mistral": "mistralai",
+    "xai": None,           # uses openai SDK
+    "meta": None,          # uses openai SDK
+    "cohere": "cohere",
+    "openrouter": None,    # uses openai SDK
+    "together": None,      # uses openai SDK
+    "minimax": None,       # uses openai SDK
+    "zhipuai": "zhipuai",
+    "microsoft": None,     # uses openai SDK
+    "amazon": "boto3",
+}
+
 
 # ---------------------------------------------------------------------------
 # Scrolling curses list helper
@@ -1160,6 +1178,12 @@ def _configure_flow_curses(stdscr) -> Tuple[Optional[str], Optional[str], Option
         if selected is None:
             continue
 
+        # Install SDK if needed for cloud providers
+        if provider_key != "ollama" and selected:
+            sdk_pkg = _PROVIDER_SDK_PACKAGES.get(provider_key)
+            if sdk_pkg:
+                _install_sdk_package(stdscr, sdk_pkg, provider["name"])
+
         # Step 5: Select messaging app
         while True:
             messaging_app = select_messaging_app(stdscr)
@@ -1186,6 +1210,31 @@ def _configure_flow_curses(stdscr) -> Tuple[Optional[str], Optional[str], Option
 
             # Successfully got messaging config (or chose "None")
             return provider_key, selected, api_key
+
+
+def _install_sdk_package(stdscr, package, provider_name):
+    """Check if an SDK is importable, install if not. Shows curses progress."""
+    import importlib
+    try:
+        importlib.import_module(package.replace('-', '_'))
+        return True
+    except ImportError:
+        pass
+    _show_message(stdscr, "Installing %s SDK for %s...\n\nThis may take a moment..." % (package, provider_name))
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "install", package],
+            capture_output=True, text=True, timeout=300
+        )
+        if result.returncode == 0:
+            _show_message(stdscr, "Successfully installed %s SDK!\n\nPress any key to continue..." % package)
+            return True
+        else:
+            _show_message(stdscr, "Could not install %s SDK.\nYou may need to install it manually:\n  pip install %s\n\nPress any key..." % (package, package))
+            return False
+    except Exception as e:
+        _show_message(stdscr, "Error installing %s: %s\n\nPress any key..." % (package, str(e)))
+        return False
 
 
 def _show_message(stdscr, text: str):
@@ -1244,6 +1293,14 @@ def _save_to_config_yaml(provider: str, model: str, api_key: Optional[str] = Non
     # Write back to file
     with open(config_path, 'w') as f:
         _yaml.dump(config, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+
+    if api_key and provider != "ollama":
+        import sys as _sys
+        _sys.stderr.write(
+            "\n\u26a0\ufe0f  WARNING: API key saved in plaintext in config.yaml\n"
+            "\U0001f4a1 Consider using environment variables instead for better security\n"
+            "\U0001f4a1 Make sure config.yaml is in .gitignore (it should already be)\n\n"
+        )
 
 
 def sync_selection_to_config(provider: str, model: str, api_key: Optional[str] = None):
