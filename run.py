@@ -2769,6 +2769,9 @@ def main():
                     self._message_callback = None
                     self._restart_callback = None
                     self._shared_history = None
+                    # Provide terminal_history attribute for compatibility
+                    # with code that sets or reads telegram_bot.terminal_history
+                    self.terminal_history = None
                     self._user_message_callback = None
 
                 def set_message_callback(self, cb):
