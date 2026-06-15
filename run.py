@@ -2789,6 +2789,42 @@ def main():
                 def queue_message(self, chat_id, message):
                     print(f"[TELEGRAM-STUB -> {chat_id}] {message}")
 
+                def start_bot(self):
+                    """Start a simple console input loop to emulate Telegram messages.
+
+                    Blocks until `stop_bot` is called. Reads lines from stdin
+                    and forwards them to the configured user message callback.
+                    """
+                    import sys
+                    import select
+                    self._running = True
+                    print("[TELEGRAM-STUB] Console input active. Type messages to send.")
+                    try:
+                        while self._running:
+                            try:
+                                print("> ", end="", flush=True)
+                                rlist, _, _ = select.select([sys.stdin], [], [], 1.0)
+                                if rlist:
+                                    line = sys.stdin.readline()
+                                    if not line:
+                                        continue
+                                    text = line.rstrip("\n")
+                                    user_id = getattr(self, "_boot_user_id", None) or getattr(self, "_last_user_id", None) or 8616350272
+                                    if self._user_message_callback:
+                                        try:
+                                            self._user_message_callback(text, user_id)
+                                        except TypeError:
+                                            self._user_message_callback(text)
+                            except Exception:
+                                # swallow input errors but keep running
+                                continue
+                    except KeyboardInterrupt:
+                        pass
+
+                def stop_bot(self):
+                    self._running = False
+                    print("[TELEGRAM-STUB] Stopped.")
+
                 # compatibility: TelegramBotManager exposes queue_message and
                 # the run loop does not expect more from the stub.
 
