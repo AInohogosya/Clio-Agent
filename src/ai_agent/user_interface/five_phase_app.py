@@ -152,8 +152,23 @@ class AutonomousAIAgent:
 
             self._apply_runtime_options(options)
 
-            _discord_mode = discord_bot is not None
-            _telegram_mode = telegram_bot is not None or (not _discord_mode)
+            # Determine the PRIMARY messaging mode.  When both bots are
+            # configured we must not blindly prefer Discord — respect the
+            # explicit mode selection propagated via environment variables
+            # (set by run.py), falling back to bot availability otherwise.
+            import os
+            _env_telegram = os.environ.get("VEXIS_TELEGRAM_MODE", "").lower() == "true"
+            _env_discord = os.environ.get("VEXIS_DISCORD_MODE", "").lower() == "true"
+            if _env_discord and discord_bot is not None:
+                _discord_mode = True
+                _telegram_mode = False
+            elif _env_telegram and telegram_bot is not None:
+                _discord_mode = False
+                _telegram_mode = True
+            else:
+                # No explicit selection — derive from which bot is available.
+                _discord_mode = discord_bot is not None and telegram_bot is None
+                _telegram_mode = not _discord_mode
             execute_kwargs = {
                 "conversation_history": conversation_history,
                 "telegram_mode": _telegram_mode,

@@ -572,22 +572,37 @@ class DiscordBotManager:
                 self.message_queue.append(queued_message)
 
     def _start_queue_processor(self):
-        """Start a background thread for queue processing."""
+        """Start a background thread for queue processing.
+
+        Discord.py channel/HTTP objects are bound to the bot client's own
+        event loop. Sends MUST therefore be marshalled onto that loop using
+        run_coroutine_threadsafe — running them on a private event loop in
+        this thread raises "attached to a different loop" errors and the
+        message is never delivered.
+        """
         def queue_processor():
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
             self.queue_processor_running = True
             while self.queue_processor_running:
-                if self.client:
+                client = self.client
+                client_loop = getattr(client, "loop", None) if client else None
+                if client and client_loop and client_loop.is_running():
                     try:
                         messages_to_send = self._pop_sendable_messages()
                         for queued_message in messages_to_send:
-                            loop.run_until_complete(self._send_queued_message(queued_message))
+                            future = asyncio.run_coroutine_threadsafe(
+                                self._send_queued_message(queued_message),
+                                client_loop,
+                            )
+                            try:
+                                future.result(timeout=15)
+                            except Exception as send_err:
+                                self.logger.warning(
+                                    f"Queued Discord send failed (will retry): {send_err}"
+                                )
                     except Exception as e:
                         self.logger.error(f"Error in queue processor: {e}")
                         time.sleep(2)
                 time.sleep(0.1)
-            loop.close()
             self.logger.info("Queue processor stopped")
 
         self.queue_processor_thread = threading.Thread(target=queue_processor, daemon=True)

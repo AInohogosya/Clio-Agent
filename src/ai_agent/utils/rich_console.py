@@ -173,6 +173,7 @@ class ShimmerLoader:
         # Build a shimmer bar using block characters
         bar_width = 32
         blocks = []
+        colors = Theme.SHIMMER_COLORS
         for i in range(bar_width):
             c_idx = (int(elapsed * 8) + i) % len(colors)
             bc = colors[c_idx]

@@ -15,6 +15,7 @@ This is the complete bootstrap entry point that handles:
 
 import sys
 import os
+import signal
 import subprocess
 
 # Fix encoding issues on macOS / environments with surrogateescape
@@ -2759,7 +2760,37 @@ def main():
             if discord_bot:
                 print("\u2713 Discord bot initialized (secondary)")
 
-        active_bot = discord_bot or telegram_bot
+        # Select the PRIMARY bot based on the user-selected mode so that the
+        # engine's mode flags, the printed label, and the polling bot all
+        # agree. Falling back to whichever bot is available keeps the agent
+        # reachable even if only the secondary integration is configured.
+        if selected_mode == "discord":
+            active_bot = discord_bot or telegram_bot
+        else:
+            active_bot = telegram_bot or discord_bot
+
+        # Keep the engine's mode flags consistent with the actual primary bot.
+        if active_bot is telegram_bot and active_bot is not None:
+            selected_mode = "telegram"
+        elif active_bot is discord_bot and active_bot is not None:
+            selected_mode = "discord"
+
+        # Restore the chat/user id from the previous session (sleep/exit state)
+        # so that, after an automatic restart, the agent still knows which
+        # conversation to reply to. Without this, the first wake-up message and
+        # any subsequent progress updates would be dropped until the user sends
+        # a fresh message — breaking 24/7 reply continuity.
+        try:
+            _restored_uid = None
+            if _restore_state:
+                _restored_uid = _restore_state.get("restart_telegram_user_id")
+            if _restored_uid is not None:
+                _restored_uid = int(_restored_uid)
+                if active_bot is not None:
+                    active_bot._boot_user_id = _restored_uid
+                    active_bot._last_user_id = _restored_uid
+        except (ValueError, TypeError, AttributeError):
+            pass
 
         agent = AutonomousAIAgent(
             provider=selected_provider, model=selected_model,

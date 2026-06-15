@@ -113,7 +113,12 @@ def retry_on_network_error(max_retries: int = 3, initial_delay: float = 1.0,
                         raise
                     delay = initial_delay * (backoff_factor ** attempt)
                     delay *= 0.75 + 0.5 * random.random()  # jitter
-                    time.sleep(delay)
+                    # MUST be async sleep: this wrapper only ever wraps
+                    # coroutine functions (see iscoroutinefunction guard
+                    # below), and they run on the bot's event loop. A
+                    # blocking time.sleep() here would freeze the entire
+                    # loop, stalling both sending AND receiving.
+                    await asyncio.sleep(delay)
 
         if inspect.iscoroutinefunction(func):
             return wrapper
@@ -506,7 +511,7 @@ class TelegramBotManager:
     ) -> str:
         if not self.message_callback:
             return "Message callback not set. Bot not properly configured."
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         sig = inspect.signature(self.message_callback)
         if len(sig.parameters) >= 3:
             return await loop.run_in_executor(
