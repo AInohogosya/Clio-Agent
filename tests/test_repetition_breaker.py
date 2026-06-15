@@ -5,8 +5,8 @@ Tests the following new features:
 1. _normalize_action_signature — creates normalized signatures from command tuples
 2. _record_iteration_actions — tracks consecutive identical iterations
 3. _check_repetition_breaker — detects loops and returns intervention messages
-4. _detect_empty_iteration — now includes semantic deduplication
-5. _exit_idle_state — does NOT clear persistent loop memory
+4. _detect_empty_iteration — now drives Curiosity Fairy nudges instead of idle
+5. _reset_drift_counters — does NOT clear persistent loop memory
 6. _handle_sleep — DOES clear persistent loop memory
 """
 
@@ -18,7 +18,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from src.ai_agent.core_processing.autonomous_loop_engine import (
-    AutonomousLoopEngine, AutonomousContext, LoopPhase, IdleState,
+    AutonomousLoopEngine, AutonomousContext, LoopPhase,
 )
 
 
@@ -250,13 +250,13 @@ class TestCheckRepetitionBreaker(unittest.TestCase):
         self.assertNotIn("CURIOSITY FAIRY", result)
 
 
-class TestExitIdleState(unittest.TestCase):
-    """Test that _exit_idle_state does NOT clear persistent loop memory."""
+class TestResetDriftCounters(unittest.TestCase):
+    """Test that _reset_drift_counters does NOT clear persistent loop memory."""
 
     def setUp(self):
         self.engine = AutonomousLoopEngine.__new__(AutonomousLoopEngine)
-        self.engine._idle_state = IdleState.IDLE
         self.engine._empty_iterations = 5
+        self.engine._empty_drift_active = True
         self.engine._previous_output_digest = "abc"
         self.engine._loop_warning_active = True
         self.engine._recent_commands = ["cmd1:sig1", "cmd2:sig2"]
@@ -277,32 +277,32 @@ class TestExitIdleState(unittest.TestCase):
             cancel_event=threading.Event(),
         )
 
-    def test_idle_state_reset_to_active(self):
-        self.engine._exit_idle_state(self.ctx)
-        self.assertEqual(self.engine._idle_state, IdleState.ACTIVE)
-
     def test_empty_iterations_reset(self):
-        self.engine._exit_idle_state(self.ctx)
+        self.engine._reset_drift_counters(self.ctx)
         self.assertEqual(self.engine._empty_iterations, 0)
 
+    def test_empty_drift_active_reset(self):
+        self.engine._reset_drift_counters(self.ctx)
+        self.assertFalse(self.engine._empty_drift_active)
+
     def test_recent_commands_cleared(self):
-        self.engine._exit_idle_state(self.ctx)
+        self.engine._reset_drift_counters(self.ctx)
         self.assertEqual(len(self.engine._recent_commands), 0)
 
     def test_persistent_loop_patterns_NOT_cleared(self):
-        self.engine._exit_idle_state(self.ctx)
+        self.engine._reset_drift_counters(self.ctx)
         self.assertEqual(self.engine._persistent_loop_patterns, {"sig_a": 4, "sig_b": 2})
 
     def test_consecutive_same_action_NOT_reset(self):
-        self.engine._exit_idle_state(self.ctx)
+        self.engine._reset_drift_counters(self.ctx)
         self.assertEqual(self.engine._consecutive_same_action, 2)
 
     def test_action_history_NOT_cleared(self):
-        self.engine._exit_idle_state(self.ctx)
+        self.engine._reset_drift_counters(self.ctx)
         self.assertEqual(len(self.engine._action_history), 3)
 
     def test_last_action_signature_NOT_cleared(self):
-        self.engine._exit_idle_state(self.ctx)
+        self.engine._reset_drift_counters(self.ctx)
         self.assertEqual(self.engine._last_action_signature, "sig_a")
 
 

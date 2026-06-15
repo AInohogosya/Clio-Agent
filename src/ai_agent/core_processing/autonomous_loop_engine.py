@@ -98,8 +98,9 @@ CONVERSATION CONTEXT:
      least one command() or tool call.
 
   7. If no real work needs to be done and no user message is
-     pending, execute `sleep` rather than spinning in an idle
-     loop.
+     pending, act as a CURIOUS AI AGENT. Explore, inspect, create,
+     or improve something useful. Never remain idle and never wait
+     for user input to continue working.
 
   LOOP DETECTION:
   Before writing a command, scan the last 20 lines of the
@@ -321,18 +322,6 @@ class LoopPhase(Enum):
     FAILED = "failed"
 
 
-class IdleState(Enum):
-    """Idle state machine for detecting and handling repetitive behavior.
-
-    ACTIVE  — Normal operation: the agent thinks and executes freely.
-    IDLE  — Content-free / repetitive iterations detected. The agent
-              enters a lightweight wait loop instead of calling the model.
-              Exits immediately when new user input arrives.
-    """
-    ACTIVE = "active"
-    IDLE = "idle"
-
-
 @dataclass
 class AutonomousContext:
     """Context for tracking autonomous loop execution"""
@@ -387,10 +376,6 @@ class AutonomousLoopEngine:
     # is emitted (separate from the context log).  Reset by sleep.
     NOTIFICATION_THRESHOLD = 100
 
-    # When the iteration count exceeds this threshold, a forced sleep is
-    # triggered automatically (one per wake-cycle, reset by sleep).
-    FORCED_SLEEP_THRESHOLD = 250
-
     def __init__(self, provider: str = None, model: str = None,
                  config: Optional[Dict[str, Any]] = None,
                  telegram_bot: Optional[TelegramBotManager] = None,
@@ -429,9 +414,6 @@ class AutonomousLoopEngine:
         # Guard so that the "you should rest" notification fires only once
         # per wake-cycle (i.e. it is cleared when sleep is executed).
         self._sleep_notification_shown: bool = False
-
-        # Guard so the forced-iteration sleep fires only once per wake-cycle.
-        self._forced_sleep_done: bool = False
 
         # Store runtime state for context persistence
         self._last_failed_instruction: Optional[str] = None
@@ -506,17 +488,20 @@ class AutonomousLoopEngine:
         self._auto_save_thread = None
         self._auto_save_running = False
 
-        # ── Idle state machine ─────────────────────────────────────
-        # Detects repetitive/content-free iterations and transitions
-        # into a clean idle loop instead of forcing model calls.
-        self._idle_state: IdleState = IdleState.ACTIVE
+        # ── Proactive work / anti-drift tracking ───────────────────
         # Consecutive iterations with no command()/tool_call()/telegram()
         # or with identical model output (exact repetition).
         self._empty_iterations: int = 0
-        # Max empty iterations before entering idle (prevents infinite loops)
+        # Max empty iterations before the Curiosity Fairy injects a new
+        # concrete direction.  Previously this entered an idle state; now
+        # it forces the model to do something NEW instead of waiting.
         self._max_empty_iterations: int = 5
         # MD5 digest of the last model output for repetition detection
         self._previous_output_digest: str = ""
+        # Monotonic flag: once empty-iteration threshold is crossed in a
+        # given wake-cycle, we keep injecting the Curiosity Fairy until
+        # the model produces real work.
+        self._empty_drift_active: bool = False
 
         # ── Repetition breaker (code-level loop prevention) ────────
         # Tracks action signatures across iterations. When the same
@@ -532,8 +517,8 @@ class AutonomousLoopEngine:
         #    sliding window.
         # 3. Actually intervenes (forces sleep or injects a break)
         #    rather than only injecting a prompt warning.
-        # 4. Survives user wake-up — persistent memory is NOT cleared
-        #    by _exit_idle_state, preventing relapse into the same loop.
+        # 4. Survives transient resets — persistent memory is NOT cleared
+        #    by _reset_drift_counters, preventing relapse into the same loop.
         self._action_history: List[str] = []  # signatures from recent iterations
         self._max_action_history: int = 50  # how many iterations to keep
         self._consecutive_same_action: int = 0  # how many times current sig repeated
@@ -564,10 +549,10 @@ class AutonomousLoopEngine:
         # current loop (prevents re-invocation until the output changes).
         self._curiosity_fairy_invoked: bool = False
 
-        # ── Idle behavior ────────────────────────────────────────────
-        # What to do when the idle loop has been running for 5+ minutes:
-        #   "sleep"  — execute sleep/restart (default, resource-friendly)
-        #   "fairy"  — invoke the Curiosity Fairy for a creative nudge
+        # ── Anti-drift fallback (kept for compatibility; no idle loop exists) ─
+        # There is no idle loop. If the agent is ever truly stuck and cannot
+        # find work, the Curiosity Fairy is invoked automatically. This knob is
+        # retained only for configuration compatibility.
         self._idle_behavior: str = self.config.get("idle_behavior", "fairy")
 
         self.logger.info("Autonomous Loop Engine initialized with enhanced resilience")
@@ -1013,14 +998,6 @@ class AutonomousLoopEngine:
             while True:
                 self._raise_if_cancelled(ctx)
 
-                # --- Idle state check: skip model call, enter wait loop ---
-                if self._idle_state == IdleState.IDLE:
-                    self._enter_idle_loop(ctx)
-                    # _enter_idle_loop returns only when woken by new input
-                    # or after full sleep.  In either case, restart the
-                    # iteration fresh.
-                    continue
-
                 ctx.iteration_count += 1
 
                 # --- Write heartbeat for supervisor monitoring ---
@@ -1043,31 +1020,6 @@ class AutonomousLoopEngine:
                             self.logger.info("Forced wake-up telegram sent after sleep restart")
                     except Exception as _e:
                         self.logger.warning(f"Failed to send wake-up message: {_e}")
-
-                # --- Forced sleep when iteration threshold is exceeded ---
-                if (
-                    not self._forced_sleep_done
-                    and ctx.iteration_count > self.FORCED_SLEEP_THRESHOLD
-                ):
-                    self._forced_sleep_done = True
-                    self.logger.warning(
-                        f'Iteration count {ctx.iteration_count} exceeded '
-                        f'threshold {self.FORCED_SLEEP_THRESHOLD} — forcing sleep'
-                    )
-                    self._term_log.separator()
-                    self._term_log.error(
-                        f'🛏 Iteration {ctx.iteration_count} > '
-                        f'{self.FORCED_SLEEP_THRESHOLD} — forcing sleep to recover...'
-                    )
-                    self._notify_telegram_error(
-                        ctx,
-                        f'🛏 Auto-sleep: reached iteration '
-                        f'{ctx.iteration_count} (threshold: '
-                        f'{self.FORCED_SLEEP_THRESHOLD}). '
-                        'Compressing context and restarting...',
-                    )
-                    self._handle_sleep(ctx)
-                    # _handle_sleep does os.execv; we never reach here.
 
                 # --- Periodic auto-save (every 10 iterations as safety net) ---
                 if ctx.iteration_count % 10 == 0:
@@ -1172,8 +1124,12 @@ class AutonomousLoopEngine:
                         self._handle_sleep(ctx)
                         # _handle_sleep does os.execv — never reached
 
-                # --- Detect empty/repetitive iterations (idle state) ---
-                self._detect_empty_iteration(ctx, think_output, commands)
+                # --- Detect empty/repetitive iterations (anti-drift) ---
+                nudge = self._detect_empty_iteration(ctx, think_output, commands)
+                if nudge:
+                    # Move on so next thinking phase sees the Curiosity Fairy.
+                    # Keep the loop tight; the model will act on the nudge.
+                    continue
 
                 # Check for sleep / exit first (they control the loop)
                 if any(cmd[0] == "exit" for cmd in commands):
@@ -1201,11 +1157,10 @@ class AutonomousLoopEngine:
 
                 self._raise_if_cancelled(ctx)
 
-                # Sleep briefly so an idle agent without real work doesn't
-                # spin at 100% CPU.  We use the new-message event so that
-                # an incoming Telegram message wakes the loop immediately
-                # instead of waiting for the full sleep duration.
-                self._new_message_event.wait(timeout=0.5)
+                # Non-blocking check for new Telegram messages.  The agent
+                # must never wait idly: a tiny timeout lets other threads
+                # deliver messages without causing any perceptible dormancy.
+                self._new_message_event.wait(timeout=0.05)
                 self._new_message_event.clear()
 
                 # --- Periodic resource health check (every 100 iterations) ---
@@ -1601,17 +1556,19 @@ class AutonomousLoopEngine:
             return None
 
     # ------------------------------------------------------------------ #
-    #  Idle State Machine — stop infinite loops when no real work       #
+    #  Proactive Anti-Drift — never idle, always do something new       #
     # ------------------------------------------------------------------ #
 
     def _detect_empty_iteration(self, ctx: AutonomousContext,
                                  model_output: str,
-                                 commands: List[Tuple[str, str]]) -> None:
+                                 commands: List[Tuple[str, str]]) -> Optional[str]:
         """
-        Detect iterations where no meaningful work was done and increment
-        the empty-iteration counter.  Transitions to IDLE state when the
-        threshold is exceeded, preventing repeated model calls that produce
-        the same useless output.
+        Detect iterations where no meaningful work was done.
+
+        Instead of pausing model calls or entering an idle wait, the engine
+        injects a Curiosity Fairy nudge to push the agent toward NEW concrete
+        work.  The agent is never described as idle and never waits for user
+        input to continue.
 
         An iteration is "empty" when ANY of the following is true:
           - No command() / tool_call() / telegram() / discord() was emitted
@@ -1621,6 +1578,9 @@ class AutonomousLoopEngine:
             one (same tool + same primary arg, even if thinking() text differs).
             This catches the common case where the agent reads the same file
             over and over with slightly different thinking() content.
+
+        Returns a Curiosity Fairy suggestion string when the threshold is
+        exceeded, or None otherwise.
         """
         # Check for meaningful commands
         has_real_work = any(
@@ -1652,127 +1612,67 @@ class AutonomousLoopEngine:
             )
         else:
             self._empty_iterations = 0
+            self._empty_drift_active = False
+            self._curiosity_fairy_invoked = False
 
-        # Transition to IDLE state when threshold is exceeded
+        # If the threshold is crossed, wake the agent up with a Curiosity
+        # Fairy suggestion instead of entering idle dormancy.
         if self._empty_iterations >= self._max_empty_iterations:
-            if self._idle_state == IdleState.ACTIVE:
-                self._idle_state = IdleState.IDLE
+            if not self._empty_drift_active:
+                self._empty_drift_active = True
                 self._auto_save_context(ctx)
-                warning = (
-                    f"[SYSTEM] Idle state activated — {self._empty_iterations} "
-                    "consecutive iterations with no meaningful work. "
-                    "Pausing model calls. Awaiting new user input to wake up."
+                self.logger.warning(
+                    f"Drift detected — {self._empty_iterations} consecutive "
+                    "empty/repetitive iterations; invoking Curiosity Fairy"
                 )
-                self._append_log(ctx, warning)
-                self._term_log.separator()
-                self._term_log.thinking(
-                    f"🛑 Idle for {self._empty_iterations} consecutive iterations — "
-                    "entering idle. No model calls until new input arrives."
+
+            self._term_log.separator()
+            self._term_log.thinking(
+                f"🧚 Drift detected ({self._empty_iterations} consecutive empty/"
+                "repetitive iterations) — asking the Curiosity Fairy for a "
+                "new direction."
+            )
+
+            # Reset so the fairy can be invoked again if needed
+            previously_invoked = self._curiosity_fairy_invoked
+            self._curiosity_fairy_invoked = False
+            suggestion = self._invoke_curiosity_fairy(ctx)
+            self._curiosity_fairy_invoked = previously_invoked
+
+            if suggestion:
+                fairy_msg = (
+                    f"[SYSTEM] 🧚 CURIOSITY FAIRY NUDGE — you have produced "
+                    f"{self._empty_iterations} consecutive empty or repetitive "
+                    "iterations. The Curiosity Fairy says:\n"
+                    f"```\n{suggestion}\n```\n"
+                    "You MUST execute this suggestion (or another completely "
+                    "NEW action) right now. The agent never idles — continue "
+                    "working."
                 )
-                if ctx.telegram_mode:
-                    self._exec_telegram(
-                        ctx,
-                        "🛑 Entering idle — no new input or meaningful work. "
-                        "Send me a message to wake me up.",
-                    )
-
-    def _enter_idle_loop(self, ctx: AutonomousContext) -> None:
-        """
-        Lightweight idle loop that polls _new_message_event instead of
-        calling the LLM.  This prevents repeated model calls when the
-        agent has no real work and would otherwise loop forever.
-
-        Transition back to ACTIVE on any of:
-          - A new user message arrives (_new_message_event set)
-          - Cancel event is set
-          - Periodic auto-save triggers (every ~30 s)
-          - After 5+ minutes idle, the configured idle behavior is triggered:
-              "sleep" → full sleep/restart (default)
-              "fairy" → invoke the Curiosity Fairy for a creative nudge
-
-        This loop runs inside the main ``while True`` in
-        execute_instruction().  When it returns, the outer loop
-        ``continue`` starts a fresh iteration in ACTIVE state.
-        """
-        idle_iters = 0
-
-        while self._idle_state == IdleState.IDLE:
-            self._raise_if_cancelled(ctx)
-
-            # Wait for new-message event with a longer poll interval (5 s)
-            woke = self._new_message_event.wait(timeout=5.0)
-
-            if woke:
-                self._new_message_event.clear()
-                self._exit_idle_state(ctx)
-                self._term_log.thinking(
-                    "✅ New input received — exiting idle state."
+            else:
+                fairy_msg = (
+                    "[SYSTEM] 🧚 No real work detected for several consecutive "
+                    "iterations. Act as a CURIOUS AI AGENT: explore the "
+                    "filesystem, read an interesting file, check git status, "
+                    "find a TODO, or inspect system health. Do something NEW "
+                    "and useful right now — never remain idle."
                 )
-                return
 
-            idle_iters += 1
+            self._append_log(ctx, fairy_msg)
+            return fairy_msg
 
-            # Periodic auto-save every ~30 s
-            if idle_iters % 6 == 0:
-                self._auto_save_context(ctx)
+        return None
 
-            # After 5+ minutes idle, trigger the configured idle behavior
-            if idle_iters >= 60:  # 60 × 5 s ≈ 5 minutes
-                if self._idle_behavior == "fairy":
-                    self._term_log.thinking(
-                        "🧚 Idle for 5+ minutes — invoking the Curiosity Fairy."
-                    )
-                    self._curiosity_fairy_invoked = False  # reset so fairy can fire
-                    suggestion = self._invoke_curiosity_fairy(ctx)
-                    if suggestion:
-                        fairy_msg = (
-                            f"[Message from the Curiosity Fairy] "
-                            f"```\n{suggestion}\n```"
-                        )
-                        self._append_log(ctx, fairy_msg)
-                    # Return to ACTIVE state so the fairy's suggestion is processed
-                    self._exit_idle_state(ctx)
-                    return
-                else:
-                    self._term_log.thinking(
-                        "⏰ Idle for 5+ minutes — executing sleep to free resources."
-                    )
-                    self._handle_sleep(ctx)
-                    return  # Only reached if _handle_sleep fails
-
-        # Idle state was reset externally — just return
-        self._exit_idle_state(ctx)
-
-    def _exit_idle_state(self, ctx: AutonomousContext) -> None:
-        """Reset idle-related counters and return to ACTIVE operation.
-
-        IMPORTANT: This does NOT clear the repetition-breaker state
-        (_action_history, _persistent_loop_patterns, _consecutive_same_action,
-        _last_action_signature).  These persist across user wake-ups so
-        that the agent cannot relapse into the same loop pattern after
-        intervention.  They are only cleared by sleep/restart.
-        """
-        self._idle_state = IdleState.ACTIVE
+    def _reset_drift_counters(self, ctx: AutonomousContext) -> None:
+        """Reset anti-drift counters when the agent produces real work."""
         self._empty_iterations = 0
+        self._empty_drift_active = False
         self._previous_output_digest = ""
         self._loop_warning_active = False
         self._recent_commands.clear()
-        # Reset Curiosity Fairy tracking on wake-up so it can fire again
-        # if the agent re-enters a loop after idle.
         self._consecutive_identical_outputs = 0
         self._last_output_hash = ""
         self._curiosity_fairy_invoked = False
-        # NOTE: _action_history, _persistent_loop_patterns,
-        # _consecutive_same_action, _last_action_signature are
-        # intentionally NOT cleared here.  They carry loop-detection
-        # memory across user wake-ups, preventing relapse.
-        self._term_log.thinking(
-            "✅ Idle state cleared — resuming active operation."
-        )
-        self._append_log(
-            ctx,
-            "[SYSTEM] Idle state cleared — resuming active operation.",
-        )
 
     def _run_thinking(self, ctx: AutonomousContext) -> str:
         """Send current context to the model and get its decision."""
@@ -2223,44 +2123,109 @@ class AutonomousLoopEngine:
     @staticmethod
     def _parse_tool_args(args_str: str) -> Dict[str, str]:
         """
-        Parse a simple key=value argument string into a dict.
+        Parse a `key=value, ...` argument string into a dict.
 
-        Handles:
-          - Unquoted values:          key=value
-          - Single-quoted values:    key='value'
-          - Double-quoted values:    key="value"
-          - Values with no = sign:   treated as positional 'arg'
+        Robustly handles:
+          - Unquoted values:        key=value
+          - Single-quoted values:   key='value'
+          - Double-quoted values:   key="value"
+          - Escaped quotes:         key="line1\\nline2"
+          - Values containing '=':  key=foo=bar
+          - Positional values:      bare_value  → arg0, arg1, ...
 
-        This is intentionally simple — it does NOT handle nested
-        structures.  For complex values, the model should use
-        command() instead.
+        For nested or unmatched quotes, falls back to raw tokenization so
+        the tool can still attempt execution.
         """
-        import re as _re
         result: Dict[str, str] = {}
-
-        if not args_str.strip():
+        if not args_str or not args_str.strip():
             return result
 
-        # Pattern: key=value with optional quotes, or bare positional
-        token_re = _re.compile(
-            r"""(?P<key>[a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*"""
-            r"""(?P<val>'(?:[^'\\]|\\.)*'|(?:[^'"\s,][^,\s]*)|"(?:[^"\\]|\\.)*")"""
-            r"""|(?P<pos>[^,=\s]+)"""
-        )
-
+        text = args_str.replace("\\n", "\n").replace("\\t", "\t")
+        length = len(text)
+        i = 0
         positional_idx = 0
-        for m in token_re.finditer(args_str):
-            if m.group("key"):
-                key = m.group("key")
-                val = m.group("val")
-                # Strip quotes
-                if (val.startswith('"') and val.endswith('"')) or \
-                   (val.startswith("'") and val.endswith("'")):
-                    val = val[1:-1]
-                result[key] = val
-            elif m.group("pos"):
-                result[f"arg{positional_idx}"] = m.group("pos")
-                positional_idx += 1
+
+        def _read_identifier() -> Optional[str]:
+            nonlocal i
+            start = i
+            while i < length and (text[i].isalnum() or text[i] == "_"):
+                i += 1
+            if start == i:
+                return None
+            return text[start:i]
+
+        def _parse_value() -> Optional[str]:
+            nonlocal i
+            # Skip leading whitespace
+            while i < length and text[i].isspace():
+                i += 1
+            if i >= length:
+                return None
+
+            quote = text[i]
+            if quote in ('"', "'"):
+                i += 1
+                raw: List[str] = []
+                while i < length:
+                    ch = text[i]
+                    if ch == "\\" and i + 1 < length:
+                        raw.append(text[i + 1])
+                        i += 2
+                        continue
+                    if ch == quote:
+                        i += 1
+                        return "".join(raw)
+                    raw.append(ch)
+                    i += 1
+                # Unterminated quote — return what we have
+                return "".join(raw)
+
+            # Unquoted value: read until next top-level comma
+            raw = []
+            while i < length and text[i] != ",":
+                raw.append(text[i])
+                i += 1
+            return "".join(raw).strip()
+
+        while i < length:
+            while i < length and text[i].isspace():
+                i += 1
+            if i >= length:
+                break
+
+            ident = _read_identifier()
+            if ident is None:
+                # Could be a positional argument or stray punctuation
+                value = _parse_value()
+                if value is not None:
+                    result[f"arg{positional_idx}"] = value
+                    positional_idx += 1
+                if i < length and text[i] == ",":
+                    i += 1
+                continue
+
+            # Check for key=value
+            key = ident
+            saved_i = i
+            while i < length and text[i].isspace():
+                i += 1
+            if i < length and text[i] == "=":
+                i += 1  # consume '='
+                value = _parse_value()
+                if value is None:
+                    value = ""
+                result[key] = value
+            else:
+                # No '=' after key — treat the identifier + remainder as a positional value
+                i = saved_i
+                value = _parse_value() or ""
+                value = (ident + value).strip()
+                if value:
+                    result[f"arg{positional_idx}"] = value
+                    positional_idx += 1
+
+            if i < length and text[i] == ",":
+                i += 1
 
         return result
 
@@ -2544,12 +2509,16 @@ class AutonomousLoopEngine:
                 ctx.telegram_user_id = user_id
             if user_id is not None:
                 self._telegram_boot_user_id = user_id
-            # Also update the telegram bot's boot user id
-            if user_id is not None and self.telegram_bot and not getattr(self.telegram_bot, "_boot_user_id", None):
-                self.telegram_bot._boot_user_id = user_id
-            # Also update the discord bot's boot user id
-            if user_id is not None and self.discord_bot and not getattr(self.discord_bot, "_boot_user_id", None):
-                self.discord_bot._boot_user_id = user_id
+            # Also update the telegram bot's user tracking
+            if user_id is not None and self.telegram_bot:
+                self.telegram_bot._last_user_id = user_id
+                if not getattr(self.telegram_bot, "_boot_user_id", None):
+                    self.telegram_bot._boot_user_id = user_id
+            # Also update the discord bot's user tracking
+            if user_id is not None and self.discord_bot:
+                self.discord_bot._last_user_id = user_id
+                if not getattr(self.discord_bot, "_boot_user_id", None):
+                    self.discord_bot._boot_user_id = user_id
             self._append_log(ctx, entry)
             if ctx.discord_mode:
                 _cmd_hint = "discord()"
@@ -2567,12 +2536,12 @@ class AutonomousLoopEngine:
             # the THINKING phase on the next iteration.
             self._new_message_event.set()
 
-            # Wake from idle if agent is currently in idle wait loop
-            if self._idle_state == IdleState.IDLE:
-                self._exit_idle_state(ctx)
-                self._term_log.thinking(
-                    "✅ User message received — waking from idle."
-                )
+            # A user message is fresh input; clear anti-drift counters so
+            # the agent is not immediately re-nudged while responding.
+            self._reset_drift_counters(ctx)
+            self._term_log.thinking(
+                "✅ User message received — continuing active operation."
+            )
         else:
             timestamp = time.strftime("%H:%M:%S", time.localtime())
             try:
@@ -2612,37 +2581,29 @@ class AutonomousLoopEngine:
     def _exec_telegram(self, ctx: AutonomousContext, content: str) -> None:
         """Send a message via Telegram (only in Telegram mode)."""
         if not ctx.telegram_mode:
-            # Should never happen because the system prompt hides this command,
-            # but guard against it anyway.
             self.logger.warning(
                 "telegram() command invoked but not in Telegram mode – ignoring"
             )
             return
-        # Determine the user to reply to: prefer the stored telegram_user_id,
-        # fall back to the bot's boot user id set on first inbound message.
+
+        # Determine the user to reply to.
         target_user = ctx.telegram_user_id
+        if target_user is None and self.telegram_bot:
+            try:
+                target_user = self.telegram_bot._resolve_chat_id(target_user)
+            except Exception:
+                target_user = ctx.telegram_user_id
         if target_user is None:
             target_user = getattr(self, "_telegram_boot_user_id", None)
         if target_user is None and self.telegram_bot:
             target_user = getattr(self.telegram_bot, "_boot_user_id", None)
+
         if self.telegram_bot and target_user:
             try:
                 self.telegram_bot.queue_message(target_user, content)
-                # Flush the queue immediately — the queue otherwise only
-                # drains on the *next* inbound Telegram message, so any
-                # telegram() call issued between user messages would sit
-                # in the queue forever until the next handle_message().
-                import asyncio as _asyncio
-                try:
-                    loop = _asyncio.get_running_loop()
-                    _asyncio.ensure_future(
-                        self.telegram_bot.process_message_queue()
-                    )
-                except RuntimeError:
-                    # No running loop in this thread — the
-                    # _queue_flush_callback (job_queue) will drain on
-                    # the next tick.  Message is not lost.
-                    pass
+                # Trigger an immediate flush if the bot loop is running.
+                if hasattr(self.telegram_bot, "_trigger_queue_flush"):
+                    self.telegram_bot._trigger_queue_flush()
                 self._term_log.telegram(content)
                 log_entry = "[telegram sent] " + content[:200]
                 self._append_log(ctx, log_entry)
@@ -2934,9 +2895,8 @@ class AutonomousLoopEngine:
         # Reset the one-time notification flag so it can fire again after
         # the next wake-up cycle.
         self._sleep_notification_shown = False
-        self._forced_sleep_done = False
 
-        # Clear all repetition-breaker and Curiosity Fairy state —
+        # Clear all repetition-breaker, anti-drift, and Curiosity Fairy state —
         # sleep/restart is the intended reset mechanism for loop detection.
         self._action_history.clear()
         self._consecutive_same_action = 0
@@ -2946,6 +2906,9 @@ class AutonomousLoopEngine:
         self._consecutive_identical_outputs = 0
         self._last_output_hash = ""
         self._curiosity_fairy_invoked = False
+        self._empty_iterations = 0
+        self._empty_drift_active = False
+        self._previous_output_digest = ""
 
         try:
             # 1. Collect auxiliary context
@@ -3630,23 +3593,33 @@ class AutonomousLoopEngine:
 
     def _notify_telegram_error(self, ctx: AutonomousContext, error: str, is_recovery: bool = False) -> None:
         """Send an error/recovery notification to the user via the active bot."""
-        # Update resilience engine's Telegram reference
-        if ctx.telegram_user_id:
-            self._resilience.set_telegram_user_id(ctx.telegram_user_id)
-
         icon = "✅" if is_recovery else "❌"
         notification = f"{icon} {error}"
 
-        # Route to the correct bot based on active mode
         active_bot = self.discord_bot if ctx.discord_mode else self.telegram_bot
-        if active_bot and ctx.telegram_user_id:
+        if active_bot:
+            # Prefer the bot's own chat resolution if available (handles explicit,
+            # last-inbound, and boot user ids safely).
             try:
-                active_bot.queue_message(ctx.telegram_user_id, notification)
-                return
+                target_user = getattr(active_bot, "_resolve_chat_id", lambda x=None: x)(ctx.telegram_user_id)
             except Exception:
-                pass
+                target_user = ctx.telegram_user_id
+            if target_user is None:
+                target_user = getattr(self, "_telegram_boot_user_id", None)
+            if target_user is None:
+                target_user = getattr(active_bot, "_boot_user_id", None)
+            if target_user is not None:
+                try:
+                    active_bot.queue_message(target_user, notification)
+                    if hasattr(active_bot, "_trigger_queue_flush"):
+                        active_bot._trigger_queue_flush()
+                    return
+                except Exception:
+                    pass
 
         # Fallback to resilience engine
+        if ctx.telegram_user_id:
+            self._resilience.set_telegram_user_id(ctx.telegram_user_id)
         self._resilience.notify_telegram(notification, is_error=not is_recovery)
 
     @staticmethod
