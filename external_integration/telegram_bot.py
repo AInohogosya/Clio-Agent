@@ -822,15 +822,18 @@ def create_telegram_bot(
         if config_path and Path(config_path).exists():
             with open(config_path, "r", encoding="utf-8") as f:
                 config_dict = yaml.safe_load(f) or {}
+        else:
+            print(f"create_telegram_bot: config_path={config_path}, exists={config_path and Path(config_path).exists()}")
 
         telegram_config = config_dict.get("telegram", {}) or {}
 
         if not telegram_config.get("enabled", False):
+            print(f"create_telegram_bot: telegram not enabled. config_dict keys={list(config_dict.keys())}")
             return None
 
         bot_token = (
             os.environ.get("TELEGRAM_BOT_TOKEN", "")
-            or telegram_config.get("bot_token", "")
+            or str(telegram_config.get("bot_token", "")).strip()
             or ""
         )
         if not bot_token:
