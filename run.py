@@ -1660,7 +1660,7 @@ def _reset_config_yaml():
         "execution": {
             "safety_mode": True, "dry_run": False, "verify_commands": True,
             "command_timeout": 1800, "task_timeout": 7200, "max_iterations": 500,
-            "auto_recovery": True, "show_thought_log": True,
+            "auto_recovery": True, "show_thought_log": True, "idle_behavior": "fairy",
         },
         "logging": {"level": "INFO", "file": "vexis.log", "json_format": False, "console": True},
         "cache": {"enabled": True, "max_size": 1000, "ttl": 3600, "persist_to_disk": True},

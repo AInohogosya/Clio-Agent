@@ -1092,7 +1092,12 @@ def get_telegram_config(stdscr=None) -> Optional[Dict[str, str]]:
 
 
 def _save_messaging_config_to_yaml(app_key: str, app_config: Optional[Dict[str, str]] = None):
-    """Save messaging app configuration to config.yaml."""
+    """Save messaging app configuration to config.yaml.
+
+    Only the selected app is touched (enabled + populated).
+    The other app is disabled only when the user explicitly chose "none".
+    This prevents wiping previously-valid credentials for the non-selected bot.
+    """
     import yaml as _yaml
 
     config_path = Path(__file__).parent.parent.parent.parent / "config.yaml"
@@ -1115,26 +1120,41 @@ def _save_messaging_config_to_yaml(app_key: str, app_config: Optional[Dict[str, 
         config['telegram']['bot_username'] = app_config.get("bot_username", "")
         config['telegram']['bot_name'] = app_config.get("bot_name", "")
         config['telegram']['bot_token'] = app_config.get("bot_token", "")
-        config['telegram']['telegram_user_id'] = app_config.get("telegram_user_id", "")
-        # Parse allowed_user_ids from comma-separated string to list of ints
+
+        # Save telegram_user_id (used as the default reply target)
+        raw_uid = app_config.get("telegram_user_id", "").strip()
+        config['telegram']['telegram_user_id'] = raw_uid
+
+        # Build allowed_user_ids list from the form field, then ensure
+        # telegram_user_id is always included so the owner can use the bot.
         raw_ids = app_config.get("allowed_user_ids", "").strip()
+        allowed_ids: List[int] = []
         if raw_ids:
-            allowed_ids = []
             for part in raw_ids.split(","):
                 part = part.strip()
                 if part.isdigit():
                     allowed_ids.append(int(part))
-            config['telegram']['allowed_user_ids'] = allowed_ids
-        else:
-            config['telegram']['allowed_user_ids'] = []
-    else:
-        config['telegram']['enabled'] = False
+        # Always include the owner's user id in the allow-list
+        if raw_uid and raw_uid.isdigit():
+            uid_int = int(raw_uid)
+            if uid_int not in allowed_ids:
+                allowed_ids.insert(0, uid_int)
+        config['telegram']['allowed_user_ids'] = allowed_ids
 
-    if app_key == "discord" and app_config:
+        # When the user configures Telegram, disable Discord so only one
+        # primary bot is active (avoids duplicate notifications).
+        config['discord']['enabled'] = False
+
+    elif app_key == "discord" and app_config:
         config['discord']['enabled'] = True
         config['discord']['bot_name'] = app_config.get("bot_name", "")
         config['discord']['bot_token'] = app_config.get("bot_token", "")
+        # Disable Telegram when Discord is explicitly chosen
+        config['telegram']['enabled'] = False
+
     else:
+        # User chose "none" — disable both bots
+        config['telegram']['enabled'] = False
         config['discord']['enabled'] = False
 
     with open(config_path, 'w') as f:

@@ -878,12 +878,24 @@ def create_telegram_bot(
         max_history_length = telegram_config.get("max_history_length", 50)
         terminal_history = terminal_history or get_terminal_history()
 
-        return TelegramBotManager(
+        manager = TelegramBotManager(
             bot_token=bot_token,
             allowed_user_ids=allowed_user_ids,
             max_history_length=max_history_length,
             terminal_history=terminal_history,
         )
+
+        # Pre-populate _boot_user_id from the configured telegram_user_id so
+        # that the agent can send proactive messages (wake-up, progress,
+        # errors) right from start-up, before the user sends any message.
+        if raw_user_id:
+            try:
+                manager._boot_user_id = int(raw_user_id)
+                manager._last_user_id = int(raw_user_id)
+            except (ValueError, TypeError):
+                pass
+
+        return manager
     except Exception as exc:
         print(f"Error loading Telegram configuration: {exc}")
         return None
