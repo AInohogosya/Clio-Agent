@@ -2586,6 +2586,28 @@ class AutonomousLoopEngine:
             )
             return
 
+        # If Telegram mode requested but we don't have a bot instance yet,
+        # attempt to auto-initialize it from the repository `config.yaml`.
+        if ctx.telegram_mode and not self.telegram_bot:
+            try:
+                from ..external_integration.telegram_bot import create_telegram_bot, TELEGRAM_AVAILABLE
+
+                if TELEGRAM_AVAILABLE:
+                    cfg_path = Path(__file__).resolve().parents[3] / "config.yaml"
+                    if cfg_path.exists():
+                        tb = create_telegram_bot(str(cfg_path))
+                        if tb:
+                            self.telegram_bot = tb
+                            if self.telegram_bot.terminal_history is None:
+                                self.telegram_bot.terminal_history = self.terminal_history
+                            try:
+                                # Ensure resilience engine knows about the bot
+                                self._resilience.set_telegram_bot(self.telegram_bot)
+                            except Exception:
+                                pass
+            except Exception as exc:
+                self.logger.debug(f"Auto-init telegram bot failed: {exc}")
+
         # Determine the user to reply to.
         target_user = ctx.telegram_user_id
         if target_user is None and self.telegram_bot:
@@ -2597,6 +2619,17 @@ class AutonomousLoopEngine:
             target_user = getattr(self, "_telegram_boot_user_id", None)
         if target_user is None and self.telegram_bot:
             target_user = getattr(self.telegram_bot, "_boot_user_id", None)
+
+        # If still no target user but the bot has allowed users configured,
+        # pick the first allowed user as a sensible default so proactive
+        # notifications (wake/restart/errors) are delivered.
+        if target_user is None and self.telegram_bot:
+            allowed = getattr(self.telegram_bot, "allowed_user_ids", None)
+            if allowed:
+                try:
+                    target_user = int(allowed[0])
+                except Exception:
+                    pass
 
         if self.telegram_bot and target_user:
             try:
