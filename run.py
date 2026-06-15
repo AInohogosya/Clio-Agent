@@ -2760,6 +2760,38 @@ def main():
             if discord_bot:
                 print("\u2713 Discord bot initialized (secondary)")
 
+        # If user requested Telegram mode but the real bot failed to initialize,
+        # provide a lightweight console-based stub so the agent can still run
+        # and send/receive messages for development/testing.
+        if selected_mode == "telegram" and telegram_bot is None:
+            class _ConsoleTelegramStub:
+                def __init__(self):
+                    self._message_callback = None
+                    self._restart_callback = None
+                    self._shared_history = None
+                    self._user_message_callback = None
+
+                def set_message_callback(self, cb):
+                    self._message_callback = cb
+
+                def set_restart_callback(self, cb):
+                    self._restart_callback = cb
+
+                def set_shared_conversation_history(self, history):
+                    self._shared_history = history
+
+                def set_user_message_callback(self, cb):
+                    self._user_message_callback = cb
+
+                def queue_message(self, chat_id, message):
+                    print(f"[TELEGRAM-STUB -> {chat_id}] {message}")
+
+                # compatibility: TelegramBotManager exposes queue_message and
+                # the run loop does not expect more from the stub.
+
+            telegram_bot = _ConsoleTelegramStub()
+            print("\u26a0\ufe0f Telegram bot unavailable; using console stub for messages")
+
         # Select the PRIMARY bot based on the user-selected mode so that the
         # engine's mode flags, the printed label, and the polling bot all
         # agree. Falling back to whichever bot is available keeps the agent
