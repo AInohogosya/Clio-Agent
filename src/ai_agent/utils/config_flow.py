@@ -7,7 +7,7 @@ Flow:
 3. Models are fetched LIVE from the provider's API
 4. User selects from the live model list, or chooses "Custom Model" to type any name
 5. User selects messaging app (Telegram or None)
-6. If Telegram selected, user enters bot username, bot name, and bot token
+6. If Telegram selected, user enters bot username, bot name, bot token, user ID, and allowed user IDs
 7. Configuration is saved to settings & config.yaml
 
 Every provider includes a "Custom Model" option so users can enter any model name
@@ -846,7 +846,7 @@ def select_messaging_app(stdscr=None) -> Optional[str]:
 
 
 def _input_telegram_config(stdscr, existing=None):
-    """Curses-based Telegram config input. Returns dict with bot_username, bot_name, bot_token or None."""
+    """Curses-based Telegram config input. Returns dict with bot_username, bot_name, bot_token, telegram_user_id, allowed_user_ids or None."""
     curses.curs_set(1)
     _setup_colors()
 
@@ -854,7 +854,8 @@ def _input_telegram_config(stdscr, existing=None):
         ("bot_username", "Bot Username", "Your bot's username (without @)"),
         ("bot_name", "Bot Name", "Display name for your bot"),
         ("bot_token", "Bot Token", "Token from @BotFather"),
-        ("telegram_user_id", "Telegram User ID", "Your Telegram numeric user ID (e.g. 123456789)"),
+        ("telegram_user_id", "Your User ID", "Your Telegram numeric user ID (e.g. 123456789)"),
+        ("allowed_user_ids", "Allowed User IDs", "Comma-separated numeric IDs (e.g. 123,456,789). Leave empty to allow all."),
     ]
     if existing:
         values = {
@@ -862,9 +863,10 @@ def _input_telegram_config(stdscr, existing=None):
             "bot_name": existing.get("bot_name", ""),
             "bot_token": existing.get("bot_token", ""),
             "telegram_user_id": existing.get("telegram_user_id", ""),
+            "allowed_user_ids": existing.get("allowed_user_ids", ""),
         }
     else:
-        values = {"bot_username": "", "bot_name": "", "bot_token": "", "telegram_user_id": ""}
+        values = {"bot_username": "", "bot_name": "", "bot_token": "", "telegram_user_id": "", "allowed_user_ids": ""}
     current_field = 0
     error_msg = ""
 
@@ -892,8 +894,10 @@ def _input_telegram_config(stdscr, existing=None):
             stdscr.addstr(y, 20, val_display, _attr(COLOR_NORMAL))
             stdscr.addstr(y + 1, 4, hint, _attr(COLOR_FOOTER))
 
-        # Show contextual footer based on whether all fields are filled
-        all_filled = all(values[k].strip() for k, _, _ in fields)
+        # Show contextual footer based on whether all required fields are filled
+        # allowed_user_ids is optional (empty = allow all users)
+        required_fields = [k for k, _, _ in fields if k != "allowed_user_ids"]
+        all_filled = all(values[k].strip() for k in required_fields)
         if all_filled:
             footer = "Enter/Tab:Confirm  Up/Down:Navigate  Esc:Back  Ctrl+C:Quit"
         elif current_field < len(fields) - 1:
@@ -921,6 +925,17 @@ def _input_telegram_config(stdscr, existing=None):
                     continue
                 if not values["bot_username"].strip():
                     error_msg = "Bot username is required."
+                    continue
+                # Validate allowed_user_ids if provided (optional field)
+                raw_ids = values.get("allowed_user_ids", "").strip()
+                if raw_ids:
+                    for part in raw_ids.split(","):
+                        part = part.strip()
+                        if part and not part.isdigit():
+                            error_msg = "Allowed User IDs must be numeric. Invalid: '%s'" % part[:20]
+                            break
+                    else:
+                        return values
                     continue
                 return values
         elif ch == curses.KEY_UP and current_field > 0:
@@ -1057,11 +1072,15 @@ def get_telegram_config(stdscr=None) -> Optional[Dict[str, str]]:
                 config = _yaml.safe_load(f) or {}
             tg = config.get('telegram', {})
             if tg.get('bot_token'):
+                # Convert allowed_user_ids list back to comma-separated string for display
+                saved_ids = tg.get("allowed_user_ids", [])
+                ids_str = ",".join(str(i) for i in saved_ids) if saved_ids else ""
                 existing = {
                     "bot_username": tg.get("bot_username", ""),
                     "bot_name": tg.get("bot_name", ""),
                     "bot_token": tg.get("bot_token", ""),
                     "telegram_user_id": tg.get("telegram_user_id", ""),
+                    "allowed_user_ids": ids_str,
                 }
     except Exception:
         pass
@@ -1097,6 +1116,17 @@ def _save_messaging_config_to_yaml(app_key: str, app_config: Optional[Dict[str, 
         config['telegram']['bot_name'] = app_config.get("bot_name", "")
         config['telegram']['bot_token'] = app_config.get("bot_token", "")
         config['telegram']['telegram_user_id'] = app_config.get("telegram_user_id", "")
+        # Parse allowed_user_ids from comma-separated string to list of ints
+        raw_ids = app_config.get("allowed_user_ids", "").strip()
+        if raw_ids:
+            allowed_ids = []
+            for part in raw_ids.split(","):
+                part = part.strip()
+                if part.isdigit():
+                    allowed_ids.append(int(part))
+            config['telegram']['allowed_user_ids'] = allowed_ids
+        else:
+            config['telegram']['allowed_user_ids'] = []
     else:
         config['telegram']['enabled'] = False
 
