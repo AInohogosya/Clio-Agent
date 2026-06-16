@@ -569,16 +569,18 @@ class ScrollingModelSelector:
 class ProviderSelector:
     """Curses-based provider selector with advanced settings"""
 
-    # Special return values for the two extra menu items
+    # Special return values for extra menu items
     ADVANCED_SETTINGS = "__advanced_settings__"
+    MESSAGING_SETTINGS = "__messaging_settings__"
     EXIT_SETTINGS = "__exit_settings__"
 
     def __init__(self):
         self.providers = list(PROVIDER_MODELS.items())
-        # Extra items appended after providers: advanced settings, exit
+        # Extra items appended after providers: messaging, advanced, exit
         self.extra_items = [
-            ("advanced", "⚙️  Advanced Settings", "Tune idle behavior and other options"),
-            ("exit",     "✅ Exit Settings",      "Save and start the agent"),
+            ("messaging", "💬 Messaging Settings", "Configure Telegram & Discord bot"),
+            ("advanced",  "⚙️  Advanced Settings",  "Tune idle behavior and other options"),
+            ("exit",      "✅ Exit Settings",       "Save and start the agent"),
         ]
         self.total_items = len(self.providers) + len(self.extra_items)
         self.current_index = 0
@@ -636,7 +638,9 @@ class ProviderSelector:
             return self.providers[self.current_index][0]
         extra_idx = self.current_index - len(self.providers)
         action_key = self.extra_items[extra_idx][0]
-        if action_key == "advanced":
+        if action_key == "messaging":
+            return self.MESSAGING_SETTINGS
+        elif action_key == "advanced":
             return self.ADVANCED_SETTINGS
         elif action_key == "exit":
             return self.EXIT_SETTINGS
@@ -886,6 +890,355 @@ class AdvancedSettingsMenu:
         return curses.wrapper(self.run)
 
 
+class MessagingSettingsMenu:
+    """Curses-based messaging (Telegram / Discord) settings menu.
+
+    Allows the user to:
+      - Enable / disable Telegram bot
+      - Enter Telegram bot token
+      - Enter Telegram authorized user IDs (comma-separated)
+      - Enable / disable Discord bot
+      - Enter Discord bot token
+      - Enter Discord authorized user IDs (comma-separated)
+    """
+
+    PLATFORM_OPTIONS = [
+        ("telegram", "📱 Telegram", "Telegram bot via python-telegram-bot"),
+        ("discord",  "🎮 Discord",  "Discord bot via discord.py"),
+    ]
+
+    def __init__(self):
+        self.current_index = 0
+        self.scroll_offset = 0
+        config = load_config()
+        tg = config.get("telegram", {})
+        self._tg_enabled = tg.get("enabled", False)
+        self._tg_token = tg.get("bot_token", "")
+        self._tg_users = ",".join(str(u) for u in tg.get("authorized_users") or tg.get("allowed_user_ids") or [])
+        dc = config.get("discord", {})
+        self._dc_enabled = dc.get("enabled", False)
+        self._dc_token = dc.get("bot_token", "")
+        self._dc_users = ",".join(str(u) for u in dc.get("authorized_users") or dc.get("allowed_user_ids") or [])
+
+    def _save_config(self):
+        """Persist Telegram & Discord settings to config.yaml."""
+        config = load_config()
+        if "telegram" not in config:
+            config["telegram"] = {}
+        config["telegram"]["enabled"] = self._tg_enabled
+        config["telegram"]["bot_token"] = self._tg_token.strip()
+        tg_uids = [u.strip() for u in self._tg_users.split(",") if u.strip()]
+        config["telegram"]["authorized_users"] = tg_uids
+        config["telegram"]["allowed_user_ids"] = tg_uids
+        if "discord" not in config:
+            config["discord"] = {}
+        config["discord"]["enabled"] = self._dc_enabled
+        config["discord"]["bot_token"] = self._dc_token.strip()
+        dc_uids = [u.strip() for u in self._dc_users.split(",") if u.strip()]
+        config["discord"]["authorized_users"] = dc_uids
+        config["discord"]["allowed_user_ids"] = dc_uids
+        save_config(config)
+
+    def _inline_input(self, stdscr, y, x, prompt, initial_value="", mask=False):
+        """Show a text input field at (y, x) with an initial value."""
+        curses.echo()
+        curses.curs_set(1)
+        max_y, max_x = stdscr.getmaxyx()
+        stdscr.addstr(y, x, prompt[:max_x - x - 1],
+                      curses.A_BOLD | curses.color_pair(COLOR_TITLE)
+                      if curses.has_colors() else curses.A_BOLD)
+        input_x = x + len(prompt)
+        input_width = max(10, max_x - input_x - 2)
+        display_val = initial_value if not mask else "*" * len(initial_value)
+        stdscr.addstr(y, input_x, display_val[:input_width],
+                      curses.color_pair(COLOR_NORMAL) if curses.has_colors() else curses.A_NORMAL)
+        cur_pos = len(initial_value)
+        stdscr.move(y, input_x + min(cur_pos, input_width - 1))
+        stdscr.refresh()
+        result = list(initial_value)
+        while True:
+            ch = stdscr.getch()
+            if ch in (10, 13):
+                break
+            elif ch == 27:
+                result = list(initial_value)
+                break
+            elif ch in (curses.KEY_BACKSPACE, 127, 8):
+                if cur_pos > 0:
+                    cur_pos -= 1
+                    result.pop(cur_pos)
+            elif ch == curses.KEY_LEFT:
+                if cur_pos > 0:
+                    cur_pos -= 1
+            elif ch == curses.KEY_RIGHT:
+                if cur_pos < len(result):
+                    cur_pos += 1
+            elif 32 <= ch <= 126:
+                if cur_pos < 200:
+                    result.insert(cur_pos, chr(ch))
+                    cur_pos += 1
+            display = "".join(result) if not mask else "*" * len(result)
+            stdscr.move(y, input_x)
+            stdscr.clrtoeol()
+            stdscr.addstr(y, input_x, display[:input_width],
+                          curses.color_pair(COLOR_NORMAL) if curses.has_colors() else curses.A_NORMAL)
+            stdscr.move(y, input_x + min(cur_pos, input_width - 1))
+            stdscr.refresh()
+        curses.noecho()
+        curses.curs_set(0)
+        return "".join(result)
+
+    def _edit_telegram(self, stdscr):
+        """Edit Telegram settings on a full curses screen."""
+        curses.curs_set(0)
+        enabled = self._tg_enabled
+        token = self._tg_token
+        users = self._tg_users
+        field = 0
+
+        while True:
+            stdscr.clear()
+            max_y, max_x = stdscr.getmaxyx()
+
+            title = "Telegram Bot Settings"
+            stdscr.addstr(0, 0, title[:max_x-1],
+                          curses.A_BOLD | curses.color_pair(COLOR_TITLE)
+                          if curses.has_colors() else curses.A_BOLD)
+
+            sep = "=" * min(50, max_x - 1)
+            stdscr.addstr(1, 0, sep,
+                          curses.color_pair(COLOR_TITLE) if curses.has_colors() else curses.A_DIM)
+
+            stdscr.addstr(2, 0,
+                          "UP/DOWN:Navigate | Enter:Edit | Q/ESC:Save&Back"[:max_x-1],
+                          curses.color_pair(COLOR_FOOTER) if curses.has_colors() else curses.A_DIM)
+
+            row = 4
+            rows = [
+                ("enabled", "Telegram Bot", "Enabled" if enabled else "Disabled"),
+                ("token",   "Bot Token",
+                 (token[:20] + "...") if len(token) > 20 else (token or "(not set)")),
+                ("users",   "Auth Users",    users if users else "(anyone)"),
+                ("back",    "<- Back",        "Save and return"),
+            ]
+
+            for i, (key, label, value) in enumerate(rows):
+                y = row + i * 3
+                if y >= max_y - 3:
+                    break
+                sel = (i == field)
+                line = f"  {'>' if sel else ' '} {label}: {value}"
+                attr = (curses.color_pair(COLOR_HIGHLIGHT) | curses.A_BOLD
+                        if curses.has_colors() else curses.A_REVERSE) if sel else \
+                       (curses.color_pair(COLOR_NORMAL) if curses.has_colors() else curses.A_NORMAL)
+                stdscr.addstr(y, 0, line[:max_x-1], attr)
+
+            footer_y = max_y - 2
+            if footer_y > row:
+                stdscr.addstr(footer_y, 0, sep,
+                              curses.color_pair(COLOR_TITLE) if curses.has_colors() else curses.A_DIM)
+            stdscr.refresh()
+
+            ch = stdscr.getch()
+            if ch == curses.KEY_UP:
+                field = max(0, field - 1)
+            elif ch == curses.KEY_DOWN or ch == 9:
+                field = min(len(rows) - 1, field + 1)
+            elif ch in (ord('q'), ord('Q'), 27):
+                self._tg_enabled = enabled
+                self._tg_token = token
+                self._tg_users = users
+                self._save_config()
+                return
+            elif ch in (10, 13):
+                if field == 0:
+                    enabled = not enabled
+                elif field == 1:
+                    token = self._inline_input(stdscr, 8, 4, "Bot Token: ", token, mask=True)
+                    stdscr.clear()
+                elif field == 2:
+                    users = self._inline_input(stdscr, 11, 4, "User IDs (comma-sep): ", users)
+                    stdscr.clear()
+                elif field == 3:
+                    self._tg_enabled = enabled
+                    self._tg_token = token
+                    self._tg_users = users
+                    self._save_config()
+                    return
+
+    def _edit_discord(self, stdscr):
+        """Edit Discord settings on a full curses screen."""
+        curses.curs_set(0)
+        enabled = self._dc_enabled
+        token = self._dc_token
+        users = self._dc_users
+        field = 0
+
+        while True:
+            stdscr.clear()
+            max_y, max_x = stdscr.getmaxyx()
+
+            title = "Discord Bot Settings"
+            stdscr.addstr(0, 0, title[:max_x-1],
+                          curses.A_BOLD | curses.color_pair(COLOR_TITLE)
+                          if curses.has_colors() else curses.A_BOLD)
+
+            sep = "=" * min(50, max_x - 1)
+            stdscr.addstr(1, 0, sep,
+                          curses.color_pair(COLOR_TITLE) if curses.has_colors() else curses.A_DIM)
+
+            stdscr.addstr(2, 0,
+                          "UP/DOWN:Navigate | Enter:Edit | Q/ESC:Save&Back"[:max_x-1],
+                          curses.color_pair(COLOR_FOOTER) if curses.has_colors() else curses.A_DIM)
+
+            row = 4
+            rows = [
+                ("enabled", "Discord Bot", "Enabled" if enabled else "Disabled"),
+                ("token",   "Bot Token",
+                 (token[:20] + "...") if len(token) > 20 else (token or "(not set)")),
+                ("users",   "Auth Users",    users if users else "(anyone)"),
+                ("back",    "<- Back",        "Save and return"),
+            ]
+
+            for i, (key, label, value) in enumerate(rows):
+                y = row + i * 3
+                if y >= max_y - 3:
+                    break
+                sel = (i == field)
+                line = f"  {'>' if sel else ' '} {label}: {value}"
+                attr = (curses.color_pair(COLOR_HIGHLIGHT) | curses.A_BOLD
+                        if curses.has_colors() else curses.A_REVERSE) if sel else \
+                       (curses.color_pair(COLOR_NORMAL) if curses.has_colors() else curses.A_NORMAL)
+                stdscr.addstr(y, 0, line[:max_x-1], attr)
+
+            footer_y = max_y - 2
+            if footer_y > row:
+                stdscr.addstr(footer_y, 0, sep,
+                              curses.color_pair(COLOR_TITLE) if curses.has_colors() else curses.A_DIM)
+            stdscr.refresh()
+
+            ch = stdscr.getch()
+            if ch == curses.KEY_UP:
+                field = max(0, field - 1)
+            elif ch == curses.KEY_DOWN or ch == 9:
+                field = min(len(rows) - 1, field + 1)
+            elif ch in (ord('q'), ord('Q'), 27):
+                self._dc_enabled = enabled
+                self._dc_token = token
+                self._dc_users = users
+                self._save_config()
+                return
+            elif ch in (10, 13):
+                if field == 0:
+                    enabled = not enabled
+                elif field == 1:
+                    token = self._inline_input(stdscr, 8, 4, "Bot Token: ", token, mask=True)
+                    stdscr.clear()
+                elif field == 2:
+                    users = self._inline_input(stdscr, 11, 4, "User IDs (comma-sep): ", users)
+                    stdscr.clear()
+                elif field == 3:
+                    self._dc_enabled = enabled
+                    self._dc_token = token
+                    self._dc_users = users
+                    self._save_config()
+                    return
+
+    def run(self, stdscr) -> Optional[str]:
+        curses.curs_set(0)
+        stdscr.clear()
+
+        if curses.has_colors():
+            curses.start_color()
+            curses.init_pair(COLOR_TITLE, curses.COLOR_CYAN, curses.COLOR_BLACK)
+            curses.init_pair(COLOR_HIGHLIGHT, curses.COLOR_BLACK, curses.COLOR_YELLOW)
+            curses.init_pair(COLOR_NORMAL, curses.COLOR_WHITE, curses.COLOR_BLACK)
+            curses.init_pair(COLOR_FOOTER, curses.COLOR_YELLOW, curses.COLOR_BLACK)
+
+        idx = 0
+        total = len(self.PLATFORM_OPTIONS) + 1  # +1 for Back
+
+        while True:
+            stdscr.clear()
+            max_y, max_x = stdscr.getmaxyx()
+
+            title = "Messaging Settings"
+            stdscr.addstr(0, 0, title[:max_x-1],
+                          curses.A_BOLD | curses.color_pair(COLOR_TITLE)
+                          if curses.has_colors() else curses.A_BOLD)
+
+            sep = "=" * min(50, max_x - 1)
+            stdscr.addstr(1, 0, sep,
+                          curses.color_pair(COLOR_TITLE) if curses.has_colors() else curses.A_DIM)
+
+            stdscr.addstr(2, 0, "Configure bot messaging platforms:"[:max_x-1],
+                          curses.color_pair(COLOR_NORMAL) if curses.has_colors() else curses.A_NORMAL)
+
+            stdscr.addstr(4, 0,
+                          "UP/DOWN:Navigate | Enter:Configure | Q/ESC:Back"[:max_x-1],
+                          curses.color_pair(COLOR_FOOTER) if curses.has_colors() else curses.A_DIM)
+
+            start_y = 6
+            for i, (key, name, desc) in enumerate(self.PLATFORM_OPTIONS):
+                y = start_y + i * 3
+                if y >= max_y - 3:
+                    break
+                is_sel = (i == idx)
+                line1 = f"  {'>' if is_sel else ' '} {name}"
+                line2 = f"     {desc}"
+                if is_sel:
+                    stdscr.addstr(y, 0, line1[:max_x-1],
+                                  curses.color_pair(COLOR_HIGHLIGHT) | curses.A_BOLD
+                                  if curses.has_colors() else curses.A_REVERSE)
+                    stdscr.addstr(y + 1, 0, line2[:max_x-1],
+                                  curses.color_pair(COLOR_HIGHLIGHT)
+                                  if curses.has_colors() else curses.A_REVERSE)
+                else:
+                    stdscr.addstr(y, 0, line1[:max_x-1],
+                                  curses.color_pair(COLOR_NORMAL)
+                                  if curses.has_colors() else curses.A_NORMAL)
+                    stdscr.addstr(y + 1, 0, line2[:max_x-1],
+                                  curses.color_pair(COLOR_NORMAL)
+                                  if curses.has_colors() else curses.A_DIM)
+
+            back_y = start_y + len(self.PLATFORM_OPTIONS) * 3 + 1
+            if back_y < max_y - 3:
+                is_sel = (idx == len(self.PLATFORM_OPTIONS))
+                line = f"  {'>' if is_sel else ' '} <- Back"
+                if is_sel:
+                    stdscr.addstr(back_y, 0, line[:max_x-1],
+                                  curses.color_pair(COLOR_HIGHLIGHT) | curses.A_BOLD
+                                  if curses.has_colors() else curses.A_REVERSE)
+                else:
+                    stdscr.addstr(back_y, 0, line[:max_x-1],
+                                  curses.color_pair(COLOR_NORMAL)
+                                  if curses.has_colors() else curses.A_NORMAL)
+
+            footer_y = max_y - 2
+            if footer_y > start_y:
+                stdscr.addstr(footer_y, 0, sep,
+                              curses.color_pair(COLOR_TITLE) if curses.has_colors() else curses.A_DIM)
+            stdscr.refresh()
+
+            ch = stdscr.getch()
+            if ch == curses.KEY_UP:
+                idx = max(0, idx - 1)
+            elif ch == curses.KEY_DOWN:
+                idx = min(total - 1, idx + 1)
+            elif ch in (10, 13):
+                if idx == 0:
+                    self._edit_telegram(stdscr)
+                elif idx == 1:
+                    self._edit_discord(stdscr)
+                elif idx == len(self.PLATFORM_OPTIONS):
+                    return None
+            elif ch in (ord('q'), ord('Q'), 27):
+                return None
+
+    def show(self) -> Optional[str]:
+        return curses.wrapper(self.run)
+
+
 def _get_config_path() -> Path:
     """Resolve config.yaml path, trying multiple locations."""
     # Try the project root relative to this file
@@ -969,6 +1322,12 @@ def select_provider_and_model() -> Tuple[Optional[str], Optional[str]]:
 
         if not selected:
             return None, None
+
+        if selected == ProviderSelector.MESSAGING_SETTINGS:
+            # Open messaging settings sub-menu, then loop back to provider selector
+            messaging = MessagingSettingsMenu()
+            messaging.show()
+            continue
 
         if selected == ProviderSelector.ADVANCED_SETTINGS:
             # Open advanced settings sub-menu, then loop back to provider selector

@@ -845,17 +845,45 @@ def select_messaging_app(stdscr=None) -> Optional[str]:
         return curses.wrapper(lambda s: select_messaging_app(s))
 
 
+def _normalize_telegram_username(username: str) -> str:
+    return (username or "").strip().lstrip("@")
+
+
+def _is_valid_telegram_bot_token(token: str) -> bool:
+    token = (token or "").strip()
+    bot_id, sep, secret = token.partition(":")
+    if not sep or not bot_id.isdigit() or len(secret) < 30:
+        return False
+    return all(ch.isalnum() or ch in "_-" for ch in secret)
+
+
+def _parse_telegram_user_ids(raw_ids: str) -> Tuple[List[int], Optional[str]]:
+    parsed: List[int] = []
+    seen = set()
+    for part in (raw_ids or "").split(","):
+        value = part.strip()
+        if not value:
+            continue
+        if not value.isdigit() or int(value) <= 0:
+            return [], "Telegram user IDs must be positive numbers. Invalid: '%s'" % value[:20]
+        user_id = int(value)
+        if user_id not in seen:
+            parsed.append(user_id)
+            seen.add(user_id)
+    return parsed, None
+
+
 def _input_telegram_config(stdscr, existing=None):
-    """Curses-based Telegram config input. Returns dict with bot_username, bot_name, bot_token, telegram_user_id, allowed_user_ids or None."""
+    """Curses-based Telegram config input. Returns Telegram settings or None."""
     curses.curs_set(1)
     _setup_colors()
 
     fields = [
-        ("bot_username", "Bot Username", "Your bot's username (without @)"),
-        ("bot_name", "Bot Name", "Display name for your bot"),
-        ("bot_token", "Bot Token", "Token from @BotFather"),
-        ("telegram_user_id", "Your User ID", "Your Telegram numeric user ID (e.g. 123456789)"),
-        ("allowed_user_ids", "Allowed User IDs", "Comma-separated numeric IDs (e.g. 123,456,789). Leave empty to allow all."),
+        ("bot_username", "Bot Username", "Optional. Your bot username from @BotFather; @ is OK."),
+        ("bot_name", "Bot Name", "Optional display name for this config."),
+        ("bot_token", "Bot Token", "Required. Format: 123456789:AA... from @BotFather."),
+        ("telegram_user_id", "Your User ID", "Optional default reply target. Numeric Telegram user/chat ID."),
+        ("allowed_user_ids", "Allowed User IDs", "Optional access list. Comma-separated numeric IDs; empty allows anyone."),
     ]
     if existing:
         values = {
@@ -894,11 +922,12 @@ def _input_telegram_config(stdscr, existing=None):
             stdscr.addstr(y, 20, val_display, _attr(COLOR_NORMAL))
             stdscr.addstr(y + 1, 4, hint, _attr(COLOR_FOOTER))
 
-        # Show contextual footer based on whether all required fields are filled
-        # allowed_user_ids is optional (empty = allow all users)
-        required_fields = [k for k, _, _ in fields if k != "allowed_user_ids"]
+        # Only the bot token is required for polling and receiving messages.
+        # User IDs are optional so a wrong ID cannot accidentally block inbound
+        # messages; the bot learns the real user ID from the first message.
+        required_fields = ["bot_token"]
         all_filled = all(values[k].strip() for k in required_fields)
-        if all_filled:
+        if current_field == len(fields) - 1 and all_filled:
             footer = "Enter/Tab:Confirm  Up/Down:Navigate  Esc:Back  Ctrl+C:Quit"
         elif current_field < len(fields) - 1:
             footer = "Enter:Next field  Up/Down:Navigate  Esc:Cancel  Ctrl+C:Quit"
@@ -920,23 +949,26 @@ def _input_telegram_config(stdscr, existing=None):
                 current_field += 1
             else:
                 # Validate all required fields
-                if not values["bot_token"].strip():
+                token = values["bot_token"].strip()
+                if not token:
                     error_msg = "Bot token is required."
                     continue
-                if not values["bot_username"].strip():
-                    error_msg = "Bot username is required."
+                if not _is_valid_telegram_bot_token(token):
+                    error_msg = "Bot token must look like 123456789:AA... from @BotFather."
                     continue
-                # Validate allowed_user_ids if provided (optional field)
+                raw_uid = values.get("telegram_user_id", "").strip()
+                if raw_uid:
+                    parsed_uid, uid_error = _parse_telegram_user_ids(raw_uid)
+                    if uid_error or len(parsed_uid) != 1:
+                        error_msg = uid_error or "Enter exactly one numeric Telegram user ID."
+                        continue
                 raw_ids = values.get("allowed_user_ids", "").strip()
-                if raw_ids:
-                    for part in raw_ids.split(","):
-                        part = part.strip()
-                        if part and not part.isdigit():
-                            error_msg = "Allowed User IDs must be numeric. Invalid: '%s'" % part[:20]
-                            break
-                    else:
-                        return values
+                _, ids_error = _parse_telegram_user_ids(raw_ids)
+                if ids_error:
+                    error_msg = ids_error
                     continue
+                values["bot_username"] = _normalize_telegram_username(values["bot_username"])
+                values["bot_token"] = token
                 return values
         elif ch == curses.KEY_UP and current_field > 0:
             current_field -= 1
@@ -1117,29 +1149,25 @@ def _save_messaging_config_to_yaml(app_key: str, app_config: Optional[Dict[str, 
 
     if app_key == "telegram" and app_config:
         config['telegram']['enabled'] = True
-        config['telegram']['bot_username'] = app_config.get("bot_username", "")
-        config['telegram']['bot_name'] = app_config.get("bot_name", "")
-        config['telegram']['bot_token'] = app_config.get("bot_token", "")
+        config['telegram']['bot_username'] = _normalize_telegram_username(
+            app_config.get("bot_username", "")
+        )
+        config['telegram']['bot_name'] = app_config.get("bot_name", "").strip()
+        config['telegram']['bot_token'] = app_config.get("bot_token", "").strip()
 
         # Save telegram_user_id (used as the default reply target)
         raw_uid = app_config.get("telegram_user_id", "").strip()
-        config['telegram']['telegram_user_id'] = raw_uid
+        output_recipients, _ = _parse_telegram_user_ids(raw_uid)
+        config['telegram']['telegram_user_id'] = str(output_recipients[0]) if output_recipients else ""
+        config['telegram']['output_recipients'] = output_recipients
 
-        # Build allowed_user_ids list from the form field, then ensure
-        # telegram_user_id is always included so the owner can use the bot.
+        # Build the allow-list only from the explicit access-list field.
+        # Leaving it empty means "accept the first real Telegram user message"
+        # and prevents a mistyped owner ID from blocking inbound messages.
         raw_ids = app_config.get("allowed_user_ids", "").strip()
-        allowed_ids: List[int] = []
-        if raw_ids:
-            for part in raw_ids.split(","):
-                part = part.strip()
-                if part.isdigit():
-                    allowed_ids.append(int(part))
-        # Always include the owner's user id in the allow-list
-        if raw_uid and raw_uid.isdigit():
-            uid_int = int(raw_uid)
-            if uid_int not in allowed_ids:
-                allowed_ids.insert(0, uid_int)
+        allowed_ids, _ = _parse_telegram_user_ids(raw_ids)
         config['telegram']['allowed_user_ids'] = allowed_ids
+        config['telegram']['authorized_users'] = allowed_ids
 
         # When the user configures Telegram, disable Discord so only one
         # primary bot is active (avoids duplicate notifications).

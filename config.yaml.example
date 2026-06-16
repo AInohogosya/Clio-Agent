@@ -100,8 +100,10 @@ telegram:
   #   TELEGRAM_AUTHORIZED_USERS   comma-separated user ids overrides authorized_users
   bot_token: "YOUR_TELEGRAM_BOT_TOKEN"
   bot_username: "your_bot_username"
-  authorized_users: []          # integer Telegram user ids allowed to chat with the bot
-  output_recipients: []
+  telegram_user_id: ""          # optional default numeric user/chat id for startup replies
+  output_recipients: []         # optional numeric user/chat ids for proactive messages
+  authorized_users: []          # optional numeric user ids allowed to chat; empty allows anyone
+  allowed_user_ids: []          # alias for authorized_users
   enable_input_listener: true
   send_phase2_end_updates: true
   max_history_length: 50

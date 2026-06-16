@@ -146,6 +146,48 @@ def _is_network_error(exc: Exception) -> bool:
         return False
 
 
+def _is_valid_bot_token_format(token: str) -> bool:
+    token = (token or "").strip()
+    bot_id, sep, secret = token.partition(":")
+    if not sep or not bot_id.isdigit() or len(secret) < 30:
+        return False
+    return all(ch.isalnum() or ch in "_-" for ch in secret)
+
+
+def _normalize_user_ids(raw_value: Any) -> List[int]:
+    if raw_value is None or raw_value == "":
+        return []
+    if isinstance(raw_value, (str, int)):
+        values = str(raw_value).split(",")
+    elif isinstance(raw_value, (list, tuple, set)):
+        values = []
+        for item in raw_value:
+            if isinstance(item, str):
+                values.extend(item.split(","))
+            else:
+                values.append(item)
+    else:
+        values = [raw_value]
+
+    normalized: List[int] = []
+    seen = set()
+    for item in values:
+        if item is None:
+            continue
+        text = str(item).strip()
+        if not text:
+            continue
+        if not text.isdigit():
+            raise ValueError(f"Telegram user id must be numeric: {text}")
+        user_id = int(text)
+        if user_id <= 0:
+            raise ValueError(f"Telegram user id must be positive: {text}")
+        if user_id not in seen:
+            normalized.append(user_id)
+            seen.add(user_id)
+    return normalized
+
+
 class TelegramMode(Enum):
     """Telegram bot mode"""
 
@@ -299,6 +341,18 @@ class TelegramBotManager:
             return True
         return user_id in self.allowed_user_ids
 
+    def _remember_user(self, user_id: int):
+        self._last_user_id = user_id
+        self._boot_user_id = user_id
+
+    def _unauthorized_message(self, user_id: int) -> str:
+        return (
+            "Sorry, you are not authorized to use this bot.\n\n"
+            f"Your Telegram user ID is: {user_id}\n"
+            "Add that ID to telegram.allowed_user_ids, or leave the list empty "
+            "during `python3 run.py --setting` to allow inbound messages."
+        )
+
     # ------------------------------------------------------------------ #
     #  Message sending & queueing (thread-safe)
     # ------------------------------------------------------------------ #
@@ -444,10 +498,9 @@ class TelegramBotManager:
             return
         user_id = update.effective_user.id
         if not self._is_user_allowed(user_id):
-            await update.message.reply_text(
-                "Sorry, you are not authorized to use this bot."
-            )
+            await update.message.reply_text(self._unauthorized_message(user_id))
             return
+        self._remember_user(user_id)
         await update.message.reply_text(
             "Clio Agent\n\n"
             "Send me instructions and I'll keep working on your machine.\n"
@@ -461,7 +514,12 @@ class TelegramBotManager:
             return
         user_id = update.effective_user.id
         if not self._is_user_allowed(user_id):
+            try:
+                await update.message.reply_text(self._unauthorized_message(user_id))
+            except Exception:
+                pass
             return
+        self._remember_user(user_id)
         await self._cancel_user_task(user_id)
         await update.message.reply_text(
             "Restarting Clio Agent with the same provider, model, and API settings..."
@@ -482,7 +540,12 @@ class TelegramBotManager:
             return
         user_id = update.effective_user.id
         if not self._is_user_allowed(user_id):
+            try:
+                await update.message.reply_text(self._unauthorized_message(user_id))
+            except Exception:
+                pass
             return
+        self._remember_user(user_id)
         await update.message.reply_text(
             "Clio Agent Help\n\n"
             "Commands:\n"
@@ -527,9 +590,7 @@ class TelegramBotManager:
             return
         user_id = update.effective_user.id
         if not self._is_user_allowed(user_id):
-            await update.message.reply_text(
-                "Sorry, you are not authorized to use this bot."
-            )
+            await update.message.reply_text(self._unauthorized_message(user_id))
             return
         if not update.message.text:
             return
@@ -543,8 +604,7 @@ class TelegramBotManager:
             await self.restart_command(update, context)
             return
 
-        self._last_user_id = user_id
-        self._boot_user_id = user_id
+        self._remember_user(user_id)
 
         history = self.get_conversation_history(user_id)
         history.add_message("user", user_message)
@@ -701,6 +761,13 @@ class TelegramBotManager:
             self.logger.error("Cannot start bot: bot_token not set")
             self.is_running = False
             return False
+        if not _is_valid_bot_token_format(self.bot_token):
+            self.logger.error(
+                "Cannot start bot: bot_token format is invalid. "
+                "Re-run `python3 run.py --setting` and paste the BotFather token."
+            )
+            self.is_running = False
+            return False
 
         self._should_restart = True
         self._start_queue_processor()
@@ -842,9 +909,17 @@ def create_telegram_bot(
             or ""
         )
         if not bot_token:
-            print("Telegram bot token not configured")
+            print("Telegram configuration error: bot token is not configured.")
             print(
-                "Set TELEGRAM_BOT_TOKEN or telegram.bot_token in config.yaml"
+                "Run `python3 run.py --setting` and choose Telegram, or set "
+                "TELEGRAM_BOT_TOKEN / telegram.bot_token in config.yaml."
+            )
+            return None
+        if not _is_valid_bot_token_format(bot_token):
+            print("Telegram configuration error: bot token format is invalid.")
+            print(
+                "Use the BotFather token format like "
+                "`123456789:AA...`; run `python3 run.py --setting` to re-enter it."
             )
             return None
 
@@ -854,26 +929,33 @@ def create_telegram_bot(
         )
         env_users = os.environ.get("TELEGRAM_AUTHORIZED_USERS", "")
         if env_users:
-            raw_allowed = [u.strip() for u in env_users.split(",") if u.strip()]
+            raw_allowed = env_users
 
-        allowed_user_ids: List[int] = []
-        if raw_allowed:
-            for uid in raw_allowed:
-                if uid is None:
-                    continue
-                try:
-                    allowed_user_ids.append(int(uid))
-                except (ValueError, TypeError):
-                    pass
+        try:
+            allowed_user_ids = _normalize_user_ids(raw_allowed)
+        except ValueError as exc:
+            print(f"Telegram configuration error: {exc}")
+            print(
+                "Allowed Telegram users must be comma-separated numeric IDs, "
+                "for example: 123456789,987654321"
+            )
+            return None
 
         raw_user_id = telegram_config.get("telegram_user_id", "")
-        if raw_user_id:
-            try:
-                uid = int(raw_user_id)
-                if uid not in allowed_user_ids:
-                    allowed_user_ids.append(uid)
-            except (ValueError, TypeError):
-                pass
+        raw_recipients = telegram_config.get("output_recipients")
+        try:
+            output_recipients = _normalize_user_ids(raw_recipients)
+            if raw_user_id:
+                for uid in _normalize_user_ids(raw_user_id):
+                    if uid not in output_recipients:
+                        output_recipients.insert(0, uid)
+        except ValueError as exc:
+            print(f"Telegram configuration error: {exc}")
+            print(
+                "telegram.telegram_user_id and telegram.output_recipients "
+                "must contain numeric Telegram user/chat IDs."
+            )
+            return None
 
         max_history_length = telegram_config.get("max_history_length", 50)
         terminal_history = terminal_history or get_terminal_history()
@@ -885,15 +967,12 @@ def create_telegram_bot(
             terminal_history=terminal_history,
         )
 
-        # Pre-populate _boot_user_id from the configured telegram_user_id so
+        # Pre-populate _boot_user_id from the configured output target so
         # that the agent can send proactive messages (wake-up, progress,
         # errors) right from start-up, before the user sends any message.
-        if raw_user_id:
-            try:
-                manager._boot_user_id = int(raw_user_id)
-                manager._last_user_id = int(raw_user_id)
-            except (ValueError, TypeError):
-                pass
+        if output_recipients:
+            manager._boot_user_id = output_recipients[0]
+            manager._last_user_id = output_recipients[0]
 
         return manager
     except Exception as exc:

@@ -225,8 +225,8 @@ telegram:
   enabled: true
   bot_token: "YOUR_BOT_TOKEN"
   bot_username: "my_agent_bot"
-  allowed_user_ids:
-    - 123456789
+  telegram_user_id: "123456789"  # optional default target for startup replies
+  allowed_user_ids: []           # optional access list; empty allows anyone
 
 # ── Security ──────────────────────────────────────────────────
 security:
@@ -304,7 +304,8 @@ Clio-Agent --debug
 # Configure in config.yaml:
 #   telegram.enabled: true
 #   telegram.bot_token: "YOUR_BOT_TOKEN"
-#   telegram.allowed_user_ids: [123456789]
+#   telegram.telegram_user_id: "123456789"   # optional startup reply target
+#   telegram.allowed_user_ids: []            # optional access list
 
 Clio-Agent  # auto-detects Telegram mode from config
 ```

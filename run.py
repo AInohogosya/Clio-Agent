@@ -2591,6 +2591,7 @@ def main():
             print(f"\u274c Failed: {e}")
         sys.exit(0)
 
+    requested_telegram_cli = "--telegram" in sys.argv
     selected_mode = os.getenv(RESTART_MODE_ENV, "") or "telegram"
     if "--discord" in sys.argv:
         sys.argv.remove("--discord")
@@ -2760,76 +2761,28 @@ def main():
             if discord_bot:
                 print("\u2713 Discord bot initialized (secondary)")
 
-        # If user requested Telegram mode but the real bot failed to initialize,
-        # provide a lightweight console-based stub so the agent can still run
-        # and send/receive messages for development/testing.
-        if selected_mode == "telegram" and telegram_bot is None:
-            class _ConsoleTelegramStub:
-                def __init__(self):
-                    self._message_callback = None
-                    self._restart_callback = None
-                    self._shared_history = None
-                    # Provide terminal_history attribute for compatibility
-                    # with code that sets or reads telegram_bot.terminal_history
-                    self.terminal_history = None
-                    self._user_message_callback = None
+        def _config_enabled(section_name):
+            try:
+                import yaml as _yaml
+                if not config_path.exists():
+                    return False
+                with open(config_path, "r", encoding="utf-8") as _f:
+                    _cfg = _yaml.safe_load(_f) or {}
+                _section = _cfg.get(section_name, {})
+                return bool(_section.get("enabled", False)) if isinstance(_section, dict) else False
+            except Exception:
+                return False
 
-                def set_message_callback(self, cb):
-                    self._message_callback = cb
-
-                def set_restart_callback(self, cb):
-                    self._restart_callback = cb
-
-                def set_shared_conversation_history(self, history):
-                    self._shared_history = history
-
-                def set_user_message_callback(self, cb):
-                    self._user_message_callback = cb
-
-                def queue_message(self, chat_id, message):
-                    print(f"[TELEGRAM-STUB -> {chat_id}] {message}")
-
-                def start_bot(self):
-                    """Start a simple console input loop to emulate Telegram messages.
-
-                    Blocks until `stop_bot` is called. Reads lines from stdin
-                    and forwards them to the configured user message callback.
-                    """
-                    import sys
-                    import select
-                    self._running = True
-                    print("[TELEGRAM-STUB] Console input active. Type messages to send.")
-                    try:
-                        while self._running:
-                            try:
-                                print("> ", end="", flush=True)
-                                rlist, _, _ = select.select([sys.stdin], [], [], 1.0)
-                                if rlist:
-                                    line = sys.stdin.readline()
-                                    if not line:
-                                        continue
-                                    text = line.rstrip("\n")
-                                    user_id = getattr(self, "_boot_user_id", None) or getattr(self, "_last_user_id", None) or 8616350272
-                                    if self._user_message_callback:
-                                        try:
-                                            self._user_message_callback(text, user_id)
-                                        except TypeError:
-                                            self._user_message_callback(text)
-                            except Exception:
-                                # swallow input errors but keep running
-                                continue
-                    except KeyboardInterrupt:
-                        pass
-
-                def stop_bot(self):
-                    self._running = False
-                    print("[TELEGRAM-STUB] Stopped.")
-
-                # compatibility: TelegramBotManager exposes queue_message and
-                # the run loop does not expect more from the stub.
-
-            telegram_bot = _ConsoleTelegramStub()
-            print("\u26a0\ufe0f Telegram bot unavailable; using console stub for messages")
+        if selected_mode == "telegram" and telegram_bot is None and (
+            requested_telegram_cli or _config_enabled("telegram")
+        ):
+            print("\n\u274c Telegram mode was requested, but no valid Telegram bot could be initialized.")
+            print("   Run `python3 run.py --setting`, choose Telegram, and enter:")
+            print("   - Bot Token in BotFather format: 123456789:AA...")
+            print("   - Optional numeric Telegram user/chat ID for startup replies")
+            print("   - Optional comma-separated allowed user IDs")
+            print("   The agent was not started with the console stub, because that cannot send or receive Telegram messages.")
+            sys.exit(1)
 
         # Select the PRIMARY bot based on the user-selected mode so that the
         # engine's mode flags, the printed label, and the polling bot all
