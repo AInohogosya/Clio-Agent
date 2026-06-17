@@ -1,5 +1,5 @@
 """
-VEXIS-CLI GUI — SVG Icons & Resources
+Clio-Agent-1 GUI — SVG Icons & Resources
 Inline SVG icons rendered as QIcon for crisp rendering at any resolution.
 """
 

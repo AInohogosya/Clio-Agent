@@ -1,5 +1,5 @@
 """
-Groq Model Definitions for VEXIS-CLI Integration
+Groq Model Definitions for Clio-Agent-1 Integration
 Organized by company/model family with progressive selection support
 Based on official Groq documentation as of 2025
 """

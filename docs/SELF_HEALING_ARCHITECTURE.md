@@ -2,7 +2,7 @@
 
 ## Overview
 
-This document describes the comprehensive self-healing architecture implemented in VEXIS-CLI AI Agent. The system is designed to **never stop working** - it automatically recovers from any error, crash, or failure condition.
+This document describes the comprehensive self-healing architecture implemented in Clio-Agent-1 AI Agent. The system is designed to **never stop working** - it automatically recovers from any error, crash, or failure condition.
 
 ## Architecture Layers
 
@@ -289,7 +289,7 @@ python3 supervisor.py --heartbeat-timeout 300 --max-restarts-per-hour 20
 
 ```ini
 [Unit]
-Description=VEXIS-CLI AI Agent
+Description=Clio-Agent-1 AI Agent
 After=network.target
 
 [Service]
@@ -332,8 +332,8 @@ cat .context/supervisor_restarts.json
 ### Log Files
 
 - `logs/supervisor.log` - Eternal supervisor logs
-- `logs/vexis.log` - Main agent logs
-- `logs/vexis_structured.log` - Structured JSON logs
+- `logs/clio_agent.log` - Main agent logs
+- `logs/clio_agent_structured.log` - Structured JSON logs
 - `logs/resilience_errors.jsonl` - Resilience engine error log
 
 ### Health Status
@@ -409,13 +409,13 @@ engine:
 
 ```bash
 # Disable watchdog (for development)
-export VEXIS_WATCHDOG_DISABLED=1
+export CLIO_WATCHDOG_DISABLED=1
 
 # Custom heartbeat timeout
-export VEXIS_WATCHDOG_TIMEOUT=300
+export CLIO_WATCHDOG_TIMEOUT=300
 
 # Supervisor mode
-export VEXIS_SUPERVISED=1
+export CLIO_SUPERVISED=1
 ```
 
 ## Best Practices

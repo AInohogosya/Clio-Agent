@@ -1,5 +1,5 @@
 """
-Eternal Supervisor - Ultimate Self-Healing System for VEXIS-CLI AI Agent
+Eternal Supervisor - Ultimate Self-Healing System for Clio-Agent-1 AI Agent
 
 This module provides the LAST LINE OF DEFENSE against any failure.
 It wraps the entire agent with multiple layers of resilience:
@@ -279,8 +279,8 @@ class EternalSupervisor:
                 cmd.extend(["--no-prompt", "--__supervised__"])
 
             env = os.environ.copy()
-            env["VEXIS_SUPERVISED"] = "1"
-            env["VEXIS_SUPERVISOR_PID"] = str(os.getpid())
+            env["CLIO_SUPERVISED"] = "1"
+            env["CLIO_SUPERVISOR_PID"] = str(os.getpid())
 
             try:
                 self._agent_process = subprocess.Popen(
@@ -863,7 +863,7 @@ def main():
     """CLI entry point for the eternal supervisor."""
     import argparse
 
-    parser = argparse.ArgumentParser(description="VEXIS-CLI Eternal Supervisor")
+    parser = argparse.ArgumentParser(description="Clio-Agent-1 Eternal Supervisor")
     parser.add_argument("--agent-args", nargs="*", help="Arguments to pass to agent")
     parser.add_argument("--heartbeat-timeout", type=float, default=600.0)
     parser.add_argument("--max-restarts-per-hour", type=int, default=10)

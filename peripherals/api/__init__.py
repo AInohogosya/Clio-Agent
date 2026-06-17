@@ -1,5 +1,5 @@
 """
-VEXIS Unified API Package
+Clio-Agent-1 Unified API Package
 
 A unified interface for multiple LLM providers including Google Gemini and OpenAI.
 

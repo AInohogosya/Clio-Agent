@@ -1,5 +1,5 @@
 """
-Prompt Cache System for VEXIS-CLI
+Prompt Cache System for Clio-Agent-1
 Caches LLM responses to reduce API calls and improve response times
 """
 
@@ -71,7 +71,7 @@ class PromptCache:
         self.max_size = max_size
         self.default_ttl = default_ttl
         self.persist_to_disk = persist_to_disk
-        self.cache_dir = Path(cache_dir) if cache_dir else Path.home() / ".vexis" / "cache"
+        self.cache_dir = Path(cache_dir) if cache_dir else Path.home() / ".clio_agent" / "cache"
         
         self.logger = get_logger("prompt_cache")
         self.cache: Dict[str, CacheEntry] = {}
@@ -350,7 +350,7 @@ def get_prompt_cache(
         _global_cache.max_size = 0
         _global_cache.default_ttl = 0
         _global_cache.persist_to_disk = False
-        _global_cache.cache_dir = Path.home() / ".vexis" / "cache"
+        _global_cache.cache_dir = Path.home() / ".clio_agent" / "cache"
     
     return _global_cache
 

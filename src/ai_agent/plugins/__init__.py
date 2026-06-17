@@ -1,24 +1,24 @@
 """
-Plugin System for VEXIS-CLI
+Plugin System for Clio-Agent-1
 Extensible architecture using pluggy
 """
 
 import pluggy
 
 # Define hook specifications namespace
-hookspec = pluggy.HookspecMarker("vexis")
-hookimpl = pluggy.HookimplMarker("vexis")
+hookspec = pluggy.HookspecMarker("clio_agent")
+hookimpl = pluggy.HookimplMarker("clio_agent")
 
 
-class VexisHooks:
+class ClioAgentHooks:
     """
-    Hook specifications for VEXIS-CLI plugins
+    Hook specifications for Clio-Agent-1 plugins
     """
     
     @hookspec
-    def vexis_initialize(self, config: dict) -> None:
+    def clio_agent_initialize(self, config: dict) -> None:
         """
-        Called when VEXIS initializes
+        Called when Clio-Agent-1 initializes
         
         Args:
             config: Application configuration dictionary
@@ -26,7 +26,7 @@ class VexisHooks:
         pass
     
     @hookspec
-    def vexis_pre_execute(self, command: str, context: dict) -> str:
+    def clio_agent_pre_execute(self, command: str, context: dict) -> str:
         """
         Called before executing a terminal command
         
@@ -40,7 +40,7 @@ class VexisHooks:
         pass
     
     @hookspec
-    def vexis_post_execute(self, command: str, result: dict, context: dict) -> None:
+    def clio_agent_post_execute(self, command: str, result: dict, context: dict) -> None:
         """
         Called after executing a terminal command
         
@@ -52,7 +52,7 @@ class VexisHooks:
         pass
     
     @hookspec
-    def vexis_pre_phase(self, phase: str, context: dict) -> None:
+    def clio_agent_pre_phase(self, phase: str, context: dict) -> None:
         """
         Called before starting a pipeline phase
         
@@ -63,7 +63,7 @@ class VexisHooks:
         pass
     
     @hookspec
-    def vexis_post_phase(self, phase: str, result: dict, context: dict) -> None:
+    def clio_agent_post_phase(self, phase: str, result: dict, context: dict) -> None:
         """
         Called after completing a pipeline phase
         
@@ -75,7 +75,7 @@ class VexisHooks:
         pass
     
     @hookspec
-    def vexis_pre_request(self, request: dict, provider: str, model: str) -> dict:
+    def clio_agent_pre_request(self, request: dict, provider: str, model: str) -> dict:
         """
         Called before making an API request
         
@@ -90,7 +90,7 @@ class VexisHooks:
         pass
     
     @hookspec
-    def vexis_post_response(self, response: dict, provider: str, model: str) -> dict:
+    def clio_agent_post_response(self, response: dict, provider: str, model: str) -> dict:
         """
         Called after receiving an API response
         
@@ -105,7 +105,7 @@ class VexisHooks:
         pass
     
     @hookspec
-    def vexis_on_error(self, error: Exception, context: dict) -> bool:
+    def clio_agent_on_error(self, error: Exception, context: dict) -> bool:
         """
         Called when an error occurs
         
@@ -119,7 +119,7 @@ class VexisHooks:
         pass
     
     @hookspec
-    def vexis_get_commands(self) -> list:
+    def clio_agent_get_commands(self) -> list:
         """
         Return custom CLI commands to register
         
@@ -129,7 +129,7 @@ class VexisHooks:
         pass
     
     @hookspec
-    def vexis_get_providers(self) -> list:
+    def clio_agent_get_providers(self) -> list:
         """
         Return custom AI providers to register
         
@@ -145,8 +145,8 @@ class PluginManager:
     """
     
     def __init__(self):
-        self.pm = pluggy.PluginManager("vexis")
-        self.pm.add_hookspecs(VexisHooks)
+        self.pm = pluggy.PluginManager("clio_agent")
+        self.pm.add_hookspecs(ClioAgentHooks)
         self._plugins = []
     
     def register_plugin(self, plugin):
@@ -159,7 +159,7 @@ class PluginManager:
         self.pm.unregister(plugin)
         self._plugins.remove(plugin)
     
-    def discover_plugins(self, entry_points_group: str = "vexis.plugins"):
+    def discover_plugins(self, entry_points_group: str = "clio_agent.plugins"):
         """Discover and load plugins from entry points"""
         self.pm.load_setuptools_entrypoints(entry_points_group)
     
@@ -191,6 +191,6 @@ def initialize_plugins(config: dict = None):
     
     # Call initialization hook
     hook = pm.get_hook_caller()
-    hook.vexis_initialize(config=config or {})
+    hook.clio_agent_initialize(config=config or {})
     
     return pm

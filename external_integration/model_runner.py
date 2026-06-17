@@ -1,5 +1,5 @@
 """
-Model Runner for VEXIS-CLI AI Agent System
+Model Runner for Clio-Agent-1 AI Agent System
 Multi-Provider Support: 13+ AI providers available
 """
 
@@ -382,7 +382,7 @@ class ModelRunner:
         In Telegram mode, log only (don't block).
         """
         try:
-            is_telegram_mode = os.getenv("VEXIS_TELEGRAM_MODE", "").lower() in ("true", "1", "yes")
+            is_telegram_mode = os.getenv("CLIO_TELEGRAM_MODE", "").lower() in ("true", "1", "yes")
 
             if provider_name == "ollama":
                 from ..utils.ollama_error_handler import handle_ollama_error

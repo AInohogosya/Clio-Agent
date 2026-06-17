@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-VEXIS-CLI GUI Launcher
+Clio-Agent-1 GUI Launcher
 Entry point for the .app bundle.
 """
 

@@ -2,7 +2,7 @@
 
 ## Overview
 
-This guide covers deployment strategies, configurations, and best practices for VEXIS-CLI in various environments from development to production.
+This guide covers deployment strategies, configurations, and best practices for Clio-Agent-1 in various environments from development to production.
 
 ## Deployment Architectures
 
@@ -13,7 +13,7 @@ This guide covers deployment strategies, configurations, and best practices for 
 │           Single Machine               │
 ├─────────────────────────────────────────┤
 │  ┌─────────────┐  ┌─────────────────┐   │
-│  │  VEXIS-CLI  │  │   Ollama       │   │
+│  │  Clio-Agent-1  │  │   Ollama       │   │
 │  │   Engine    │  │   Server       │   │
 │  └─────────────┘  └─────────────────┘   │
 │  ┌─────────────┐  ┌─────────────────┐   │
@@ -43,7 +43,7 @@ This guide covers deployment strategies, configurations, and best practices for 
                     └─────────────┬─────────────┘
                                  │
                     ┌─────────────┴─────────────┐
-                    │   VEXIS-CLI Cluster      │
+                    │   Clio-Agent-1 Cluster      │
                     │  ┌─────────────────────┐ │
                     │  │   Application Node   │ │
                     │  └─────────────────────┘ │
@@ -67,7 +67,7 @@ This guide covers deployment strategies, configurations, and best practices for 
 ├─────────────────────────────────────────┤
 │  ┌─────────────┐  ┌─────────────────┐   │
 │  │   Container │  │   Container     │   │
-│  │  VEXIS-CLI │  │    Ollama      │   │
+│  │  Clio-Agent-1 │  │    Ollama      │   │
 │  └─────────────┘  └─────────────────┘   │
 │  ┌─────────────┐  ┌─────────────────┐   │
 │  │   Container │  │   Container     │   │
@@ -108,8 +108,8 @@ ollama --version
 
 ```bash
 # 1. Clone repository
-git clone https://github.com/AInohogosya/VEXIS-CLI.git
-cd VEXIS-CLI
+git clone https://github.com/AInohogosya/Clio-Agent-1.git
+cd Clio-Agent-1
 
 # 2. Create virtual environment
 python3 -m venv venv
@@ -188,7 +188,7 @@ execution:
 logging:
   level: "INFO"
   console: false
-  file: "/var/log/vexis/staging.log"
+  file: "/var/log/clio_agent/staging.log"
   rotation: true
 
 security:
@@ -208,7 +208,7 @@ monitoring:
 
 set -e
 
-echo "Deploying VEXIS-CLI to staging..."
+echo "Deploying Clio-Agent-1 to staging..."
 
 # 1. Update code
 git pull origin main
@@ -218,7 +218,7 @@ pip install -r requirements.txt
 pip install -e .
 
 # 3. Set up configuration
-export VEXIS_CONFIG="config.staging.yaml"
+export CLIO_CONFIG="config.staging.yaml"
 export GOOGLE_API_KEY="${STAGING_API_KEY}"
 
 # 4. Run health checks
@@ -227,10 +227,10 @@ python3 run.py --health-check
 
 # 5. Start services
 if command -v systemctl &> /dev/null; then
-    sudo systemctl restart vexis-staging
+    sudo systemctl restart clio_agent-staging
 else
     # Fallback to manual start
-    nohup python3 run.py --daemon --config config.staging.yaml > /var/log/vexis/staging.out 2>&1 &
+    nohup python3 run.py --daemon --config config.staging.yaml > /var/log/clio_agent/staging.out 2>&1 &
 fi
 
 echo "Staging deployment complete!"
@@ -268,7 +268,7 @@ execution:
 logging:
   level: "INFO"
   console: false
-  file: "/var/log/vexis/production.log"
+  file: "/var/log/clio_agent/production.log"
   rotation: true
   max_size: "100MB"
   backup_count: 10
@@ -299,10 +299,10 @@ set -e
 set -u
 
 # Configuration
-APP_USER="vexis"
-APP_DIR="/opt/vexis"
-SERVICE_NAME="vexis-production"
-BACKUP_DIR="/opt/vexis/backups"
+APP_USER="clio_agent"
+APP_DIR="/opt/clio_agent"
+SERVICE_NAME="clio_agent-production"
+BACKUP_DIR="/opt/clio_agent/backups"
 
 echo "=== Production Deployment ==="
 
@@ -324,7 +324,7 @@ fi
 
 # 2. Backup current deployment
 echo "Creating backup..."
-BACKUP_FILE="${BACKUP_DIR}/vexis-$(date +%Y%m%d-%H%M%S).tar.gz"
+BACKUP_FILE="${BACKUP_DIR}/clio_agent-$(date +%Y%m%d-%H%M%S).tar.gz"
 tar -czf "$BACKUP_FILE" -C "$APP_DIR" .
 
 # 3. Update application
@@ -395,7 +395,7 @@ FROM python:3.11-slim
 # Set environment variables
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
-ENV VEXIS_CONFIG=/app/config.yaml
+ENV CLIO_CONFIG=/app/config.yaml
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
@@ -417,9 +417,9 @@ COPY . .
 RUN pip install -e .
 
 # Create non-root user
-RUN useradd --create-home --shell /bin/bash vexis
-RUN chown -R vexis:vexis /app
-USER vexis
+RUN useradd --create-home --shell /bin/bash clio_agent
+RUN chown -R clio_agent:clio_agent /app
+USER clio_agent
 
 # Expose port
 EXPOSE 8080
@@ -439,17 +439,17 @@ CMD ["python3", "run.py", "--server", "--port", "8080"]
 version: '3.8'
 
 services:
-  vexis:
+  clio_agent:
     build: .
     ports:
       - "8080:8080"
     environment:
-      - VEXIS_CONFIG=/app/config.yaml
+      - CLIO_CONFIG=/app/config.yaml
       - GOOGLE_API_KEY=${GOOGLE_API_KEY}
     volumes:
       - ./config.yaml:/app/config.yaml:ro
       - ./logs:/app/logs
-      - ollama_models:/home/vexis/.ollama
+      - ollama_models:/home/clio_agent/.ollama
     depends_on:
       - ollama
       - redis
@@ -497,7 +497,7 @@ services:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
       - ./ssl:/etc/nginx/ssl:ro
     depends_on:
-      - vexis
+      - clio_agent
     restart: unless-stopped
 
 volumes:
@@ -543,9 +543,9 @@ COPY . .
 RUN pip install -e .
 
 # Create non-root user
-RUN useradd --create-home --shell /bin/bash vexis
-RUN chown -R vexis:vexis /app
-USER vexis
+RUN useradd --create-home --shell /bin/bash clio_agent
+RUN chown -R clio_agent:clio_agent /app
+USER clio_agent
 
 EXPOSE 8080
 
@@ -561,31 +561,31 @@ CMD ["python3", "run.py", "--server", "--port", "8080"]
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: vexis-deployment
+  name: clio_agent-deployment
   labels:
-    app: vexis
+    app: clio_agent
 spec:
   replicas: 3
   selector:
     matchLabels:
-      app: vexis
+      app: clio_agent
   template:
     metadata:
       labels:
-        app: vexis
+        app: clio_agent
     spec:
       containers:
-      - name: vexis
-        image: vexis-cli:latest
+      - name: clio_agent
+        image: clio_agent-cli:latest
         ports:
         - containerPort: 8080
         env:
-        - name: VEXIS_CONFIG
+        - name: CLIO_CONFIG
           value: "/app/config.yaml"
         - name: GOOGLE_API_KEY
           valueFrom:
             secretKeyRef:
-              name: vexis-secrets
+              name: clio_agent-secrets
               key: google-api-key
         volumeMounts:
         - name: config
@@ -615,7 +615,7 @@ spec:
       volumes:
       - name: config
         configMap:
-          name: vexis-config
+          name: clio_agent-config
       - name: logs
         emptyDir: {}
 ```
@@ -627,10 +627,10 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: vexis-service
+  name: clio_agent-service
 spec:
   selector:
-    app: vexis
+    app: clio_agent
   ports:
   - protocol: TCP
     port: 80
@@ -645,7 +645,7 @@ spec:
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: vexis-config
+  name: clio_agent-config
 data:
   config.yaml: |
     api:
@@ -677,7 +677,7 @@ data:
 apiVersion: v1
 kind: Secret
 metadata:
-  name: vexis-secrets
+  name: clio_agent-secrets
 type: Opaque
 data:
   google-api-key: <base64-encoded-api-key>
@@ -707,12 +707,12 @@ sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-
 sudo chmod +x /usr/local/bin/docker-compose
 
 # Create application directory
-sudo mkdir -p /opt/vexis
-sudo chown ec2-user:ec2-user /opt/vexis
+sudo mkdir -p /opt/clio_agent
+sudo chown ec2-user:ec2-user /opt/clio_agent
 
 # Clone repository
-cd /opt/vexis
-git clone https://github.com/AInohogosya/VEXIS-CLI.git .
+cd /opt/clio_agent
+git clone https://github.com/AInohogosya/Clio-Agent-1.git .
 
 # Set up environment
 echo "GOOGLE_API_KEY=${GOOGLE_API_KEY}" > .env
@@ -721,8 +721,8 @@ echo "GOOGLE_API_KEY=${GOOGLE_API_KEY}" > .env
 docker-compose up -d
 
 # Setup log rotation
-sudo tee /etc/logrotate.d/vexis << EOF
-/opt/vexis/logs/*.log {
+sudo tee /etc/logrotate.d/clio_agent << EOF
+/opt/clio_agent/logs/*.log {
     daily
     missingok
     rotate 30
@@ -738,7 +738,7 @@ EOF
 
 ```json
 {
-  "family": "vexis-task",
+  "family": "clio_agent-task",
   "networkMode": "awsvpc",
   "requiresCompatibilities": ["FARGATE"],
   "cpu": "1024",
@@ -747,8 +747,8 @@ EOF
   "taskRoleArn": "arn:aws:iam::account:role/ecsTaskRole",
   "containerDefinitions": [
     {
-      "name": "vexis",
-      "image": "your-account.dkr.ecr.region.amazonaws.com/vexis:latest",
+      "name": "clio_agent",
+      "image": "your-account.dkr.ecr.region.amazonaws.com/clio_agent:latest",
       "portMappings": [
         {
           "containerPort": 8080,
@@ -757,20 +757,20 @@ EOF
       ],
       "environment": [
         {
-          "name": "VEXIS_CONFIG",
+          "name": "CLIO_CONFIG",
           "value": "/app/config.yaml"
         }
       ],
       "secrets": [
         {
           "name": "GOOGLE_API_KEY",
-          "valueFrom": "arn:aws:secretsmanager:region:account:secret:vexis/google-api-key"
+          "valueFrom": "arn:aws:secretsmanager:region:account:secret:clio_agent/google-api-key"
         }
       ],
       "logConfiguration": {
         "logDriver": "awslogs",
         "options": {
-          "awslogs-group": "/ecs/vexis",
+          "awslogs-group": "/ecs/clio_agent",
           "awslogs-region": "us-west-2",
           "awslogs-stream-prefix": "ecs"
         }
@@ -796,7 +796,7 @@ EOF
 apiVersion: serving.knative.dev/v1
 kind: Service
 metadata:
-  name: vexis-service
+  name: clio_agent-service
   annotations:
     run.googleapis.com/ingress: all
 spec:
@@ -809,16 +809,16 @@ spec:
       containerConcurrency: 10
       timeoutSeconds: 300
       containers:
-      - image: gcr.io/project-id/vexis:latest
+      - image: gcr.io/project-id/clio_agent:latest
         ports:
         - containerPort: 8080
         env:
-        - name: VEXIS_CONFIG
+        - name: CLIO_CONFIG
           value: "/app/config.yaml"
         - name: GOOGLE_API_KEY
           valueFrom:
             secretKeyRef:
-              name: vexis-secrets
+              name: clio_agent-secrets
               key: google-api-key
         resources:
           limits:
@@ -850,22 +850,22 @@ spec:
 
 PROJECT_ID="your-project-id"
 REGION="us-central1"
-SERVICE_NAME="vexis-service"
+SERVICE_NAME="clio_agent-service"
 
 # Build and push image
-gcloud builds submit --tag gcr.io/${PROJECT_ID}/vexis:latest .
+gcloud builds submit --tag gcr.io/${PROJECT_ID}/clio_agent:latest .
 
 # Deploy to Cloud Run
 gcloud run deploy ${SERVICE_NAME} \
-  --image gcr.io/${PROJECT_ID}/vexis:latest \
+  --image gcr.io/${PROJECT_ID}/clio_agent:latest \
   --region ${REGION} \
   --platform managed \
   --allow-unauthenticated \
   --memory 2Gi \
   --cpu 1 \
   --timeout 300s \
-  --set-env-vars VEXIS_CONFIG=/app/config.yaml \
-  --set-secrets GOOGLE_API_KEY=vexis-secrets:google-api-key
+  --set-env-vars CLIO_CONFIG=/app/config.yaml \
+  --set-secrets GOOGLE_API_KEY=clio_agent-secrets:google-api-key
 
 # Get service URL
 SERVICE_URL=$(gcloud run services describe ${SERVICE_NAME} \
@@ -997,11 +997,11 @@ import time
 import psutil
 
 # Define metrics
-REQUEST_COUNT = Counter('vexis_requests_total', 'Total requests', ['method', 'endpoint', 'status'])
-REQUEST_DURATION = Histogram('vexis_request_duration_seconds', 'Request duration')
-ACTIVE_CONNECTIONS = Gauge('vexis_active_connections', 'Active connections')
-MEMORY_USAGE = Gauge('vexis_memory_usage_bytes', 'Memory usage')
-CPU_USAGE = Gauge('vexis_cpu_usage_percent', 'CPU usage')
+REQUEST_COUNT = Counter('clio_agent_requests_total', 'Total requests', ['method', 'endpoint', 'status'])
+REQUEST_DURATION = Histogram('clio_agent_request_duration_seconds', 'Request duration')
+ACTIVE_CONNECTIONS = Gauge('clio_agent_active_connections', 'Active connections')
+MEMORY_USAGE = Gauge('clio_agent_memory_usage_bytes', 'Memory usage')
+CPU_USAGE = Gauge('clio_agent_cpu_usage_percent', 'CPU usage')
 
 class MetricsMiddleware:
     """Middleware to collect request metrics."""
@@ -1120,7 +1120,7 @@ class StructuredFormatter(logging.Formatter):
         return json.dumps(log_entry)
 
 # Usage example
-logger = StructuredLogger("vexis.production")
+logger = StructuredLogger("clio_agent.production")
 
 logger.info(
     "Instruction processed",
@@ -1188,7 +1188,7 @@ security:
 FROM python:3.11-slim as builder
 
 # Build as root, then run as non-root
-RUN addgroup --system vexis && adduser --system --group vexis
+RUN addgroup --system clio_agent && adduser --system --group clio_agent
 
 # Install build dependencies
 RUN apt-get update && apt-get install -y \
@@ -1212,7 +1212,7 @@ RUN apt-get update && apt-get install -y \
     && apt-get clean
 
 # Create non-root user
-RUN addgroup --system vexis && adduser --system --group vexis
+RUN addgroup --system clio_agent && adduser --system --group clio_agent
 
 WORKDIR /app
 
@@ -1221,18 +1221,18 @@ COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/pytho
 COPY --from=builder /usr/local/bin /usr/local/bin
 
 # Copy application code
-COPY --chown=vexis:vexis . .
+COPY --chown=clio_agent:clio_agent . .
 
 # Install application
 RUN pip install -e .
 
 # Set permissions
-RUN chown -R vexis:vexis /app
+RUN chown -R clio_agent:clio_agent /app
 RUN chmod -R 755 /app
 RUN chmod 600 /app/config.yaml
 
 # Switch to non-root user
-USER vexis
+USER clio_agent
 
 # Security scanning
 RUN python3 -m pip audit
@@ -1266,8 +1266,8 @@ http {
     # Rate limiting
     limit_req_zone $binary_remote_addr zone=api:10m rate=10r/s;
     
-    upstream vexis_backend {
-        server vexis:8080;
+    upstream clio_agent_backend {
+        server clio_agent:8080;
     }
     
     server {
@@ -1293,7 +1293,7 @@ http {
         limit_req zone=api burst=20 nodelay;
         
         location / {
-            proxy_pass http://vexis_backend;
+            proxy_pass http://clio_agent_backend;
             proxy_set_header Host $host;
             proxy_set_header X-Real-IP $remote_addr;
             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -1308,7 +1308,7 @@ http {
         # Health check endpoint (no rate limiting)
         location /health {
             limit_req zone=api burst=5 nodelay;
-            proxy_pass http://vexis_backend;
+            proxy_pass http://clio_agent_backend;
         }
     }
 }
@@ -1327,17 +1327,17 @@ http {
 set -e
 
 # Configuration
-BACKUP_DIR="/opt/vexis/backups"
-APP_DIR="/opt/vexis"
+BACKUP_DIR="/opt/clio_agent/backups"
+APP_DIR="/opt/clio_agent"
 RETENTION_DAYS=30
-S3_BUCKET="vexis-backups"
+S3_BUCKET="clio_agent-backups"
 
 # Create backup directory
 mkdir -p "$BACKUP_DIR"
 
 # Generate backup filename
 TIMESTAMP=$(date +%Y%m%d-%H%M%S)
-BACKUP_FILE="vexis-backup-${TIMESTAMP}.tar.gz"
+BACKUP_FILE="clio_agent-backup-${TIMESTAMP}.tar.gz"
 
 # Create backup
 echo "Creating backup: $BACKUP_FILE"
@@ -1357,7 +1357,7 @@ fi
 
 # Clean old backups
 echo "Cleaning old backups..."
-find "$BACKUP_DIR" -name "vexis-backup-*.tar.gz" -mtime +$RETENTION_DAYS -delete
+find "$BACKUP_DIR" -name "clio_agent-backup-*.tar.gz" -mtime +$RETENTION_DAYS -delete
 
 # Clean S3 backups
 if command -v aws &> /dev/null && [ ! -z "$S3_BUCKET" ]; then
@@ -1386,14 +1386,14 @@ echo "Backup completed: $BACKUP_FILE"
 set -e
 
 # Configuration
-BACKUP_DIR="/opt/vexis/backups"
-APP_DIR="/opt/vexis"
-SERVICE_NAME="vexis-production"
+BACKUP_DIR="/opt/clio_agent/backups"
+APP_DIR="/opt/clio_agent"
+SERVICE_NAME="clio_agent-production"
 
 # Function to list available backups
 list_backups() {
     echo "Available backups:"
-    ls -la "$BACKUP_DIR"/vexis-backup-*.tar.gz | awk '{print $9}' | while read backup; do
+    ls -la "$BACKUP_DIR"/clio_agent-backup-*.tar.gz | awk '{print $9}' | while read backup; do
         basename "$backup"
     done
 }
@@ -1422,11 +1422,11 @@ restore_backup() {
     sudo tar -xzf "$BACKUP_DIR/$backup_file" -C "$APP_DIR"
     
     # Fix permissions
-    sudo chown -R vexis:vexis "$APP_DIR"
+    sudo chown -R clio_agent:clio_agent "$APP_DIR"
     
     # Reinstall dependencies
-    sudo -u vexis pip install -r "$APP_DIR/requirements.txt"
-    sudo -u vexis pip install -e "$APP_DIR"
+    sudo -u clio_agent pip install -r "$APP_DIR/requirements.txt"
+    sudo -u clio_agent pip install -e "$APP_DIR"
     
     echo "Starting service..."
     sudo systemctl start "$SERVICE_NAME"
@@ -1453,4 +1453,4 @@ restore_backup "$1"
 echo "Recovery completed successfully"
 ```
 
-This comprehensive deployment guide provides everything needed to deploy VEXIS-CLI-2.2 in various environments, from development setups to production-scale deployments with proper monitoring, security, and backup strategies.
+This comprehensive deployment guide provides everything needed to deploy Clio-Agent-1-2.2 in various environments, from development setups to production-scale deployments with proper monitoring, security, and backup strategies.

@@ -2,7 +2,7 @@
 Integration Example: Using the Unified API in main.py
 
 This example shows how to integrate the new unified API structure
-into the existing VEXIS codebase.
+into the existing Clio-Agent-1 codebase.
 """
 
 import os
@@ -52,7 +52,7 @@ class AIAssistant:
     """
     Example class that uses the unified API.
     
-    This could be integrated into the existing VEXIS architecture.
+    This could be integrated into the existing Clio-Agent-1 architecture.
     """
     
     def __init__(self, provider: str = "google", api_key: Optional[str] = None):
@@ -119,7 +119,7 @@ class AIAssistant:
 
 def integration_with_existing_config(config: Dict[str, Any]):
     """
-    Example of integrating with existing VEXIS configuration.
+    Example of integrating with existing Clio-Agent-1 configuration.
     
     This shows how to bridge the existing config with the new API.
     """
@@ -266,7 +266,7 @@ def integration_with_model_runner():
     Example: How to integrate with existing ModelRunner.
     
     This shows how the new unified API could be used within
-    the existing VEXIS ModelRunner class.
+    the existing Clio-Agent-1 ModelRunner class.
     """
     
     class UnifiedModelRunner:
@@ -346,7 +346,7 @@ def integration_with_model_runner():
 
 if __name__ == "__main__":
     print("=" * 60)
-    print("VEXIS Unified API Integration Examples")
+    print("Clio-Agent-1 Unified API Integration Examples")
     print("=" * 60)
     
     # Uncomment examples to run:

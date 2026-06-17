@@ -1,5 +1,5 @@
 """
-Unified Model Definitions for VEXIS-CLI Ollama Integration
+Unified Model Definitions for Clio-Agent-1 Ollama Integration
 Verified against official Ollama library as of 2025
 Single source of truth for all model classifications - WITH ICONS
 """

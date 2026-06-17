@@ -1,4 +1,4 @@
-# Core dependencies for VEXIS-CLI
+# Core dependencies for Clio-Agent-1
 Pillow>=10.0.0; python_version < '3.13'
 Pillow>=11.0.0; python_version >= '3.13'
 requests>=2.31.0

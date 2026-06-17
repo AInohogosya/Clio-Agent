@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Clio Agent — One-command installer
-# Usage:  curl -fsSL https://raw.githubusercontent.com/AInohogosya/VEXIS-CLI/main/install.sh | bash
-# Or:     git clone https://github.com/AInohogosya/VEXIS-CLI.git && cd VEXIS-CLI && bash install.sh
+# Usage:  curl -fsSL https://raw.githubusercontent.com/AInohogosya/Clio-Agent-1/main/install.sh | bash
+# Or:     git clone https://github.com/AInohogosya/Clio-Agent-1.git && cd Clio-Agent-1 && bash install.sh
 
 set -euo pipefail
 

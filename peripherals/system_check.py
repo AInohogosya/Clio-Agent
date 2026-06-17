@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Comprehensive System Check for VEXIS-CLI
+Comprehensive System Check for Clio-Agent-1
 Validates all components and provides detailed diagnostics
 """
 
@@ -231,15 +231,15 @@ class SystemChecker:
         
         if results["errors"]:
             print(f"\n🚨 CRITICAL ISSUES FOUND:")
-            print(f"   Please fix the errors before running VEXIS-CLI")
+            print(f"   Please fix the errors before running Clio-Agent-1")
             return False
         elif results["warnings"]:
             print(f"\n⚠️  MINOR ISSUES FOUND:")
-            print(f"   VEXIS-CLI should work, but consider fixing warnings")
+            print(f"   Clio-Agent-1 should work, but consider fixing warnings")
             return True
         else:
             print(f"\n🎉 ALL CHECKS PASSED!")
-            print(f"   VEXIS-CLI is ready to run")
+            print(f"   Clio-Agent-1 is ready to run")
             return True
 
 

@@ -569,7 +569,6 @@ def _auto_configure():
             capture_output=True, text=True, timeout=120,
         )
         import yaml as _yaml  # noqa: F401
-    import yaml as _yaml
 
     # ── Load existing config ──
     config = {}
@@ -698,7 +697,6 @@ def _quick_bootstrap_config():
             capture_output=True, text=True, timeout=120,
         )
         import yaml as _yaml  # noqa: F401
-    import yaml as _yaml
 
     # ── Ollama detection ──
     ollama_path = shutil.which("ollama")
@@ -789,6 +787,7 @@ def _quick_bootstrap_config():
             "cohere": "COHERE_API_KEY", "deepseek": "DEEPSEEK_API_KEY",
             "together": "TOGETHER_API_KEY", "minimax": "MINIMAX_API_KEY",
             "zhipuai": "ZHIPUAI_API_KEY", "openrouter": "OPENROUTER_API_KEY",
+            "amazon": "AWS_ACCESS_KEY_ID",
         }
         _ev = _env_map.get(provider)
         if _ev:
@@ -974,7 +973,7 @@ except Exception:
 VENV_DIR = "venv"
 VENV_RESTART_FLAG = "--__venv_restarted__"
 USER_RESTART_FLAG = "--__user_restarted__"
-RESTART_ENV_PREFIX = "VEXIS_RESTART_"
+RESTART_ENV_PREFIX = "CLIO_RESTART_"
 RESTART_MODE_ENV = f"{RESTART_ENV_PREFIX}MODE"
 RESTART_PROVIDER_ENV = f"{RESTART_ENV_PREFIX}PROVIDER"
 RESTART_MODEL_ENV = f"{RESTART_ENV_PREFIX}MODEL"
@@ -1662,7 +1661,7 @@ def _reset_config_yaml():
             "command_timeout": 1800, "task_timeout": 7200, "max_iterations": 500,
             "auto_recovery": True, "show_thought_log": True, "idle_behavior": "fairy",
         },
-        "logging": {"level": "INFO", "file": "vexis.log", "json_format": False, "console": True},
+        "logging": {"level": "INFO", "file": "clio_agent.log", "json_format": False, "console": True},
         "cache": {"enabled": True, "max_size": 1000, "ttl": 3600, "persist_to_disk": True},
         "cost": {"daily_budget": None, "monthly_budget": None, "per_request_budget": None,
                   "warning_threshold": 0.8, "critical_threshold": 0.95},
@@ -1670,7 +1669,7 @@ def _reset_config_yaml():
         "user": {"name": "", "preferred_style": "detailed", "auto_confirm": False, "show_progress": True},
         "telegram": {
             "enabled": False, "bot_token": "", "bot_username": "", "api_id": 0, "api_hash": "",
-            "session_name": "vexis_telegram", "authorized_users": [], "allowed_user_ids": [],
+            "session_name": "clio_agent_telegram", "authorized_users": [], "allowed_user_ids": [],
             "enable_input_listener": True, "max_history_length": 50, "bot_name": "Clio Agent",
         },
         "discord": {
@@ -2218,7 +2217,7 @@ def _post_install_hint(pipx_path):
     console.print("  [white]clio-agent --help[/]")
     if pipx_path:
         console.print()
-        console.print("[dim]Managed by pipx. To uninstall: pipx uninstall vexis-cli[/]")
+        console.print("[dim]Managed by pipx. To uninstall: pipx uninstall clio_agent-cli[/]")
 
 
 def _add_to_shell_path(project_root, venv_bin=None):
@@ -2836,8 +2835,8 @@ def main():
             pass
 
         options = {"debug": debug_mode, "command_timeout": command_timeout, "task_timeout": task_timeout, "self_heal": _self_heal_mode}
-        os.environ['VEXIS_TELEGRAM_MODE'] = 'true' if selected_mode == 'telegram' else 'false'
-        os.environ['VEXIS_DISCORD_MODE'] = 'true' if selected_mode == 'discord' else 'false'
+        os.environ['CLIO_TELEGRAM_MODE'] = 'true' if selected_mode == 'telegram' else 'false'
+        os.environ['CLIO_DISCORD_MODE'] = 'true' if selected_mode == 'discord' else 'false'
 
         if active_bot:
             bot_label = "Discord" if selected_mode == "discord" else "Telegram"

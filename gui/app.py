@@ -1,5 +1,5 @@
 """
-VEXIS-CLI GUI — Application Entry Point
+Clio-Agent-1 GUI — Application Entry Point
 """
 
 import sys
@@ -19,7 +19,7 @@ from gui.main_window import MainWindow
 
 
 def run():
-    """Launch the VEXIS-CLI GUI application."""
+    """Launch the Clio-Agent-1 GUI application."""
 
     # Enable high-DPI scaling
     QApplication.setHighDpiScaleFactorRoundingPolicy(
@@ -27,9 +27,9 @@ def run():
     )
 
     app = QApplication(sys.argv)
-    app.setApplicationName("VEXIS")
+    app.setApplicationName("Clio-Agent-1")
     app.setApplicationVersion("3.0.0")
-    app.setOrganizationName("VEXIS")
+    app.setOrganizationName("Clio-Agent-1")
 
     # Apply global stylesheet
     app.setTheme = lambda: None  # placeholder

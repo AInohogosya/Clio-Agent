@@ -1,4 +1,4 @@
-# VEXIS Unified LLM API
+# Clio-Agent-1 Unified LLM API
 
 A unified, provider-agnostic interface for Large Language Model APIs supporting 13+ providers including Google Gemini, OpenAI, Anthropic, xAI, Meta, Mistral AI, Microsoft Azure, Amazon Bedrock, Cohere, DeepSeek, Groq, Together AI, and Ollama.
 
@@ -490,10 +490,10 @@ response = client.generate(prompt)
 Run the examples:
 
 ```bash
-cd /path/to/VEXIS-CLI-2.2
+cd /path/to/Clio-Agent-1-2.2
 python -m api.usage_example
 ```
 
 ## License
 
-Same as VEXIS-CLI-2.2 project
+Same as Clio-Agent-1-2.2 project

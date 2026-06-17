@@ -1,5 +1,5 @@
 """
-Usage Examples for VEXIS Unified API
+Usage Examples for Clio-Agent-1 Unified API
 
 This file demonstrates how to use the unified API interface
 with different LLM providers (Google Gemini, OpenAI).
@@ -235,7 +235,7 @@ def example_provider_comparison():
 if __name__ == "__main__":
     # Run examples
     print("=" * 50)
-    print("VEXIS Unified API Examples")
+    print("Clio-Agent-1 Unified API Examples")
     print("=" * 50)
     
     # Uncomment the examples you want to run:

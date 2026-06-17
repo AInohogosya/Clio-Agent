@@ -1,5 +1,5 @@
 """
-Autonomous Loop Application Entry Point for VEXIS-CLI AI Agent System.
+Autonomous Loop Application Entry Point for Clio-Agent-1 AI Agent System.
 Implements the autonomous think-execute loop architecture.
 
 The agent is fully self-directed. It starts thinking the moment it is
@@ -157,8 +157,8 @@ class AutonomousAIAgent:
             # explicit mode selection propagated via environment variables
             # (set by run.py), falling back to bot availability otherwise.
             import os
-            _env_telegram = os.environ.get("VEXIS_TELEGRAM_MODE", "").lower() == "true"
-            _env_discord = os.environ.get("VEXIS_DISCORD_MODE", "").lower() == "true"
+            _env_telegram = os.environ.get("CLIO_TELEGRAM_MODE", "").lower() == "true"
+            _env_discord = os.environ.get("CLIO_DISCORD_MODE", "").lower() == "true"
             if _env_discord and discord_bot is not None:
                 _discord_mode = True
                 _telegram_mode = False
@@ -230,7 +230,7 @@ def main():
     """CLI entry point (retained for backward compatibility)."""
     import argparse
     parser = argparse.ArgumentParser(
-        description="VEXIS-CLI Autonomous Loop AI Agent",
+        description="Clio-Agent-1 Autonomous Loop AI Agent",
     )
     parser.add_argument("instruction", type=str, nargs="?", default="",
                         help="Initial thought seed (optional — agent works without it)")

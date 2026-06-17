@@ -1,5 +1,5 @@
 """
-Example plugin demonstrating the VEXIS plugin system
+Example plugin demonstrating the Clio-Agent-1 plugin system
 """
 
 from . import hookimpl
@@ -15,37 +15,37 @@ class ExamplePlugin:
         self.error_count = 0
     
     @hookimpl
-    def vexis_initialize(self, config: dict) -> None:
-        """Called when VEXIS initializes"""
+    def clio_agent_initialize(self, config: dict) -> None:
+        """Called when Clio-Agent-1 initializes"""
         print(f"[ExamplePlugin] Initialized with config: {config}")
     
     @hookimpl
-    def vexis_pre_execute(self, command: str, context: dict) -> str:
+    def clio_agent_pre_execute(self, command: str, context: dict) -> str:
         """Log commands before execution"""
         self.command_count += 1
         print(f"[ExamplePlugin] Pre-execute: {command[:50]}...")
         return command
     
     @hookimpl
-    def vexis_post_execute(self, command: str, result: dict, context: dict) -> None:
+    def clio_agent_post_execute(self, command: str, result: dict, context: dict) -> None:
         """Log results after execution"""
         exit_code = result.get('exit_code', 'unknown')
         print(f"[ExamplePlugin] Post-execute: exit_code={exit_code}")
     
     @hookimpl
-    def vexis_pre_phase(self, phase: str, context: dict) -> None:
+    def clio_agent_pre_phase(self, phase: str, context: dict) -> None:
         """Log phase start"""
         print(f"[ExamplePlugin] Starting phase: {phase}")
     
     @hookimpl
-    def vexis_on_error(self, error: Exception, context: dict) -> bool:
+    def clio_agent_on_error(self, error: Exception, context: dict) -> bool:
         """Log errors"""
         self.error_count += 1
         print(f"[ExamplePlugin] Error occurred: {error}")
         return False  # Don't handle, just log
     
     @hookimpl
-    def vexis_get_commands(self) -> list:
+    def clio_agent_get_commands(self) -> list:
         """Register custom commands"""
         return [
             ("plugin-stats", self.show_stats, "Show plugin statistics"),

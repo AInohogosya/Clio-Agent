@@ -1,5 +1,5 @@
 """
-Security Utilities for VEXIS-CLI
+Security Utilities for Clio-Agent-1
 Enhanced security features including sandboxing and sensitive data masking
 Configuration via config.yaml or environment variables
 """
@@ -241,7 +241,7 @@ class SandboxManager:
     
     def create_temp_workspace(self) -> Path:
         """Create temporary workspace for sandboxed execution"""
-        self.temp_dir = Path(tempfile.mkdtemp(prefix="vexis_sandbox_"))
+        self.temp_dir = Path(tempfile.mkdtemp(prefix="clio_agent_sandbox_"))
         self.logger.info(f"Created sandbox workspace: {self.temp_dir}")
         return self.temp_dir
     
@@ -370,22 +370,22 @@ def get_security_config_from_env() -> SecurityConfig:
     Load security configuration from environment variables
     
     Environment variables:
-    - VEXIS_ENABLE_COMMAND_BLOCKING: true/false
-    - VEXIS_ENABLE_CONFIRMATION_PROMPTS: true/false
-    - VEXIS_ENABLE_SUDO_WARNING: true/false
-    - VEXIS_ENABLE_SHELL_PIPE_WARNING: true/false
-    - VEXIS_ENABLE_SANDBOX: true/false
+    - CLIO_ENABLE_COMMAND_BLOCKING: true/false
+    - CLIO_ENABLE_CONFIRMATION_PROMPTS: true/false
+    - CLIO_ENABLE_SUDO_WARNING: true/false
+    - CLIO_ENABLE_SHELL_PIPE_WARNING: true/false
+    - CLIO_ENABLE_SANDBOX: true/false
     """
     def env_bool(name: str, default: bool) -> bool:
         value = os.getenv(name, "").lower()
         return value in ("true", "1", "yes", "on") if value else default
     
     return SecurityConfig(
-        enable_command_blocking=env_bool("VEXIS_ENABLE_COMMAND_BLOCKING", False),
-        enable_confirmation_prompts=env_bool("VEXIS_ENABLE_CONFIRMATION_PROMPTS", False),
-        enable_sudo_warning=env_bool("VEXIS_ENABLE_SUDO_WARNING", False),
-        enable_shell_pipe_warning=env_bool("VEXIS_ENABLE_SHELL_PIPE_WARNING", False),
-        enable_sandbox=env_bool("VEXIS_ENABLE_SANDBOX", True)
+        enable_command_blocking=env_bool("CLIO_ENABLE_COMMAND_BLOCKING", False),
+        enable_confirmation_prompts=env_bool("CLIO_ENABLE_CONFIRMATION_PROMPTS", False),
+        enable_sudo_warning=env_bool("CLIO_ENABLE_SUDO_WARNING", False),
+        enable_shell_pipe_warning=env_bool("CLIO_ENABLE_SHELL_PIPE_WARNING", False),
+        enable_sandbox=env_bool("CLIO_ENABLE_SANDBOX", True)
     )
 
 
@@ -399,7 +399,7 @@ def get_security_manager(
     
     Config priority:
     1. Explicit config parameter
-    2. Environment variables (VEXIS_*)
+    2. Environment variables (Clio-Agent-1_*)
     3. config.yaml (via load_config())
     4. Default values (all disabled)
     """
@@ -413,10 +413,10 @@ def get_security_manager(
             
             # Check if any env vars were set
             if any([
-                os.getenv("VEXIS_ENABLE_COMMAND_BLOCKING"),
-                os.getenv("VEXIS_ENABLE_CONFIRMATION_PROMPTS"),
-                os.getenv("VEXIS_ENABLE_SUDO_WARNING"),
-                os.getenv("VEXIS_ENABLE_SHELL_PIPE_WARNING"),
+                os.getenv("CLIO_ENABLE_COMMAND_BLOCKING"),
+                os.getenv("CLIO_ENABLE_CONFIRMATION_PROMPTS"),
+                os.getenv("CLIO_ENABLE_SUDO_WARNING"),
+                os.getenv("CLIO_ENABLE_SHELL_PIPE_WARNING"),
             ]):
                 config = env_config
             else:
@@ -450,8 +450,8 @@ def check_command_safety(
         # Try environment first, then config.yaml
         env_config = get_security_config_from_env()
         if any([
-            os.getenv("VEXIS_ENABLE_COMMAND_BLOCKING"),
-            os.getenv("VEXIS_ENABLE_CONFIRMATION_PROMPTS"),
+            os.getenv("CLIO_ENABLE_COMMAND_BLOCKING"),
+            os.getenv("CLIO_ENABLE_CONFIRMATION_PROMPTS"),
         ]):
             config = env_config
         else:
@@ -477,7 +477,7 @@ def create_secure_config(
     
     For user-friendly configuration, prefer:
     1. config.yaml -> security section
-    2. Environment variables (VEXIS_*)
+    2. Environment variables (Clio-Agent-1_*)
     
     Example:
         # Strict mode (blocks dangerous commands)

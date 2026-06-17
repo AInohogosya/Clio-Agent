@@ -1,5 +1,5 @@
 """
-Structured Logging for VEXIS-CLI
+Structured Logging for Clio-Agent-1
 JSON-formatted logs for better observability and log analysis
 """
 
@@ -20,7 +20,7 @@ class StructuredLogFormatter(logging.Formatter):
     {
         "timestamp": "2026-04-18T10:30:00.123Z",
         "level": "INFO",
-        "logger": "vexis.engine",
+        "logger": "clio_agent.engine",
         "message": "Execution started",
         "context": {
             "phase": "phase1",
@@ -85,7 +85,7 @@ class StructuredLogger:
     
     def __init__(
         self,
-        name: str = "vexis",
+        name: str = "clio_agent",
         log_level: int = logging.INFO,
         log_dir: Optional[str] = None,
         json_output: bool = True,
@@ -113,7 +113,7 @@ class StructuredLogger:
             log_path = Path(log_dir)
             log_path.mkdir(parents=True, exist_ok=True)
             
-            json_file = log_path / "vexis_structured.log"
+            json_file = log_path / "clio_agent_structured.log"
             file_handler = RotatingFileHandler(
                 json_file,
                 maxBytes=max_file_size,
@@ -124,7 +124,7 @@ class StructuredLogger:
             self.logger.addHandler(file_handler)
             
             # Also add standard log file
-            standard_file = log_path / "vexis.log"
+            standard_file = log_path / "clio_agent.log"
             standard_handler = RotatingFileHandler(
                 standard_file,
                 maxBytes=max_file_size,
@@ -177,7 +177,7 @@ class TelemetryCollector:
             "gauges": {},
             "histograms": {}
         }
-        self.logger = logging.getLogger("vexis.telemetry")
+        self.logger = logging.getLogger("clio_agent.telemetry")
     
     def increment_counter(self, name: str, value: int = 1, labels: Optional[Dict] = None):
         """Increment a counter metric"""
@@ -236,7 +236,7 @@ _telemetry: Optional[TelemetryCollector] = None
 
 
 def get_structured_logger(
-    name: str = "vexis",
+    name: str = "clio_agent",
     log_level: int = logging.INFO,
     log_dir: Optional[str] = None,
     json_output: bool = True
@@ -248,7 +248,7 @@ def get_structured_logger(
         _structured_logger = StructuredLogger(
             name=name,
             log_level=log_level,
-            log_dir=log_dir or str(Path.home() / ".vexis" / "logs"),
+            log_dir=log_dir or str(Path.home() / ".clio_agent" / "logs"),
             json_output=json_output
         )
     
@@ -276,7 +276,7 @@ def configure_logging(
     Args:
         level: Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
         json_output: Enable JSON structured logging to file
-        log_dir: Directory for log files (default: ~/.vexis/logs)
+        log_dir: Directory for log files (default: ~/.clio_agent/logs)
     """
     log_level = getattr(logging, level.upper(), logging.INFO)
     
@@ -289,7 +289,7 @@ def configure_logging(
     
     # Set up structured logger
     logger = get_structured_logger(
-        name="vexis",
+        name="clio_agent",
         log_level=log_level,
         log_dir=log_dir,
         json_output=json_output
@@ -300,7 +300,7 @@ def configure_logging(
         "Structured logging configured",
         level=level,
         json_output=json_output,
-        log_dir=log_dir or str(Path.home() / ".vexis" / "logs")
+        log_dir=log_dir or str(Path.home() / ".clio_agent" / "logs")
     )
     
     return logger

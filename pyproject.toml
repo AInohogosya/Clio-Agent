@@ -3,7 +3,7 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "vexis-cli"
+name = "clio_agent-cli"
 version = "3.0.0"
 description = "Autonomous loop AI-powered terminal automation system"
 readme = "README.md"
@@ -119,9 +119,9 @@ exclude_lines = [
 "clio-agent" = "clio_agent:main"
 
 [project.urls]
-Homepage = "https://github.com/vexis-project/VEXIS-CLI"
-Repository = "https://github.com/vexis-project/VEXIS-CLI"
-"Bug Reports" = "https://github.com/vexis-project/VEXIS-CLI/issues"
+Homepage = "https://github.com/clio-project/Clio-Agent-1"
+Repository = "https://github.com/clio-project/Clio-Agent-1"
+"Bug Reports" = "https://github.com/clio-project/Clio-Agent-1/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]

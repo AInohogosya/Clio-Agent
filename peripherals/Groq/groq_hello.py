@@ -150,7 +150,7 @@ def ask_groq(message, model="llama-3.1-8b-instant"):
         raise RuntimeError(f"Groq API error: {e}")
 
 if __name__ == "__main__":
-    print("Welcome to VEXIS Groq Integration!")
+    print("Welcome to Clio-Agent-1 Groq Integration!")
     print("This program allows you to call GPT-OSS 120B via Groq.")
     print()
     

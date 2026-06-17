@@ -1,5 +1,5 @@
 """
-VEXIS-CLI GUI — Premium Dark Theme
+Clio-Agent-1 GUI — Premium Dark Theme
 Flawless design system with no compromises.
 """
 

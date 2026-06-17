@@ -1,5 +1,5 @@
 """
-VEXIS-CLI AI Agent System
+Clio-Agent-1 AI Agent System
 Autonomous Loop Architecture with 16+ AI provider support.
 """
 
@@ -37,7 +37,7 @@ elif not _EXTERNAL_DIR.is_dir() and not _EXT_LINK.exists():
         _sys.path.insert(0, _PROJECT_ROOT_STR)
 
 __version__ = "3.0.0"
-__author__ = "VEXIS Project"
+__author__ = "Clio Agent 1 Project"
 __description__ = "Autonomous loop AI-powered terminal automation system"
 
 from .core_processing.autonomous_loop_engine import AutonomousLoopEngine

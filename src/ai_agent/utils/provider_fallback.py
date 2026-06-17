@@ -1,5 +1,5 @@
 """
-Provider Fallback Manager for VEXIS-CLI
+Provider Fallback Manager for Clio-Agent-1
 Manages automatic failover between multiple AI providers for high availability
 """
 

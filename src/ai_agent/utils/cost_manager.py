@@ -1,5 +1,5 @@
 """
-Cost Manager for VEXIS-CLI
+Cost Manager for Clio-Agent-1
 Tracks and manages API usage costs with budget controls
 """
 
@@ -121,7 +121,7 @@ class CostManager:
         # Storage
         self.stats = CostStats()
         self.recent_usage: List[UsageRecord] = []
-        self.persist_path = Path(persist_path) if persist_path else Path.home() / ".vexis" / "costs.json"
+        self.persist_path = Path(persist_path) if persist_path else Path.home() / ".clio_agent" / "costs.json"
         
         # Load persisted data
         self._load_from_disk()

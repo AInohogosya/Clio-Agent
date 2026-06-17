@@ -1,4 +1,4 @@
-# Optional Cloud Provider SDKs for VEXIS-CLI
+# Optional Cloud Provider SDKs for Clio-Agent-1
 # Install with: pip install -r requirements-optional.txt
 
 # Additional Cloud Provider SDKs

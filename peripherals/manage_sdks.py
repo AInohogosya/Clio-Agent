@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-VEXIS-CLI SDK Management Tool
+Clio-Agent-1 SDK Management Tool
 
 Command-line tool for managing AI provider SDK dependencies.
 Similar to the virtual environment setup, this handles SDK installation automatically.
@@ -25,12 +25,12 @@ try:
     from ai_agent.external_integration.multi_provider_vision_client import MultiProviderVisionAPIClient
 except ImportError as e:
     print(f"❌ Failed to import SDK management modules: {e}")
-    print("Make sure you're running this from the VEXIS-CLI directory")
+    print("Make sure you're running this from the Clio-Agent-1 directory")
     sys.exit(1)
 
 def show_status():
     """Show SDK installation status for all providers"""
-    print("🔍 VEXIS-CLI SDK Status")
+    print("🔍 Clio-Agent-1 SDK Status")
     print("=" * 50)
     
     installer = create_installer()
@@ -110,7 +110,7 @@ def test_providers():
 def main():
     """Main CLI interface"""
     parser = argparse.ArgumentParser(
-        description="VEXIS-CLI SDK Management Tool",
+        description="Clio-Agent-1 SDK Management Tool",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:

@@ -5,7 +5,7 @@
 
 **An autonomous AI agent that thinks and acts continuously in your terminal — and lives on through crashes.**
 
-Clio Agent 1 (codename VEXIS-CLI) runs a perpetual think-execute loop: it decides what to do, runs shell commands on your machine, evaluates the results, and then does it again. And again. It never "completes" — it works until you stop it, and even then it saves enough context to pick up exactly where it left off.
+Clio Agent 1 (codename Clio-Agent-1) runs a perpetual think-execute loop: it decides what to do, runs shell commands on your machine, evaluates the results, and then does it again. And again. It never "completes" — it works until you stop it, and even then it saves enough context to pick up exactly where it left off.
 
 Two ways to talk to it: directly in the terminal, or remotely via **Telegram bot** (send instructions from your phone).
 
@@ -51,8 +51,8 @@ Two ways to talk to it: directly in the terminal, or remotely via **Telegram bot
 ## Quick Start
 
 ```bash
-git clone https://github.com/AInohogosya/VEXIS-CLI.git
-cd VEXIS-CLI
+git clone https://github.com/AInohogosya/Clio-Agent-1.git
+cd Clio-Agent-1
 pip install -e .
 ```
 
@@ -96,8 +96,8 @@ On first run, `Clio-Agent` will:
 ## Installation
 
 ```bash
-git clone https://github.com/AInohogosya/VEXIS-CLI.git
-cd VEXIS-CLI
+git clone https://github.com/AInohogosya/Clio-Agent-1.git
+cd Clio-Agent-1
 pip install -e .
 ```
 

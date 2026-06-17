@@ -1,4 +1,4 @@
-# VEXIS-CLI Configuration Template
+# Clio-Agent-1 Configuration Template
 # Copy this file to `config.yaml` and fill in your values.
 # NEVER commit `config.yaml` — it contains secrets.
 
@@ -66,7 +66,7 @@ execution:
 
 logging:
   level: "INFO"            # DEBUG, INFO, WARNING, ERROR
-  file: "vexis.log"
+  file: "clio_agent.log"
   json_format: false
   console: true
 
@@ -114,7 +114,7 @@ discord:
   authorized_users: []
   allowed_user_ids: []
   max_history_length: 50
-  bot_name: "VEXIS Agent"
+  bot_name: "Clio Agent 1"
   # Optional: restrict to specific guilds (servers)
   # allowed_guild_ids: []
   # Optional: restrict to specific channels

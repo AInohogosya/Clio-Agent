@@ -1,4 +1,4 @@
-# VEXIS-CLI Configuration
+# Clio-Agent-1 Configuration
 # Copy this file to config.yaml and customize as needed.
 
 # AI Provider Configuration
@@ -70,7 +70,7 @@ engine:
 # Logging Configuration
 logging:
   level: "INFO"
-  file: "vexis.log"
+  file: "clio_agent.log"
   json_format: false
   console: true
 
@@ -108,7 +108,7 @@ telegram:
   bot_username: ""          # Telegram bot username (without @)
   api_id: 0                 # Telegram API ID (for user account)
   api_hash: ""              # Telegram API hash (for user account)
-  session_name: "vexis_telegram"
+  session_name: "clio_agent_telegram"
 
   # User account information (optional, for user-mode Telegram)
   phone_number: ""          # Your phone number with country code

@@ -1,5 +1,5 @@
 """
-Ollama Model Manager for VEXIS-1.1 AI Agent
+Ollama Model Manager for Clio-Agent-1 AI Agent
 Handles model validation, installation, and management
 """
 

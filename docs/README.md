@@ -1,8 +1,8 @@
-# VEXIS-CLI Technical Documentation
+# Clio-Agent-1 Technical Documentation
 
 ## Overview
 
-This directory contains comprehensive technical documentation for VEXIS-CLI, including architecture details, troubleshooting guides, and development resources.
+This directory contains comprehensive technical documentation for Clio-Agent-1, including architecture details, troubleshooting guides, and development resources.
 
 ## Document Structure
 

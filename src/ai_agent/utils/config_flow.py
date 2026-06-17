@@ -864,9 +864,12 @@ def _parse_telegram_user_ids(raw_ids: str) -> Tuple[List[int], Optional[str]]:
         value = part.strip()
         if not value:
             continue
-        if not value.isdigit() or int(value) <= 0:
+        try:
+            user_id = int(value)
+        except ValueError:
+            return [], "Telegram user IDs must be numeric. Invalid: '%s'" % value[:20]
+        if user_id <= 0:
             return [], "Telegram user IDs must be positive numbers. Invalid: '%s'" % value[:20]
-        user_id = int(value)
         if user_id not in seen:
             parsed.append(user_id)
             seen.add(user_id)

@@ -2,7 +2,7 @@
 
 ## Overview
 
-This guide covers comprehensive integration with Ollama, including setup, configuration, model management, and troubleshooting for VEXIS-CLI.
+This guide covers comprehensive integration with Ollama, including setup, configuration, model management, and troubleshooting for Clio-Agent-1.
 
 ## Ollama Architecture
 
@@ -10,7 +10,7 @@ This guide covers comprehensive integration with Ollama, including setup, config
 
 ```
 ┌─────────────────┐    HTTP/REST    ┌─────────────────┐
-│ VEXIS-CLI       │◄──────────────►│   Ollama        │
+│ Clio-Agent-1       │◄──────────────►│   Ollama        │
 │ Model Runner    │                │   Local Server  │
 └─────────────────┘                └─────────────────┘
         │                                   │
@@ -242,10 +242,10 @@ export OLLAMA_HOST=http://localhost:11434
 export OLLAMA_MODELS=~/.ollama/models
 export OLLAMA_TIMEOUT=120
 
-# VEXIS configuration
-export VEXIS_OLLAMA_MODEL=gemini-3-flash-preview:latest
-export VEXIS_OLLAMA_TIMEOUT=60
-export VEXIS_OLLAMA_MAX_RETRIES=3
+# Clio-Agent-1 configuration
+export CLIO_OLLAMA_MODEL=gemini-3-flash-preview:latest
+export CLIO_OLLAMA_TIMEOUT=60
+export CLIO_OLLAMA_MAX_RETRIES=3
 ```
 
 ## API Integration
@@ -1161,4 +1161,4 @@ fi
 echo "=== Diagnostic Complete ==="
 ```
 
-This comprehensive Ollama integration guide provides everything needed to set up, configure, optimize, and troubleshoot Ollama integration with VEXIS-CLI.
+This comprehensive Ollama integration guide provides everything needed to set up, configure, optimize, and troubleshoot Ollama integration with Clio-Agent-1.

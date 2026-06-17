@@ -1,5 +1,5 @@
 """
-Watchdog / Supervisor for VEXIS-CLI AI Agent
+Watchdog / Supervisor for Clio-Agent-1 AI Agent
 
 A separate lightweight process that monitors the main agent process and
 automatically restarts it if it crashes, hangs, or becomes unresponsive.
@@ -278,7 +278,7 @@ class WatchdogSupervisor:
             if run_py.exists():
                 # Re-run the current command
                 env = os.environ.copy()
-                env["VEXIS_WATCHDOG_CHILD"] = "1"
+                env["CLIO_WATCHDOG_CHILD"] = "1"
                 proc = subprocess.Popen(
                     [sys.executable, str(run_py), "--__watchdog_spawned__"] + sys.argv[1:],
                     cwd=str(script_dir),
@@ -306,12 +306,12 @@ def start_watchdog(
     (or None if watchdog is disabled).
     """
     # Allow disabling via env
-    if os.getenv("VEXIS_WATCHDOG_DISABLED", "").lower() in ("1", "true", "yes"):
-        logger.info("Watchdog disabled via VEXIS_WATCHDOG_DISABLED")
+    if os.getenv("CLIO_WATCHDOG_DISABLED", "").lower() in ("1", "true", "yes"):
+        logger.info("Watchdog disabled via CLIO_WATCHDOG_DISABLED")
         return None
 
     heartbeat_timeout = float(
-        os.getenv("VEXIS_WATCHDOG_TIMEOUT", DEFAULT_HEARTBEAT_TIMEOUT)
+        os.getenv("CLIO_WATCHDOG_TIMEOUT", DEFAULT_HEARTBEAT_TIMEOUT)
     )
 
     supervisor = WatchdogSupervisor(

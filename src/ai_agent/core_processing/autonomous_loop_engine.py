@@ -1,5 +1,5 @@
 """
-Autonomous Loop Engine for VEXIS-CLI AI Agent System
+Autonomous Loop Engine for Clio-Agent-1 AI Agent System
 
 Replaces the 5-Phase Architecture with a fully autonomous think-execute loop.
 The agent cycles through thinking and execution without waiting for user prompts
@@ -9,7 +9,7 @@ and without ever "completing" — it works continuously from the moment it start
   AGENT IDENTITY & CONTEXT
 ═══════════════════════════════════════════════════════════════
 
-You are an autonomous AI agent running inside VEXIS-CLI (codename
+You are an autonomous AI agent running inside Clio-Agent-1 (codename
 "Clio Agent 1"). You operate in a continuous think-execute loop: on
 every iteration you receive your execution log, decide what to do
 next, and emit commands that are executed on the host machine.
@@ -960,7 +960,31 @@ class AutonomousLoopEngine:
 
         # Restore terminal history from disk so the agent sees previous
         # session activity even after a force-kill or signal interruption.
+        #
+        # IMPORTANT: When resuming from a sleep restart, we must NOT restore
+        # the full uncompressed terminal history log.  The whole point of the
+        # sleep workflow is to compress the context — if we restored the old
+        # raw log here AND also injected the compressed context block into the
+        # prompt, the model would receive BOTH the compressed and uncompressed
+        # versions, wasting tokens and causing confusion.
+        #
+        # Solution: On sleep resume, replace the restored log with a brief
+        # note pointing to the compressed context (which is already injected
+        # into the prompt via saved_context_block).  For non-sleep resumes
+        # (e.g. crash recovery), restore the log as before.
         _restored_log = self._restore_terminal_history_log()
+        if self._resuming_from_sleep:
+            # Discard the old uncompressed log entirely.
+            # The compressed context is already in self._saved_ctx_block and
+            # will be injected into the prompt by _run_thinking.
+            _restored_log = [
+                "[SYSTEM] Previous session context was compressed during sleep. "
+                "See the SAVED CONTEXT section above for the compressed summary. "
+                "The full uncompressed log has been discarded to conserve context window."
+            ]
+            self._term_log.thinking(
+                "Sleep resume: replaced uncompressed terminal history with compressed context."
+            )
 
         ctx = AutonomousContext(
             user_prompt=user_prompt,
@@ -3338,11 +3362,11 @@ class AutonomousLoopEngine:
             mode = "normal"
 
         # Store provider/model/mode in env for the restarted process
-        os.environ["VEXIS_RESTART_MODE"] = mode
+        os.environ["CLIO_RESTART_MODE"] = mode
         if provider:
-            os.environ["VEXIS_RESTART_PROVIDER"] = provider
+            os.environ["CLIO_RESTART_PROVIDER"] = provider
         if model:
-            os.environ["VEXIS_RESTART_MODEL"] = model
+            os.environ["CLIO_RESTART_MODEL"] = model
 
         # Determine project root from this file's location
         _script = Path(__file__).resolve()

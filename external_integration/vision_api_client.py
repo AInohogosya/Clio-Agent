@@ -131,7 +131,7 @@ class VisionAPIClient:
                     import sys
                     import os
                     # Check if running in Telegram mode via environment variable
-                    is_telegram_mode = os.getenv('VEXIS_TELEGRAM_MODE', '').lower() in ('true', '1', 'yes')
+                    is_telegram_mode = os.getenv('CLIO_TELEGRAM_MODE', '').lower() in ('true', '1', 'yes')
                     if sys.stdin.isatty() and not is_telegram_mode:  # Only prompt if in terminal AND not in Telegram mode
                         try:
                             choice = input("\nWould you like to sign in to Ollama now? (y/n): ").lower().strip()

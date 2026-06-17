@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Model Availability Checker for VEXIS-CLI
+Model Availability Checker for Clio-Agent-1
 Checks if required models are available and provides helpful guidance
 """
 

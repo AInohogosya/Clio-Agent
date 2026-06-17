@@ -2,7 +2,7 @@
 
 ## Overview
 
-Thank you for your interest in contributing to VEXIS-CLI! This guide covers everything you need to know to contribute effectively, from code standards to submission process.
+Thank you for your interest in contributing to Clio-Agent-1! This guide covers everything you need to know to contribute effectively, from code standards to submission process.
 
 ## Getting Started
 
@@ -18,13 +18,13 @@ Thank you for your interest in contributing to VEXIS-CLI! This guide covers ever
 1. **Fork the Repository**
    ```bash
    # Fork on GitHub, then clone your fork
-   git clone https://github.com/YOUR_USERNAME/VEXIS-CLI.git
-   cd VEXIS-CLI
+   git clone https://github.com/YOUR_USERNAME/Clio-Agent-1.git
+   cd Clio-Agent-1
    ```
 
 2. **Add Upstream Remote**
    ```bash
-   git remote add upstream https://github.com/AInohogosya/VEXIS-CLI.git
+   git remote add upstream https://github.com/AInohogosya/Clio-Agent-1.git
    ```
 
 3. **Set Up Development Environment**
@@ -248,11 +248,11 @@ except Exception as e:
     raise
 
 # Create custom exceptions
-class VexisError(Exception):
-    """Base exception for VEXIS-CLI."""
+class ClioAgentError(Exception):
+    """Base exception for Clio-Agent-1."""
     pass
 
-class ValidationError(VexisError):
+class ValidationError(ClioAgentError):
     """Raised when input validation fails."""
     pass
 ```
@@ -834,4 +834,4 @@ flake8 src/ --show-source
    - @mention maintainers in issues
    - Request review on PRs
 
-Thank you for contributing to VEXIS-CLI! Your contributions help make this project better for everyone.
+Thank you for contributing to Clio-Agent-1! Your contributions help make this project better for everyone.

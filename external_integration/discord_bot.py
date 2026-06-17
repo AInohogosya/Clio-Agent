@@ -1,5 +1,5 @@
 """
-Discord Bot Integration for VEXIS-CLI AI Agent
+Discord Bot Integration for Clio-Agent-1 AI Agent
 Handles Discord bot communication and message management.
 Mirrors the Telegram bot interface for compatibility with the
 autonomous loop engine's telegram() / telegram_log() commands.
@@ -258,7 +258,7 @@ class DiscordBotManager:
             return
 
         await ctx.send(
-            "VEXIS-CLI AI Agent\n\n"
+            "Clio-Agent-1 AI Agent\n\n"
             "Send me commands and I'll execute them on your computer.\n"
             "Use /restart to restart while keeping current settings.\n"
             "Use /help for more information.\n\n"
@@ -278,7 +278,7 @@ class DiscordBotManager:
             return
 
         await self._cancel_user_task(user_id)
-        await ctx.send("Restarting VEXIS-CLI with the same provider, model, and API settings...")
+        await ctx.send("Restarting Clio-Agent-1 with the same provider, model, and API settings...")
 
         if self.restart_callback:
             self.restart_callback(user_id)
@@ -297,7 +297,7 @@ class DiscordBotManager:
             return
 
         await ctx.send(
-            "VEXIS-CLI AI Agent Help\n\n"
+            "Clio-Agent-1 AI Agent Help\n\n"
             "Commands:\n"
             "/start - Start the bot\n"
             "/restart - Restart while keeping current provider/model/API settings\n"

@@ -1,5 +1,5 @@
 """
-Ollama Model Selection UI for VEXIS-1.1 AI Agent
+Ollama Model Selection UI for Clio-Agent-1 AI Agent
 Using curses-based arrow key navigation
 """
 

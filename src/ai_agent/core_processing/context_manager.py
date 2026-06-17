@@ -1,5 +1,5 @@
 """
-Context Manager for VEXIS-CLI AI Agent System
+Context Manager for Clio-Agent-1 AI Agent System
 
 Provides always-on context visibility: reads the .context/ folder and
 surfaces its contents in the terminal and in the model prompt at all

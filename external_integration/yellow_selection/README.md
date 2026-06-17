@@ -1,7 +1,7 @@
 # 🟡 Yellow Selection System
 
 ## Overview
-A unified, reproducible menu system with consistent yellow highlighting for all selection interfaces in the VEXIS AI Agent.
+A unified, reproducible menu system with consistent yellow highlighting for all selection interfaces in the Clio-Agent-1 AI Agent.
 
 ## Features
 - 🟡 **Consistent Yellow Highlighting**: All selections use the same yellow color scheme

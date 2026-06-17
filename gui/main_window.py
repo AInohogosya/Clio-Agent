@@ -1,5 +1,5 @@
 """
-VEXIS-CLI GUI — Main Window
+Clio-Agent-1 GUI — Main Window
 Premium dark-themed main window with sidebar navigation.
 """
 
@@ -141,7 +141,7 @@ class ChatBubble(QWidget):
 
         # Role label + timestamp
         header = QHBoxLayout()
-        role_label = QLabel("You" if self.role == "user" else "VEXIS" if self.role == "assistant" else "System")
+        role_label = QLabel("You" if self.role == "user" else "Clio-Agent-1" if self.role == "assistant" else "System")
         role_label.setStyleSheet(f"""
             color: {Theme.TEXT_SECONDARY if self.role == 'user' else Theme.ACCENT_SECONDARY};
             font-size: {Theme.FONT_SIZE_XS}pt;
@@ -1007,7 +1007,7 @@ class MainWindow(QMainWindow):
         self._apply_greeting()
 
     def _setup_window(self):
-        self.setWindowTitle("VEXIS — AI Agent")
+        self.setWindowTitle("Clio-Agent-1 — AI Agent")
         self.setMinimumSize(1200, 750)
         self.resize(1400, 850)
         self.setStyleSheet(f"QMainWindow {{ background-color: {Theme.BG_PRIMARY}; }}")
@@ -1065,7 +1065,7 @@ class MainWindow(QMainWindow):
         logo_icon.setFixedSize(32, 32)
         logo_layout.addWidget(logo_icon)
 
-        logo_text = QLabel("VEXIS")
+        logo_text = QLabel("Clio-Agent-1")
         logo_text.setStyleSheet(f"""
             color: {Theme.TEXT_PRIMARY};
             font-size: {Theme.FONT_SIZE_XL}pt;
@@ -1188,7 +1188,7 @@ class MainWindow(QMainWindow):
 
     def _apply_greeting(self):
         greeting = (
-            "Welcome to **VEXIS 3.0** — Your Autonomous AI Agent.\n\n"
+            "Welcome to **Clio-Agent-1 3.0** — Your Autonomous AI Agent.\n\n"
             "I can help you with terminal automation, file management, "
             "code analysis, and much more. Just type your instruction below "
             "and I'll get to work.\n\n"
@@ -1290,7 +1290,7 @@ class AgentThread(QThread):
 
                 # Parse output for chat messages
                 stripped = line.strip()
-                if stripped.startswith("VEXIS:") or stripped.startswith("Assistant:"):
+                if stripped.startswith("Clio-Agent-1:") or stripped.startswith("Assistant:"):
                     content = stripped.split(":", 1)[1].strip() if ":" in stripped else stripped
                     self.signal_bridge.message_received.emit("assistant", content)
                 elif stripped.startswith("Error:") or stripped.startswith("❌"):

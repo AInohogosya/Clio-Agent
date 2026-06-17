@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-VEXIS-CLI Agent Core - Autonomous Loop Entry Point
+Clio-Agent-1 Agent Core - Autonomous Loop Entry Point
 Retained for backward compatibility.  Primary entry is via run.py.
 """
 

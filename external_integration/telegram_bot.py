@@ -1,5 +1,5 @@
 """
-Telegram Bot Integration for VEXIS-CLI AI Agent
+Telegram Bot Integration for Clio-Agent-1 AI Agent
 Handles Telegram bot communication and message management.
 
 HARDENED VERSION — fixes the primary failure modes for a 24/7 agent:

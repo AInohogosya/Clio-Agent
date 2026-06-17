@@ -1,5 +1,5 @@
 """
-Resilience Engine for VEXIS-CLI AI Agent
+Resilience Engine for Clio-Agent-1 AI Agent
 
 Provides:
 1. Intelligent error classification with auto-recovery strategies

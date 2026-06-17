@@ -69,10 +69,10 @@ local_settings.py
 local_config.py
 
 # Application-specific settings
-.vexis/
-!.vexis/
-.vexis/settings.json
-!.vexis/settings.json.example
+.clio_agent/
+!.clio_agent/
+.clio_agent/settings.json
+!.clio_agent/settings.json.example
 
 # Context persistence (sleep / exit state)
 .context/

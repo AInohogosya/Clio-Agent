@@ -7,7 +7,7 @@ GPT-OSS 120Bを含む最新のGroqモデルをサポート。
 
 ```bash
 # プロジェクトルートで仮想環境を作成・有効化
-cd /path/to/VEXIS-CLI-2.2
+cd /path/to/Clio-Agent-1-2.2
 source venv/bin/activate
 
 # Groq依存関係をインストール
@@ -91,7 +91,7 @@ response = ask_groq("日本語で説明して", model="openai/gpt-oss-120b")
 
 ```bash
 # プロジェクトルートの仮想環境を使用
-cd /path/to/VEXIS-CLI-2.2
+cd /path/to/Clio-Agent-1-2.2
 source venv/bin/activate && cd Groq
 python groq_hello.py
 ```

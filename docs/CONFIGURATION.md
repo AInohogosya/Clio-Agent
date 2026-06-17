@@ -2,7 +2,7 @@
 
 ## Overview
 
-VEXIS-CLI uses a flexible configuration system that supports 16+ AI providers, customization options, and environment-specific settings. This guide covers all configuration aspects from basic setup to advanced customization.
+Clio-Agent-1 uses a flexible configuration system that supports 16+ AI providers, customization options, and environment-specific settings. This guide covers all configuration aspects from basic setup to advanced customization.
 
 ## Supported Providers
 
@@ -30,7 +30,7 @@ VEXIS-CLI uses a flexible configuration system that supports 16+ AI providers, c
 **File**: `config.yaml`
 
 ```yaml
-# VEXIS-CLI Configuration File
+# Clio-Agent-1 Configuration File
 # Version: 2.1.0
 
 # AI Provider Configuration
@@ -82,7 +82,7 @@ execution:
 logging:
   level: "INFO"           # DEBUG, INFO, WARNING, ERROR, CRITICAL
   format: "structured"    # "simple" or "structured"
-  file: "logs/vexis.log"  # Log file path
+  file: "logs/clio_agent.log"  # Log file path
   console: true           # Enable console logging
   rotation: true          # Enable log rotation
   
@@ -220,15 +220,15 @@ GOOGLE_ENDPOINT=https://generativelanguage.googleapis.com
 
 # Logging
 LOG_LEVEL=DEBUG
-LOG_FILE=logs/vexis.log
+LOG_FILE=logs/clio_agent.log
 
 # Security
-VEXIS_SAFE_MODE=true
-VEXIS_DRY_RUN=false
+CLIO_SAFE_MODE=true
+CLIO_DRY_RUN=false
 
 # Development
-VEXIS_DEBUG=true
-VEXIS_TEST_MODE=false
+CLIO_DEBUG=true
+CLIO_TEST_MODE=false
 ```
 
 ## Configuration Sections
@@ -323,7 +323,7 @@ execution:
 logging:
   level: "INFO"           # DEBUG, INFO, WARNING, ERROR, CRITICAL
   format: "structured"    # "simple" or "structured"
-  file: "logs/vexis.log"
+  file: "logs/clio_agent.log"
   console: true
   rotation: true
 ```
@@ -366,7 +366,7 @@ logging:
 
 #### Command Blocking (New in v2.1)
 
-VEXIS-CLI now offers configurable command blocking. All safety features are **disabled by default** to give users full control.
+Clio-Agent-1 now offers configurable command blocking. All safety features are **disabled by default** to give users full control.
 
 **Configuration via config.yaml:**
 ```yaml
@@ -390,24 +390,24 @@ security:
 **Configuration via Environment Variables:**
 ```bash
 # Enable command blocking
-export VEXIS_ENABLE_COMMAND_BLOCKING=true
+export CLIO_ENABLE_COMMAND_BLOCKING=true
 
 # Enable confirmation prompts
-export VEXIS_ENABLE_CONFIRMATION_PROMPTS=true
+export CLIO_ENABLE_CONFIRMATION_PROMPTS=true
 
 # Enable sudo warnings
-export VEXIS_ENABLE_SUDO_WARNING=true
+export CLIO_ENABLE_SUDO_WARNING=true
 
 # Enable shell pipe warnings
-export VEXIS_ENABLE_SHELL_PIPE_WARNING=true
+export CLIO_ENABLE_SHELL_PIPE_WARNING=true
 
 # Disable sandbox (if needed)
-export VEXIS_ENABLE_SANDBOX=false
+export CLIO_ENABLE_SANDBOX=false
 ```
 
 **Priority Order:**
 1. Explicit code configuration
-2. Environment variables (VEXIS_*)
+2. Environment variables (Clio-Agent-1_*)
 3. config.yaml settings
 4. Defaults (all disabled)
 
@@ -598,7 +598,7 @@ api:
 
 logging:
   level: "INFO"
-  file: "/var/log/vexis/vexis.log"
+  file: "/var/log/clio_agent/clio_agent.log"
 
 security:
   # Enable command safety features for production
@@ -641,7 +641,7 @@ execution:
 python3 run.py --config config.dev.yaml "instruction"
 
 # Use environment
-export VEXIS_CONFIG=config.prod.yaml
+export CLIO_CONFIG=config.prod.yaml
 python3 run.py "instruction"
 ```
 
@@ -826,4 +826,4 @@ python3 run.py --test-providers
 3. **Validate Configs** before use
 4. **Monitor Configuration** changes
 
-This comprehensive configuration system provides flexibility while maintaining security and performance standards for VEXIS-CLI deployments.
+This comprehensive configuration system provides flexibility while maintaining security and performance standards for Clio-Agent-1 deployments.

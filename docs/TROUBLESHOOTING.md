@@ -2,7 +2,7 @@
 
 ## Overview
 
-This comprehensive troubleshooting guide covers common issues, their causes, and step-by-step solutions for VEXIS-CLI.
+This comprehensive troubleshooting guide covers common issues, their causes, and step-by-step solutions for Clio-Agent-1.
 
 ## Quick Diagnosis
 
@@ -113,7 +113,7 @@ Administrator privileges required
    ```
 
 3. **Configure Antivirus:**
-   - Add VEXIS-CLI-2.1 to antivirus exclusions
+   - Add Clio-Agent-1-2.1 to antivirus exclusions
    - Allow Terminal/PowerShell execution
 
 ### 2. Ollama Model Issues
@@ -544,8 +544,8 @@ python3 run.py "your instruction" --debug
 #### System Logs
 
 ```bash
-# View VEXIS logs
-tail -f logs/vexis.log
+# View Clio-Agent-1 logs
+tail -f logs/clio_agent.log
 
 # View Ollama logs
 tail -f ~/.ollama/logs/ollama.log
@@ -559,13 +559,13 @@ log stream --predicate 'process == "ollama"'  # macOS
 
 ```bash
 # Search for common errors
-grep -i "error\|exception\|failed" logs/vexis.log
+grep -i "error\|exception\|failed" logs/clio_agent.log
 
 # Search for timeouts
-grep -i "timeout" logs/vexis.log
+grep -i "timeout" logs/clio_agent.log
 
 # Search for permission issues
-grep -i "permission\|denied" logs/vexis.log
+grep -i "permission\|denied" logs/clio_agent.log
 ```
 
 ### Health Checks
@@ -576,7 +576,7 @@ grep -i "permission\|denied" logs/vexis.log
 #!/bin/bash
 # health_check.sh
 
-echo "=== VEXIS-CLI-2.1 Health Check ==="
+echo "=== Clio-Agent-1-2.1 Health Check ==="
 
 # Check Python
 python3 --version
@@ -646,7 +646,7 @@ When all else fails, perform a clean reset:
 #!/bin/bash
 # reset_system.sh
 
-echo "⚠️  This will reset VEXIS-CLI-2.2 completely"
+echo "⚠️  This will reset Clio-Agent-1-2.2 completely"
 read -p "Continue? (y/N): " confirm
 
 if [[ $confirm == "y" ]]; then
@@ -701,7 +701,7 @@ fi
 #!/bin/bash
 # maintenance.sh
 
-echo "=== VEXIS-CLI-2.2 Maintenance ==="
+echo "=== Clio-Agent-1-2.2 Maintenance ==="
 
 # Update models
 echo "Updating models..."
