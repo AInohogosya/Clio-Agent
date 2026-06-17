@@ -751,7 +751,7 @@ class AdvancedSettingsMenu:
         ("sleep", "🛏  Sleep (default)",
          "After 5+ min idle → sleep/restart to free resources"),
         ("fairy", "🧚 Curiosity Fairy",
-         "After 5+ min idle → invoke the Curiosity Fairy for a creative nudge"),
+         "When stuck in a loop → invoke the Curiosity Fairy for a new direction"),
     ]
 
     def __init__(self):
