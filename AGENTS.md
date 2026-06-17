@@ -28,19 +28,25 @@
 
 **THE AGENT MUST NEVER GET STUCK IN A LOOP.**
 
+The engine monitors your action patterns. Repeating the same action signature
+3 times consecutively invokes the Curiosity Fairy. At 6 repeats, a forced
+sleep triggers. AVOID this by following these rules:
+
 ### Hard Rules:
-1. **NEVER run the same command with the same arguments more than 3 times consecutively.** If a command fails twice, TRY A DIFFERENT APPROACH.
-2. **NEVER output the same `thinking()` text more than once.** If you catch yourself repeating a thought, STOP and execute a concrete action.
-3. **NEVER re-read the same file without a NEW reason.** Use the content you already have from the log.
+1. **NEVER run the same command with the same arguments more than 2 times consecutively.** If a command fails twice, TRY A DIFFERENT APPROACH — don't retry the same thing a third time.
+2. **VARY YOUR ACTIONS** — alternate between reading files, running shell commands, searching code, and exploring directories. Don't do the same type of operation every iteration.
+3. **NEVER re-read the same file without a NEW reason.** Use the content you already have from the log. "Read the file first" applies to NEW files you haven't seen yet — not re-reading the same file repeatedly.
 4. **NEVER re-explore the same directory or re-check the same system status within 20 iterations.**
 5. **If you detect repetition in the execution log**, IMMEDIATELY switch to a different task or execute `sleep`.
 6. **NEVER output ONLY `thinking()`** — always pair it with at least one `command()` or tool call.
-7. **If no real work needs to be done**, execute `sleep` rather than spinning idle.
+7. **MINIMIZE `thinking()`** — every iteration with `thinking()` + the same tool call produces an identical action signature. Use at most 1 short thinking() line per iteration, or omit it entirely.
+8. **If no real work needs to be done**, execute `sleep` rather than spinning idle.
 
 ### Loop Detection Protocol:
 - Before writing any command, **scan the last 20 lines of the execution log**.
 - If you see the same command pattern repeated, **DO NOT issue it again**.
 - Choose a completely different action or execute `sleep` to reset.
+- **Key insight:** The engine normalizes `thinking()` content away, so `thinking()` + `read(path="same_file")` looks identical every time. Vary your tool calls, not just your thoughts.
 
 ### 🚫 NO LOOPING AT MULTIPLES OF 10 (OR ANY OTHER PERIODIC INTERVAL)
 
