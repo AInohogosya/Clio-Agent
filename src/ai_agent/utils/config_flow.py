@@ -1201,6 +1201,13 @@ def configure_provider_and_model() -> Tuple[Optional[str], Optional[str], Option
     Returns (provider_key, model_id, api_key) or (None, None, None) if cancelled.
     api_key is None for Ollama, the key string for cloud providers.
     """
+    # Check if stdin is a TTY before attempting curses UI
+    import sys as _sys
+    if not _sys.stdin.isatty():
+        print("\n⚠️  --setting requires an interactive terminal (TTY).")
+        print("   Please run directly from a terminal, not from a pipe or non-interactive shell.")
+        print("   Example: python3 run.py --setting")
+        return None, None, None
     return curses.wrapper(_configure_flow_curses)
 
 

@@ -94,9 +94,17 @@ class AutonomousAIAgent:
 
             self._apply_runtime_options(options)
 
+            # Determine messaging mode from environment variables set by run.py
+            import os as _os
+            _env_telegram = _os.environ.get("CLIO_TELEGRAM_MODE", "").lower() == "true"
+            _env_discord = _os.environ.get("CLIO_DISCORD_MODE", "").lower() == "true"
+            _telegram_mode = _env_telegram
+            _discord_mode = _env_discord
+
             execute_kwargs = {
                 "conversation_history": conversation_history,
-                "telegram_mode": True,
+                "telegram_mode": _telegram_mode,
+                "discord_mode": _discord_mode,
             }
             if cancel_event is not None:
                 execute_kwargs["cancel_event"] = cancel_event

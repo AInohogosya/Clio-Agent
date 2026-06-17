@@ -343,7 +343,11 @@ class TelegramBotManager:
 
     def _remember_user(self, user_id: int):
         self._last_user_id = user_id
-        self._boot_user_id = user_id
+        # Only set _boot_user_id if it hasn't been set from config already.
+        # This prevents an arbitrary inbound user from overwriting the
+        # configured output target.
+        if not getattr(self, "_boot_user_id", None):
+            self._boot_user_id = user_id
 
     def _unauthorized_message(self, user_id: int) -> str:
         return (

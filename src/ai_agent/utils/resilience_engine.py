@@ -961,8 +961,8 @@ class ResilienceEngine:
             exc_tb: Any,
             thread: Optional[threading.Thread] = None,
         ) -> None:
-            # Skip KeyboardInterrupt
-            if issubclass(exc_type, KeyboardInterrupt):
+            # Skip KeyboardInterrupt and SystemExit — these must propagate
+            if issubclass(exc_type, (KeyboardInterrupt, SystemExit)):
                 if engine._original_excepthook:
                     engine._original_excepthook(exc_type, exc_value, exc_tb)
                 return

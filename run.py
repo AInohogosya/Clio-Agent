@@ -2495,7 +2495,7 @@ def main():
                 f"{_history_block}\n\n"
             )
         _resume_instruction += (
-            "Resume work immediately from where I left off. Do not act.\n\n"
+            "Resume work immediately from where I left off. Act immediately — do not wait.\n\n"
             "## TELEGRAM REPORTING (MANDATORY)\n"
             "Send progress updates via telegram() every 5-10 iterations."
         )
@@ -2591,16 +2591,48 @@ def main():
         sys.exit(0)
 
     requested_telegram_cli = "--telegram" in sys.argv
-    selected_mode = os.getenv(RESTART_MODE_ENV, "") or "telegram"
-    if "--discord" in sys.argv:
-        sys.argv.remove("--discord")
-        selected_mode = "discord"
-    elif "--telegram" in sys.argv:
+    requested_discord_cli = "--discord" in sys.argv
+
+    # Determine the selected mode from (in priority order):
+    #   1. Explicit CLI flags (--telegram / --discord)
+    #   2. Restart environment variable (set by a previous session)
+    #   3. Config file (telegram.enabled / discord.enabled)
+    #   4. Default to "console" (no bot)
+    if requested_telegram_cli:
         sys.argv.remove("--telegram")
         selected_mode = "telegram"
+    elif requested_discord_cli:
+        sys.argv.remove("--discord")
+        selected_mode = "discord"
+    else:
+        restart_mode = os.getenv(RESTART_MODE_ENV, "")
+        if restart_mode in ("telegram", "discord"):
+            selected_mode = restart_mode
+        else:
+            # Check config for enabled bot mode only when no explicit CLI flag
+            import yaml as _yaml_cfg
+            _cfg_path_mode = current_dir / "config.yaml"
+            _telegram_cfg_enabled = False
+            _discord_cfg_enabled = False
+            try:
+                if _cfg_path_mode.exists():
+                    with open(_cfg_path_mode, "r", encoding="utf-8") as _fmc:
+                        _cfg_mc = _yaml_cfg.safe_load(_fmc) or {}
+                    _telegram_cfg_enabled = bool(_cfg_mc.get("telegram", {}).get("enabled", False))
+                    _discord_cfg_enabled = bool(_cfg_mc.get("discord", {}).get("enabled", False))
+            except Exception:
+                pass
+            if _telegram_cfg_enabled and not _discord_cfg_enabled:
+                selected_mode = "telegram"
+            elif _discord_cfg_enabled and not _telegram_cfg_enabled:
+                selected_mode = "discord"
+            elif _telegram_cfg_enabled and _discord_cfg_enabled:
+                # Both enabled: default to Telegram as primary
+                selected_mode = "telegram"
+            else:
+                selected_mode = "console"
+
     force_reconfigure = "--setting" in sys.argv
-    if force_reconfigure:
-        _reset_config_yaml()
 
     selected_provider = os.getenv(RESTART_PROVIDER_ENV)
     selected_model = os.getenv(RESTART_MODEL_ENV)
@@ -2776,11 +2808,25 @@ def main():
             requested_telegram_cli or _config_enabled("telegram")
         ):
             print("\n\u274c Telegram mode was requested, but no valid Telegram bot could be initialized.")
-            print("   Run `python3 run.py --setting`, choose Telegram, and enter:")
-            print("   - Bot Token in BotFather format: 123456789:AA...")
-            print("   - Optional numeric Telegram user/chat ID for startup replies")
-            print("   - Optional comma-separated allowed user IDs")
-            print("   The agent was not started with the console stub, because that cannot send or receive Telegram messages.")
+            print("")
+            print("   Possible causes:")
+            print("   - python-telegram-bot is not installed")
+            print("     Fix: pip install 'python-telegram-bot[job-queue]>=21.0.0'")
+            print("   - Bot token is missing or invalid in config.yaml")
+            print("   - Network connectivity issues")
+            print("")
+            print("   To configure Telegram interactively, run:")
+            print("     python3 run.py --setting")
+            print("   Then select a provider and choose 'Telegram' as the messaging app.")
+            print("")
+            print("   Or set telegram.bot_token directly in config.yaml:")
+            print("     telegram:")
+            print("       enabled: true")
+            print("       bot_token: '123456789:AA...'  (from @BotFather)")
+            print("")
+            print("   To run without Telegram, use console mode:")
+            print("     python3 run.py")
+            print("   (Make sure telegram.enabled is false in config.yaml)")
             sys.exit(1)
 
         # Select the PRIMARY bot based on the user-selected mode so that the
