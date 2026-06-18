@@ -970,7 +970,6 @@ def _input_telegram_config(stdscr, existing=None):
                 if ids_error:
                     error_msg = ids_error
                     continue
-                values["bot_username"] = _normalize_telegram_username(values["bot_username"])
                 values["bot_token"] = token
                 return values
         elif ch == curses.KEY_UP and current_field > 0:
@@ -1152,9 +1151,7 @@ def _save_messaging_config_to_yaml(app_key: str, app_config: Optional[Dict[str, 
 
     if app_key == "telegram" and app_config:
         config['telegram']['enabled'] = True
-        config['telegram']['bot_username'] = _normalize_telegram_username(
-            app_config.get("bot_username", "")
-        )
+        config['telegram']['bot_username'] = app_config.get("bot_username", "").strip()
         config['telegram']['bot_name'] = app_config.get("bot_name", "").strip()
         config['telegram']['bot_token'] = app_config.get("bot_token", "").strip()
 
@@ -1162,7 +1159,6 @@ def _save_messaging_config_to_yaml(app_key: str, app_config: Optional[Dict[str, 
         raw_uid = app_config.get("telegram_user_id", "").strip()
         output_recipients, _ = _parse_telegram_user_ids(raw_uid)
         config['telegram']['telegram_user_id'] = str(output_recipients[0]) if output_recipients else ""
-        config['telegram']['output_recipients'] = output_recipients
 
         # Build the allow-list only from the explicit access-list field.
         # Leaving it empty means "accept the first real Telegram user message"
