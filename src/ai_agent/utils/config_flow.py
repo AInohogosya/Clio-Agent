@@ -1159,6 +1159,7 @@ def _save_messaging_config_to_yaml(app_key: str, app_config: Optional[Dict[str, 
         raw_uid = app_config.get("telegram_user_id", "").strip()
         output_recipients, _ = _parse_telegram_user_ids(raw_uid)
         config['telegram']['telegram_user_id'] = str(output_recipients[0]) if output_recipients else ""
+        config['telegram']['output_recipients'] = output_recipients
 
         # Build the allow-list only from the explicit access-list field.
         # Leaving it empty means "accept the first real Telegram user message"
