@@ -2300,7 +2300,7 @@ def _append_to_file_if_missing(filepath, line):
         if line.strip() in existing:
             return False
     with open(filepath, "a", encoding="utf-8") as f:
-        f.write("\n# Clio-Agent\n{line}\n".format(line=line))
+        f.write("\n# Clio-Agent\n" + line + "\n")
     return True
 
 

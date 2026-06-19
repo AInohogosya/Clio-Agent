@@ -689,8 +689,16 @@ class DiscordBotManager:
                 self._stop_queue_processor()
                 if self.client:
                     try:
-                        loop = asyncio.new_event_loop()
-                        loop.run_until_complete(self.client.close())
+                        client_loop = self.client.loop
+                        if client_loop and not client_loop.is_closed():
+                            future = asyncio.run_coroutine_threadsafe(
+                                self.client.close(), client_loop
+                            )
+                            future.result(timeout=10)
+                        else:
+                            loop = asyncio.new_event_loop()
+                            loop.run_until_complete(self.client.close())
+                            loop.close()
                     except Exception:
                         pass
                     self.client = None

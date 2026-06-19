@@ -254,7 +254,7 @@ class OllamaManager:
             return True  # Assume cursor positioning works
             
         except Exception:
-            return True  # Safer to use fallback if there's any error
+            return False  # Safer to use fallback if there's any error
     
     def _fallback_model_families(self) -> Optional[str]:
         """Fallback method using original number-based selection"""

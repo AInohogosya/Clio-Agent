@@ -784,7 +784,15 @@ class TelegramBotManager:
                 consecutive_errors = 0
                 # Create a fresh Application so previous state doesn't leak.
                 self.application = Application.builder().token(self.bot_token).build()
-                asyncio.run(self._run_application())
+                # Create and own our event loop so stop_bot() can safely signal it.
+                self._own_loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(self._own_loop)
+                try:
+                    self._own_loop.run_until_complete(self._run_application())
+                finally:
+                    self._own_loop.close()
+                    self._own_loop = None
+                    asyncio.set_event_loop(None)
                 self.is_running = False
                 self.application = None
                 self._loop_ready.clear()
