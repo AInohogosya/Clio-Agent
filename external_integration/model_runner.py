@@ -41,6 +41,8 @@ class ModelRequest:
     max_tokens: int = 5000
     temperature: float = 1.0
     timeout: int = 30
+    system_instruction: Optional[str] = None
+    response_format: Optional[Dict[str, Any]] = None
 
 
 @dataclass

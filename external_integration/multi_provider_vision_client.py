@@ -82,6 +82,7 @@ class APIRequest:
     model: Optional[str] = None
     provider: Optional[str] = None
     system_instruction: Optional[str] = None
+    response_format: Optional[Dict[str, Any]] = None
 
 
 class MultiProviderVisionAPIClient:
@@ -318,7 +319,8 @@ class MultiProviderVisionAPIClient:
                 max_tokens=request.max_tokens,
                 system_instructions=request.system_instruction,
                 image_data=request.image_data,
-                image_format=request.image_format
+                image_format=request.image_format,
+                response_format=request.response_format,
             )
 
             return APIResponse(

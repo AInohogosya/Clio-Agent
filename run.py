@@ -415,35 +415,145 @@ def _min_version_for(pkg):
     return None
 
 
+def _diagnose_venv_failure(err=""):
+    """Print platform-specific diagnostic hints when venv creation fails."""
+    system = platform.system()
+    py_ver = f"{sys.version_info.major}.{sys.version_info.minor}"
+    print()
+    print("Diagnostic hints for venv creation failure:")
+    if system == "Darwin":
+        print("  macOS detected. Common fixes:")
+        print("    1. Install Xcode CLI tools:  xcode-select --install")
+        print(f"    2. If using Homebrew Python:  brew install python@{py_ver}")
+        print("    3. If using pyenv:  pyenv install <ver> && pyenv local <ver>")
+        print("    4. Try:  python3 -m pip install virtualenv && python3 -m virtualenv venv")
+    elif system == "Linux":
+        print("  Linux detected. Common fixes:")
+        print(f"    1. sudo apt install python{py_ver}-venv")
+        print(f"    2. sudo dnf install python{py_ver}-venv")
+    elif system == "Windows":
+        print("  Windows detected. Common fixes:")
+        print("    1. Re-run the Python installer, ensure 'venv' is checked")
+        print("    2. Use:  py -m venv venv")
+    if "ensurepip" in err:
+        print("  'ensurepip' error: install the system venv package for your Python.")
+    print()
+
+
+def _try_create_venv(venv_path, python_exe):
+    """Try creating a venv with the given Python executable. Returns (ok, err)."""
+    print(f"  Trying: {python_exe} -m venv ...")
+    try:
+        result = subprocess.run(
+            [python_exe, "-m", "venv", str(venv_path)],
+            capture_output=True, text=True, timeout=120,
+        )
+        if result.returncode == 0:
+            return True, ""
+        err = (result.stderr or result.stdout or "").strip()
+        print(f"    Failed: {err[:200]}")
+        return False, err
+    except FileNotFoundError:
+        print(f"    Not found: {python_exe}")
+        return False, "not found"
+    except Exception as e:
+        print(f"    Error: {e}")
+        return False, str(e)
+
+
+def _try_create_venv_virtualenv(venv_path):
+    """Try creating a venv using the virtualenv package. Returns True on success."""
+    for exe in ("virtualenv", "python3", sys.executable):
+        print(f"  Trying virtualenv via: {exe}")
+        try:
+            cmd = [exe, str(venv_path)] if exe == "virtualenv" else [exe, "-m", "virtualenv", str(venv_path)]
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            if result.returncode == 0:
+                return True
+            print(f"    Failed: {(result.stderr or result.stdout or '').strip()[:200]}")
+        except FileNotFoundError:
+            print(f"    Not found: {exe}")
+        except Exception as e:
+            print(f"    Error: {e}")
+    return False
+
+
+def _collect_python_candidates():
+    """Collect a deduplicated list of candidate Python executables."""
+    candidates = [sys.executable]
+    for name in ("python3", "python3.13", "python3.12", "python3.11", "python3.10", "python3.9", "python3.8"):
+        found = shutil.which(name)
+        if found and found not in candidates:
+            candidates.append(found)
+    pyenv_root = os.environ.get("PYENV_ROOT", os.path.expanduser("~/.pyenv"))
+    for shim_name in ("python3", "python"):
+        shim = os.path.join(pyenv_root, "shims", shim_name)
+        if os.path.exists(shim) and shim not in candidates:
+            candidates.append(shim)
+    for hb in ("/opt/homebrew/bin/python3", "/usr/local/bin/python3",
+               "/opt/homebrew/bin/python3.12", "/opt/homebrew/bin/python3.11",
+               "/opt/homebrew/bin/python3.10", "/opt/homebrew/bin/python3.13"):
+        if os.path.exists(hb) and hb not in candidates:
+            candidates.append(hb)
+    conda_prefix = os.environ.get("CONDA_PREFIX")
+    if conda_prefix:
+        for cp in (os.path.join(conda_prefix, "bin", "python"), os.path.join(conda_prefix, "bin", "python3")):
+            if os.path.exists(cp) and cp not in candidates:
+                candidates.append(cp)
+    return candidates
+
+
 def _create_venv_and_install():
-    """Create a fresh venv, install deps, return venv python path."""
+    """Create a fresh venv, install deps, return venv python path.
+
+    Self-healing strategy:
+      1. Remove any existing broken venv.
+      2. Try creating venv with multiple Python executables.
+      3. Try with virtualenv package as a last resort.
+      4. Install deps with progressive fallback.
+    """
     project_root = Path(__file__).parent.resolve()
     venv_path = project_root / "venv"
 
-    # If a broken/stale venv directory exists, remove it before recreating.
     if venv_path.exists():
-        print(f"Removing unusable virtual environment at {venv_path} ...")
+        print(f"Removing existing virtual environment at {venv_path} ...")
         try:
             shutil.rmtree(venv_path)
         except Exception as e:
             print(f"Warning: could not remove old venv: {e}")
 
+    # Phase 1: Try multiple Python executables
     print(f"Creating virtual environment at {venv_path} ...")
-    try:
-        result = subprocess.run(
-            [sys.executable, "-m", "venv", str(venv_path)],
-            capture_output=True, text=True, timeout=120,
-        )
-        if result.returncode != 0:
-            err = (result.stderr or result.stdout or "").strip()
-            print(f"Failed to create venv: {err}")
-            if "ensurepip" in err or "python3-venv" in err:
-                print(f"  Hint: sudo apt install python3.{sys.version_info.minor}-venv")
-            sys.exit(1)
-    except Exception as e:
-        print(f"Error creating venv: {e}")
+    candidates = _collect_python_candidates()
+    venv_created = False
+    last_err = ""
+    for exe in candidates:
+        ok, err = _try_create_venv(venv_path, exe)
+        if ok:
+            venv_created = True
+            print(f"  OK: Virtual environment created with {exe}")
+            break
+        last_err = err
+
+    # Phase 2: Fallback to virtualenv package
+    if not venv_created:
+        print("Standard venv creation failed. Trying virtualenv package ...")
+        try:
+            r = subprocess.run([sys.executable, "-m", "pip", "install", "virtualenv"],
+                               capture_output=True, text=True, timeout=60)
+            if r.returncode == 0 and _try_create_venv_virtualenv(venv_path):
+                venv_created = True
+                print("  OK: Virtual environment created with virtualenv")
+        except Exception:
+            pass
+
+    if not venv_created:
+        print(f"\nERROR: Could not create virtual environment after trying all methods.")
+        _diagnose_venv_failure(last_err)
+        print("  Manual fix: rm -rf venv && python3 -m venv venv")
         sys.exit(1)
 
+    # Phase 3: Resolve venv Python and install deps
     venv_python, _needs_install, _deps_ok = _resolve_venv_python()
     if not venv_python:
         print("Could not find venv Python after creation")
@@ -462,22 +572,34 @@ def _create_venv_and_install():
 
 
 def _auto_bootstrap_venv():
-    """Ensure we run inside the project venv, creating it if necessary."""
+    """Ensure we run inside the project venv, creating it if necessary.
+
+    Self-healing: this function detects common environment problems and
+    automatically fixes them (stale venvs, broken pip, missing deps)
+    before restarting into the venv.
+    """
     project_root = Path(__file__).parent.resolve()
     run_py = str(project_root / "run.py")
 
     # Prevent infinite restart loops: cap the number of bootstrap attempts.
     _bootstrap_count = int(os.environ.get("_CLIO_BOOTSTRAP_ATTEMPTS", "0"))
     if _bootstrap_count >= 3:
-        print("ERROR: Bootstrap failed after 3 attempts. Please check your Python installation.")
-        print("  Try: rm -rf venv && python3 -m venv venv && source venv/bin/activate && pip install -e .")
+        print()
+        print("=" * 60)
+        print("ERROR: Bootstrap failed after 3 attempts.")
+        print()
+        _diagnose_venv_failure("")
+        print("Quick fix:")
+        print("  rm -rf venv && python3 -m venv venv")
+        print("  source venv/bin/activate  # or venv\\Scripts\\activate on Windows")
+        print("  pip install -e .")
+        print("=" * 60)
         sys.exit(1)
     os.environ["_CLIO_BOOTSTRAP_ATTEMPTS"] = str(_bootstrap_count + 1)
 
     venv_python, needs_install, deps_ok = _resolve_venv_python()
 
     # ── Detect a stale/broken venv (e.g. base Python upgraded or removed) ──
-    # If the interpreter is unusable, rebuild from scratch rather than fail.
     if venv_python and not _venv_python_is_healthy(venv_python):
         print("Existing virtual environment is unusable; rebuilding ...")
         venv_python = _create_venv_and_install()
@@ -488,9 +610,8 @@ def _auto_bootstrap_venv():
             print("Warning: restart via execv failed. Running directly.")
             return
 
+    # ── Venv exists but pip is broken → recreate entirely ──
     if venv_python and needs_install:
-        # Venv exists but pip is broken -> recreate the venv entirely.
-        # Repairing pip in-place is unreliable and causes infinite restart loops.
         print("Virtual environment has broken pip; recreating from scratch ...")
         venv_python = _create_venv_and_install()
         print(f"Restarting in virtual environment ({venv_python}) ...")
@@ -500,32 +621,26 @@ def _auto_bootstrap_venv():
             print("Warning: restart via execv failed. Running directly.")
             return
 
+    # ── Venv exists with deps → check if we need to restart into it ──
     if venv_python and deps_ok:
-        # Venv exists with deps — are we already inside it?
-        # Use _is_in_venv() (which checks sys.prefix/sys.base_prefix/VIRTUAL_ENV)
-        # rather than os.path.samefile(), which resolves symlinks and produces
-        # false positives when venv/bin/python is a symlink to the system python.
         if _is_in_venv():
             return  # already running inside venv with deps
-        # venv exists with deps but we're running under system python → restart
         print(f"Switching to virtual environment ({venv_python}) ...")
         try:
             os.execv(venv_python, [venv_python, run_py] + sys.argv[1:])
         except (OSError, Exception) as _exec_err:
             print(f"Warning: could not restart into venv ({_exec_err}). Running directly.")
-            # Fall back to running with current Python — install deps if needed
             return
 
+    # ── Venv exists but deps are missing/outdated → repair in place ──
     if venv_python and not deps_ok:
-        # venv exists but deps are missing or outdated → repair in place,
-        # touching only the components that actually need work.
         print("Virtual environment found but dependencies need attention. Repairing ...")
         _ensure_pip(venv_python)
         _pip_install(venv_python, ["--upgrade", "pip"], timeout=300)
         if not _repair_venv_deps(venv_python, project_root):
-            print("ERROR: Core dependencies could not be repaired.")
-            print("       Run: pip install -e \".[all]\"")
-            sys.exit(1)
+            # Last resort: try recreating the entire venv
+            print("In-place repair failed. Recreating virtual environment from scratch ...")
+            venv_python = _create_venv_and_install()
         print(f"Restarting in virtual environment ({venv_python}) ...")
         try:
             os.execv(venv_python, [venv_python, run_py] + sys.argv[1:])
@@ -533,7 +648,7 @@ def _auto_bootstrap_venv():
             print("Warning: restart via execv failed. Running directly.")
             return
 
-    # No valid venv at all → create one and restart inside it
+    # ── No valid venv at all → create one and restart inside it ──
     venv_python = _create_venv_and_install()
     print(f"Restarting in virtual environment ({venv_python}) ...")
     try:
@@ -839,6 +954,30 @@ if "--help" in sys.argv or "-h" in sys.argv:
     print("  --install-sdks   Install AI provider SDKs")
     print("  --sdk-status     Show SDK installation status")
     print()
+    sys.exit(0)
+
+# Handle diagnostic/fix commands before venv bootstrap so they work
+# even when the venv is broken or missing.
+if "--health-check" in sys.argv:
+    sys.argv.remove("--health-check")
+    _auto_bootstrap_venv()
+    _run_health_check()
+    sys.exit(0)
+
+if "--check" in sys.argv or "-c" in sys.argv:
+    sys.argv.remove("--check") if "--check" in sys.argv else sys.argv.remove("-c")
+    print("Running environment check (pre-venv) ...")
+    try:
+        _auto_bootstrap_venv()
+    except SystemExit:
+        pass
+    _run_health_check()
+    sys.exit(0)
+
+if "--fix" in sys.argv:
+    sys.argv.remove("--fix")
+    print("Running environment check with auto-fix ...")
+    _auto_bootstrap_venv()
     sys.exit(0)
 
 # Auto-bootstrap venv BEFORE any project imports

@@ -164,7 +164,7 @@ class OpenRouterProvider:
                 pass
         return self.popular_models + ["Other Models"]
     
-    def chat(self, prompt: str, model: Optional[str] = None, temperature: float = 1.0, max_tokens: int = 5000, system_instructions: Optional[str] = None, image_data: Optional[bytes] = None, image_format: str = "PNG") -> OpenRouterResponse:
+    def chat(self, prompt: str, model: Optional[str] = None, temperature: float = 1.0, max_tokens: int = 5000, system_instructions: Optional[str] = None, image_data: Optional[bytes] = None, image_format: str = "PNG", response_format: Optional[Dict[str, Any]] = None) -> OpenRouterResponse:
         """Send a chat request to OpenRouter"""
         api_key = self._get_api_key()
         if not api_key:
@@ -208,7 +208,11 @@ class OpenRouterProvider:
                 "max_tokens": max_tokens,
                 "temperature": temperature,
             }
-            
+
+            # Add response_format for structured JSON output (OpenRouter JSON mode)
+            if response_format:
+                payload["response_format"] = response_format
+
             # Add image if provided
             if image_data:
                 # Convert image to base64
@@ -289,7 +293,8 @@ class OpenRouterProvider:
             max_tokens=request.max_tokens,
             system_instructions=getattr(request, 'system_instruction', None),
             image_data=getattr(request, 'image_data', None),
-            image_format=getattr(request, 'image_format', 'PNG')
+            image_format=getattr(request, 'image_format', 'PNG'),
+            response_format=getattr(request, 'response_format', None),
         )
     
     def _calculate_cost(self, model: str, tokens: Optional[int] = None) -> Optional[float]:
