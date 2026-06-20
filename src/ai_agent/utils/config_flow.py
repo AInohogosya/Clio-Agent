@@ -858,6 +858,11 @@ def _is_valid_telegram_bot_token(token: str) -> bool:
 
 
 def _parse_telegram_user_ids(raw_ids: str) -> Tuple[List[int], Optional[str]]:
+    """Parse comma-separated Telegram user/chat IDs.
+
+    Accepts positive IDs (private chats) and negative IDs (group/channel chats).
+    Returns (list_of_int_ids, error_message_or_None).
+    """
     parsed: List[int] = []
     seen = set()
     for part in (raw_ids or "").split(","):
@@ -868,8 +873,8 @@ def _parse_telegram_user_ids(raw_ids: str) -> Tuple[List[int], Optional[str]]:
             user_id = int(value)
         except ValueError:
             return [], "Telegram user IDs must be numeric. Invalid: '%s'" % value[:20]
-        if user_id <= 0:
-            return [], "Telegram user IDs must be positive numbers. Invalid: '%s'" % value[:20]
+        if user_id == 0:
+            return [], "Telegram user IDs must not be zero. Invalid: '%s'" % value[:20]
         if user_id not in seen:
             parsed.append(user_id)
             seen.add(user_id)
@@ -877,7 +882,11 @@ def _parse_telegram_user_ids(raw_ids: str) -> Tuple[List[int], Optional[str]]:
 
 
 def _input_telegram_config(stdscr, existing=None):
-    """Curses-based Telegram config input. Returns Telegram settings or None."""
+    """Curses-based Telegram config input. Returns Telegram settings or None.
+
+    Handles terminal resize, small terminals, paste, and distinguishes
+    Esc (go back) from Ctrl+C (hard quit via KeyboardInterrupt).
+    """
     curses.curs_set(1)
     _setup_colors()
 
@@ -900,10 +909,26 @@ def _input_telegram_config(stdscr, existing=None):
         values = {"bot_username": "", "bot_name": "", "bot_token": "", "telegram_user_id": "", "allowed_user_ids": ""}
     current_field = 0
     error_msg = ""
+    has_existing_token = bool(existing and existing.get("bot_token"))
+
+    MIN_LINES = 22
+    MIN_COLS = 40
 
     while True:
         stdscr.clear()
         max_y, max_x = stdscr.getmaxyx()
+
+        # Fix #1: Check terminal size
+        if max_y < MIN_LINES or max_x < MIN_COLS:
+            stdscr.addstr(0, 0, "Terminal too small!"[:max_x - 1], _attr(COLOR_ERROR, True))
+            stdscr.addstr(1, 0, "Need at least %dx%d, have %dx%d" % (MIN_COLS, MIN_LINES, max_y, max_x), _attr(COLOR_NORMAL))
+            stdscr.addstr(2, 0, "Please resize your terminal."[:max_x - 1], _attr(COLOR_NORMAL))
+            stdscr.addstr(4, 0, "Press Q to quit, or resize and wait..."[:max_x - 1], _attr(COLOR_FOOTER))
+            stdscr.refresh()
+            ch = stdscr.getch()
+            if ch in (ord('q'), ord('Q')):
+                return None
+            continue
 
         stdscr.addstr(0, 0, "Telegram Bot Configuration", _attr(COLOR_TITLE, True))
         stdscr.addstr(1, 0, "=" * min(50, max_x - 1), _attr(COLOR_TITLE))
@@ -921,7 +946,11 @@ def _input_telegram_config(stdscr, existing=None):
             prefix = ">>> " if sel else "    "
             line = "%s%s:" % (prefix, label)
             stdscr.addstr(y, 0, line, _attr(COLOR_HIGHLIGHT, True) if sel else _attr(COLOR_NORMAL))
-            val_display = values[key] if key != "bot_token" else ("*" * len(values[key]) if values[key] else "")
+            # Fix #3: Fixed-length mask for bot_token
+            if key == "bot_token":
+                val_display = "********" if values[key] else ""
+            else:
+                val_display = values[key]
             stdscr.addstr(y, 20, val_display, _attr(COLOR_NORMAL))
             stdscr.addstr(y + 1, 4, hint, _attr(COLOR_FOOTER))
 
@@ -933,25 +962,28 @@ def _input_telegram_config(stdscr, existing=None):
         if current_field == len(fields) - 1 and all_filled:
             footer = "Enter/Tab:Confirm  Up/Down:Navigate  Esc:Back  Ctrl+C:Quit"
         elif current_field < len(fields) - 1:
-            footer = "Enter:Next field  Up/Down:Navigate  Esc:Cancel  Ctrl+C:Quit"
+            footer = "Enter:Next  Up/Down:Nav  Home/End:Jump  Esc:Back  Ctrl+C:Quit"
         else:
-            footer = "Enter:Confirm  Up/Down:Navigate  Esc:Cancel  Ctrl+C:Quit"
+            footer = "Enter:Confirm  Up/Down:Nav  Home/End:Jump  Esc:Back  Ctrl+C:Quit"
         stdscr.addstr(max_y - 1, 0, footer[:max_x - 1], _attr(COLOR_FOOTER))
         stdscr.refresh()
 
         ch = stdscr.getch()
+
+        # Fix #11: Handle terminal resize (KEY_RESIZE)
+        if ch == curses.KEY_RESIZE:
+            error_msg = ""
+            continue
+
+        # Fix #2: Ctrl+C raises KeyboardInterrupt (hard quit), Esc goes back
         if ch == 27:
-            # Escape = cancel/go back
             return None
         elif ch == 3:
-            # Ctrl+C = quit without saving
-            return None
+            raise KeyboardInterrupt
         elif ch in (10, 13, 9):
-            # Enter or Tab: next field, or confirm if on last field
             if current_field < len(fields) - 1:
                 current_field += 1
             else:
-                # Validate all required fields
                 token = values["bot_token"].strip()
                 if not token:
                     error_msg = "Bot token is required."
@@ -970,15 +1002,35 @@ def _input_telegram_config(stdscr, existing=None):
                 if ids_error:
                     error_msg = ids_error
                     continue
+                # Fix #9: Confirm before overwriting existing token
+                if has_existing_token and values["bot_token"] != existing.get("bot_token", ""):
+                    stdscr.clear()
+                    stdscr.addstr(0, 0, "Overwrite existing bot token?"[:max_x - 1], _attr(COLOR_TITLE, True))
+                    stdscr.addstr(2, 0, "You are replacing the previously saved token."[:max_x - 1], _attr(COLOR_NORMAL))
+                    stdscr.addstr(4, 0, "Press Y to confirm, any other key to go back."[:max_x - 1], _attr(COLOR_FOOTER))
+                    stdscr.refresh()
+                    confirm_ch = stdscr.getch()
+                    if confirm_ch not in (ord('y'), ord('Y')):
+                        continue
                 values["bot_token"] = token
                 return values
         elif ch == curses.KEY_UP and current_field > 0:
             current_field -= 1
         elif ch == curses.KEY_DOWN and current_field < len(fields) - 1:
             current_field += 1
+        # Fix #4: Home/End key support for quick navigation
+        elif ch == curses.KEY_HOME:
+            current_field = 0
+        elif ch == curses.KEY_END:
+            current_field = len(fields) - 1
         elif ch == curses.KEY_BACKSPACE or ch == 127 or ch == 8:
             key = fields[current_field][0]
             values[key] = values[key][:-1]
+            error_msg = ""
+        # Fix #7: Ctrl+L clears the current field
+        elif ch == 12:
+            key = fields[current_field][0]
+            values[key] = ""
             error_msg = ""
         elif 32 <= ch <= 126:
             key = fields[current_field][0]
@@ -1106,11 +1158,19 @@ def get_telegram_config(stdscr=None) -> Optional[Dict[str, str]]:
                 config = _yaml.safe_load(f) or {}
             tg = config.get('telegram', {})
             if tg.get('bot_token'):
-                # Convert allowed_user_ids list back to comma-separated string for display
+                # Fix #5: Normalize allowed_user_ids to comma-separated string
+                # regardless of whether it was saved as list[str] or list[int]
                 saved_ids = tg.get("allowed_user_ids", [])
-                ids_str = ",".join(str(i) for i in saved_ids) if saved_ids else ""
+                if isinstance(saved_ids, list):
+                    ids_str = ",".join(str(int(i)) for i in saved_ids if str(i).strip())
+                else:
+                    ids_str = str(saved_ids)
+                # Fix #12: Normalize bot_username (strip @ prefix)
+                bot_username = tg.get("bot_username", "")
+                if bot_username:
+                    bot_username = _normalize_telegram_username(bot_username)
                 existing = {
-                    "bot_username": tg.get("bot_username", ""),
+                    "bot_username": bot_username,
                     "bot_name": tg.get("bot_name", ""),
                     "bot_token": tg.get("bot_token", ""),
                     "telegram_user_id": tg.get("telegram_user_id", ""),
@@ -1151,7 +1211,9 @@ def _save_messaging_config_to_yaml(app_key: str, app_config: Optional[Dict[str, 
 
     if app_key == "telegram" and app_config:
         config['telegram']['enabled'] = True
-        config['telegram']['bot_username'] = app_config.get("bot_username", "").strip()
+        # Fix #12: Normalize bot_username (strip @ prefix) before saving
+        raw_username = app_config.get("bot_username", "").strip()
+        config['telegram']['bot_username'] = _normalize_telegram_username(raw_username)
         config['telegram']['bot_name'] = app_config.get("bot_name", "").strip()
         config['telegram']['bot_token'] = app_config.get("bot_token", "").strip()
 

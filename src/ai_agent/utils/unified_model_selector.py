@@ -921,22 +921,48 @@ class MessagingSettingsMenu:
         self._dc_users = ",".join(str(u) for u in dc.get("authorized_users") or dc.get("allowed_user_ids") or [])
 
     def _save_config(self):
-        """Persist Telegram & Discord settings to config.yaml."""
+        """Persist Telegram & Discord settings to config.yaml.
+
+        Fix #8: Properly save all fields including bot_username, normalize
+        user IDs to integers, save output_recipients, and disable the other
+        platform to avoid duplicate bot notifications.
+        """
         config = load_config()
         if "telegram" not in config:
             config["telegram"] = {}
         config["telegram"]["enabled"] = self._tg_enabled
         config["telegram"]["bot_token"] = self._tg_token.strip()
-        tg_uids = [u.strip() for u in self._tg_users.split(",") if u.strip()]
-        config["telegram"]["authorized_users"] = tg_uids
-        config["telegram"]["allowed_user_ids"] = tg_uids
+        # Fix #12: bot_username is not available in this menu's state,
+        # but we preserve any existing value in config
+        if "bot_username" not in config["telegram"]:
+            config["telegram"]["bot_username"] = ""
+        # Fix #5: Normalize user IDs to List[int] for consistency
+        tg_uids_str = [u.strip() for u in self._tg_users.split(",") if u.strip()]
+        tg_uids_int = []
+        for uid_str in tg_uids_str:
+            try:
+                tg_uids_int.append(int(uid_str))
+            except ValueError:
+                pass
+        config["telegram"]["authorized_users"] = tg_uids_int
+        config["telegram"]["allowed_user_ids"] = tg_uids_int
+        # Fix #8: Save output_recipients for the telegram bot to use
+        config["telegram"]["output_recipients"] = tg_uids_int
+        # Fix #8: Set telegram_user_id to first recipient if available
+        config["telegram"]["telegram_user_id"] = str(tg_uids_int[0]) if tg_uids_int else ""
         if "discord" not in config:
             config["discord"] = {}
         config["discord"]["enabled"] = self._dc_enabled
         config["discord"]["bot_token"] = self._dc_token.strip()
-        dc_uids = [u.strip() for u in self._dc_users.split(",") if u.strip()]
-        config["discord"]["authorized_users"] = dc_uids
-        config["discord"]["allowed_user_ids"] = dc_uids
+        dc_uids_str = [u.strip() for u in self._dc_users.split(",") if u.strip()]
+        dc_uids_int = []
+        for uid_str in dc_uids_str:
+            try:
+                dc_uids_int.append(int(uid_str))
+            except ValueError:
+                pass
+        config["discord"]["authorized_users"] = dc_uids_int
+        config["discord"]["allowed_user_ids"] = dc_uids_int
         save_config(config)
 
     def _inline_input(self, stdscr, y, x, prompt, initial_value="", mask=False):
