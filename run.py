@@ -415,6 +415,132 @@ def _min_version_for(pkg):
     return None
 
 
+def _run_fix_command(cmd, timeout=120):
+    """Run a fix command and return True if it succeeded."""
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=timeout,
+            shell=isinstance(cmd, str),
+        )
+        if result.returncode == 0:
+            return True
+        err_out = (result.stderr or result.stdout or "").strip()
+        if err_out:
+            print(f"    Output: {err_out[:200]}")
+        return False
+    except subprocess.TimeoutExpired:
+        print(f"    Timed out after {timeout}s (may still be running in background)")
+        return False
+    except Exception as e:
+        print(f"    Error: {e}")
+        return False
+
+
+def _auto_fix_venv_failure(err=""):
+    """Attempt to automatically fix the venv creation failure.
+
+    Returns True if a fix was applied (caller should retry), False if no fix worked.
+    """
+    system = platform.system()
+    py_ver = f"{sys.version_info.major}.{sys.version_info.minor}"
+    fixed = False
+
+    print()
+    print("Attempting automatic fix ...")
+    print()
+
+    if system == "Darwin":
+        # Fix 1: xcode-select --install (often needed for CLI tools / headers)
+        print("[auto-fix] Checking Xcode Command Line Tools ...")
+        try:
+            r = subprocess.run(
+                ["xcode-select", "-p"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if r.returncode != 0:
+                print("[auto-fix] Xcode CLI tools not found. Installing (GUI dialog may appear)...")
+                if _run_fix_command("xcode-select --install", timeout=300):
+                    fixed = True
+                    print("[auto-fix] Xcode CLI tools installation triggered.")
+                else:
+                    print("[auto-fix] Xcode CLI tools install may have been cancelled or failed.")
+            else:
+                print("[auto-fix] Xcode CLI tools already installed.")
+        except Exception:
+            pass
+
+        # Fix 2: Try installing via Homebrew
+        if not fixed and shutil.which("brew"):
+            print(f"[auto-fix] Upgrading Homebrew Python (brew install python@{py_ver}) ...")
+            if _run_fix_command(["brew", "install", f"python@{py_ver}"], timeout=300):
+                fixed = True
+                print("[auto-fix] Homebrew Python installed/updated successfully.")
+
+        # Fix 3: Try installing virtualenv package as a fallback
+        if not fixed:
+            print("[auto-fix] Trying to install virtualenv package ...")
+            if _run_fix_command(
+                [sys.executable, "-m", "pip", "install", "virtualenv"], timeout=120,
+            ):
+                fixed = True
+                print("[auto-fix] virtualenv package installed successfully.")
+
+    elif system == "Linux":
+        has_apt = shutil.which("apt") or shutil.which("apt-get")
+        has_dnf = shutil.which("dnf")
+        has_yum = shutil.which("yum")
+        venv_pkg = f"python{py_ver}-venv"
+
+        # Fix 1: apt install pythonX.Y-venv
+        if has_apt:
+            print(f"[auto-fix] Installing {venv_pkg} via apt ...")
+            if _run_fix_command(["sudo", "apt", "update"], timeout=120) and \
+               _run_fix_command(["sudo", "apt", "install", "-y", venv_pkg], timeout=300):
+                fixed = True
+                print(f"[auto-fix] {venv_pkg} installed via apt.")
+
+        # Fix 2: dnf install pythonX.Y-venv
+        if not fixed and has_dnf:
+            print(f"[auto-fix] Installing {venv_pkg} via dnf ...")
+            if _run_fix_command(["sudo", "dnf", "install", "-y", venv_pkg], timeout=300):
+                fixed = True
+                print(f"[auto-fix] {venv_pkg} installed via dnf.")
+
+        # Fix 3: yum install pythonX.Y-venv
+        if not fixed and has_yum:
+            print(f"[auto-fix] Installing {venv_pkg} via yum ...")
+            if _run_fix_command(["sudo", "yum", "install", "-y", venv_pkg], timeout=300):
+                fixed = True
+                print(f"[auto-fix] {venv_pkg} installed via yum.")
+
+        # Fix 4: Try ensurepip package
+        if not fixed and "ensurepip" in err:
+            pip_pkg = f"python{py_ver}-pip"
+            if has_apt:
+                print(f"[auto-fix] Installing {pip_pkg} via apt ...")
+                if _run_fix_command(["sudo", "apt", "install", "-y", pip_pkg], timeout=300):
+                    fixed = True
+            elif has_dnf:
+                print(f"[auto-fix] Installing {pip_pkg} via dnf ...")
+                if _run_fix_command(["sudo", "dnf", "install", "-y", pip_pkg], timeout=300):
+                    fixed = True
+
+    elif system == "Windows":
+        print("[auto-fix] On Windows, please re-run the Python installer and ensure 'venv' is checked.")
+        print("[auto-fix] Alternatively, try:  py -m pip install virtualenv")
+
+    if fixed:
+        print()
+        print("[auto-fix] Fix applied! The program will now retry.")
+        print()
+    else:
+        print()
+        print("[auto-fix] Could not automatically fix the issue.")
+        print()
+
+    return fixed
+
+
 def _diagnose_venv_failure(err=""):
     """Print platform-specific diagnostic hints when venv creation fails."""
     system = platform.system()
@@ -551,7 +677,28 @@ def _create_venv_and_install():
         print(f"\nERROR: Could not create virtual environment after trying all methods.")
         _diagnose_venv_failure(last_err)
         print("  Manual fix: rm -rf venv && python3 -m venv venv")
-        sys.exit(1)
+        # Attempt auto-fix before giving up
+        if _auto_fix_venv_failure(last_err):
+            # Remove any partially-created venv so we can retry cleanly
+            if venv_path.exists():
+                try:
+                    shutil.rmtree(venv_path)
+                except Exception:
+                    pass
+            # Retry venv creation with all candidates again
+            print("Retrying venv creation after auto-fix ...")
+            for exe in _collect_python_candidates():
+                ok, err2 = _try_create_venv(venv_path, exe)
+                if ok:
+                    venv_created = True
+                    print(f"  OK: Virtual environment created with {exe} after auto-fix")
+                    break
+                last_err = err2
+            if not venv_created:
+                print("Auto-fix was applied but venv creation still failed.")
+                sys.exit(1)
+        else:
+            sys.exit(1)
 
     # Phase 3: Resolve venv Python and install deps
     venv_python, _needs_install, _deps_ok = _resolve_venv_python()
@@ -593,6 +740,26 @@ def _auto_bootstrap_venv():
         print("  rm -rf venv && python3 -m venv venv")
         print("  source venv/bin/activate  # or venv\\Scripts\\activate on Windows")
         print("  pip install -e .")
+        # Last-ditch auto-fix attempt before giving up
+        if _auto_fix_venv_failure(""):
+            print("Auto-fix applied on final attempt. One more bootstrap try ...")
+            # Reset the bootstrap counter for one last attempt
+            os.environ["_CLIO_BOOTSTRAP_ATTEMPTS"] = "0"
+            # Remove stale venv so creation is clean
+            venv_dir = project_root / "venv"
+            if venv_dir.exists():
+                try:
+                    shutil.rmtree(venv_dir)
+                except Exception:
+                    pass
+            # Retry full bootstrap path
+            venv_python = _create_venv_and_install()
+            print(f"Restarting in virtual environment ({venv_python}) ...")
+            try:
+                os.execv(venv_python, [venv_python, run_py] + sys.argv[1:])
+            except (OSError, Exception):
+                print("Warning: restart via execv failed. Running directly.")
+                return
         print("=" * 60)
         sys.exit(1)
     os.environ["_CLIO_BOOTSTRAP_ATTEMPTS"] = str(_bootstrap_count + 1)
