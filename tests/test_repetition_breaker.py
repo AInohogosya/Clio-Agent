@@ -173,7 +173,7 @@ class TestCheckRepetitionBreaker(unittest.TestCase):
         self.engine._max_action_history = 50
         self.engine._consecutive_same_action = 0
         self.engine._last_action_signature = ""
-        self.engine._repetition_break_threshold = 3
+        self.engine._repetition_break_threshold = 6
         self.engine._persistent_loop_patterns = {}
         self.engine._persistent_loop_threshold = 6
         self.engine._prev_iteration_action_sig = ""
@@ -181,7 +181,7 @@ class TestCheckRepetitionBreaker(unittest.TestCase):
         self.engine._consecutive_identical_outputs = 0
         self.engine._last_output_hash = ""
         self.engine._curiosity_fairy_invoked = False
-        self.engine._curiosity_fairy_threshold = 5
+        self.engine._curiosity_fairy_threshold = 6
         self.engine.logger = MagicMock()
         # Minimal ctx for logging
         self.ctx = AutonomousContext(
@@ -196,9 +196,11 @@ class TestCheckRepetitionBreaker(unittest.TestCase):
         self.assertIsNone(result)
 
     def test_level1_intervention_on_consecutive_repeat(self):
-        # Simulate 3 consecutive identical actions
-        self.engine._consecutive_same_action = 3
+        # Simulate 6 consecutive identical actions with fairy already invoked
+        # so Level 1 fires instead of Level 0 (both thresholds are now 6)
+        self.engine._consecutive_same_action = 6
         self.engine._last_action_signature = "tool:read:abc12345"
+        self.engine._curiosity_fairy_invoked = True
         result = self.engine._check_repetition_breaker(self.ctx)
         self.assertIsNotNone(result)
         self.assertIn("LOOP BREAKER ACTIVATED", result)
@@ -218,9 +220,10 @@ class TestCheckRepetitionBreaker(unittest.TestCase):
         result = self.engine._check_repetition_breaker(self.ctx)
         self.assertIsNone(result)
 
-    def test_curiosity_fairy_on_5_same_commands(self):
-        # Simulate 5 consecutive identical command signatures
-        self.engine._consecutive_same_action = 5
+    def test_curiosity_fairy_on_6_same_commands(self):
+        # Simulate 6 consecutive identical command signatures — the moment
+        # the loop has run six times, the Curiosity Fairy is summoned
+        self.engine._consecutive_same_action = 6
         self.engine._last_action_signature = "tool:read:abc12345"
         result = self.engine._check_repetition_breaker(self.ctx)
         self.assertIsNotNone(result)
@@ -229,22 +232,21 @@ class TestCheckRepetitionBreaker(unittest.TestCase):
         self.assertTrue(self.engine._curiosity_fairy_invoked)
 
     def test_no_curiosity_fairy_below_threshold(self):
-        # 4 consecutive same commands — below fairy threshold of 5
-        # Level 1 (threshold=3) fires its own intervention instead
-        self.engine._consecutive_same_action = 4
+        # 5 consecutive same commands — below fairy threshold of 6
+        # No intervention fires at all (below both fairy and Level 1 thresholds)
+        self.engine._consecutive_same_action = 5
         self.engine._last_action_signature = "tool:read:abc12345"
         result = self.engine._check_repetition_breaker(self.ctx)
-        self.assertIsNotNone(result)
-        self.assertIn("LOOP BREAKER ACTIVATED", result)
-        self.assertNotIn("CURIOSITY FAIRY", result)
+        self.assertIsNone(result)
         self.assertFalse(self.engine._curiosity_fairy_invoked)
 
     def test_no_curiosity_fairy_if_already_invoked(self):
-        self.engine._consecutive_same_action = 5
+        # At 6 consecutive with fairy already invoked, Level 1 fires
+        self.engine._consecutive_same_action = 6
         self.engine._last_action_signature = "tool:read:abc12345"
         self.engine._curiosity_fairy_invoked = True
         result = self.engine._check_repetition_breaker(self.ctx)
-        # Fairy already invoked, so Level 1 fires instead (consecutive >= 3)
+        # Fairy already invoked, so Level 1 fires instead (consecutive >= 6)
         self.assertIsNotNone(result)
         self.assertIn("LOOP BREAKER ACTIVATED", result)
         self.assertNotIn("CURIOSITY FAIRY", result)

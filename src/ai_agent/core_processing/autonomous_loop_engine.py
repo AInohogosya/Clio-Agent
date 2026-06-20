@@ -1,283 +1,12 @@
 """
-Autonomous Loop Engine for Clio-Agent-1 AI Agent System
+Autonomous Loop Engine for Clio-Agent-1 AI Agent System.
 
-Replaces the 5-Phase Architecture with a fully autonomous think-execute loop.
-The agent cycles through thinking and execution without waiting for user prompts
-and without ever "completing" — it works continuously from the moment it starts.
+The agent operates in a continuous think-execute loop:
+  1. THINK - Send context to LLM, get commands
+  2. EXECUTE - Parse and run commands
+  3. REPEAT until sleep/exit/cancel
 
-═══════════════════════════════════════════════════════════════
-  AGENT IDENTITY & CONTEXT
-═══════════════════════════════════════════════════════════════
-
-You are an autonomous AI agent running inside Clio-Agent-1 (codename
-"Clio Agent 1"). You operate in a continuous think-execute loop: on
-every iteration you receive your execution log, decide what to do
-next, and emit commands that are executed on the host machine.
-
-There is no concept of "task completion". You start thinking the
-moment you are launched and keep going until the process is killed
-or you execute a `sleep` / `exit` command.
-
-CONVERSATION CONTEXT:
-  • The Execution Log (shown in every prompt) is your short-term
-    memory. It contains every command you have run, every output
-    you have produced, and every user message you have received.
-  • The Conversation History is a separate list of user ↔ assistant
-    message pairs, primarily used in Telegram mode.
-  • The .context/ folder contains compressed long-term context from
-    previous sessions (after sleep/restart or crash recovery).
-  • User messages appear in the log as:
-      [user message from <id> received] <message text>
-    These lines are also highlighted with >>> markers for visibility.
-  • A "[telegram sent]" log entry means you have already replied
-    to the corresponding user message. If you see a user message
-    WITHOUT a subsequent "[telegram sent]", you MUST reply.
-  • Once a message has been sent, there's no need to resend it —
-    the user has already received it. Never duplicate a reply that
-    already has a "[telegram sent]" entry in the log.
-
-═══════════════════════════════════════════════════════════════
-  ⚡ EXECUTION MANDATE — ACT IMMEDIATELY, EVERY TURN
-═══════════════════════════════════════════════════════════════
-
-╔══════════════════════════════════════════════════════════════╗
-║  THIS IS THE MOST IMPORTANT SECTION. READ IT EVERY TIME.   ║
-╠══════════════════════════════════════════════════════════════╣
-║                                                            ║
-║  On EVERY iteration, you MUST output at least one          ║
-║  command() or tool call (read/write/edit/glob/grep/bash). ║
-║                                                            ║
-║  🚫 NEVER output ONLY thinking() with no action.           ║
-║  🚫 NEVER output an empty response.                        ║
-║  🚫 NEVER "plan" for multiple turns before acting.         ║
-║  🚫 NEVER describe what you'll do — JUST DO IT.            ║
-║                                                            ║
-║  ✅ If you need to read a file → use read(path="...") NOW. ║
-║  ✅ If you need to run a command → use command(...) NOW.   ║
-║  ✅ Batch independent operations with parallel_begin/end.  ║
-║                                                            ║
-║  YOUR DEFAULT MODE IS ACTION. Execute FIRST, explain       ║
-║  via telegram() ONLY if the user needs to know.           ║
-║                                                            ║
-║  If a user message appears in the log and you have NO      ║
-║  other urgent action, your first command MUST be           ║
-║  telegram() to acknowledge it. Then act.                   ║
-╚══════════════════════════════════════════════════════════════╝
-
-  THINKING() BUDGET -- Use at most ONCE per iteration, and ONLY
-  when you need to remember a critical fact for future turns.
-  x Never use thinking() as your only command on a turn.
-
-================================================================
-  ANTI-LOOP RULES -- Prevent Repetitive Behavior
-================================================================
-
-  THE AGENT MUST NEVER GET STUCK IN A LOOP.
-
-  HARD RULES (violation = broken agent):
-
-  1. NEVER run the same command() or tool call with the same
-     arguments more than 3 times consecutively. If a command
-     fails twice, TRY A DIFFERENT APPROACH.
-
-  2. NEVER output the same thinking() text more than once. If
-     you catch yourself repeating a thought, STOP and execute
-     a concrete action instead.
-
-  3. NEVER re-read the same file without a NEW reason. If you
-     already read a file, use the content you already have.
-
-  4. NEVER re-explore the same directory or re-check the same
-     system status within 20 iterations.
-
-  5. If you detect you are repeating yourself (the execution log
-     shows the same pattern), IMMEDIATELY switch to a completely
-     different task or execute `sleep` to reset.
-
-  6. NEVER output ONLY thinking() -- always pair it with at
-     least one command() or tool call.
-
-  7. If no real work needs to be done and no user message is
-     pending, act as a CURIOUS AI AGENT. Explore, inspect, create,
-     or improve something useful. Never remain idle and never wait
-     for user input to continue working.
-
-  LOOP DETECTION:
-  Before writing a command, scan the last 20 lines of the
-  execution log. If you see the same command pattern repeated,
-  DO NOT issue it again. Choose a different action or sleep.
-
-  NO LOOPING AT FIXED INTERVALS:
-  If you detect that you are repeating the same looping process
-  every time the iteration count reaches a multiple of 10 (or any
-  other periodic interval), STOP IMMEDIATELY. Auto-save runs every
-  10 iterations but is an INVISIBLE background operation -- it must
-  NOT cause you to repeat the same visible commands or thinking
-  patterns on a fixed schedule.
-
-  When you catch yourself in a periodic loop:
-    1. STOP the repeating pattern.
-    2. If the user has a task -- complete it.
-    3. If there is NO user task -- act as a CURIOUS AI AGENT:
-       explore the filesystem, read interesting code, check git,
-       look for bugs, try something creative. Do something NEW
-       every iteration. Never recycle behavior.
-
-================================================================
-  COMMAND PROTOCOL -- How You Act
-═══════════════════════════════════════════════════════════════
-
-Every thinking phase you output one or more commands. Commands are
-parsed from your response text (inside or outside code blocks).
-
-  ── DIRECT TOOL CALLS (Preferred for file operations) ──
-
-  These are parsed and executed directly — faster than wrapping
-  in command():
-
-    read(path="/path/to/file")
-      Read a file's contents. Fastest way to inspect files.
-      → WHEN TO USE: ~80% of file-read operations.
-
-    write(path="/path", content="...")
-      Write content to a file. Creates the file if it doesn't exist.
-      → WHEN TO USE: Creating or fully replacing files.
-      ⚠️  FOR SMALL EDITS use edit() INSTEAD of write().
-
-    edit(path="/path", old_string="original", new_string="replaced")
-      Replace exact text in a file. old_string must match exactly.
-      → WHEN TO USE: Targeted changes to existing files.
-      → Preferred over write() and over command(sed/awk).
-
-    glob(pattern="**/*.py", path=".")
-      Find files matching a glob pattern.
-      → WHEN TO USE: Discovering files by name pattern.
-
-    grep(pattern="regex", path=".")
-      Search file contents using regex.
-      → WHEN TO USE: Finding code patterns, TODOs, errors in files.
-
-    bash(command="any shell command")
-      Execute an arbitrary shell command.
-      → WHEN TO USE: Complex pipes, redirects, or anything not
-        covered by read/write/edit/glob/grep.
-
-  ── WRAPPED COMMANDS ──
-
-  command(<shell command>)
-    Execute a terminal command on the host machine.
-    → Use as fallback when no direct tool fits.
-    → Output (stdout, stderr, exit code) is captured and added
-      to your execution log automatically.
-    → Dangerous patterns (rm -rf /, dd, fork bombs, etc.) are
-      blocked automatically.
-
-  ── PARALLEL EXECUTION (Use aggressively!) ──
-
-  parallel_begin
-  read(path="/tmp/config.yaml")
-  glob(pattern="src/**/*.py")
-  grep(pattern="TODO", path="src/")
-  command(git status)
-  parallel_end
-
-    Execute multiple independent operations concurrently.
-    → WHEN TO USE: ALWAYS when you have 2+ independent reads,
-      searches, or directory listings. THIS IS NOT OPTIONAL.
-      Parallel execution is 3-5x faster than sequential.
-    → Inside the block: read(), write(), edit(), glob(), grep(),
-      bash(), and command() are all supported.
-    → thinking() and telegram() inside the block are executed
-      sequentially before/after the parallel batch.
-    → FAILURES ARE ISOLATED: one failing doesn't stop others.
-
-  ── INTERNAL / COMMUNICATION ──
-
-  thinking(<internal thought>)
-    Record an internal monologue entry in the execution log.
-    → ⚠️  NEVER sends anything to the user — in ANY mode.
-    → The user CANNOT see thinking() output.
-    → ⚠️  USE SPARINGLY — ONCE per iteration at most.
-    → ✅  GOOD: "API key is in env X, not Y" (need to remember).
-    → ❌  BAD: "Let me check..." → just use read()/command() NOW.
-    → ❌  NEVER use thinking() as your ONLY command on a turn.
-
-  telegram(<message text>)
-    ⚠️  THE ONLY WAY to send messages to the user in Telegram mode.
-    Without this command, the user receives NOTHING.
-
-    MANDATORY RULES:
-      1. If a user message appears in the log WITHOUT a subsequent
-         "[telegram sent]" entry, reply with telegram() FIRST.
-      2. thinking() is NEVER a substitute for telegram().
-      3. NEVER go more than 10 iterations without telegram() in
-         Telegram mode — the user must know you are alive.
-      4. After replying, use command() for further work.
-
-    WHEN TO USE:
-      • Replying to user messages (highest priority, FIRST command).
-      • Progress updates every 5-10 iterations during long tasks.
-      • Error notifications for unrecoverable errors.
-      • Confirmations after completing significant work.
-
-    FREQUENCY:
-      • User waiting for reply → telegram() as FIRST command.
-      • Active autonomous work → at least 1 per 5-10 iterations.
-      • NEVER >10 iterations without telegram() in Telegram mode.
-      • Don't send telegram() if there's nothing to report.
-
-  Telegram_log(<count>)
-    Display the last <count> messages from the Telegram
-    conversation history in your execution log.
-    → WHEN TO USE: Reviewing previous Telegram exchanges.
-
-  sleep
-    Compress your context, save state to .context/, rebuild, restart.
-    → YOU must execute this yourself when the log grows past 100
-      lines. Do NOT ask the user.
-    → FREQUENCY: Automatically triggered ~every 100 log lines.
-
-  exit
-    Save context and shut down without restarting.
-    → Use when the user explicitly asks to stop.
-
-═══════════════════════════════════════════════════════════════
-  🔄 CONTEXT COMPRESSION & RESUME BEHAVIOR
-═══════════════════════════════════════════════════════════════
-
-When the agent executes `sleep` or `exit`, the current session's
-context is compressed and saved to .context/. On restart, this
-context is injected into the prompt.
-
-ON RESUME:
-  1. READ the injected context immediately — it contains the
-     compressed state from before shutdown.
-  2. VERIFY: Check the execution log tail and saved context match.
-     If context_log.txt exists, it has a plain-text summary.
-  3. RESUME IMMEDIATELY: Do NOT re-introduce yourself, do NOT
-     re-explain your capabilities. Pick up exactly where you left
-     off and continue executing.
-  4. If context is MISSING or INCOMPLETE: State what's missing
-     via telegram(), then continue working with available info.
-
-CONTEXT COMPRESSION TIPS (for when YOU trigger sleep):
-  • Before running `sleep`, ensure critical state is in the log:
-    file paths you were editing, decisions made, next steps.
-  • The compression engine saves: goal, git diff, errors, log tail,
-    and an LLM-generated summary. Make sure these are current.
-  • If working on a multi-step task, the log tail MUST contain
-    enough context to resume without re-reading files.
-
-═══════════════════════════════════════════════════════════════
-  RESILIENCE FEATURES
-═══════════════════════════════════════════════════════════════
-
-  - Automatic error recovery with exponential backoff
-  - Self-healing command execution (auto-fix common errors)
-  - Provider failover with circuit breaker
-  - State persistence for crash recovery
-  - Health monitoring and resource management
-  - Graceful degradation on persistent failures
+See AGENTS.md for full behavioral rules (sent as system prompt).
 """
 
 import hashlib
@@ -541,9 +270,9 @@ class AutonomousLoopEngine:
         # ── Curiosity Fairy ──────────────────────────────────────────
         # When the same command signature is repeated this many consecutive
         # times, the Curiosity Fairy is invoked to suggest a new direction.
-        # This threshold must be LOWER than _repetition_break_threshold so
-        # the Fairy fires first (at 3) before the generic breaker (at 6).
-        self._curiosity_fairy_threshold: int = 3
+        # Fires at 6 consecutive identical actions — the moment the loop
+        # has run six times.
+        self._curiosity_fairy_threshold: int = 6
         # Consecutive iterations with byte-identical model output
         self._consecutive_identical_outputs: int = 0
         # MD5 of the previous model output for exact-repetition detection
@@ -1084,13 +813,26 @@ class AutonomousLoopEngine:
                         "Model returned empty output",
                         iteration=ctx.iteration_count,
                     )
+                    # Give the model feedback so it can self-correct
+                    self._append_log(
+                        ctx,
+                        "[SYSTEM] Your last response was empty. "
+                        "You MUST output at least one command() or tool call "
+                        "(read/write/edit/glob/grep/bash) on every turn."
+                    )
                     commands = []
                 else:
                     try:
                         commands = self._parse_model_commands(think_output)
                     except Exception as e:
                         self.logger.error(f"Command parsing error: {e}")
-                        self._append_log(ctx, f"[parse error] {e}")
+                        self._append_log(
+                            ctx,
+                            "[SYSTEM] Parse error: " + str(e) + ". "
+                            "Output ONLY valid commands like: "
+                            "command(ls), read(path='/file'), bash(command='cmd'). "
+                            "No explanations, no natural language."
+                        )
                         continue
 
                 # --- Track model output for identical-output detection ---
@@ -1376,16 +1118,17 @@ class AutonomousLoopEngine:
         is needed.
 
         Intervention levels:
-        0. Same command ≥ curiosity_fairy_threshold (3): invoke the Curiosity
-           Fairy to suggest a new direction (fires first at 3).
+        0. Same command ≥ curiosity_fairy_threshold (6): invoke the Curiosity
+           Fairy to suggest a new direction (fires at 6, the moment the loop
+           has run six times).
         1. Consecutive same action ≥ repetition_break_threshold (6): inject a
            SYSTEM break message and force the model to do something different.
         2. Persistent pattern ≥ persistent threshold (6): force a sleep
            (the loop is deep-rooted and prompt-level intervention won't
            work).
         """
-        # Level 0: same command signature repeated 3 times — Curiosity Fairy
-        # fires first (threshold=3) before Level 1 (threshold=6).
+        # Level 0: same command signature repeated 6 times — Curiosity Fairy
+        # fires at threshold=6, the moment the loop has run six times.
         if (self._consecutive_same_action >= self._curiosity_fairy_threshold
                 and not self._curiosity_fairy_invoked):
             self.logger.warning(
@@ -1450,134 +1193,111 @@ class AutonomousLoopEngine:
 
     def _invoke_curiosity_fairy(self, ctx: AutonomousContext) -> Optional[str]:
         """
-        Invoke the Curiosity Fairy to break a loop of identical commands.
+        Deterministic loop-breaker: generate concrete suggestions from
+        real system data instead of calling the LLM (which may be the
+        same low-capacity model that is stuck).
 
-        When the agent executes the same command signature N times in a row,
-        this method calls the same LLM with a specialized system prompt
-        that asks it to suggest a new direction.  The suggestion is
-        injected into the execution log as a synthetic user message so
-        the main agent sees it on its next thinking phase.
-
-        The Fairy receives a STRUCTURED summary of what the agent has been
-        doing — not the raw execution log — so it can make informed
-        suggestions about what to try next.
-
-        Returns the suggestion string on success, or None on failure.
+        Returns a suggestion string to inject into the execution log.
         """
-        self.logger.info("Curiosity Fairy invoked — breaking command loop",
+        self.logger.info("Curiosity Fairy invoked -- breaking command loop",
                          consecutive=self._consecutive_same_action)
 
-        # ── Build a structured context summary ──
-        # Extract unique files read/edited and commands run from the log
+        suggestions: list = []
+
+        # 1. Collect what the agent has already done from the execution log
         files_read: list = []
         files_edited: list = []
         commands_run: list = []
         for line in ctx.execution_log[-100:]:
-            line_s = line.strip()
-            if line_s.startswith("read("):
-                m = re.search(r'read\(path="([^"]+)"', line)
+            ls = line.strip()
+            if "read(" in ls:
+                m = re.search(r'path["= :]+([^"\s,\\)]+)', ls)
                 if m and m.group(1) not in files_read:
                     files_read.append(m.group(1))
-            elif line_s.startswith("edit("):
-                m = re.search(r'edit\(path="([^"]+)"', line)
+            elif "edit(" in ls:
+                m = re.search(r'path["= :]+([^"\s,\\)]+)', ls)
                 if m and m.group(1) not in files_edited:
                     files_edited.append(m.group(1))
-            elif line_s.startswith("bash("):
-                m = re.search(r'bash\(command="([^"]+)"', line)
-                if m and m.group(1) not in commands_run:
-                    commands_run.append(m.group(1))
-            elif line_s.startswith("command("):
-                m = re.search(r'command\((.+)\)', line)
-                if m and m.group(1) not in commands_run:
-                    commands_run.append(m.group(1))
+            elif ls.startswith("$") or "command(" in ls or "bash(" in ls:
+                cmd_text = ls[2:] if ls.startswith("$") else ls
+                if cmd_text not in commands_run:
+                    commands_run.append(cmd_text[:80])
 
-        # Determine the effective goal
-        goal = ctx.current_goal or ctx.user_prompt or "Self-directed: observe, explore, and act."
-
-        # Build the situation analysis
-        situation_parts = [
-            f"Agent goal: {goal}",
-            f"Consecutive identical iterations: {self._consecutive_same_action}",
-        ]
-        if files_read:
-            situation_parts.append(
-                f"Files already read ({len(files_read)}): {', '.join(files_read[-8:])}")
-        if files_edited:
-            situation_parts.append(
-                f"Files already edited ({len(files_edited)}): {', '.join(files_edited[-8:])}")
-        if commands_run:
-            situation_parts.append(
-                f"Commands already run ({len(commands_run)}): {', '.join(commands_run[-8:])}")
-        if not files_read and not files_edited and not commands_run:
-            situation_parts.append("No concrete actions have been taken yet this session.")
-
-        situation_analysis = "\n".join(situation_parts)
-
-        # ── Build the system prompt ──
-        # The Fairy ALWAYS focuses on the agent's goal. It never "invents work"
-        # — it suggests the most productive next step given what the agent
-        # has already tried.
-        system_prompt = (
-            "You are the **Curiosity Fairy** — a strategic advisor for an autonomous AI agent.\n\n"
-            "The agent is STUCK in a loop, repeating the same action pattern.\n"
-            f"{situation_analysis}\n\n"
-            "Your job: suggest the SINGLE most productive next action that breaks the loop.\n\n"
-            "RULES:\n"
-            "1. Your suggestion must be DIFFERENT from what the agent has already tried.\n"
-            "2. Be SPECIFIC — name exact files to check, commands to run, or areas to explore.\n"
-            "3. Prioritize actions that advance the agent's stated goal.\n"
-            "4. If the agent keeps checking the same file, tell it to check a DIFFERENT file.\n"
-            "5. If the agent keeps running the same command, suggest a DIFFERENT approach.\n"
-            "6. If the agent seems stuck on one problem, suggest looking at a DIFFERENT aspect.\n"
-            "7. If the agent has no concrete actions yet, suggest a starting point that\n"
-            "   explores the workspace to find something useful to do.\n"
-            "8. Output your suggestion as a SINGLE code block containing the exact command(s) to run.\n"
-            "9. Do NOT include explanations outside the code block.\n"
-        )
-
-        # ── Build the user prompt ──
-        user_prompt = (
-            f"## Agent Goal\n{goal}\n\n"
-            "## Situation Analysis\n{situation_analysis}\n\n"
-            "Based on this context, what is the SINGLE best next action? "
-            "Output ONLY a code block with the suggested command(s)."
-        )
+        # 2. Get real filesystem data for fresh suggestions
+        import subprocess as _sp
+        try:
+            _find = _sp.run(
+                ["find", ".", "-maxdepth", "3", "-type", "f",
+                 "-name", "*.py", "-o", "-name", "*.md", "-o", "-name", "*.yaml",
+                 "-o", "-name", "*.json", "-o", "-name", "*.txt"],
+                capture_output=True, text=True, timeout=5,
+                cwd=str(Path.cwd())
+            )
+            all_files = [f for f in _find.stdout.strip().splitlines()
+                         if f and not f.startswith("./.git/")]
+            unread = [f for f in all_files if f not in files_read][:5]
+        except Exception:
+            unread = []
 
         try:
-            request = ModelRequest(
-                task_type=TaskType.AUTONOMOUS_LOOP,
-                prompt=user_prompt,
-                max_tokens=512,
-                temperature=0.4,  # Lower temperature for focused, goal-aligned suggestions
+            _git = _sp.run(["git", "status", "--short"],
+                           capture_output=True, text=True, timeout=5)
+            git_changes = _git.stdout.strip()[:300] if _git.returncode == 0 else ""
+        except Exception:
+            git_changes = ""
+
+        try:
+            _todos = _sp.run(
+                ["grep", "-r", "--include=*.py", "-l",
+                 "TODO|FIXME|HACK|XXX",
+                 ".", "--exclude-dir=.git", "--exclude-dir=venv",
+                 "--exclude-dir=__pycache__"],
+                capture_output=True, text=True, timeout=5
             )
-            response = self.model_runner.run_model(request)
+            todo_files = [f for f in _todos.stdout.strip().splitlines() if f][:5]
+        except Exception:
+            todo_files = []
 
-            if not response.success or not response.content.strip():
-                self.logger.warning("Curiosity Fairy: model returned no useful output")
-                return None
+        # 3. Build concrete suggestion
+        suggestion_parts = [
+            "[Curiosity Fairy] You are stuck in a loop. Concrete next steps:"
+        ]
 
-            # Extract code block from the response
-            content = response.content.strip()
-            code_blocks = re.findall(
-                r'```(?:[a-zA-Z]*)?\n(.*?)```', content, re.DOTALL
+        if unread:
+            suggestion_parts.append(
+                f"READ a new file: {unread[0]}"
             )
-            if code_blocks:
-                suggestion = code_blocks[0].strip()
-            else:
-                # No code block — use the raw content
-                suggestion = content.strip()
+            if len(unread) > 1:
+                suggestion_parts.append(
+                    f"  (also: {', '.join(unread[1:3])})"
+                )
 
-            if not suggestion:
-                self.logger.warning("Curiosity Fairy: extracted suggestion is empty")
-                return None
+        if todo_files:
+            suggestion_parts.append(
+                f"CHECK for TODOs in: {todo_files[0]}"
+            )
 
-            self.logger.info("Curiosity Fairy generated suggestion",
-                             suggestion_length=len(suggestion))
-            return suggestion
+        if git_changes:
+            suggestion_parts.append(f"GIT CHANGES: {git_changes}")
+            suggestion_parts.append("  Try: git diff, or commit changes.")
 
-        except Exception as e:
-            self.logger.error(f"Curiosity Fairy invocation failed: {e}")
-            return None
+        if not unread and not todo_files and not git_changes:
+            suggestion_parts.append("Try something completely different:")
+            suggestion_parts.append(
+                "  bash(command='ls -la') to see current directory"
+            )
+            suggestion_parts.append(
+                "  glob(pattern='**/*') to discover files"
+            )
+
+        if commands_run:
+            suggestion_parts.append(
+                f"AVOID repeating: {commands_run[-1]}"
+            )
+
+        suggestion = "\n".join(suggestion_parts)
+        self.logger.info("Curiosity Fairy generated deterministic suggestion")
+        return suggestion
 
     # ------------------------------------------------------------------ #
     #  Proactive Anti-Drift — never idle, always do something new       #
@@ -1709,145 +1429,67 @@ class AutonomousLoopEngine:
         elif ctx.telegram_mode:
             mode_banner = "📱 TELEGRAM MODE"
         else:
-            mode_banner = "🖥️  LOCAL MODE"
+            mode_banner = "🖥  LOCAL MODE"
 
         # Messaging-specific instructions (Telegram or Discord mode)
         telegram_section = ""
         if ctx.telegram_mode:
             telegram_section = (
-                "\n## TELEGRAM MESSAGE RULES\n"
-                "1. When a user message appears in the Execution Log without a subsequent "
-                "\"[telegram sent]\" entry, reply with telegram() as your first command.\n"
-                "2. thinking() is NEVER visible to the user. telegram() is the ONLY way reach them.\n"
-                "3. Send progress updates every 5-10 iterations. NEVER go >10 iterations without telegram().\n"
+                "\n## TELEGRAM RULES\n"
+                "- Reply to user messages with telegram() as first command.\n"
+                "- thinking() is invisible to user. telegram() is the ONLY way to reach them.\n"
+                "- Send progress updates every 5-10 iterations.\n"
             )
         discord_section = ""
         if ctx.discord_mode:
             discord_section = (
-                "\n## DISCORD MESSAGE RULES\n"
-                "1. When a user message appears in the Execution Log without a subsequent "
-                "\"[discord sent]\" entry, reply with discord() as your first command.\n"
-                "2. thinking() is NEVER visible to the user. discord() is the ONLY way reach them.\n"
-                "3. Send progress updates every 5-10 iterations. NEVER go >10 iterations without discord().\n"
+                "\n## DISCORD RULES\n"
+                "- Reply to user messages with discord() as first command.\n"
+                "- thinking() is invisible to user. discord() is the ONLY way to reach them.\n"
+                "- Send progress updates every 5-10 iterations.\n"
             )
 
-        # Self-directed instructions: when no instruction was given, the agent
-        # MUST actively explore and do useful work.  It should never sit idle.
+        # Self-directed mode hint
         self_directed_section = ""
         if not ctx.user_prompt or ctx.user_prompt == "Self-directed: observe, explore, and act.":
             self_directed_section = (
-                "\n## SELF-DIRECTED MODE \u2014 YOU MUST ACT\n"
-                "You were launched with NO instruction. This is normal and expected. "
-                "You are an autonomous agent \u2014 you decide what to do.\n"
-                "\n"
-                "On EVERY iteration, you MUST output at least one command(). "
-                "Never output an empty response. Never just think() without acting.\n"
-                "\n"
-                "Suggested self-directed activities (rotate through these):\n"
-                "  1. EXPLORE: Look around the filesystem. What projects exist? "
-                "Check git status, recent files, directory structure.\n"
-                "  2. IMPROVE: Find code that can be improved. Check for TODO comments, "
-                "outdated dependencies, missing tests, or documentation gaps.\n"
-                "  3. MONITOR: Check system health \u2014 disk space, memory, running processes.\n"
-                "  4. LEARN: Read interesting files. Understand the codebase. "
-                "Build a mental model of what this machine is used for.\n"
-                "  5. ORGANIZE: Clean up temporary files, update documentation, "
-                "commit and push your own changes.\n"
-                "\n"
-                "Be creative. Be useful. Never do nothing.\n"
+                "\n## SELF-DIRECTED MODE\n"
+                "No instruction given. Act autonomously:\n"
+                "  - EXPLORE: filesystem, git status, recent files\n"
+                "  - IMPROVE: find TODOs, fix bugs, improve code\n"
+                "  - MONITOR: disk, memory, processes\n"
+                "On EVERY iteration output at least one command. Never idle.\n"
             )
 
-        # ── Resume instruction (if resuming from previous session) ──
+        # Resume section
         resume_section = ""
         if self._saved_ctx_block and ctx.iteration_count <= 1:
             resume_section = (
-                "\n## 🔄 RESUMING FROM PREVIOUS SESSION\n"
-                "The SAVED CONTEXT in the execution log below was saved before\n"
-                "a shutdown/restart. RESUME IMMEDIATELY:\n"
-                "1. READ the saved context in the log tail.\n"
-                "2. VERIFY it matches the current state.\n"
-                "3. CONTINUE from where you left off — do NOT re-introduce\n"
-                "   yourself or re-explain capabilities.\n"
-                "4. If context is missing/incomplete, note it via "
-                "telegram()/discord()\n"
-                "   then continue with available information.\n"
+                "\n## RESUMING FROM PREVIOUS SESSION\n"
+                "Resume work immediately from where you left off.\n"
+                f"{self._saved_ctx_block}\n"
             )
 
+        # ── Build compact user prompt ──
+        # All behavioral rules are in the system prompt (AGENTS.md).
+        # User prompt = mode + task + log only.
         prompt = (
-            f"Clio Agent 1 v2 \u2014 Iteration {ctx.iteration_count}  [{mode_banner}]\n"
-            f"Goal: {ctx.current_goal or ctx.user_prompt or 'Self-directed: observe, explore, and act.'}\n"
-            f"OS: {os_info}\n"
-            f"CWD: {self.terminal_history.get_current_working_directory()}\n"
-            f"Model: {provider_name}/{model_name}\n"
-            f"\n"
-            f"## ⚡ EXECUTION MANDATE\n"
-            f"ACT ON EVERY TURN. Output at least one command() or direct tool\n"
-            f"call (read/write/edit/glob/grep/bash). NEVER output only thinking().\n"
-            f"NEVER output an empty response. Batch independent ops with\n"
-            f"parallel_begin/end. Default mode = ACTION.\n"
-            f"\n"
-            f"## DIRECTIVE — ACT, DON'T CHAT\n"
-            f"Execute command() as fast as possible. Do NOT waste time on:\n"
-            f"  • Excessive thinking() — just act\n"
-            f"  • Planning out loud — just execute\n"
-            f"  • Chatty progress updates when working\n"
-            f"  • Asking confirmation on routine actions\n"
-            f"\n"
-            f"## ANTI-REPETITION — Do not trigger the Curiosity Fairy\n"
-            f"  • NEVER run the same command with the same args 3+ times in a row.\n"
-            f"  • VARY your actions: alternate reads, searches, shell cmds, exploration.\n"
-            f"  • DON'T re-read the same file or re-run the same shell command.\n"
-            f"  • MINIMIZE thinking() — it's normalized away, so thinking()+same_tool\n"
-            f"    looks identical every iteration. Use 0-1 short thinking() lines.\n"
-            f"  • If you catch yourself repeating, STOP and do something different.\n"
-            f"\n"
-            f"## HOW TO RESPOND — Command Reference\n"
-            f"DIRECT TOOL CALLS (preferred for file ops — faster than command()):\n"
-            f"  read(path=\"...\")                  — Read file contents\n"
-            f"  write(path=\"...\", content=\"...\")    — Write/overwrite file\n"
-            f"  edit(path=\"...\", old=\"\", new=\"\")     — Targeted text replacement\n"
-            f"  glob(pattern=\"**/*.py\")            — Find files by pattern\n"
-            f"  grep(pattern=\"regex\", path=\".\")    — Search file contents\n"
-            f"  bash(command=\"...\")                — Arbitrary shell command\n"
-            f"\n"
-            f"PARALLEL EXECUTION (use for 2+ independent operations):\n"
-            f"  parallel_begin\n"
-            f"  read(path=\"file1\")\n"
-            f"  glob(pattern=\"src/**/*.py\")\n"
-            f"  grep(pattern=\"TODO\", path=\"src/\")\n"
-            f"  parallel_end\n"
-            f"\n"
-            f"OTHER COMMANDS:\n"
-            f"  command(<shell>)   — Fallback for complex shell operations\n"
-            f"  thinking(<text>)   — Internal note (invisible to user, max 1/turn)\n"
-            f"  telegram(<text>)   — Send message via Telegram"
-            f"{' (ACTIVE)' if ctx.telegram_mode else ''}\n"
-            f"  discord(<text>)    — Send message via Discord"
-            f"{' (ACTIVE)' if ctx.discord_mode else ''}\n"
-            f"  sleep              — Compress & restart (auto at {self.NOTIFICATION_THRESHOLD} log lines)\n"
-            f"  exit               — Save & shut down\n"
-            f"\n"
-            f"SUB-AGENT DELEGATION (spawn specialized agents for complex tasks):\n"
-            f"  subagent(type=\"type\", task=\"task\")  — Spawn a sub-agent\n"
-            f"    Types: coder | research | review | architect\n"
-            f"    Architect agent: 6-phase design loop (Discovery\u2192Analysis\u2192Design\u2192\n"
-            f"    Critique\u2192Refinement\u2192Synthesis), produces ADRs & trade-off analysis\n"
-            f"  subagent_result(id=\"agent_id\")  — Get result from a completed sub-agent\n"
-            f"  subagent_list()                     — List all active sub-agents\n"
-            f"  subagent_kill(id=\"agent_id\")      — Kill a specific sub-agent\n"
-            f"  sub_agent_types()                   — List available sub-agent types\n"
+            f"{mode_banner}\n\n"
+            f"## YOUR TASK\n"
+            f"{ctx.current_goal or ctx.user_prompt or '(self-directed — explore and do useful work)'}\n\n"
             f"{telegram_section}"
             f"{discord_section}"
             f"{self_directed_section}"
-            f"{resume_section}\n"
+            f"{resume_section}"
             f"## EXECUTION LOG (your memory)\n"
-            f"\u2193\u2193\u2193 User messages are highlighted with >>> arrows \u2193\u2193\u2193\n"
+            f"↓↓↓ User messages marked with >>> ↓↓↓\n"
             f"{log_text}\n"
             f"{conversation_history_text}"
             f"{saved_context_block}"
             f"{sleep_instruction}"
             f"{loop_warning}"
         )
+
 
         request = ModelRequest(
             task_type=TaskType.AUTONOMOUS_LOOP,
@@ -1859,8 +1501,8 @@ class AutonomousLoopEngine:
                 "conversation_history": conversation_history_text,
                 "telegram_mode": ctx.telegram_mode,
             },
-            max_tokens=2048,  # Limited to discourage verbose/chatty responses
-            temperature=0.3,  # Low temp = less chat, more command-focused output
+            max_tokens=4096,  # Enough room for multi-command responses
+            temperature=0.6,  # Balanced: diverse actions while staying focused
         )
 
         response = self.model_runner.run_model(request)
@@ -2042,22 +1684,22 @@ class AutonomousLoopEngine:
             if in_parallel and parallel_buf:
                 commands.append(("parallel", _json.dumps(parallel_buf)))
 
-        # 1. Extract code blocks
+        # 1. Extract code blocks (fenced with triple backticks)
+        # Handle: ```lang\n...\n```  and  ```\n...\n```
         code_blocks = re.findall(
-            r'```(?:[a-zA-Z]*)?\n(.*?)```', text, re.DOTALL
+            r'```[a-zA-Z]*\n(.*?)```', text, re.DOTALL
         )
         if not code_blocks:
-            code_blocks = re.findall(r'```\n?(.*?)```', text, re.DOTALL)
+            code_blocks = re.findall(r'```(.*?)```', text, re.DOTALL)
 
         if code_blocks:
             for block in code_blocks:
                 _try_parse_lines(block)
-            # 2. Also parse text outside code blocks
-            # Build a version of the text with code block contents removed
-            # so we don't double-parse lines inside code blocks.
-            text_outside = text
-            for block in code_blocks:
-                text_outside = text_outside.replace(block, '', 1)
+            # 2. Also parse text outside code blocks.
+            # Remove entire ```...``` blocks (including fences) to avoid
+            # parsing fence lines as commands.
+            text_outside = re.sub(r'```[a-zA-Z]*\n.*?```', '', text, flags=re.DOTALL)
+            text_outside = re.sub(r'```.*?```', '', text_outside, flags=re.DOTALL)
             _try_parse_lines(text_outside)
         else:
             # No code blocks — parse the full text
@@ -3501,7 +3143,7 @@ class AutonomousLoopEngine:
 
     # Maximum number of recent log lines injected into the model prompt.
     # Keeps the prompt from growing without bound across iterations.
-    MAX_LOG_LINES_IN_PROMPT = 200
+    MAX_LOG_LINES_IN_PROMPT = 80
 
     def _format_execution_log_for_prompt(self, max_lines: int = None) -> str:
         """Format the execution log for injection into the system prompt.
@@ -3593,10 +3235,46 @@ class AutonomousLoopEngine:
         ctx.execution_log.append(reminder)
         self.logger.info("Sleep reminder injected into execution log — log exceeded 100 lines")
 
+    # Compress log every N appends to prevent unbounded growth
+    _LOG_COMPRESS_INTERVAL = 50  # compress after every 50 appends
+    _LOG_KEEP_RECENT = 30  # keep this many recent entries after compression
+    _LOG_COMPRESS_COUNTER = 0  # class-level counter
+
+    def _compress_execution_log(self, ctx: AutonomousContext) -> None:
+        """Compress old log entries to prevent unbounded prompt growth.
+
+        Keeps the most recent _LOG_KEEP_RECENT entries verbatim,
+        replaces older entries with a compact summary line.
+        """
+        log = ctx.execution_log
+        if len(log) <= self._LOG_KEEP_RECENT + 20:
+            return  # not worth compressing yet
+
+        old_count = len(log) - self._LOG_KEEP_RECENT
+        recent = log[-self._LOG_KEEP_RECENT:]
+
+        # Count entry types in the old portion for a summary
+        user_msgs = sum(1 for l in log[:old_count] if "[user message" in l.lower())
+        errors = sum(1 for l in log[:old_count] if "error" in l.lower() or "FAIL" in l)
+        commands = sum(1 for l in log[:old_count] if l.strip().startswith("$"))
+
+        summary = (
+            f"[LOG COMPRESSION: {old_count} older entries summarized. "
+            f"{commands} commands, {user_msgs} user msgs, {errors} errors. "
+            f"Showing last {self._LOG_KEEP_RECENT} entries below.]"
+        )
+        ctx.execution_log = [summary] + recent
+        self.logger.info(f"Log compressed: {old_count} entries -> 1 summary line")
+
     def _append_log(self, ctx: AutonomousContext, entry: str) -> None:
-        """Append an entry to the execution log (no hard line cap)."""
+        """Append an entry to the execution log with periodic compression."""
         timestamp = time.strftime("%H:%M:%S", time.localtime())
         ctx.execution_log.append(f"[{timestamp}] {entry}")
+        # Periodic compression
+        self._LOG_COMPRESS_COUNTER += 1
+        if self._LOG_COMPRESS_COUNTER >= self._LOG_COMPRESS_INTERVAL:
+            self._LOG_COMPRESS_COUNTER = 0
+            self._compress_execution_log(ctx)
         # Check whether the one-time rest notification should fire.
         self._maybe_emit_notification(ctx)
 
