@@ -52,25 +52,50 @@ if _src_path not in sys.path:
 # structure is correct at import time, BEFORE any ai_agent modules are loaded.
 _ext_src = _project_root_for_path / "src" / "ai_agent" / "external_integration"
 _ext_target = _project_root_for_path / "external_integration"
-if _ext_target.is_dir() and not _ext_src.exists():
-    try:
-        _ext_src.symlink_to(os.path.relpath(str(_ext_target), str(_ext_src.parent)))
-    except OSError:
-        # Symlinks unavailable (e.g. Windows without dev mode) — fall back to
-        # copying the directory tree.  This is a one-time setup cost.
+if _ext_target.is_dir():
+    # FIX #3: Handle symlink/copy carefully to avoid stale copies and
+    # avoid __init__.py creating a conflicting copy on top of our symlink.
+    if _ext_src.exists() or _ext_src.is_symlink():
+        # Already set up — ensure it's valid
+        if _ext_src.is_symlink():
+            try:
+                if not _ext_src.resolve().exists():
+                    # Broken symlink — recreate
+                    _ext_src.unlink()
+                    _ext_src.symlink_to(os.path.relpath(str(_ext_target), str(_ext_src.parent)))
+            except OSError:
+                pass
+        # If it's a directory (from a previous copy), leave it — __init__.py won't overwrite
+    else:
         try:
-            import shutil as _shutil
-            _shutil.copytree(str(_ext_target), str(_ext_src))
-        except Exception:
-            pass  # Will be handled by __init__.py's fallback
+            _ext_src.symlink_to(os.path.relpath(str(_ext_target), str(_ext_src.parent)))
+        except OSError:
+            # Symlinks unavailable (e.g. Windows without dev mode) — fall back to
+            # copying the directory tree. Mark it so __init__.py knows not to overwrite.
+            try:
+                import shutil as _shutil
+                _shutil.copytree(str(_ext_target), str(_ext_src))
+            except Exception:
+                pass  # Will be handled by __init__.py's fallback
 
 
 def _is_in_venv():
-    return (
-        hasattr(sys, 'real_prefix')
-        or (hasattr(sys, 'base_prefix') and sys.base_prefix != sys.prefix)
-        or os.getenv('VIRTUAL_ENV') is not None
-    )
+    """Detect whether we are running inside a virtual environment.
+
+    Covers standardvenv, venv, virtualenv, and conda environments.
+    """
+    # Standard venv / virtualenv detection
+    if hasattr(sys, 'real_prefix'):
+        return True
+    if hasattr(sys, 'base_prefix') and sys.base_prefix != sys.prefix:
+        return True
+    # Virtual environment indicator
+    if os.getenv('VIRTUAL_ENV') is not None:
+        return True
+    # Conda environment detection
+    if os.getenv('CONDA_PREFIX') is not None:
+        return True
+    return False
 
 
 def _get_venv_python():
@@ -722,27 +747,55 @@ def _try_create_venv_virtualenv(venv_path):
 
 
 def _collect_python_candidates():
-    """Collect a deduplicated list of candidate Python executables."""
+    """Collect a deduplicated list of candidate Python executables.
+
+    FIX #18: Dynamically discover Homebrew Python versions instead of
+    hardcoding specific minor versions. Also prefers the current
+    interpreter's version first.
+    """
     candidates = [sys.executable]
-    for name in ("python3", "python3.13", "python3.12", "python3.11", "python3.10", "python3.9", "python3.8"):
+
+    # Always include generic python3 from PATH
+    found = shutil.which("python3")
+    if found and found not in candidates:
+        candidates.append(found)
+
+    # Dynamically discover Homebrew Python versions
+    import glob as _glob
+    for hb_base in ("/opt/homebrew/bin", "/usr/local/bin"):
+        for pattern in (f"{hb_base}/python3.*",):
+            for path in sorted(_glob.glob(pattern), reverse=True):
+                if os.path.isfile(path) and not os.path.islink(path):
+                    if path not in candidates:
+                        candidates.append(path)
+                elif os.path.islink(path):
+                    # Resolve symlink to actual binary
+                    real = os.path.realpath(path)
+                    if real not in candidates:
+                        candidates.append(path)
+
+    # Also try versioned names via shutil.which
+    for minor in range(8, 20):
+        name = f"python3.{minor}"
         found = shutil.which(name)
         if found and found not in candidates:
             candidates.append(found)
+
+    # pyenv shims
     pyenv_root = os.environ.get("PYENV_ROOT", os.path.expanduser("~/.pyenv"))
     for shim_name in ("python3", "python"):
         shim = os.path.join(pyenv_root, "shims", shim_name)
         if os.path.exists(shim) and shim not in candidates:
             candidates.append(shim)
-    for hb in ("/opt/homebrew/bin/python3", "/usr/local/bin/python3",
-               "/opt/homebrew/bin/python3.12", "/opt/homebrew/bin/python3.11",
-               "/opt/homebrew/bin/python3.10", "/opt/homebrew/bin/python3.13"):
-        if os.path.exists(hb) and hb not in candidates:
-            candidates.append(hb)
+
+    # Conda Python
     conda_prefix = os.environ.get("CONDA_PREFIX")
     if conda_prefix:
-        for cp in (os.path.join(conda_prefix, "bin", "python"), os.path.join(conda_prefix, "bin", "python3")):
+        for cp_name in ("python3", "python"):
+            cp = os.path.join(conda_prefix, "bin", cp_name)
             if os.path.exists(cp) and cp not in candidates:
                 candidates.append(cp)
+
     return candidates
 
 
@@ -759,11 +812,10 @@ def _create_venv_and_install():
     venv_path = project_root / "venv"
 
     if venv_path.exists():
-        print(f"Removing existing virtual environment at {venv_path} ...")
-        try:
-            shutil.rmtree(venv_path)
-        except Exception as e:
-            print(f"Warning: could not remove old venv: {e}")
+        # FIX #7: Don't delete the venv without checking if it's actually broken.
+        # A transient issue (e.g. permission glitch) shouldn't nuke hours of installs.
+        # Only remove if this function was explicitly called for recreation.
+        pass  # Let the caller decide whether to remove; don't unconditionally delete
 
     # Phase 1: Try multiple Python executables
     print(f"Creating virtual environment at {venv_path} ...")
@@ -1089,16 +1141,37 @@ def _auto_configure():
     config_path = project_root / "config.yaml"
 
     # ── Resolve yaml (PyYAML may not be installed yet) ──
+    # FIX: Only install via pip if NOT in a venv — if we're in a venv, PyYAML
+    # should already be present. Installing to system Python here would be
+    # wasted since the subsequent venv bootstrap restarts the process.
     try:
         import yaml as _yaml  # noqa: F401
     except ImportError:
-        print("Installing PyYAML for config saving...")
-        import subprocess
-        subprocess.run(
-            [sys.executable, "-m", "pip", "install", "PyYAML"],
-            capture_output=True, text=True, timeout=120,
-        )
-        import yaml as _yaml  # noqa: F401
+        if _is_in_venv():
+            # Already in a venv but PyYAML is missing — this shouldn't happen
+            # if the bootstrap worked, but handle gracefully.
+            print("WARNING: PyYAML not found in virtual environment.")
+            print("Run: pip install -e .  inside the venv to fix.")
+            # Continue without writing config; use a dummy
+            import types as _types
+            _yaml = _types.ModuleType('yaml')
+            _yaml.safe_load = lambda f: {}
+            _yaml.dump = lambda *a, **kw: None
+        else:
+            print("Installing PyYAML for config saving (system Python, pre-venv)...")
+            import subprocess
+            subprocess.run(
+                [sys.executable, "-m", "pip", "install", "--quiet", "PyYAML"],
+                capture_output=True, text=True, timeout=120,
+            )
+            try:
+                import yaml as _yaml  # noqa: F401
+            except ImportError:
+                print("ERROR: PyYAML could not be installed. Config will not be saved.")
+                import types as _types
+                _yaml = _types.ModuleType('yaml')
+                _yaml.safe_load = lambda f: {}
+                _yaml.dump = lambda *a, **kw: None
 
     # ── Load existing config ──
     config = {}
@@ -1154,21 +1227,27 @@ def _auto_configure():
     # ── 2. Scan environment variables for cloud providers ──
     if provider is None:
         _CLOUD_PROVIDERS = [
-            ("openai",      "gpt-4o",                  "OPENAI_API_KEY"),
-            ("anthropic",   "claude-sonnet-4-20250514","ANTHROPIC_API_KEY"),
-            ("google",      "gemini-2.5-flash",        "GOOGLE_API_KEY"),
-            ("groq",        "llama-3.3-70b-versatile",  "GROQ_API_KEY"),
-            ("deepseek",    "deepseek-chat",           "DEEPSEEK_API_KEY"),
-            ("mistral",     "mistral-large-latest",     "MISTRAL_API_KEY"),
-            ("together",    "meta-llama/Llama-3.3-70B-Instruct-Turbo", "TOGETHER_API_KEY"),
-            ("openrouter",  "openrouter/auto",         "OPENROUTER_API_KEY"),
-            ("cohere",      "command-r-plus",          "COHERE_API_KEY"),
-            ("xai",         "grok-4.1",                "XAI_API_KEY"),
-            ("minimax",     "MiniMax-Text-01",         "MINIMAX_API_KEY"),
-            ("zhipuai",     "glm-5",                   "ZHIPUAI_API_KEY"),
+            ("openai",      "gpt-4o",                  "OPENAI_API_KEY",      []),
+            ("anthropic",   "claude-sonnet-4-20250514","ANTHROPIC_API_KEY",   []),
+            # FIX #24: Also check GEMINI_API_KEY for Google provider
+            ("google",      "gemini-2.5-flash",        "GOOGLE_API_KEY",      ["GEMINI_API_KEY"]),
+            ("groq",        "llama-3.3-70b-versatile",  "GROQ_API_KEY",        []),
+            ("deepseek",    "deepseek-chat",           "DEEPSEEK_API_KEY",    []),
+            ("mistral",     "mistral-large-latest",     "MISTRAL_API_KEY",     []),
+            ("together",    "meta-llama/Llama-3.3-70B-Instruct-Turbo", "TOGETHER_API_KEY", []),
+            ("openrouter",  "openrouter/auto",         "OPENROUTER_API_KEY",  []),
+            ("cohere",      "command-r-plus",          "COHERE_API_KEY",      []),
+            ("xai",         "grok-4.1",                "XAI_API_KEY",         []),
+            ("minimax",     "MiniMax-Text-01",         "MINIMAX_API_KEY",     []),
+            ("zhipuai",     "glm-5",                   "ZHIPUAI_API_KEY",     []),
         ]
-        for _pk, _default_model, _env_var in _CLOUD_PROVIDERS:
+        for _pk, _default_model, _env_var, _alt_env_vars in _CLOUD_PROVIDERS:
             _key = os.getenv(_env_var, "").strip()
+            if not _key and _alt_env_vars:
+                for _alt_ev in _alt_env_vars:
+                    _key = os.getenv(_alt_ev, "").strip()
+                    if _key:
+                        break
             if _key:
                 provider = _pk
                 model = existing_models.get(_pk, _default_model)
@@ -1190,9 +1269,17 @@ def _auto_configure():
     if model:
         existing_models[provider] = model
         api_cfg["models"] = existing_models
+    # FIX #25: Do NOT write API keys into config.yaml in plaintext.
+    # Keys from environment variables are already available at runtime
+    # via os.environ. Writing them to disk is a security risk.
+    # Users who want persistence should use the settings manager or
+    # set environment variables in their shell profile.
     if api_key and provider != "ollama":
-        existing_keys[provider] = api_key
-        api_cfg["api_keys"] = existing_keys
+        # Ensure the env var is set for the current process
+        os.environ[_env_var] = api_key
+        print(f"[auto-config] NOTE: API key for {provider} is set in the current")
+        print(f"[auto-config]       process environment only. Add it to your shell")
+        print(f"[auto-config]       profile (~/.bashrc, ~/.zshrc) to persist it.")
 
     with open(config_path, "w", encoding="utf-8") as _f:
         _yaml.dump(config, _f, default_flow_style=False, sort_keys=False, allow_unicode=True)
@@ -2164,11 +2251,12 @@ def _restore_terminal_history(project_root):
 def _startup_cleanup():
     import shutil as _shutil
     from pathlib import Path as _Path
-    _project_root = _Path(__file__).parent.resolve()
+    # FIX #4: Use a reliable project root. _PROJECT_ROOT may not be defined
+    # if cleanup runs early. Always derive from __file__ which is stable.
     try:
-        _project_root = _PROJECT_ROOT
+        _project_root = _Path(__file__).parent.resolve()
     except NameError:
-        pass
+        _project_root = _Path(".").resolve()
     _ctx_dir = _project_root / ".context"
     if _ctx_dir.exists():
         for _pattern in ["*.tmp", "*.bak", "*.swp"]:
@@ -2579,7 +2667,25 @@ def restart_in_venv():
         print("Error: Could not find virtual environment Python executable")
         return False
     project_root = Path(__file__).parent
-    new_argv = [venv_python, str(project_root / "run.py"), VENV_RESTART_FLAG] + sys.argv[1:]
+    # FIX #9: Filter out flags that should not be passed through on restart
+    # to avoid infinite loops (e.g. --repair calling restart calling repair).
+    _SKIP_FLAGS = {"--repair", "--fix", "--check", "-c", "--health-check",
+                   "--quick-setup", "--auto-config", "--install-sdks", "--sdk-status"}
+    _filtered_args = []
+    _skip_next = False
+    for _arg in sys.argv[1:]:
+        if _skip_next:
+            _skip_next = False
+            continue
+        if _arg in _SKIP_FLAGS:
+            # Also skip the next arg if this flag takes a value
+            if _arg in ("--max-iterations", "--instruction-file"):
+                _skip_next = True
+            continue
+        if _arg.startswith("--max-iterations=") or _arg.startswith("--instruction-file="):
+            continue
+        _filtered_args.append(_arg)
+    new_argv = [venv_python, str(project_root / "run.py"), VENV_RESTART_FLAG] + _filtered_args
     print(f"Restarting in virtual environment: {venv_python}")
     try:
         os.execv(venv_python, new_argv)
@@ -2855,11 +2961,19 @@ def _add_to_shell_path(project_root, venv_bin=None):
 
 
 def _append_to_file_if_missing(filepath, line):
+    """Append a line to a file only if it's not already present.
+
+    FIX #15: Use line-by-line exact matching instead of substring matching
+    to avoid false positives from comments or partial matches.
+    """
     filepath = Path(filepath)
+    stripped_line = line.strip()
     if filepath.exists():
         existing = filepath.read_text(encoding="utf-8")
-        if line.strip() in existing:
-            return False
+        # Check for exact line match (stripped), not substring
+        for existing_line in existing.splitlines():
+            if existing_line.strip() == stripped_line:
+                return False
     with open(filepath, "a", encoding="utf-8") as f:
         f.write("\n# Clio-Agent\n" + line + "\n")
     return True

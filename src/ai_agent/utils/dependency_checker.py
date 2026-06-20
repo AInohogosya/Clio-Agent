@@ -22,27 +22,41 @@ class DependencyChecker:
         self.project_root = project_root
         self.requirements_file = project_root / "requirements.txt"
         self.pyproject_file = project_root / "pyproject.toml"
-        
-        # Core dependencies that must be available
-        self.core_dependencies = {
-            "PIL": "Pillow>=10.0.0",
-            "requests": "requests>=2.31.0",
-            "numpy": "numpy>=1.24.0",
-            "structlog": "structlog>=23.0.0",
-            "rich": "rich>=13.0.0",
-            "yaml": "PyYAML>=6.0.0",
-            "ollama": "ollama>=0.1.0",
-            "psutil": "psutil>=5.9.0",
-            "pluggy": "pluggy>=1.0.0",
-            "openai": "openai>=1.0.0",
-            "groq": "groq>=0.5.0",
-            "anthropic": "anthropic>=0.25.0",
-            "google.genai": "google-genai>=0.3.0",
-            "mistralai": "mistralai>=0.1.0",
-            "cohere": "cohere>=5.0.0",
-            "telegram": "python-telegram-bot>=21.0.0",
-            "discord": "discord.py>=2.3.0",
-        }
+
+        # FIX #10: Core dependencies must stay in sync with run.py's
+        # CORE_DEPENDENCIES. We import it from run.py at runtime to
+        # ensure a single source of truth. Fallback to inline copy
+        # if run.py is not importable.
+        try:
+            import importlib, sys as _sys
+            _run_path = str(self.project_root / "run.py")
+            _spec = importlib.util.spec_from_file_location("run_bootstrap", _run_path)
+            _mod = importlib.util.module_from_spec(_spec)
+            _spec.loader.exec_module(_mod)
+            _core = _mod.CORE_DEPENDENCIES
+            self.core_dependencies = {k: v[0] for k, v in _core.items()}
+        except Exception:
+            # Fallback: inline copy (keep in sync manually)
+            self.core_dependencies = {
+                "PIL": "Pillow>=10.0.0",
+                "requests": "requests>=2.31.0",
+                "numpy": "numpy>=1.24.0",
+                "structlog": "structlog>=23.0.0",
+                "rich": "rich>=13.0.0",
+                "yaml": "PyYAML>=6.0.0",
+                "ollama": "ollama>=0.1.0",
+                "psutil": "psutil>=5.9.0",
+                "pluggy": "pluggy>=1.0.0",
+                "openai": "openai>=1.0.0",
+                "groq": "groq>=0.5.0",
+                "anthropic": "anthropic>=0.25.0",
+                "google.genai": "google-genai>=0.3.0",
+                "mistralai": "mistralai>=0.1.0",
+                "cohere": "cohere>=5.0.0",
+                "telegram": "python-telegram-bot>=21.0.0",
+                "discord": "discord.py>=2.3.0",
+                "boto3": "boto3>=1.34.0",
+            }
         
         # Conditional dependencies (only checked on specific platforms)
         self.conditional_dependencies = {

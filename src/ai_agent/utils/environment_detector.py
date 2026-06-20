@@ -232,14 +232,18 @@ class EnvironmentDetector:
             return []
     
     def _detect_cloud_models(self) -> List[str]:
-        """Detect cloud models in installed list"""
+        """Detect cloud models in installed list.
+
+        FIX #12: Only match the ':cloud' Ollama tag suffix, not arbitrary
+        substrings containing 'cloud' (e.g. 'mycloudmodel').
+        """
         models = self._detect_ollama_models()
-        return [m for m in models if ':cloud' in m.lower() or 'cloud' in m.lower()]
+        return [m for m in models if ':cloud' in m.lower()]
     
     def _detect_local_models(self) -> List[str]:
         """Detect local models (non-cloud)"""
         models = self._detect_ollama_models()
-        return [m for m in models if ':cloud' not in m.lower() and 'cloud' not in m.lower()]
+        return [m for m in models if ':cloud' not in m.lower()]
     
     def _detect_needs_ollama_update(self) -> bool:
         """Check if Ollama needs update for cloud model support"""
@@ -287,13 +291,55 @@ class EnvironmentDetector:
             return False
     
     def _detect_recommended_provider(self) -> str:
-        """Determine recommended AI provider based on environment"""
+        """Determine recommended AI provider based on environment.
+
+        FIX #13: Check for API key availability before recommending a
+        cloud provider. Falls back to ollama-local or empty string
+        instead of recommending a cloud provider without a key.
+        """
         if self._detect_can_use_cloud_models():
             return "ollama"
         elif self._detect_ollama_available() and self._detect_local_models():
             return "ollama-local"  # Local models only
         else:
-            return "google"  # Fallback to Google API
+            # Check if any cloud provider has an API key available
+            import os as _os
+            _cloud_env_vars = [
+                "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GOOGLE_API_KEY",
+                "GEMINI_API_KEY", "GROQ_API_KEY", "DEEPSEEK_API_KEY",
+                "MISTRAL_API_KEY", "TOGETHER_API_KEY", "OPENROUTER_API_KEY",
+                "COHERE_API_KEY", "XAI_API_KEY", "MINIMAX_API_KEY", "ZHIPUAI_API_KEY",
+            ]
+            for _ev in _cloud_env_vars:
+                if _os.getenv(_ev, "").strip():
+                    # Found a key — recommend a provider that can use it
+                    _ev_lower = _ev.lower()
+                    if "openai" in _ev_lower:
+                        return "openai"
+                    elif "anthropic" in _ev_lower:
+                        return "anthropic"
+                    elif "google" in _ev_lower or "gemini" in _ev_lower:
+                        return "google"
+                    elif "groq" in _ev_lower:
+                        return "groq"
+                    elif "deepseek" in _ev_lower:
+                        return "deepseek"
+                    elif "mistral" in _ev_lower:
+                        return "mistral"
+                    elif "together" in _ev_lower:
+                        return "together"
+                    elif "openrouter" in _ev_lower:
+                        return "openrouter"
+                    elif "cohere" in _ev_lower:
+                        return "cohere"
+                    elif "xai" in _ev_lower:
+                        return "xai"
+                    elif "minimax" in _ev_lower:
+                        return "minimax"
+                    elif "zhipuai" in _ev_lower:
+                        return "zhipuai"
+            # Nothing found — return empty so the caller can prompt interactively
+            return ""
     
     # === System Tool Detection ===
     

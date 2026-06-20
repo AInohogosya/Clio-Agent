@@ -341,8 +341,22 @@ class ConfigManager:
             raise ConfigurationError("Configuration must be a dictionary")
     
     def save_config(self, config_path: Optional[Union[str, Path]] = None):
-        """Save configuration is disabled - settings are not persisted"""
-        pass  # No-op - configuration is not saved to file
+        """Save current configuration state to config.yaml.
+
+        FIX #20: Previously a no-op, this now actually persists the
+        in-memory configuration (including any changes made via set()).
+        """
+        import yaml as _yaml
+        _path = Path(config_path) if config_path else self._config_path
+        try:
+            with open(_path, "w", encoding="utf-8") as f:
+                _yaml.dump(self._raw_config, f, default_flow_style=False,
+                           sort_keys=False, allow_unicode=True)
+        except Exception as e:
+            raise ConfigurationError(
+                f"Failed to save config to {_path}: {e}",
+                config_key="save_config"
+            )
     
     def get(self, key: str, default: Any = None) -> Any:
         """Get configuration value by dot notation key"""
@@ -422,5 +436,10 @@ def get_config_manager() -> ConfigManager:
 
 
 def save_config(config_path: Optional[Union[str, Path]] = None):
-    """Save configuration is disabled - settings are not persisted"""
-    pass  # No-op - configuration is not saved to file
+    """Save current configuration state to config.yaml.
+
+    FIX #20: Delegates to ConfigManager.save_config() which now
+    actually persists the configuration.
+    """
+    _mgr = get_config_manager()
+    _mgr.save_config(config_path)

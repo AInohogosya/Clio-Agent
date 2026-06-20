@@ -31,7 +31,23 @@ else
     exit 1
 fi
 
+# FIX #14: Verify the selected Python is actually Python 3.8+, not Python 2
+PY_MAJOR=$($PYTHON -c 'import sys; print(sys.version_info.major)' 2>/dev/null)
+if [ "$PY_MAJOR" != "3" ]; then
+    fail "Python 3 is required but '$PYTHON' is Python $PY_MAJOR."
+    fail "Install Python 3.8+ and retry, or ensure 'python3' is in PATH."
+    exit 1
+fi
+
 PY_VERSION=$($PYTHON -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
+
+# Also check minimum version 3.8
+PY_MINOR=$($PYTHON -c 'import sys; print(sys.version_info.minor)')
+if [ "$PY_MINOR" -lt 8 ] 2>/dev/null; then
+    fail "Python 3.8+ required but found Python $PY_VERSION."
+    exit 1
+fi
+
 ok "Python $PY_VERSION detected ($($PYTHON -c 'import sys; print(sys.executable)'))"
 
 # ── Create venv ──
