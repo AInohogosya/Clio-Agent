@@ -2,6 +2,7 @@
 Sub-Agent System for Clio Agent 1
 
 Provides a managed, parallel execution system for specialized sub-agents:
+- CodingAgent: ALL coding tasks - writing, editing, debugging, refactoring, testing (PRIMARY coding entity)
 - ResearchAgent: Investigation and analysis tasks
 - ReviewAgent: Code review and quality analysis tasks
 - ArchitectAgent: Architectural design, ADR generation, and trade-off analysis

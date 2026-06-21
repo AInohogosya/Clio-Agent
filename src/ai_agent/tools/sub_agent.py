@@ -62,9 +62,12 @@ class SubAgentTool(ToolExecutor):
     )
     required_permission = Permission.EXECUTE
     guideline = (
-        "Use sub-agents for complex, parallelizable tasks. "
-        "Spawn a researcher for investigation, "
-        "reviewer for code review. Wait for results before proceeding."
+        "Use sub-agents for specialized tasks. "
+        "ALWAYS spawn the Coding Agent (agent_type='coding') for ANY coding work: "
+        "writing code, editing code, debugging, refactoring, writing tests, "
+        "implementing features. The Coding Agent is FAR more capable than the main agent. "
+        "Also: researcher for investigation, reviewer for code review, "
+        "architect for system design. Wait for results before proceeding."
     )
 
     def __init__(self, permissions=None, config: Optional[Dict[str, Any]] = None):

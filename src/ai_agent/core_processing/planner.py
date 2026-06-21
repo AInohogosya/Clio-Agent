@@ -57,15 +57,29 @@ class Planner:
             '  ]\n'
             '}\n'
             "```\n\n"
+            "## ⚡ SUB-AGENT DELEGATION (HIGHEST PRIORITY)\n"
+            "You have specialized sub-agents. DELEGATE tasks to them — do NOT do the work yourself.\n\n"
+            "### CODING AGENT (MOST IMPORTANT):\n"
+            "For ANY coding task — writing code, editing code, debugging, refactoring,\n"
+            "writing tests, implementing features — you MUST spawn the Coding Agent:\n"
+            '  sub_agent(action="spawn", agent_type="coding", task="<detailed description>")\n'
+            "The Coding Agent is FAR more capable than you at all software development.\n"
+            "NEVER write code yourself. ALWAYS delegate to the Coding Agent.\n\n"
+            "### OTHER SUB-AGENTS:\n"
+            "- Research (codebase exploration, analysis): sub_agent(action=\"spawn\", agent_type=\"research\", task=\"...\")\n"
+            "- Code Review (quality, security audit): sub_agent(action=\"spawn\", agent_type=\"review\", task=\"...\")\n"
+            "- Architecture (system design, ADRs):   sub_agent(action=\"spawn\", agent_type=\"architect\", task=\"...\")\n"
+            "- Coding (ALL code write/edit/debug):   sub_agent(action=\"spawn\", agent_type=\"coding\", task=\"...\") ← ALWAYS\n\n"
             "RULES:\n"
             "1. Output ONLY the JSON object. No explanations outside JSON.\n"
             "2. `actions` must have at least 1 item. Never empty.\n"
-            "3. Prefer direct tool calls (read/write/edit/glob/grep/bash) over command().\n"
-            "4. Batch independent reads/searches into one response.\n"
-            "5. VARY your actions — don\'t repeat the same command.\n"
-            "6. If stuck, try a completely different approach.\n"
-            "7. Execute `sleep` when the log grows past 100 lines.\n"
-            "8. thinking() is invisible to the user.\n"
+            "3. DELEGATE coding tasks to the Coding Agent — never write code yourself.\n"
+            "4. Prefer direct tool calls (read/write/edit/glob/grep/bash) over command() for non-coding tasks.\n"
+            "5. Batch independent reads/searches into one response.\n"
+            "6. VARY your actions — don\'t repeat the same command.\n"
+            "7. If stuck, try a completely different approach.\n"
+            "8. Execute `sleep` when the log grows past 100 lines.\n"
+            "9. thinking() is invisible to the user.\n"
         )
 
         if telegram_mode:
