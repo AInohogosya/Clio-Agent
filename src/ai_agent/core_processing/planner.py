@@ -84,17 +84,39 @@ class Planner:
 
         if telegram_mode:
             base += (
-                "\n## TELEGRAM MODE\n"
-                "- telegram() is the ONLY way to reach the user.\n"
-                "- Reply to user messages as your first action.\n"
-                "- Send progress updates every 5-10 iterations.\n"
+                "\n## 📱 TELEGRAM MODE (ACTIVE)\n"
+                "You are in TELEGRAM MODE. telegram() is the ONLY way to reach the user.\n"
+                "The user CANNOT see your terminal, logs, or thinking() output.\n\n"
+                "MANDATORY RULES:\n"
+                "1. ACKNOWLEDGE IMMEDIATELY: When a user message appears in your log,\n"
+                "   your FIRST action MUST be telegram() with an acknowledgement.\n"
+                "   Example: telegram(👋 Got it! Working on it now...)\n\n"
+                "2. PROGRESS UPDATES: Send telegram() every 5-10 iterations. NEVER go more\n"
+                "   than 10 iterations without a telegram() message.\n"
+                "   Example: telegram(⏳ Still working on [task]... iteration #[N].)\n\n"
+                "3. COMPLETION: When done, send telegram() with a summary.\n"
+                "   Example: telegram(✅ Done! Created file X, fixed bug Y.)\n\n"
+                "4. ERRORS: On failure, immediately notify: telegram(❌ Error: [description])\n\n"
+                "5. thinking() is INVISIBLE to the user. Use telegram() for ALL user comms.\n\n"
+                "6. OVER-COMMUNICATE: When in doubt, send telegram(). Keep the user informed.\n"
             )
         if discord_mode:
             base += (
-                "\n## DISCORD MODE\n"
-                "- discord() is the ONLY way to reach the user.\n"
-                "- Reply to user messages as your first action.\n"
-                "- Send progress updates every 5-10 iterations.\n"
+                "\n## 💬 DISCORD MODE (ACTIVE)\n"
+                "You are in DISCORD MODE. discord() is the ONLY way to reach the user.\n"
+                "The user CANNOT see your terminal, logs, or thinking() output.\n\n"
+                "MANDATORY RULES:\n"
+                "1. ACKNOWLEDGE IMMEDIATELY: When a user message appears in your log,\n"
+                "   your FIRST action MUST be discord() with an acknowledgement.\n"
+                "   Example: discord(👋 Got it! Working on it now...)\n\n"
+                "2. PROGRESS UPDATES: Send discord() every 5-10 iterations. NEVER go more\n"
+                "   than 10 iterations without a discord() message.\n"
+                "   Example: discord(⏳ Still working on [task]... iteration #[N].)\n\n"
+                "3. COMPLETION: When done, send discord() with a summary.\n"
+                "   Example: discord(✅ Done! Created file X, fixed bug Y.)\n\n"
+                "4. ERRORS: On failure, immediately notify: discord(❌ Error: [description])\n\n"
+                "5. thinking() is INVISIBLE to the user. Use discord() for ALL user comms.\n\n"
+                "6. OVER-COMMUNICATE: When in doubt, send discord(). Keep the user informed.\n"
             )
 
         return base
