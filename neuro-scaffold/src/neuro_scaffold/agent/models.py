@@ -82,6 +82,22 @@ class PlanStep(BaseModel):
     error: str | None = None
 
 
+class ExecutedAction(BaseModel):
+    """Record of a single executed tool call for deduplication."""
+    tool: str
+    arguments_hash: str
+    iteration: int
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class FileReadRecord(BaseModel):
+    """Record of a file read operation including line ranges."""
+    file_path: str
+    start_line: int = 1
+    end_line: int = 0
+    iteration: int = 0
+
+
 class Scratchpad(BaseModel):
     """Persistent working memory for the agent."""
     session_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
@@ -90,6 +106,8 @@ class Scratchpad(BaseModel):
     current_step: int = 0
     observations: list[str] = Field(default_factory=list)
     reflections: list[str] = Field(default_factory=list)
+    executed_actions: list[ExecutedAction] = Field(default_factory=list)
+    files_read: list[FileReadRecord] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
@@ -113,6 +131,66 @@ class Scratchpad(BaseModel):
     def is_complete(self) -> bool:
         return self.current_step >= len(self.plan) and len(self.plan) > 0
 
+    def record_action(self, tool: str, arguments_hash: str, iteration: int) -> None:
+        """Record that a tool call was executed."""
+        self.executed_actions.append(
+            ExecutedAction(
+                tool=tool,
+                arguments_hash=arguments_hash,
+                iteration=iteration,
+            )
+        )
+        self.updated_at = datetime.now(timezone.utc)
+
+    def was_action_executed(self, tool: str, arguments_hash: str) -> bool:
+        """Check if the exact same tool call was already made."""
+        return any(
+            a.tool == tool and a.arguments_hash == arguments_hash
+            for a in self.executed_actions
+        )
+
+    def record_file_read(
+        self, file_path: str, start_line: int = 1, end_line: int = 0, iteration: int = 0
+    ) -> None:
+        """Record that a file (or chunk) was read."""
+        self.files_read.append(
+            FileReadRecord(
+                file_path=file_path,
+                start_line=start_line,
+                end_line=end_line,
+                iteration=iteration,
+            )
+        )
+        self.updated_at = datetime.now(timezone.utc)
+
+    def get_last_read_line(self, file_path: str) -> int:
+        """Get the last line number read for a file. Returns 0 if never read."""
+        last_line = 0
+        for record in self.files_read:
+            if record.file_path == file_path and record.end_line > last_line:
+                last_line = record.end_line
+        return last_line
+
+    def was_file_read(self, file_path: str) -> bool:
+        """Check if a file has been read at all."""
+        return any(r.file_path == file_path for r in self.files_read)
+
+    def get_recent_observations(self, count: int = 5) -> list[str]:
+        """Get the N most recent observations."""
+        return self.observations[-count:] if self.observations else []
+
+    def observations_are_stagnant(self, window: int = 3) -> bool:
+        """Check if the last N observations are identical or near-identical."""
+        if len(self.observations) < window * 2:
+            return False
+        recent = self.observations[-window:]
+        previous = self.observations[-(window * 2):-window]
+        if not recent or not previous:
+            return False
+        recent_set = set(o[:100] for o in recent)
+        previous_set = set(o[:100] for o in previous)
+        return len(recent_set) <= 2 and recent_set == previous_set
+
 
 class AgentState(BaseModel):
     """Full snapshot of the agent's current state."""
@@ -127,6 +205,8 @@ class AgentState(BaseModel):
     last_tool_result: ToolResult | None = None
     error_count: int = 0
     max_consecutive_errors: int = 3
+    stagnation_count: int = 0
+    max_stagnation_count: int = 3
     started_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     last_activity: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -159,6 +239,31 @@ class AgentState(BaseModel):
 
     def is_error_limit_reached(self) -> bool:
         return self.error_count >= self.max_consecutive_errors
+
+    def is_stagnation_limit_reached(self) -> bool:
+        return self.stagnation_count >= self.max_stagnation_count
+
+    def record_stagnation(self) -> None:
+        """Record that a stagnation was detected."""
+        self.stagnation_count += 1
+        self.last_activity = datetime.now(timezone.utc)
+
+    def reset_stagnation(self) -> None:
+        """Reset stagnation counter when meaningful progress is made."""
+        self.stagnation_count = 0
+
+    def detect_stagnation(self) -> bool:
+        """Detect if the agent is stuck in a loop based on observation history."""
+        if self.scratchpad.observations_are_stagnant(window=3):
+            return True
+        # Also detect if we've been reading the same files repeatedly
+        if len(self.scratchpad.files_read) >= 4:
+            recent_reads = self.scratchpad.files_read[-4:]
+            file_paths = [r.file_path for r in recent_reads]
+            # If all recent reads are the same file, we're stuck
+            if len(set(file_paths)) == 1:
+                return True
+        return False
 
 
 class LintIssue(BaseModel):

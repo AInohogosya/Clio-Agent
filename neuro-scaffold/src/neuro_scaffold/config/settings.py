@@ -64,6 +64,7 @@ class Settings(BaseSettings):
     max_iterations: int = Field(default=50, ge=1, le=200)
     max_tool_calls_per_iteration: int = Field(default=10, ge=1, le=50)
     iteration_timeout_seconds: int = Field(default=300, ge=10, le=3600)
+    max_stagnation_count: int = Field(default=3, ge=1, le=20)
     scratchpad_path: Path = Field(default=Path("/tmp/neuro_scratchpad.json"))
 
     # ── Shell / Execution ─────────────────────────────────────────────
