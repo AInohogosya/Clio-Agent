@@ -1691,17 +1691,18 @@ class AutonomousLoopEngine:
                 "\n## 📱 TELEGRAM MODE — ACTIVE\n"
                 "You are in TELEGRAM MODE. telegram() is the ONLY way to reach the user.\n"
                 "The user CANNOT see your terminal, logs, or thinking() output.\n\n"
+                "⚠️ CRITICAL: If the log below contains a ## 📥 INBOX section, your VERY FIRST\n"
+                "output line MUST be telegram() with an acknowledgement. This is ABSOLUTE.\n"
+                "Example: telegram(👋 承知しました！「[message]」について処理を開始します…)\n"
+                "Then proceed with the actual work.\n\n"
                 "MANDATORY RULES:\n"
-                "1. ACKNOWLEDGE IMMEDIATELY: When you see a user message in the log below,\n"
-                "   your FIRST action MUST be telegram() with an acknowledgement.\n"
-                "   Example: telegram(👋 Got it! Working on it now...)\n\n"
-                "2. PROGRESS UPDATES: Send telegram() every 5-10 iterations. NEVER go more\n"
-                "   than 10 iterations without a telegram() message.\n"
-                "   Example: telegram(⏳ Still working on [task]... iteration #[N].)\n\n"
-                "3. COMPLETION: When done, send telegram() with a summary of what was done.\n"
-                "   Example: telegram(✅ Done! Created file X, fixed bug Y.)\n\n"
-                "4. ERRORS: On failure, immediately notify: telegram(❌ Error: [description])\n\n"
-                "5. thinking() is INVISIBLE to the user. Use telegram() for ALL user comms.\n\n"
+                "1. FIRST LINE = telegram() when INBOX has messages. ALWAYS. No exceptions.\n"
+                "2. PROGRESS UPDATES: Send telegram() every 5-10 iterations.\n"
+                "   Example: telegram(⏳ Still working on [task]... iteration #[N].)\n"
+                "3. COMPLETION: When done, send telegram() with a summary.\n"
+                "   Example: telegram(✅ Done! Created file X, fixed bug Y.)\n"
+                "4. ERRORS: On failure, immediately notify: telegram(❌ Error: [description])\n"
+                "5. thinking() is INVISIBLE to the user. Use telegram() for ALL user comms.\n"
                 "6. OVER-COMMUNICATE: When in doubt, send telegram(). Keep the user informed.\n"
             )
         discord_section = ""
@@ -1781,7 +1782,7 @@ class AutonomousLoopEngine:
                 "telegram_mode": ctx.telegram_mode,
             },
             max_tokens=4096,  # Enough room for multi-command responses
-            temperature=0.6,  # Balanced: diverse actions while staying focused
+            temperature=0.2,  # Low: prioritize following instructions (telegram() compliance)
             system_instruction=system_instruction,
         )
 
@@ -1872,11 +1873,15 @@ class AutonomousLoopEngine:
                 "your execution log, or your thinking() output. telegram() is the ONLY\n"
                 "way to send messages to the user. If you don't use telegram(), the user\n"
                 "receives NOTHING.\n\n"
+                "### ⚠️ ABSOLUTE RULE: FIRST LINE = telegram()\n"
+                "When the execution log contains a ## 📥 INBOX section with user messages,\n"
+                "your VERY FIRST output line MUST ALWAYS be a telegram() command.\n"
+                "This is non-negotiable. No exceptions. Not even one iteration without it.\n"
+                "Format: telegram(👋 承知しました！「[user message preview]」について処理を開始します…)\n"
+                "After sending telegram(), then proceed with the actual work.\n\n"
                 "### Telegram Command Rules:\n"
-                "1. IMMEDIATE ACKNOWLEDGMENT: When a user message appears in your log,\n"
-                "   your VERY FIRST action MUST be telegram() with an acknowledgement.\n"
-                "   Example: telegram(👋 Got it! Working on it now...)\n"
-                "   Then do the actual work. Never leave the user waiting.\n\n"
+                "1. FIRST LINE = telegram(): When you see ## 📥 INBOX in the log, your FIRST\n"
+                "   output line MUST be telegram() with an acknowledgement. ALWAYS.\n\n"
                 "2. PROGRESS UPDATES: Send telegram() updates every 5-10 iterations.\n"
                 "   NEVER go more than 10 iterations without a telegram() message.\n"
                 "   Example: telegram(⏳ Still working on [task]... iteration #[N].)\n\n"
@@ -2540,24 +2545,29 @@ class AutonomousLoopEngine:
     def add_user_message(self, user_message: str,
                           user_id: Optional[int] = None) -> None:
         """
-        Add a user message to the context log strictly as a log entry.
+        Add a user message to the context log and IMMEDIATELY send a
+        telegram() acknowledgement — do NOT wait for the LLM.
 
-        This does NOT change the agent's current goal or interrupt its work.
-        The message is simply recorded so the agent can see it the next time
-        it consults the execution log during its thinking phase.  Whether the
-        agent reacts to the message is entirely up to the agent itself.
-
-        Uses the current autonomous context if available, otherwise logs
-        directly to the terminal history.
+        The code-level acknowledgement ensures the user always gets a
+        confirmation even if the LLM forgets to call telegram().
+        The LLM is still expected to send a follow-up reply with the
+        actual response after processing the message.
         """
         ctx = getattr(self, "_current_context", None)
         tag = f"[user message received]"
         if user_id is not None:
             tag = f"[user message from {user_id} received]"
         entry = f"{tag} {user_message}"
-        self.logger.info("User message received (logged passively)",
+        self.logger.info("User message received",
                          user_message=user_message, user_id=user_id)
-        self._term_log.thinking(f"User message (passive): {user_message}")
+        self._term_log.thinking(f"User message: {user_message}")
+
+        # ── IMMEDIATE code-level acknowledgement (no LLM involved) ──
+        # This guarantees the user always gets a confirmation.
+        _ack_sent = False
+        if ctx is not None and user_id is not None:
+            _ack_sent = self._send_immediate_ack(ctx, user_id, user_message)
+
         if ctx is not None:
             # Remember the first user who sends a message so that
             # telegram() commands know where to send replies.
@@ -2633,6 +2643,33 @@ class AutonomousLoopEngine:
                 )
             except Exception:
                 pass  # best-effort only
+
+    def _send_immediate_ack(self, ctx: AutonomousContext, user_id: int, user_message: str) -> bool:
+        """
+        Send an immediate acknowledgement via telegram() — called directly
+        from add_user_message(), NOT via the LLM.  This guarantees the user
+        always receives a confirmation that their message was received.
+
+        Returns True if the message was queued successfully.
+        """
+        if not ctx.telegram_mode or not self.telegram_bot:
+            return False
+        # Truncate long messages for the ack preview
+        preview = user_message[:100] + ("…" if len(user_message) > 100 else "")
+        ack_text = (
+            f"👋 メッセージを受け取りました！\n"
+            f"「{preview}」\n"
+            f"処理を開始します、少々お待ちください…"
+        )
+        try:
+            self.telegram_bot.queue_message(user_id, ack_text)
+            if hasattr(self.telegram_bot, "_trigger_queue_flush"):
+                self.telegram_bot._trigger_queue_flush()
+            self.logger.info("Immediate ack sent", user_id=user_id)
+            return True
+        except Exception as exc:
+            self.logger.warning(f"Immediate ack failed: {exc}")
+            return False
 
     def _exec_telegram(self, ctx: AutonomousContext, content: str) -> None:
         """Send a message via Telegram (only in Telegram mode)."""
@@ -3659,7 +3696,7 @@ class AutonomousLoopEngine:
 
     # Maximum number of recent log lines injected into the model prompt.
     # Keeps the prompt from growing without bound across iterations.
-    MAX_LOG_LINES_IN_PROMPT = 80
+    MAX_LOG_LINES_IN_PROMPT = 200
 
     def _format_execution_log_for_prompt(self, max_lines: int = None) -> str:
         """Format the execution log for injection into the model prompt.
@@ -3668,11 +3705,13 @@ class AutonomousLoopEngine:
         (terminal history entries are already reflected in execution_log
         via _append_log calls after each command).
 
-        Only the most recent *max_lines* entries are included to keep the
+        The most recent *max_lines* entries are included to keep the
         prompt within the model's context window.
 
-        User messages received via Telegram are highlighted with >>> markers
-        so the model can easily spot them.
+        CRITICAL: User messages are ALWAYS placed at the very top of the
+        log (inside a ## INBOX section) so the model sees them first and
+        never misses them due to line trimming. They are also kept in their
+        original position in the log for chronological context.
         """
         if max_lines is None:
             max_lines = self.MAX_LOG_LINES_IN_PROMPT
@@ -3681,32 +3720,41 @@ class AutonomousLoopEngine:
             if ctx is None:
                 return "(no context)"
 
-            # Use execution_log as the sole source — it already contains
-            # command results, user messages, thoughts, and telegram markers.
-            # Reading terminal_history separately would duplicate entries.
             all_lines = list(ctx.execution_log)
 
             if not all_lines:
                 return "(no terminal history)"
 
-            # Post-process: highlight user-message lines
-            highlighted_lines = []
+            # Separate user messages from the rest.
+            # User messages go to the TOP (inbox) so they are never trimmed away.
+            inbox_lines = []
+            other_lines = []
             for line in all_lines:
                 if "[user message" in line.lower():
-                    highlighted_lines.append(">>> " + line + " <<<")
+                    inbox_lines.append(">>> " + line + " <<<")
                 else:
-                    highlighted_lines.append(line)
+                    other_lines.append(line)
 
-            # Keep only the most recent max_lines
-            if len(highlighted_lines) > max_lines:
-                omitted = len(highlighted_lines) - max_lines
+            # Trim only the non-inbox lines to max_lines
+            trimmed_other = other_lines
+            if len(other_lines) > max_lines:
+                omitted = len(other_lines) - max_lines
                 header = (
                     f"... ({omitted} older log entries omitted \u2014 "
-                    f"showing last {max_lines} of {len(highlighted_lines)} lines) ..."
+                    f"showing last {max_lines} of {len(other_lines)} lines) ..."
                 )
-                highlighted_lines = [header] + highlighted_lines[-max_lines:]
+                trimmed_other = [header] + other_lines[-max_lines:]
 
-            return "\n".join(highlighted_lines)
+            # Build final output: INBOX first, then the rest chronologically
+            parts = []
+            if inbox_lines:
+                parts.append("## 📥 INBOX (user messages — ALWAYS reply with telegram() first)")
+                parts.extend(inbox_lines)
+                parts.append("## END INBOX\n")
+            parts.append("## EXECUTION LOG (chronological)")
+            parts.extend(trimmed_other)
+
+            return "\n".join(parts)
         except Exception:
             return "(terminal log unavailable)"
 
