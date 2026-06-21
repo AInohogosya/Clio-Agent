@@ -1,0 +1,113 @@
+# ============================================================
+# Neuro-Scaffold Docker Compose
+# Secure containment configuration
+# ============================================================
+version: "3.9"
+
+services:
+  neuro-scaffold:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    image: neuro-scaffold:latest
+    container_name: neuro-scaffold-agent
+    restart: unless-stopped
+
+    # ── Security: Read-only root filesystem ────────────────────
+    read_only: true
+    tmpfs:
+      - /tmp:size=100m,noexec,nosuid,uid=10000,gid=10000
+      - /var/tmp:size=50m,noexec,nosuid,uid=10000,gid=10000
+      - /home/neuro/.cache:size=50m,uid=10000,gid=10000
+
+    # ── Security: Drop all capabilities ────────────────────────
+    cap_drop:
+      - ALL
+
+    # ── Security: No privilege escalation ──────────────────────
+    security_opt:
+      - no-new-privileges:true
+
+    # ── Security: Network isolation ────────────────────────────
+    networks:
+      - neuro-internal
+    # No external network access by default
+    # To enable: remove 'neuro-internal' and add ports
+
+    # ── Resource limits ────────────────────────────────────────
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+        reservations:
+          cpus: "0.25"
+          memory: 128M
+
+    # ── PID limit to prevent fork bombs ────────────────────────
+    pids_limit: 256
+
+    # ── Volume mounts ──────────────────────────────────────────
+    volumes:
+      # Workspace: bind-mounted from host, read-write but nosuid/noexec
+      - type: bind
+        source: ./workspace
+        target: /workspace
+        read_only: false
+      # Git configuration (read-only)
+      - type: bind
+        source: ~/.gitconfig
+        target: /home/neuro/.gitconfig
+        read_only: true
+
+    # ── Environment ────────────────────────────────────────────
+    env_file:
+      - .env
+    environment:
+      - NEURO_MODE=subagent
+      - NEURO_LOG_LEVEL=INFO
+      - NEURO_GATEWAY_HOST=0.0.0.0
+      - NEURO_GATEWAY_PORT=9090
+      - NEURO_MAX_ITERATIONS=50
+      - NEURO_SHELL_TIMEOUT_SECONDS=120
+
+    # ── Ports (only exposed on internal network) ──────────────
+    ports:
+      - "127.0.0.1:9090:9090"
+
+    # ── Health check ───────────────────────────────────────────
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9090/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+    # ── Logging ────────────────────────────────────────────────
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+        tag: "neuro-scaffold"
+
+  # ── Optional: Clio Agent parent (for integration testing) ────
+  # clio-agent:
+  #   image: clio-agent:latest
+  #   container_name: clio-agent
+  #   networks:
+  #     - neuro-internal
+  #   environment:
+  #     - NEURO_SCAFFOLD_URL=http://neuro-scaffold:9090
+  #     - NEURO_SCAFFOLD_API_KEY=${NEURO_CLIO_API_KEY}
+  #   depends_on:
+  #     neuro-scaffold:
+  #       condition: service_healthy
+
+networks:
+  neuro-internal:
+    driver: bridge
+    internal: true
+    labels:
+      - "com.neuro-scaffold.description=Isolated network for Clio-Neuro communication"

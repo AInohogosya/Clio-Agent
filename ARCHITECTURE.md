@@ -62,7 +62,6 @@ Detailed technical reference for the Clio Agent 1 codebase.
 | `manager.py` | `SubAgentManager` | ThreadPoolExecutor orchestration |
 | `registry.py` | `SubAgentRegistry`, `@sub_agent` | Decorator-based registration |
 | `context.py` | `SubAgentContext` | Context dataclass |
-| `agents/coder_agent.py` | `CoderAgent` | Code implementation |
 | `agents/research_agent.py` | `ResearchAgent` | Research tasks |
 | `agents/review_agent.py` | `ReviewAgent` | Code/output review |
 | `agents/architect_agent.py` | `ArchitectAgent` | System design |
@@ -168,8 +167,8 @@ When the execution log grows too large, the agent:
 ### 4. Decorator-Based Registration
 Sub-agents use a decorator pattern:
 ```python
-@sub_agent("coder", description="Implements code")
-class CoderAgent(SubAgentBase):
+@sub_agent("research", description="Performs research")
+class ResearchAgent(SubAgentBase):
     ...
 ```
 

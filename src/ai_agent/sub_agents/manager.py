@@ -47,8 +47,8 @@ class SubAgentManager:
     Usage:
         manager = SubAgentManager(config=config)
 
-        ctx = SubAgentContext(task="Implement feature X", config=config)
-        handle = manager.spawn("coder", ctx)
+        ctx = SubAgentContext(task="Investigate feature X", config=config)
+        handle = manager.spawn("research", ctx)
 
         # Wait for results
         results = manager.wait_all()
@@ -100,7 +100,7 @@ class SubAgentManager:
         Spawn a new sub-agent of the given type.
 
         Args:
-            agent_type: Registered type name (e.g. "coder").
+            agent_type: Registered type name (e.g. "research").
             context: Context for the sub-agent.
 
         Returns:

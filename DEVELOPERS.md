@@ -456,7 +456,7 @@ python gui/app.py
 
 Sub-agents run in parallel threads via ThreadPoolExecutor.
 
-**Built-in:** coder, research, review, architect
+**Built-in:** research, review, architect
 
 **Lifecycle:** `spawn() → initialize() → _run() → report() → cleanup()`
 

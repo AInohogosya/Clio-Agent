@@ -2,10 +2,9 @@
 Prompt templates for sub-agents.
 
 Each sub-agent type has specialized system and task prompts optimized
-for its domain: coding, research, review, or architecture.
+for its domain: research, review, or architecture.
 """
 
-from .coder_prompts import CODER_SYSTEM_PROMPT, CODER_TASK_PROMPT
 from .research_prompts import RESEARCH_SYSTEM_PROMPT, RESEARCH_TASK_PROMPT
 from .review_prompts import REVIEW_SYSTEM_PROMPT, REVIEW_TASK_PROMPT
 from .architect_prompts import (
@@ -20,8 +19,6 @@ from .architect_prompts import (
 )
 
 __all__ = [
-    "CODER_SYSTEM_PROMPT",
-    "CODER_TASK_PROMPT",
     "RESEARCH_SYSTEM_PROMPT",
     "RESEARCH_TASK_PROMPT",
     "REVIEW_SYSTEM_PROMPT",

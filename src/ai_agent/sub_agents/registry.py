@@ -25,11 +25,11 @@ class SubAgentRegistry:
     Usage:
         registry = SubAgentRegistry()
 
-        @registry.register("coder")
-        class CoderAgent(SubAgentBase):
+        @registry.register("research")
+        class ResearchAgent(SubAgentBase):
             ...
 
-        agent = registry.create("coder", context)
+        agent = registry.create("research", context)
     """
 
     def __init__(self) -> None:
@@ -41,13 +41,13 @@ class SubAgentRegistry:
         Decorator to register a sub-agent class under a given type name.
 
         Args:
-            agent_type: Unique string identifier (e.g. "coder", "research").
+            agent_type: Unique string identifier (e.g. "research", "review").
             description: Human-readable description of the agent.
 
         Usage:
-            @registry.register("coder", description="Implements code tasks")
-            class CoderAgent(SubAgentBase):
-                agent_type = "coder"
+            @registry.register("research", description="Performs research tasks")
+            class ResearchAgent(SubAgentBase):
+                agent_type = "research"
                 ...
         """
         def decorator(cls: Type[SubAgentBase]) -> Type[SubAgentBase]:
@@ -147,8 +147,8 @@ def sub_agent(agent_type: str, *, description: str = "") -> callable:
     Convenience decorator that registers with the global registry.
 
     Usage:
-        @sub_agent("coder", description="Implements code tasks")
-        class CoderAgent(SubAgentBase):
+        @sub_agent("research", description="Performs research tasks")
+        class ResearchAgent(SubAgentBase):
             ...
     """
     return get_global_registry().register(agent_type, description=description)

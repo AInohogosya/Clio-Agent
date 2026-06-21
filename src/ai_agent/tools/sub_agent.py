@@ -63,7 +63,7 @@ class SubAgentTool(ToolExecutor):
     required_permission = Permission.EXECUTE
     guideline = (
         "Use sub-agents for complex, parallelizable tasks. "
-        "Spawn a coder for implementation, researcher for investigation, "
+        "Spawn a researcher for investigation, "
         "reviewer for code review. Wait for results before proceeding."
     )
 

@@ -3,7 +3,7 @@ Delegate Sub-Agent Tool — allows the Main Agent to spawn sub-agents.
 
 This tool integrates the SubAgentManager into the Main Agent's tool
 system. The Main Agent can use it to spawn, list, or retrieve results
-from sub-agents (Coder, Research, Review, Architect, etc.).
+from sub-agents (Research, Review, Architect, etc.).
 
 Tool commands:
   delegate(agent_type="architect", task="Design a caching layer")
@@ -67,7 +67,7 @@ class DelegateSubAgentTool(ToolExecutor):
     """
 
     name = "subagent"
-    description = "Delegate a task to a specialized sub-agent (coder, research, review, architect)"
+    description = "Delegate a task to a specialized sub-agent (research, review, architect)"
     required_permission = Permission.EXECUTE
 
     def __init__(self, permissions: Optional[PermissionSet] = None) -> None:
@@ -488,7 +488,6 @@ def get_subagent_tools_config() -> Dict[str, Any]:
                 "description": "delegate task to specialized sub-agent",
                 "examples": [
                     'subagent(agent_type="architect", task="Design a caching layer")',
-                    'subagent(agent_type="coder", task="Fix the login bug in auth.py")',
                     'subagent(agent_type="research", task="Find all usages of deprecated API")',
                     'subagent(agent_type="review", task="Review security in authentication module")',
                 ],
@@ -519,7 +518,6 @@ You can delegate complex tasks to specialized sub-agents using the
 their results.
 
 ### Available Sub-Agent Types
-- **coder** — Implements code changes, fixes bugs, writes tests
 - **research** — Investigates codebase, finds patterns, traces dependencies
 - **review** — Performs code review, quality analysis, security audit
 - **architect** — Produces architectural designs, ADRs, trade-off analysis
