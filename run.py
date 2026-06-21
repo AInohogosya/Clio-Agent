@@ -43,7 +43,10 @@ if sys.platform == "win32":
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     except Exception:
         pass
-os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+# Only set default IO encoding if not already set by the system (avoids overriding
+# system locale settings like LANG=C which may be intentional)
+if not os.environ.get("PYTHONIOENCODING"):
+    os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 
 import shutil
 import json as _json_mod
@@ -563,17 +566,113 @@ def _sudo_works_noninteractive():
         return False
 
 
-def _run_fix_command(cmd, timeout=120):
-    """Run a fix command and return True if it succeeded."""
+def _get_sudo_password():
+    """Prompt the user for their sudo password and validate it.
+
+    Returns the password string if valid, or None if the user cancels
+    or provides an invalid password after retries.
+
+    The password is only prompted during initial setup or explicit repair.
+    """
+    import getpass
+    # Check if we're on a platform that uses sudo
+    if sys.platform == "win32":
+        return None
+
+    # First check if passwordless sudo already works
+    if _sudo_works_noninteractive():
+        return ""
+
+    max_attempts = 3
+    for attempt in range(1, max_attempts + 1):
+        try:
+            prompt = "Enter your system (sudo) password"
+            if attempt > 1:
+                prompt += f" (attempt {attempt}/{max_attempts})"
+            prompt += ": "
+            password = getpass.getpass(prompt)
+        except (KeyboardInterrupt, EOFError):
+            print()
+            return None
+
+        if not password:
+            print("  No password entered. Skipping system-level fixes.")
+            return None
+
+        # Validate the password by running sudo -S true
+        try:
+            proc = subprocess.run(
+                ["sudo", "-S", "true"],
+                input=password + "\n",
+                capture_output=True, text=True, timeout=10,
+            )
+            if proc.returncode == 0:
+                return password
+            else:
+                stderr_out = (proc.stderr or "").strip()
+                if "incorrect password" in stderr_out.lower() or "sorry" in stderr_out.lower():
+                    print("  Incorrect password.")
+                else:
+                    print(f"  Password validation failed: {stderr_out[:100]}")
+        except subprocess.TimeoutExpired:
+            print("  Password validation timed out.")
+        except Exception as e:
+            print(f"  Error validating password: {e}")
+
+    print("  Too many incorrect attempts. Skipping system-level fixes.")
+    return None
+
+
+def _run_fix_command(cmd, timeout=120, sudo_password=None):
+    """Run a fix command and return True if it succeeded.
+
+    Args:
+        cmd: Command as list or string.
+        timeout: Timeout in seconds.
+        sudo_password: If provided, use this password for sudo commands via stdin.
+                       Empty string "" means passwordless sudo is available.
+                       None means no password available (skip sudo commands).
+    """
     import shlex
     try:
         # BUG FIX #24: Always use shell=False with properly split args
         if isinstance(cmd, str):
             cmd = shlex.split(cmd)
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=timeout,
-            shell=False,
-        )
+
+        # Determine if this is a sudo command
+        use_sudo = len(cmd) > 0 and cmd[0] == "sudo"
+
+        if use_sudo:
+            if sudo_password is None:
+                # No password available — skip this command
+                print(f"    (skipping: sudo requires password)")
+                return False
+            elif sudo_password == "":
+                # Passwordless sudo — use -n flag
+                if len(cmd) > 1 and cmd[1] != "-n":
+                    cmd = [cmd[0], "-n"] + cmd[1:]
+                result = subprocess.run(
+                    cmd, capture_output=True, text=True, timeout=timeout,
+                    shell=False,
+                )
+            else:
+                # We have a password — use -S to read from stdin
+                # Replace any -n flags with -S
+                if len(cmd) > 1 and cmd[1] == "-n":
+                    cmd = [cmd[0], "-S"] + cmd[2:]
+                elif len(cmd) > 1 and cmd[1] != "-S":
+                    cmd = [cmd[0], "-S"] + cmd[1:]
+                result = subprocess.run(
+                    cmd, input=sudo_password + "\n",
+                    capture_output=True, text=True, timeout=timeout,
+                    shell=False,
+                )
+        else:
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=timeout,
+                shell=False,
+            )
+
         if result.returncode == 0:
             return True
         err_out = (result.stderr or result.stdout or "").strip()
@@ -588,15 +687,20 @@ def _run_fix_command(cmd, timeout=120):
         return False
 
 
-def _auto_fix_venv_failure(err=""):
+def _auto_fix_venv_failure(err="", sudo_password=None):
     """Attempt to automatically fix the venv creation failure.
 
+    Args:
+        err: Error message from the failed venv creation attempt.
+        sudo_password: If not None, use this password for sudo commands.
+                       Empty string "" means passwordless sudo.
+                       None means no password available.
+
     Returns True if a fix was applied, False otherwise.
-    Uses sudo -n (non-interactive) to avoid hanging on password prompts.
     """
     py_ver = f"{sys.version_info.major}.{sys.version_info.minor}"
     fixed = False
-    can_sudo = _sudo_works_noninteractive()
+    can_sudo = sudo_password is not None
 
     print()
     print("Attempting automatic fix ...")
@@ -645,38 +749,44 @@ def _auto_fix_venv_failure(err=""):
         has_yum = shutil.which("yum")
         venv_pkg = f"python{py_ver}-venv"
 
-        # Fix 1: apt (non-interactive)
+        # Fix 1: apt (with password support)
         if not fixed and has_apt and can_sudo:
             print(f"[auto-fix] Installing {venv_pkg} via apt ...")
-            if _run_fix_command(["sudo", "-n", "apt", "update"], timeout=120) and \
-               _run_fix_command(["sudo", "-n", "apt", "install", "-y", venv_pkg], timeout=300):
+            if _run_fix_command(["sudo", "apt", "update"], timeout=120,
+                                sudo_password=sudo_password) and \
+               _run_fix_command(["sudo", "apt", "install", "-y", venv_pkg], timeout=300,
+                                sudo_password=sudo_password):
                 fixed = True
                 print(f"[auto-fix] {venv_pkg} installed via apt.")
 
-        # Fix 2: dnf (non-interactive)
+        # Fix 2: dnf (with password support)
         if not fixed and has_dnf and can_sudo:
             print(f"[auto-fix] Installing {venv_pkg} via dnf ...")
-            if _run_fix_command(["sudo", "-n", "dnf", "install", "-y", venv_pkg], timeout=300):
+            if _run_fix_command(["sudo", "dnf", "install", "-y", venv_pkg], timeout=300,
+                                sudo_password=sudo_password):
                 fixed = True
                 print(f"[auto-fix] {venv_pkg} installed via dnf.")
 
-        # Fix 3: yum (non-interactive)
+        # Fix 3: yum (with password support)
         if not fixed and has_yum and can_sudo:
             print(f"[auto-fix] Installing {venv_pkg} via yum ...")
-            if _run_fix_command(["sudo", "-n", "yum", "install", "-y", venv_pkg], timeout=300):
+            if _run_fix_command(["sudo", "yum", "install", "-y", venv_pkg], timeout=300,
+                                sudo_password=sudo_password):
                 fixed = True
                 print(f"[auto-fix] {venv_pkg} installed via yum.")
 
-        # Fix 4: ensurepip package (non-interactive)
+        # Fix 4: ensurepip package (with password support)
         if not fixed and "ensurepip" in err and can_sudo:
             pip_pkg = f"python{py_ver}-pip"
             if has_apt:
                 print(f"[auto-fix] Installing {pip_pkg} via apt ...")
-                if _run_fix_command(["sudo", "-n", "apt", "install", "-y", pip_pkg], timeout=300):
+                if _run_fix_command(["sudo", "apt", "install", "-y", pip_pkg], timeout=300,
+                                    sudo_password=sudo_password):
                     fixed = True
             elif has_dnf:
                 print(f"[auto-fix] Installing {pip_pkg} via dnf ...")
-                if _run_fix_command(["sudo", "-n", "dnf", "install", "-y", pip_pkg], timeout=300):
+                if _run_fix_command(["sudo", "dnf", "install", "-y", pip_pkg], timeout=300,
+                                    sudo_password=sudo_password):
                     fixed = True
 
         # Fix 5: virtualenv at user level (no sudo)
@@ -915,8 +1025,12 @@ def _collect_python_candidates():
     return candidates
 
 
-def _create_venv_and_install():
+def _create_venv_and_install(sudo_password=None):
     """Create a fresh venv, install deps, return venv python path.
+
+    Args:
+        sudo_password: If not None, use this password for sudo commands during
+                       auto-fix. None means no password available.
 
     Self-healing strategy:
       1. Remove any existing broken venv.
@@ -976,7 +1090,7 @@ def _create_venv_and_install():
         print(f"\nERROR: Could not create virtual environment after trying all methods.")
         _diagnose_venv_failure(last_err)
         print("  Manual fix: rm -rf venv && python3 -m venv venv")
-        if _auto_fix_venv_failure(last_err):
+        if _auto_fix_venv_failure(last_err, sudo_password=sudo_password):
             if venv_path.exists():
                 try:
                     shutil.rmtree(venv_path)
@@ -1038,9 +1152,12 @@ def _create_venv_and_install():
 
 def repair_environment():
     """Comprehensive environment repair: install missing deps, fix platform issues.
-    
+
     This function can be called independently via --repair to fix the environment
     without starting the agent.
+
+    Prompts for sudo password when triggered via --repair so that system-level
+    dependencies can be installed.
     """
     import platform as _plat
     import importlib
@@ -1049,15 +1166,21 @@ def repair_environment():
     print("  Clio Agent - Environment Repair")
     print("=" * 60)
     print()
-    
+
+    # Prompt for sudo password to enable system-level repairs
+    sudo_password = _get_sudo_password()
+    # Clear password from local scope as soon as possible after use
+    _sudo_pwd = sudo_password  # keep reference for passing to sub-functions
+
     # Step 1: Ensure venv exists
     project_root = Path(__file__).parent.resolve()
     venv_path = project_root / "venv"
-    
+
     if not venv_path.exists():
         print("[1/4] Virtual environment not found. Creating...")
-        venv_python = _create_venv_and_install()
+        venv_python = _create_venv_and_install(sudo_password=_sudo_pwd)
         if not venv_python:
+            _sudo_pwd = None
             print("ERROR: Failed to create virtual environment.")
             sys.exit(1)
     else:
@@ -1065,8 +1188,9 @@ def repair_environment():
         venv_python, needs_install, deps_ok = _resolve_venv_python()
         if not venv_python:
             print("  Venv appears broken. Recreating...")
-            venv_python = _create_venv_and_install()
+            venv_python = _create_venv_and_install(sudo_password=_sudo_pwd)
             if not venv_python:
+                _sudo_pwd = None
                 print("ERROR: Failed to recreate virtual environment.")
                 sys.exit(1)
     
@@ -1137,6 +1261,13 @@ def repair_environment():
             print(f"  ✗ Still outdated: {', '.join(outdated)}")
         print("\n  Try running: pip install -e \".[all]\"")
     
+    # Securely clear sudo password from memory after use
+    try:
+        if '_sudo_pwd' in dir() and _sudo_pwd:
+            _sudo_pwd = None
+    except Exception:
+        pass
+
     print("\nRepair complete. You can now run: Clio-Agent")
     print()
 
@@ -1161,6 +1292,14 @@ def _auto_bootstrap_venv():
 
     # Prevent infinite restart loops: cap the number of bootstrap attempts.
     _bootstrap_count = int(os.environ.get("_CLIO_BOOTSTRAP_ATTEMPTS", "0"))
+
+    # On first run, prompt for sudo password to enable system-level repairs.
+    # The password is only requested during initial setup, NOT during normal
+    # operation or automatic recovery.
+    _sudo_pwd = None
+    if _bootstrap_count == 0:
+        _sudo_pwd = _get_sudo_password()
+
     if _bootstrap_count >= 3:
         print()
         print("=" * 60)
@@ -1172,7 +1311,7 @@ def _auto_bootstrap_venv():
         print("  source venv/bin/activate  # or venv\\Scripts\\activate on Windows")
         print("  pip install -e .")
         # Last-ditch auto-fix attempt before giving up
-        if _auto_fix_venv_failure(""):
+        if _auto_fix_venv_failure("", sudo_password=_sudo_pwd):
             print("Auto-fix applied on final attempt. One more bootstrap try ...")
             # Reset the bootstrap counter for one last attempt
             os.environ["_CLIO_BOOTSTRAP_ATTEMPTS"] = "0"
@@ -1184,13 +1323,18 @@ def _auto_bootstrap_venv():
                 except Exception:
                     pass
             # Retry full bootstrap path
-            venv_python = _create_venv_and_install()
-            print(f"Restarting in virtual environment ({venv_python}) ...")
-            try:
-                os.execv(venv_python, [venv_python, run_py] + sys.argv[1:])
-            except (OSError, Exception):
-                print("Warning: restart via execv failed. Running directly.")
-                return
+            venv_python = _create_venv_and_install(sudo_password=_sudo_pwd)
+            _sudo_pwd = None  # clear password after use
+            if venv_python:
+                print(f"Restarting in virtual environment ({venv_python}) ...")
+                try:
+                    os.execv(venv_python, [venv_python, run_py] + sys.argv[1:])
+                except (OSError, Exception):
+                    print("Warning: restart via execv failed. Running directly.")
+                    return
+            else:
+                print("ERROR: Could not create venv even after auto-fix.")
+                sys.exit(1)
         print("=" * 60)
         sys.exit(1)
     os.environ["_CLIO_BOOTSTRAP_ATTEMPTS"] = str(_bootstrap_count + 1)
@@ -1200,7 +1344,8 @@ def _auto_bootstrap_venv():
     # ── Detect a stale/broken venv (e.g. base Python upgraded or removed) ──
     if venv_python and not _venv_python_is_healthy(venv_python):
         print("Existing virtual environment is unusable; rebuilding ...")
-        venv_python = _create_venv_and_install()
+        venv_python = _create_venv_and_install(sudo_password=_sudo_pwd)
+        _sudo_pwd = None  # clear password after use
         print(f"Restarting in virtual environment ({venv_python}) ...")
         try:
             os.execv(venv_python, [venv_python, run_py] + sys.argv[1:])
@@ -1211,7 +1356,8 @@ def _auto_bootstrap_venv():
     # ── Venv exists but pip is broken → recreate entirely ──
     if venv_python and needs_install:
         print("Virtual environment has broken pip; recreating from scratch ...")
-        venv_python = _create_venv_and_install()
+        venv_python = _create_venv_and_install(sudo_password=_sudo_pwd)
+        _sudo_pwd = None  # clear password after use
         print(f"Restarting in virtual environment ({venv_python}) ...")
         try:
             os.execv(venv_python, [venv_python, run_py] + sys.argv[1:])
@@ -1238,7 +1384,8 @@ def _auto_bootstrap_venv():
         if not _repair_venv_deps(venv_python, project_root):
             # Last resort: try recreating the entire venv
             print("In-place repair failed. Recreating virtual environment from scratch ...")
-            venv_python = _create_venv_and_install()
+            venv_python = _create_venv_and_install(sudo_password=_sudo_pwd)
+        _sudo_pwd = None  # clear password after use
         print(f"Restarting in virtual environment ({venv_python}) ...")
         try:
             os.execv(venv_python, [venv_python, run_py] + sys.argv[1:])
@@ -1247,7 +1394,8 @@ def _auto_bootstrap_venv():
             return
 
     # ── No valid venv at all → create one and restart inside it ──
-    venv_python = _create_venv_and_install()
+    venv_python = _create_venv_and_install(sudo_password=_sudo_pwd)
+    _sudo_pwd = None  # clear password after use
     print(f"Restarting in virtual environment ({venv_python}) ...")
     try:
         os.execv(venv_python, [venv_python, run_py] + sys.argv[1:])
@@ -2392,7 +2540,11 @@ def select_model_provider(_recursion_depth=0):
 def get_valid_api_key(prompt):
     from ai_agent.utils.interactive_menu import Colors, warning_message
     while True:
-        api_key = input(prompt).strip()
+        try:
+            api_key = input(prompt).strip()
+        except EOFError:
+            print()
+            return None
         if not api_key:
             return None
         if len(api_key) < 10:

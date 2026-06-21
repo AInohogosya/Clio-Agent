@@ -41,6 +41,7 @@ MAX_QUEUE_SIZE = 1000
 MAX_CONVERSATION_HISTORY = 100
 RATE_LIMIT_RETRY_DELAY = 5.0  # seconds
 MAX_RATE_LIMIT_RETRIES = 3
+MAX_RESTART_ATTEMPTS = 5  # Bug #26 fix: circuit breaker for restart loop
 
 
 def retry_on_network_error(max_retries: int = 3, initial_delay: float = 1.0, backoff_factor: float = 2.0):

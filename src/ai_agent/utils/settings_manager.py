@@ -5,9 +5,10 @@ Handles API key storage and model configuration
 
 import json
 import os
+import threading
 import yaml
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Union
 from dataclasses import dataclass, asdict
 
 from ..utils.config import _resolve_config_path, _atomic_write_yaml
@@ -707,15 +708,19 @@ class SettingsManager:
         return getattr(self._settings, provider_model_map[provider])
 
 
-# Global settings manager instance
+# Global settings manager instance with thread-safe lock (Bug #7 fix)
 _settings_manager: Optional[SettingsManager] = None
+_singleton_lock = threading.Lock()
 
 
 def get_settings_manager() -> SettingsManager:
-    """Get global settings manager instance"""
+    """Get global settings manager instance (thread-safe singleton)"""
     global _settings_manager
     
     if _settings_manager is None:
-        _settings_manager = SettingsManager()
+        with _singleton_lock:
+            # Double-check pattern to prevent race condition
+            if _settings_manager is None:
+                _settings_manager = SettingsManager()
     
     return _settings_manager

@@ -50,6 +50,35 @@ fi
 
 ok "Python $PY_VERSION detected ($($PYTHON -c 'import sys; print(sys.executable)'))"
 
+# ── Sudo password prompt (for system-level dependency installation) ──
+# Only prompt during initial setup. The password is used solely for installing
+# system packages (e.g. python3-venv, python3-pip) and is not stored.
+SUDO_PASSWORD=""
+if command -v sudo &>/dev/null; then
+    # Check if passwordless sudo works
+    if sudo -n true 2>/dev/null; then
+        ok "Passwordless sudo available"
+    else
+        echo ""
+        echo -e "${YELLOW}  Some system-level dependencies may require sudo access.${RESET}"
+        echo -e "${YELLOW}  Your password will be used only for the setup process.${RESET}"
+        echo ""
+        read -s -p "  Enter your system (sudo) password (or press Enter to skip): " SUDO_PASSWORD
+        echo ""
+        if [ -n "$SUDO_PASSWORD" ]; then
+            # Validate the password
+            if ! echo "$SUDO_PASSWORD" | sudo -S true 2>/dev/null; then
+                warn "Incorrect password — will skip system package manager fixes"
+                SUDO_PASSWORD=""
+            else
+                ok "Sudo password accepted"
+            fi
+        else
+            info "No password entered — will skip system package manager fixes"
+        fi
+    fi
+fi
+
 # ── Create venv ──
 VENV_DIR="$PROJECT_DIR/venv"
 if [ ! -d "$VENV_DIR" ]; then
@@ -136,3 +165,7 @@ echo ""
 echo -e "  ${DIM}If 'Clio-Agent' is not found, restart your terminal or run:${RESET}"
 echo -e "    ${CYAN}source $RC_FILE${RESET}"
 echo ""
+
+# ── Clear sudo password from memory ──
+SUDO_PASSWORD=""
+unset SUDO_PASSWORD
