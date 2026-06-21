@@ -226,8 +226,14 @@ class ModelRunner:
                 # Format prompt
                 prompt = self._format_prompt(request)
 
-                # Get system instructions for API request
-                system_instructions = self._get_system_instructions(request.task_type)
+                # Get system instructions for API request.
+                # If the caller provided an explicit system_instruction, use it
+                # (e.g. for context-compression or custom agent prompts).
+                # Otherwise, fall back to the built-in behavioral rules.
+                if request.system_instruction is not None:
+                    system_instructions = request.system_instruction
+                else:
+                    system_instructions = self._get_system_instructions(request.task_type)
 
                 # Add retry instruction if not first attempt
                 if attempt > 0:
@@ -406,11 +412,23 @@ class ModelRunner:
             self.logger.debug(f"Auth error handler failed: {e}")
 
     def _format_prompt(self, request: ModelRequest) -> str:
-        """Format prompt based on task type and context"""
+        """Format prompt based on task type and context.
+
+        For AUTONOMOUS_LOOP, the prompt is already fully built by the caller
+        (_run_thinking), so we return it as-is to avoid double-wrapping with
+        the template (which would duplicate Telegram rules and other sections).
+        """
+        # For autonomous loop, the prompt is already complete — skip templating
+        if request.task_type == TaskType.AUTONOMOUS_LOOP:
+            return request.prompt
+
         telegram_mode = False
         if request.context and "telegram_mode" in request.context:
             telegram_mode = request.context["telegram_mode"] in (True, "true", "True", 1, "1")
         template = self.prompt_template.get_template(request.task_type, telegram_mode=telegram_mode)
+
+        if not template:
+            return request.prompt
 
         format_vars = {
             "instruction": request.prompt,
@@ -427,7 +445,6 @@ class ModelRunner:
 
         try:
             formatted_prompt = template.format(**format_vars)
-            
             return formatted_prompt
         except KeyError as e:
             self.logger.warning(f"Template variable missing: {e}")

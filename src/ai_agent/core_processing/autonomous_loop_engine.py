@@ -367,6 +367,7 @@ class AutonomousLoopEngine:
         self._loop_warning_active = False  # True when loop detected
         self._auto_save_thread = None
         self._auto_save_running = False
+        self._auto_save_lock = threading.Lock()  # protects ctx.execution_log during auto-save
 
         # ── Proactive work / anti-drift tracking ───────────────────
         # Consecutive iterations with no command()/tool_call()/telegram()
@@ -697,11 +698,16 @@ class AutonomousLoopEngine:
                     return
                 time.sleep(0.1)
             try:
-                self._auto_save_context(ctx)
+                # Take a snapshot of the log under the lock to avoid
+                # reading a list that is being modified by the main thread.
+                with self._auto_save_lock:
+                    log_snapshot = list(ctx.execution_log)
+                self._auto_save_context(ctx, log_snapshot)
             except Exception as e:
                 self.logger.warning(f"Auto-save failed (non-critical): {e}")
 
-    def _auto_save_context(self, ctx: AutonomousContext) -> None:
+    def _auto_save_context(self, ctx: AutonomousContext,
+                            log_snapshot: Optional[List[str]] = None) -> None:
         """
         Lightweight, LLM-free context flush to disk.
 
@@ -709,13 +715,22 @@ class AutonomousLoopEngine:
         state.  Called periodically (every 60 s via background thread and
         every 10 iterations in the main loop) so that even a hard crash
         (kill -9, power loss, device reboot) leaves recoverable context.
+
+        Args:
+            ctx: The current autonomous context.
+            log_snapshot: Optional pre-snapshot of execution_log taken under
+                the auto-save lock. If None, reads ctx.execution_log directly
+                (safe only when called from the main thread).
         """
         try:
             _project_root = _get_project_root()
             context_dir = _project_root / ".context"
             context_dir.mkdir(parents=True, exist_ok=True)
 
-            aux = self._collect_auxiliary_context(ctx)
+            # Use the provided snapshot or read directly (main-thread call)
+            execution_log = log_snapshot if log_snapshot is not None else ctx.execution_log
+
+            aux = self._collect_auxiliary_context(ctx, execution_log)
             compressed = self._heuristic_compress(ctx, aux)
 
             state = {
@@ -757,7 +772,7 @@ class AutonomousLoopEngine:
             self.logger.debug(
                 "Auto-save complete",
                 iteration=ctx.iteration_count,
-                log_lines=len(ctx.execution_log),
+                log_lines=len(execution_log),
             )
         except Exception as e:
             self.logger.warning(f"Auto-save error (non-critical): {e}")
@@ -1168,6 +1183,12 @@ class AutonomousLoopEngine:
 
         finally:
             self._stop_auto_save()
+            # Shut down sub-agent manager to release thread pool resources
+            try:
+                if self.sub_agent_manager:
+                    self.sub_agent_manager.shutdown(wait=False, cancel_pending=True)
+            except Exception:
+                pass
             with self._cancel_lock:
                 if self._active_cancel_event is ctx.cancel_event:
                     self._active_cancel_event = None
@@ -1703,7 +1724,7 @@ class AutonomousLoopEngine:
             )
 
         # ── Build compact user prompt ──
-        # All behavioral rules are in the system prompt (AGENTS.md).
+        # Behavioral rules are in the system prompt from _build_system_instruction().
         # User prompt = mode + task + log only.
         prompt = (
             f"{mode_banner}\n\n"
@@ -1722,6 +1743,10 @@ class AutonomousLoopEngine:
             f"{loop_warning}"
         )
 
+        # Build the system instruction with mode-specific rules so they
+        # appear in the SYSTEM prompt (highest LLM priority) rather than
+        # only in the user prompt.
+        system_instruction = self._build_system_instruction(ctx)
 
         request = ModelRequest(
             task_type=TaskType.AUTONOMOUS_LOOP,
@@ -1735,6 +1760,7 @@ class AutonomousLoopEngine:
             },
             max_tokens=4096,  # Enough room for multi-command responses
             temperature=0.6,  # Balanced: diverse actions while staying focused
+            system_instruction=system_instruction,
         )
 
         response = self.model_runner.run_model(request)
@@ -1746,6 +1772,97 @@ class AutonomousLoopEngine:
         self.logger.info("Thinking phase completed",
                          output_length=out_len)
         return response.content
+
+    # ------------------------------------------------------------------ #
+    #  System prompt builder                                             #
+    # ------------------------------------------------------------------ #
+
+    def _build_system_instruction(self, ctx: AutonomousContext) -> str:
+        """Build the system instruction — behavioral rules sent as the SYSTEM prompt.
+
+        This combines the base behavioral rules from ModelRunner with
+        mode-specific rules (Telegram/Discord) so they appear in the
+        highest-priority system message.
+        """
+        # Start with the base behavioral rules
+        base = (
+            "# Clio Agent 1 — Command-Only Autonomous Agent\n\n"
+            "## 1. CRITICAL: YOUR OUTPUT FORMAT\n"
+            "Your entire response MUST consist ONLY of valid command invocations.\n"
+            "Every line you output must parse as one of:\n"
+            "  command(<shell>), thinking(<text>), telegram(<text>), sleep,\n"
+            "  parallel_begin/parallel_end, or a direct tool call.\n\n"
+            "ABSOLUTELY FORBIDDEN — if any line in your response matches these,\n"
+            "YOUR RESPONSE IS INVALID AND WILL BE REJECTED:\n"
+            "  ✗ Free natural-language text outside command()/telegram()/thinking()\n"
+            "  ✗ Sentences like \"Okay, I'll start coding\" or \"Let me work on that\"\n"
+            "  ✗ Greetings, acknowledgments, or conversational filler\n"
+            "  ✗ Explanations or descriptions of what you're about to do\n"
+            "  ✗ Summaries or progress reports in plain text\n"
+            "  ✗ Questions directed at the user (unless inside telegram())\n"
+            "  ✗ ANY natural language that is not wrapped in a command\n\n"
+            "RULE: If you want to tell the user something, put it in telegram().\n"
+            "RULE: If you need internal reasoning, put it in thinking().\n"
+            "RULE: If you need to act, use command() or a direct tool call.\n"
+            "RULE: EVERYTHING ELSE IS FORBIDDEN.\n\n"
+            "## 2. COMMAND REFERENCE\n"
+            "Wrapped:\n"
+            "  command(<shell cmd>)    — Execute a shell command\n"
+            "  thinking(<text>)        — Internal note (USER CANNOT SEE THIS)\n"
+            "  telegram(<message>)    — ONLY way to send a message to the user\n"
+            "  sleep                  — Compress context and restart\n"
+            "  parallel_begin/end     — Run multiple commands concurrently\n\n"
+            "Direct tool calls (faster than command() for file ops):\n"
+            "  read(path=\"/path/to/file\")\n"
+            "  write(path=\"/path\", content=\"text\")\n"
+            "  edit(path=\"/path\", old_string=\"orig\", new_string=\"repl\")\n"
+            "  glob(pattern=\"**/*.py\")\n"
+            "  grep(pattern=\"regex\", path=\".\")\n"
+            "  bash(command=\"any shell cmd\")\n\n"
+            "## 3. BEHAVIORAL RULES\n"
+            "  a. ACT IMMEDIATELY — never output only thinking(), never an empty response.\n"
+            "  b. PARALLELIZE — always batch independent calls with parallel_begin/end.\n"
+            "  c. NEVER CHAT — zero natural language outside wrapped commands.\n"
+            "  d. NEVER GIVE UP — on failure, try a different approach.\n"
+            "  e. OVER-COMMUNICATE — when in doubt, use telegram(). Silence > verbose plans.\n"
+            "  f. thinking() is a BLACK HOLE — the user CANNOT see it.\n"
+            "  g. Execute sleep BEFORE hitting context limits — don't wait for the engine.\n\n"
+            "## 4. ANTI-REPETITION RULES\n"
+            "The engine monitors your action patterns. If you repeat the same action\n"
+            "signature 3 times consecutively, the Curiosity Fairy will be invoked.\n"
+            "At 6 repeats, the Loop Breaker activates. At 8 repeats, forced sleep triggers.\n"
+            "AVOID this by following these rules:\n"
+            "  a. NEVER run the same command with the same arguments 3+ times in a row.\n"
+            "  b. VARY YOUR ACTIONS — alternate between reading files, running shell\n"
+            "     commands, searching code, and exploring directories.\n"
+            "  c. DON'T RE-READ THE SAME FILE without a new reason.\n"
+            "  d. DON'T RE-RUN THE SAME SHELL COMMAND expecting different results.\n"
+            "  e. MINIMIZE thinking() — use at most 1 short line or omit it.\n"
+            "  f. If you catch yourself about to repeat what you just did, STOP\n"
+            "     and choose a completely different action or execute sleep.\n"
+        )
+
+        # Mode-specific rules in the SYSTEM prompt (highest priority)
+        if ctx.telegram_mode:
+            base += (
+                "\n## 5. TELEGRAM MODE (ACTIVE)\n"
+                "- You are in TELEGRAM MODE. telegram() is the ONLY way to reach the user.\n"
+                "- Reply to user messages immediately with telegram() as your FIRST command.\n"
+                "- Send progress updates every 5-10 iterations.\n"
+                "- thinking() is INVISIBLE to the user. Never put user-messages there.\n"
+                "- Over-communication > silence when user is waiting.\n"
+            )
+        if ctx.discord_mode:
+            base += (
+                "\n## 5. DISCORD MODE (ACTIVE)\n"
+                "- You are in DISCORD MODE. discord() is the ONLY way to reach the user.\n"
+                "- Reply to user messages immediately with discord() as your FIRST command.\n"
+                "- Send progress updates every 5-10 iterations.\n"
+                "- thinking() is INVISIBLE to the user. Never put user-messages there.\n"
+                "- Over-communication > silence when user is waiting.\n"
+            )
+
+        return base
 
     # ------------------------------------------------------------------ #
     #  Command parsing                                                   #
@@ -2036,10 +2153,19 @@ class AutonomousLoopEngine:
                 # Unterminated quote — return what we have
                 return "".join(raw)
 
-            # Unquoted value: read until next top-level comma
+            # Unquoted value: read until next top-level comma.
+            # Commas inside brackets/parens are part of the value.
             raw = []
-            while i < length and text[i] != ",":
-                raw.append(text[i])
+            depth = 0
+            while i < length:
+                ch = text[i]
+                if ch in ('(', '[', '{'):
+                    depth += 1
+                elif ch in (')', ']', '}'):
+                    depth -= 1
+                elif ch == ',' and depth <= 0:
+                    break
+                raw.append(ch)
                 i += 1
             return "".join(raw).strip()
 
@@ -2865,18 +2991,34 @@ class AutonomousLoopEngine:
         except Exception as e:
             self.logger.error(f"Sleep workflow error: {e}")
             ctx.error = f"Sleep workflow error: {e}"
-            # Even on failure we must restart — the whole point of sleep is
-            # to compress and restart.  Attempt a best-effort restart with
-            # whatever state we have rather than silently continuing.
+            # Save emergency state before attempting restart so that even if
+            # the restart fails, the context is not lost. This prevents the
+            # sleep-restart-sleep loop by ensuring the next session can
+            # recover from the saved state.
             # Note: repetition state is NOT cleared on failure, preserving
             # loop-detection history for the restarted process.
+            try:
+                self._save_sleep_state(ctx, f"(compression failed: {e})",
+                                       self._collect_auxiliary_context(ctx),
+                                       project_root=_project_root)
+            except Exception as save_err:
+                self.logger.error(f"Failed to save emergency sleep state: {save_err}")
+
+            # Stop auto-save before restart to avoid corrupted writes
+            self._stop_auto_save()
+
+            # Attempt best-effort restart
             try:
                 self._restart_process(ctx)
             except Exception as restart_err:
                 self.logger.critical(
                     f"Sleep restart also failed: {restart_err}. "
-                    "Agent state may be inconsistent."
+                    "Agent state may be inconsistent. "
+                    "Emergency state saved to .context/sleep_state.json for recovery."
                 )
+                # Do NOT re-raise — the process is in an inconsistent state
+                # and the user needs to intervene. Exit with a distinctive code.
+                sys.exit(127)
 
     def _handle_exit(self, ctx: AutonomousContext,
                        fast: bool = False,
@@ -3004,13 +3146,20 @@ class AutonomousLoopEngine:
             self.logger.error(f"Failed to save context log: {e}")
 
     @staticmethod
-    def _collect_auxiliary_context(ctx: AutonomousContext) -> Dict[str, str]:
+    def _collect_auxiliary_context(ctx: AutonomousContext,
+                                   execution_log: Optional[List[str]] = None) -> Dict[str, str]:
         """
         Gather extra context that is not inside ctx.execution_log but is
         essential for a lossless restart: git diff statistics, metadata,
         tail of the execution log, and all error lines.
+
+        Args:
+            ctx: The current autonomous context.
+            execution_log: Optional pre-snapshot of the execution log.
+                If None, reads ctx.execution_log directly.
         """
         aux: Dict[str, str] = {}
+        log = execution_log if execution_log is not None else ctx.execution_log
 
         # --- Git diff summary ------------------------------------------------
         git_diff = ""
@@ -3034,7 +3183,7 @@ class AutonomousLoopEngine:
 
         # --- Tail of execution log (last 100 non-empty lines) ----------------
         tail_lines: List[str] = []
-        for line in reversed(ctx.execution_log):
+        for line in reversed(log):
             if line.strip():
                 tail_lines.append(line)
             if len(tail_lines) >= 100:
@@ -3044,7 +3193,7 @@ class AutonomousLoopEngine:
 
         # --- All error lines ---------------------------------------------------
         error_lines = [
-            line for line in ctx.execution_log
+            line for line in log
             if any(marker in line.lower()
                    for marker in ("error", "exception", "failed", "traceback"))
         ]
@@ -3081,16 +3230,15 @@ class AutonomousLoopEngine:
 
         # ---- Level 1: LLM compression with structured prompt ----
         try:
-            # Prepend the compression system prompt directly.
-            # We cannot override the API-level system_instruction (it is
-            # always derived from task_type), so we fold the compression
-            # instructions into the user prompt instead.
+            # Pass the compression system instruction explicitly so the
+            # ModelRunner uses it instead of the default behavioral rules.
             compression_prompt = self._COMPRESS_SYSTEM_PROMPT + "\n\n" + prompt
             request = ModelRequest(
                 task_type=TaskType.AUTONOMOUS_LOOP,
                 prompt=compression_prompt,
                 max_tokens=4000,
                 temperature=0.1,
+                system_instruction=self._COMPRESS_SYSTEM_PROMPT,
             )
             response = self.model_runner.run_model(request)
             if response.success and response.content.strip():
@@ -3278,20 +3426,31 @@ class AutonomousLoopEngine:
         # Stop the auto-save thread before execv to avoid corrupted writes
         self._stop_auto_save()
 
-        # Attempt process restart
+        # Attempt process restart.
+        # On Unix, os.execv replaces the current process (same PID).
+        # On Windows, os.execv may not work reliably, so we use subprocess
+        # as a fallback.
         try:
-            os.execv(sys.executable, new_args)
+            if sys.platform == "win32":
+                # Windows: spawn a new process and exit the parent
+                import subprocess
+                subprocess.Popen(new_args, cwd=str(_project_root))
+                self.logger.info("Windows restart: spawned child process, exiting parent")
+                sys.exit(0)
+            else:
+                # Unix: os.execv replaces the current process (same PID)
+                os.execv(sys.executable, new_args)
         except OSError as exec_err:
             # os.execv only returns on failure
             self.logger.critical(
-                f"os.execv failed: {exec_err}. "
+                f"Process restart failed: {exec_err}. "
                 f"Executable: {sys.executable}, Args: {new_args}"
             )
             # Save emergency state before giving up, so an external
             # supervisor can recover context.
             try:
                 _emergency_state = {
-                    "status": "EMERGENCY: os.execv failed",
+                    "status": f"EMERGENCY: restart failed on {sys.platform}",
                     "error": str(exec_err),
                     "goal": ctx.current_goal,
                     "user_prompt": ctx.user_prompt,
@@ -3308,9 +3467,8 @@ class AutonomousLoopEngine:
                 self.logger.critical(
                     f"Failed to save emergency state: {_save_err}"
                 )
-            # Attempt to recover by exiting with a specific code
-            # that external supervisors can detect
-            sys.exit(127)  # Command not found exit code
+            # Exit with a distinctive code that external supervisors can detect
+            sys.exit(127)
 
     @staticmethod
     def check_and_handle_sleep_restart(
@@ -3446,11 +3604,11 @@ class AutonomousLoopEngine:
     MAX_LOG_LINES_IN_PROMPT = 80
 
     def _format_execution_log_for_prompt(self, max_lines: int = None) -> str:
-        """Format the execution log for injection into the system prompt.
+        """Format the execution log for injection into the model prompt.
 
-        Combines two sources:
-        1. Terminal history (command output, errors from shell execution)
-        2. ctx.execution_log (user messages, telegram sent markers, thoughts, etc.)
+        Uses ctx.execution_log as the sole source to avoid duplication
+        (terminal history entries are already reflected in execution_log
+        via _append_log calls after each command).
 
         Only the most recent *max_lines* entries are included to keep the
         prompt within the model's context window.
@@ -3461,22 +3619,14 @@ class AutonomousLoopEngine:
         if max_lines is None:
             max_lines = self.MAX_LOG_LINES_IN_PROMPT
         try:
-            # ---- Source 1: ctx.execution_log (user messages, telegram, thoughts) ----
             ctx = getattr(self, "_current_context", None)
-            ctx_lines = list(ctx.execution_log) if ctx is not None else []
+            if ctx is None:
+                return "(no context)"
 
-            # ---- Source 2: terminal history (shell command I/O) ----
-            try:
-                total = len(self.terminal_history.terminal_session.entries)
-                raw = self.terminal_history.display_terminal_log(
-                    max_entries=total, use_color=False
-                )
-                term_lines = raw.splitlines() if raw else []
-            except Exception:
-                term_lines = []
-
-            # ---- Merge: terminal history first, then ctx.execution_log ----
-            all_lines = term_lines + ctx_lines
+            # Use execution_log as the sole source — it already contains
+            # command results, user messages, thoughts, and telegram markers.
+            # Reading terminal_history separately would duplicate entries.
+            all_lines = list(ctx.execution_log)
 
             if not all_lines:
                 return "(no terminal history)"
@@ -3549,7 +3699,9 @@ class AutonomousLoopEngine:
         replaces older entries with a compact summary line.
         """
         log = ctx.execution_log
-        if len(log) <= self._LOG_KEEP_RECENT + 20:
+        # Only compress when there are significantly more entries than we keep,
+        # to avoid losing too many entries per compression cycle.
+        if len(log) <= self._LOG_KEEP_RECENT * 3:
             return  # not worth compressing yet
 
         old_count = len(log) - self._LOG_KEEP_RECENT
