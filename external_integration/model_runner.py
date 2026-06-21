@@ -242,7 +242,8 @@ class ModelRunner:
                     temperature=request.temperature,
                     model=model_name,
                     provider=provider_name,
-                    system_instruction=system_instructions
+                    system_instruction=system_instructions,
+                    response_format=request.response_format,
                 )
 
                 # Make API call
@@ -381,7 +382,7 @@ class ModelRunner:
     def _handle_auth_error(self, provider_name: str, model_name: str, error_text: str) -> None:
         """
         Handle authentication errors with user-friendly guidance.
-        In Telegram mode, log only (don't block).
+        In Telegram mode or non-interactive mode, log only (never block).
         """
         try:
             is_telegram_mode = os.getenv("CLIO_TELEGRAM_MODE", "").lower() in ("true", "1", "yes")
@@ -391,26 +392,14 @@ class ModelRunner:
                 context = {"model_name": model_name, "operation": "model_execution"}
                 handle_ollama_error(error_text, context, display_to_user=not is_telegram_mode)
 
-                if not is_telegram_mode and sys.stdin.isatty():
-                    try:
-                        choice = input("\nWould you like to sign in to Ollama now? (y/n): ").lower().strip()
-                        if choice in ("y", "yes"):
-                            print("\n🔐 Opening Ollama sign-in...")
-                            try:
-                                result = subprocess.run(["ollama", "signin"], capture_output=False, text=True)
-                                if result.returncode == 0:
-                                    print("✓ Sign-in initiated. Please complete it in your browser.")
-                                else:
-                                    print("✗ Failed to initiate sign-in.")
-                            except FileNotFoundError:
-                                print("✗ Ollama command not found.")
-                    except (KeyboardInterrupt, EOFError):
-                        print("\nOperation cancelled.")
+                # Never block on input() — daemon/CI environments have no interactive terminal.
+                # Sign-in must be done manually by the user.
             else:
                 # Generic auth error for other providers
-                if not is_telegram_mode:
-                    print(f"\n🔑 Authentication error with {provider_name}: {error_text}")
-                    print(f"Please check your API key for {provider_name}.")
+                self.logger.warning(
+                    f"Authentication error with {provider_name}: {error_text}. "
+                    f"Check your API key configuration."
+                )
         except ImportError:
             pass
         except Exception as e:
@@ -563,8 +552,9 @@ class ModelRunner:
             "## 4. ANTI-REPETITION RULES — Avoid triggering the Curiosity Fairy\n"
             "The engine monitors your action patterns. If you repeat the same action\n"
             "signature 3 times consecutively, the Curiosity Fairy will be invoked\n"
-            "to suggest a new direction. If you reach 6 repeats, a forced sleep\n"
-            "triggers. AVOID this by following these rules:\n"
+            "to suggest a new direction. At 6 repeats, the Loop Breaker activates\n"
+            "(hard enforcement). At 8 repeats across wake-ups, forced sleep triggers.\n"
+            "AVOID this by following these rules:\n"
             "  a. NEVER run the same command with the same arguments 3+ times in a row.\n"
             "     If a command fails twice, TRY A DIFFERENT APPROACH — don't retry\n"
             "     the same thing a third time.\n"

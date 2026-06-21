@@ -13,6 +13,7 @@ This module knows NOTHING about thinking or loop control. It only executes.
 import json
 import time
 import subprocess
+import concurrent.futures
 from typing import List, Optional, Tuple
 from pathlib import Path
 
@@ -65,12 +66,12 @@ class Executor:
                 continue
             if action.type == ActionType.TELEGRAM:
                 msg = action.args.get("message", "")
-                self._send_telegram(msg, telegram_mode)
+                self._send_telegram(msg, telegram_mode, telegram_user_id)
                 self._log(execution_log, f"[telegram sent] {msg[:100]}")
                 continue
             if action.type == ActionType.DISCORD:
                 msg = action.args.get("message", "")
-                self._send_discord(msg, discord_mode)
+                self._send_discord(msg, discord_mode, telegram_user_id)
                 self._log(execution_log, f"[discord sent] {msg[:100]}")
                 continue
             if action.type == ActionType.PARALLEL:
@@ -110,15 +111,33 @@ class Executor:
             self.logger.error(f"Action execution error: {e}")
 
     def _execute_parallel(self, actions_data: list, execution_log: List[str]):
-        """Execute a list of actions sequentially (parallel is handled by the tool registry)."""
+        """Execute a list of actions in parallel using a thread pool."""
         self._log(execution_log, f"[parallel batch] {len(actions_data)} actions")
+
+        parsed_actions = []
         for action_data in actions_data:
             if isinstance(action_data, dict):
-                action = AgentAction(
+                parsed_actions.append(AgentAction(
                     type=action_data.get("type", "command"),
-                    args=action_data.get("args", {})
-                )
-                self._execute_single(action, execution_log)
+                    args=action_data.get("args", {}),
+                ))
+
+        if not parsed_actions:
+            return
+
+        def _run_action(action):
+            self._execute_single(action, execution_log)
+
+        # Use ThreadPoolExecutor for parallel I/O-bound tool execution
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=min(len(parsed_actions), 8),
+        ) as executor:
+            futures = [executor.submit(_run_action, a) for a in parsed_actions]
+            for future in concurrent.futures.as_completed(futures):
+                try:
+                    future.result()
+                except Exception as e:
+                    self._log(execution_log, f"  PARALLEL ERROR: {e}")
 
     def _build_tool_input(self, tool_name: str, args: dict):
         """Convert action args to the appropriate ToolInput."""
@@ -169,17 +188,35 @@ class Executor:
             )
         return None
 
-    def _send_telegram(self, message: str, telegram_mode: bool):
+    def _send_telegram(self, message: str, telegram_mode: bool, telegram_user_id: Optional[int] = None):
+        """Send a message via Telegram.
+        
+        Args:
+            message: The message to send
+            telegram_mode: Whether Telegram mode is enabled
+            telegram_user_id: Optional user ID for targeted messages
+        """
         if telegram_mode and self.telegram_bot:
             try:
-                self.telegram_bot.send_message(message)
+                # queue_message accepts user_id and resolves to channel internally
+                user_id = telegram_user_id if telegram_user_id else 0
+                self.telegram_bot.queue_message(user_id, message)
             except Exception as e:
                 self.logger.error(f"Telegram send failed: {e}")
 
-    def _send_discord(self, message: str, discord_mode: bool):
+    def _send_discord(self, message: str, discord_mode: bool, telegram_user_id: Optional[int] = None):
+        """Send a message via Discord.
+        
+        Args:
+            message: The message to send
+            discord_mode: Whether Discord mode is enabled
+            telegram_user_id: User ID for targeted messages (used as user_id for Discord routing)
+        """
         if discord_mode and self.discord_bot:
             try:
-                self.discord_bot.send_message(message)
+                # queue_message accepts user_id and resolves to channel internally
+                user_id = telegram_user_id if telegram_user_id else 0
+                self.discord_bot.queue_message(user_id, message)
             except Exception as e:
                 self.logger.error(f"Discord send failed: {e}")
 

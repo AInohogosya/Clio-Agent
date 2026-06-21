@@ -26,7 +26,6 @@ import atexit
 import json
 import logging
 import os
-import platform
 import random
 import shutil
 import signal
@@ -39,6 +38,11 @@ from dataclasses import dataclass, field
 from enum import Enum, auto
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
+
+from .platform_compat import (
+    is_process_alive, kill_process, spawn_detached, is_windows,
+    is_macos, is_linux, is_unix, get_platform,
+)
 
 logger = logging.getLogger("eternal_supervisor")
 
@@ -239,19 +243,35 @@ class EternalSupervisor:
 
     def shutdown(self) -> None:
         """Gracefully shutdown the supervisor and agent."""
-        logger.info("Initiating graceful shutdown...")
-        self.state = SupervisorState.STOPPING
-        self._running = False
-        self._shutdown_event.set()
+        try:
+            logger.info("Initiating graceful shutdown...")
+            self.state = SupervisorState.STOPPING
+            self._running = False
+            self._shutdown_event.set()
 
-        # Stop agent process
-        self._stop_agent()
+            # Stop agent process
+            self._stop_agent()
 
-        # Save final state
-        self._save_state()
+            # Join daemon threads cleanly
+            for thread_attr in ("_watchdog_thread", "_heartbeat_thread", "_health_thread"):
+                t = getattr(self, thread_attr, None)
+                if t is not None:
+                    try:
+                        t.join(timeout=5)
+                    except Exception:
+                        pass
 
-        self.state = SupervisorState.STOPPED
-        logger.info("Shutdown complete")
+            # Save final state
+            self._save_state()
+
+            self.state = SupervisorState.STOPPED
+            logger.info("Shutdown complete")
+        except Exception as e:
+            # Ensure we always log shutdown completion
+            try:
+                logger.info(f"Shutdown complete (with errors: {e})")
+            except Exception:
+                pass
 
     def emergency_restart(self, reason: str = "emergency") -> None:
         """Emergency restart of the agent process."""
@@ -283,15 +303,17 @@ class EternalSupervisor:
             env["CLIO_SUPERVISOR_PID"] = str(os.getpid())
 
             try:
-                self._agent_process = subprocess.Popen(
+                pid = spawn_detached(
                     cmd,
                     cwd=str(self._project_root),
                     env=env,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    start_new_session=True,
                 )
-                self._agent_pid = self._agent_process.pid
+                if pid is None:
+                    raise RuntimeError("spawn_detached returned None")
+                self._agent_pid = pid
+                # We don't have a Popen object when using spawn_detached,
+                # so we track the PID directly.
+                self._agent_process = None
 
                 logger.info(f"Agent started - PID: {self._agent_pid}")
                 self.health.last_restart_time = time.time()
@@ -305,18 +327,12 @@ class EternalSupervisor:
     def _stop_agent(self) -> None:
         """Stop the agent process gracefully."""
         with self._lock:
-            if self._agent_process is None:
+            pid = self._agent_pid
+            if pid is None:
                 return
 
             try:
-                # Try graceful termination first
-                self._agent_process.terminate()
-                try:
-                    self._agent_process.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    logger.warning("Agent didn't stop gracefully - force killing")
-                    self._agent_process.kill()
-                    self._agent_process.wait(timeout=5)
+                kill_process(pid, graceful_timeout=10.0)
             except Exception as e:
                 logger.warning(f"Error stopping agent: {e}")
             finally:
@@ -376,9 +392,10 @@ class EternalSupervisor:
 
     def _is_agent_alive(self) -> bool:
         """Check if the agent process is still running."""
-        if self._agent_process is None:
+        pid = self._agent_pid
+        if pid is None:
             return False
-        return self._agent_process.poll() is None
+        return is_process_alive(pid)
 
     def _is_agent_hanging(self) -> bool:
         """Check if the agent process is hanging (no heartbeat)."""
@@ -480,7 +497,7 @@ class EternalSupervisor:
                 "timestamp": time.time(),
                 "uptime": time.time() - self.health.uptime_start,
                 "total_restarts": self.health.total_restarts,
-                "platform": platform.system(),
+                "platform": get_platform().value,
             }
 
             tmp = hb_file.with_suffix(".tmp")
@@ -675,9 +692,10 @@ class EternalSupervisor:
         return delay
 
     def _count_recent_restarts(self, window_seconds: float = 3600) -> int:
-        """Count restarts within the given time window."""
-        cutoff = time.time() - window_seconds
-        return sum(1 for r in self._restart_history if r.timestamp > cutoff)
+        """Count restarts within the given time window (thread-safe)."""
+        with self._lock:
+            cutoff = time.time() - window_seconds
+            return sum(1 for r in self._restart_history if r.timestamp > cutoff)
 
     def _increment_restart_counter(self) -> None:
         """Increment the restart counter."""

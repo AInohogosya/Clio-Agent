@@ -19,11 +19,23 @@ import signal
 import subprocess
 
 # Fix encoding issues on macOS / environments with surrogateescape
-if sys.stdout.encoding and sys.stdout.encoding.lower().startswith("utf") and sys.stdout.errors == "surrogateescape":
-    sys.stdout.reconfigure(errors="surrogatepass")
-if sys.stderr.encoding and sys.stderr.encoding.lower().startswith("utf") and sys.stderr.errors == "surrogateescape":
-    sys.stderr.reconfigure(errors="surrogatepass")
+try:
+    if (sys.stdout.encoding
+            and sys.stdout.encoding.lower().startswith("utf")
+            and sys.stdout.errors == "surrogateescape"):
+        sys.stdout.reconfigure(errors="surrogatepass")
+except (ValueError, AttributeError, OSError):
+    pass
+try:
+    if (sys.stderr.encoding
+            and sys.stderr.encoding.lower().startswith("utf")
+            and sys.stderr.errors == "surrogateescape"):
+        sys.stderr.reconfigure(errors="surrogatepass")
+except (ValueError, AttributeError, OSError):
+    pass
+
 # Windows consoles may use cp1252 or cp65001; force UTF-8 where possible
+# Use the compat module for platform detection (avoids import cycle).
 if sys.platform == "win32":
     os.environ["PYTHONIOENCODING"] = "utf-8"
     try:
@@ -32,12 +44,17 @@ if sys.platform == "win32":
     except Exception:
         pass
 os.environ.setdefault("PYTHONIOENCODING", "utf-8")
-import platform
+
 import shutil
 import json as _json_mod
 import time
 from pathlib import Path
 from typing import Optional
+
+# Import platform compat (safe after sys.path is set up below)
+def _is_windows() -> bool:
+    """Check if running on Windows (early import, before compat module)."""
+    return sys.platform == "win32"
 
 # Ensure src directory is in sys.path so ai_agent can be imported
 _project_root_for_path = Path(__file__).parent.resolve()
@@ -82,7 +99,8 @@ if _ext_target.is_dir():
 def _is_in_venv():
     """Detect whether we are running inside a virtual environment.
 
-    Covers standardvenv, venv, virtualenv, and conda environments.
+    Covers standardvenv, venv, virtualenv, conda, pipenv, poetry,
+    and pyenv-virtualenv environments.
     """
     # Standard venv / virtualenv detection
     if hasattr(sys, 'real_prefix'):
@@ -95,6 +113,15 @@ def _is_in_venv():
     # Conda environment detection
     if os.getenv('CONDA_PREFIX') is not None:
         return True
+    # pipenv environment detection
+    if os.getenv('PIPENV_ACTIVE') is not None:
+        return True
+    # poetry environment detection
+    if os.getenv('POETRY_ACTIVE') is not None:
+        return True
+    # pyenv-virtualenv detection
+    if os.getenv('PYENV_VIRTUAL_ENV') is not None:
+        return True
     return False
 
 
@@ -103,7 +130,7 @@ def _get_venv_python():
     venv_path = project_root / "venv"
     if not venv_path.exists():
         return None
-    if platform.system() == "Windows":
+    if _is_windows():
         python_exe = venv_path / "Scripts" / "python.exe"
         if not python_exe.exists():
             python_exe = venv_path / "Scripts" / "pythonw.exe"
@@ -167,28 +194,58 @@ MIN_PYTHON = (3, 8)
 def _version_tuple(value):
     """Parse a dotted version string into a comparable tuple of ints.
 
-    Non-numeric suffixes (e.g. '1.2.3rc1', '2.0.0.post1') are ignored so the
-    comparison stays robust across the many packaging conventions in the wild.
+    Non-numeric suffixes (e.g. '1.2.3rc1', '2.0.0.post1') are handled so that
+    pre-release and dev versions are considered LESS than the release version.
+    This ensures '1.0.0rc1' < '1.0.0' and '1.0.0.dev0' < '1.0.0'.
 
-    Also strips local version identifiers (e.g. '1.0.0+git.abc123') and
-    dev markers (e.g. '1.0.0.dev0') so these don't break parsing.
+    Also strips local version identifiers (e.g. '1.0.0+git.abc123').
     """
-    # Strip local version identifier (PEP 440): everything after '+'
-    raw = str(value).split("+")[0]
-    # Strip dev markers, pre/post release suffixes for comparison
-    raw = raw.split("-")[0]
+    import re
+    raw = str(value).split("+")[0]  # Strip local version identifier (PEP 440)
+    # Detect pre-release/dev markers: rc, beta, alpha, dev, post, a, b
+    # PEP 440 ordering: dev < alpha < beta < rc < (final) < post
+    # Rank: higher = more mature (post > final > rc > beta > alpha > dev)
+    _PRERELEASE_RANK = {"dev": 0, "a": 1, "alpha": 1, "b": 2, "beta": 2,
+                        "rc": 3, "c": 3, "post": 5, "r": 5, "rev": 5}
+    _FINAL_RANK = 4  # final release sits between rc and post
+    _rank = None  # None means "no pre-release marker found yet"
+
+    # Extract the numeric parts and detect pre-release suffix
     parts = []
     for chunk in raw.split("."):
-        num = ""
-        for ch in chunk:
+        num_str = ""
+        suffix_start = len(chunk)
+        for i, ch in enumerate(chunk):
             if ch.isdigit():
-                num += ch
+                num_str += ch
             else:
+                suffix_start = i
                 break
-        if num == "":
+        if num_str == "":
+            # Handle chunks that are entirely a pre-release marker
+            # e.g., "1.0.0.dev0" splits into ["1","0","0","dev0"]
+            _chk = chunk.lower().strip().lstrip("-_")
+            if _chk:
+                for _mark, _r in _PRERELEASE_RANK.items():
+                    if _chk.startswith(_mark):
+                        _rank = _r
+                        break
             break
-        parts.append(int(num))
-    return tuple(parts) if parts else (0,)
+        parts.append(int(num_str))
+        # Check if the remainder of this chunk is a pre-release marker
+        remainder = chunk[suffix_start:].lower().strip()
+        if remainder:
+            remainder = remainder.lstrip("-_")
+            for _mark, _r in _PRERELEASE_RANK.items():
+                if remainder.startswith(_mark):
+                    _rank = _r
+                    break
+            break  # Stop at first non-numeric chunk
+
+    if not parts:
+        return (0,)
+    # Use _FINAL_RANK (4) if no pre-release marker was found
+    return tuple(parts) + (_rank if _rank is not None else _FINAL_RANK,)
 
 
 def _inspect_venv_deps(venv_python):
@@ -198,11 +255,10 @@ def _inspect_venv_deps(venv_python):
       ok       -> True when every core dependency is present and new enough.
       missing  -> list of pip package names that are not importable at all.
       outdated -> list of pip package names installed below the minimum version.
-
-    The probe runs *inside* the target interpreter so it reflects exactly what
-    the agent will see at runtime, regardless of host OS or Python build.
     """
     spec_json = _json_mod.dumps(CORE_DEPENDENCIES)
+    # Subprocess script with pre-release handling, increased timeout,
+    # robust JSON parsing, and graceful error reporting.
     check_script = (
         "import importlib.util, json, sys\n"
         "try:\n"
@@ -211,19 +267,26 @@ def _inspect_venv_deps(venv_python):
         "    _v = None\n"
         "    class PackageNotFoundError(Exception):\n"
         "        pass\n"
+        "_PRERELEASE_ORDER = {'dev': 0, 'a': 1, 'alpha': 1, 'b': 2, 'beta': 2,\n"
+        "                     'rc': 3, 'c': 3, 'post': 5, 'r': 5, 'rev': 5}\n"
         "def _vt(s):\n"
         "    raw = str(s).split('+')[0]\n"
-        "    raw = raw.split('-')[0]\n"
-        "    out=[]\n"
-        "    for c in raw.split('.'):\n"
-        "        n=''\n"
-        "        for ch in c:\n"
-            "            if ch.isdigit(): n+=ch\n"
-            "            else: break\n"
-        "        if n=='': break\n"
-        "        out.append(int(n))\n"
-        "    return tuple(out) if out else (0,)\n"
-
+        "    _pr = 4\n"
+        "    parts = []\n"
+        "    for chunk in raw.split('.'):\n"
+        "        ns = ''\n"
+        "        ss = len(chunk)\n"
+        "        for i, ch in enumerate(chunk):\n"
+        "            if ch.isdigit(): ns += ch\n"
+        "            else: ss = i; break\n"
+        "        if not ns: break\n"
+        "        parts.append(int(ns))\n"
+        "        rem = chunk[ss:].lower().strip().lstrip('-_')\n"
+        "        if rem:\n"
+        "            for m, r in _PRERELEASE_ORDER.items():\n"
+        "                if rem.startswith(m): _pr = min(_pr, r); break\n"
+        "            break\n"
+        "    return tuple(parts) + (_pr,) if parts else (0, 4)\n"
         f"spec = json.loads('''{spec_json}''')\n"
         "missing=[]; outdated=[]\n"
         "for mod,(pkg,minv) in spec.items():\n"
@@ -241,17 +304,30 @@ def _inspect_venv_deps(venv_python):
     )
     try:
         r = subprocess.run([venv_python, "-c", check_script],
-                           capture_output=True, text=True, timeout=30)
+                           capture_output=True, text=True, timeout=120)
         if r.returncode != 0:
-            return False, list({p for p, _ in CORE_DEPENDENCIES.values()}), []
-        data = _json_mod.loads(r.stdout.strip().splitlines()[-1])
+            _err_msg = (r.stderr or r.stdout or "unknown error").strip()[:300]
+            print(f"  [dep-check] WARNING: venv dep probe exited {r.returncode}: {_err_msg}")
+            return False, [], []
+        _json_line = None
+        for _line in reversed(r.stdout.strip().splitlines()):
+            _line_s = _line.strip()
+            if _line_s.startswith("{") and _line_s.endswith("}"):
+                _json_line = _line_s
+                break
+        if _json_line is None:
+            print(f"  [dep-check] WARNING: No JSON output from dep probe")
+            return False, [], []
+        data = _json_mod.loads(_json_line)
         missing = data.get("missing", [])
         outdated = data.get("outdated", [])
         return (not missing and not outdated), missing, outdated
-    except Exception:
-        return False, list({p for p, _ in CORE_DEPENDENCIES.values()}), []
-
-
+    except subprocess.TimeoutExpired:
+        print(f"  [dep-check] WARNING: venv dep probe timed out after 120s")
+        return False, [], []
+    except Exception as _e:
+        print(f"  [dep-check] WARNING: venv dep probe failed: {_e}")
+        return False, [], []
 def _check_venv_deps(venv_python):
     """Return True if all core dependencies are present and new enough."""
     ok, _missing, _outdated = _inspect_venv_deps(venv_python)
@@ -308,7 +384,7 @@ def _resolve_venv_python():
     from pathlib import Path as _P
     project_root = Path(__file__).parent.resolve()
     venv_path = project_root / "venv"
-    if platform.system() == "Windows":
+    if _is_windows():
         candidates = [venv_path / "Scripts" / "python.exe", venv_path / "Scripts" / "pythonw.exe"]
     else:
         candidates = [venv_path / "bin" / "python", venv_path / "bin" / "python3"]
@@ -441,16 +517,28 @@ def _repair_venv_deps(venv_python, project_root):
     ok, missing, outdated = _inspect_venv_deps(venv_python)
     if ok:
         return True
+    # BUG FIX #20: Track individual install failures
+    _install_failures = []
     for pkg in missing:
         minv = _min_version_for(pkg)
         spec = f"{pkg}>={minv}" if minv else pkg
         print(f"Installing missing package: {spec}")
-        _pip_install(venv_python, [spec], timeout=300)
+        _ok, _err = _pip_install(venv_python, [spec], timeout=300)
+        if not _ok:
+            _install_failures.append((pkg, _err))
+            print(f"  WARNING: Failed to install {pkg}: {_err[:200]}")
     for pkg in outdated:
         minv = _min_version_for(pkg)
         spec = f"{pkg}>={minv}" if minv else pkg
         print(f"Upgrading outdated package: {spec}")
-        _pip_install(venv_python, ["--upgrade", spec], timeout=300)
+        _ok, _err = _pip_install(venv_python, ["--upgrade", spec], timeout=300)
+        if not _ok:
+            _install_failures.append((pkg, _err))
+            print(f"  WARNING: Failed to upgrade {pkg}: {_err[:200]}")
+    if _install_failures:
+        print(f"\n  WARNING: {len(_install_failures)} package(s) could not be installed:")
+        for _pkg, _err in _install_failures:
+            print(f"    - {_pkg}: {_err[:100]}")
 
     return _check_venv_deps(venv_python)
 
@@ -477,10 +565,14 @@ def _sudo_works_noninteractive():
 
 def _run_fix_command(cmd, timeout=120):
     """Run a fix command and return True if it succeeded."""
+    import shlex
     try:
+        # BUG FIX #24: Always use shell=False with properly split args
+        if isinstance(cmd, str):
+            cmd = shlex.split(cmd)
         result = subprocess.run(
             cmd, capture_output=True, text=True, timeout=timeout,
-            shell=isinstance(cmd, str),
+            shell=False,
         )
         if result.returncode == 0:
             return True
@@ -502,7 +594,6 @@ def _auto_fix_venv_failure(err=""):
     Returns True if a fix was applied, False otherwise.
     Uses sudo -n (non-interactive) to avoid hanging on password prompts.
     """
-    system = platform.system()
     py_ver = f"{sys.version_info.major}.{sys.version_info.minor}"
     fixed = False
     can_sudo = _sudo_works_noninteractive()
@@ -513,16 +604,20 @@ def _auto_fix_venv_failure(err=""):
         print("  (sudo requires password — will skip system package manager fixes)")
     print()
 
-    if system == "Darwin":
+    if sys.platform == "darwin":
         # Fix 1: xcode-select --install
         print("[auto-fix] Checking Xcode Command Line Tools ...")
         try:
             r = subprocess.run(["xcode-select", "-p"], capture_output=True, text=True, timeout=10)
             if r.returncode != 0:
                 print("[auto-fix] Xcode CLI tools not found. Installing (GUI dialog may appear)...")
-                if _run_fix_command("xcode-select --install", timeout=300):
+                # BUG FIX #23: xcode-select --install is blocking; use Popen
+                try:
+                    subprocess.Popen(["xcode-select", "--install"])
                     fixed = True
-                    print("[auto-fix] Xcode CLI tools installation triggered.")
+                    print("[auto-fix] Xcode CLI tools installation triggered (background).")
+                except Exception as _xcode_err:
+                    print(f"[auto-fix] Could not trigger Xcode CLI install: {_xcode_err}")
             else:
                 print("[auto-fix] Xcode CLI tools already installed.")
         except Exception:
@@ -544,7 +639,7 @@ def _auto_fix_venv_failure(err=""):
                 fixed = True
                 print("[auto-fix] virtualenv installed at user level.")
 
-    elif system == "Linux":
+    elif sys.platform.startswith("linux"):
         has_apt = shutil.which("apt") or shutil.which("apt-get")
         has_dnf = shutil.which("dnf")
         has_yum = shutil.which("yum")
@@ -593,7 +688,7 @@ def _auto_fix_venv_failure(err=""):
                 fixed = True
                 print("[auto-fix] virtualenv installed at user level.")
 
-    elif system == "Windows":
+    elif _is_windows():
         print("[auto-fix] On Windows, re-run the Python installer and ensure 'venv' is checked.")
 
     if fixed:
@@ -660,46 +755,48 @@ def _bootstrap_pip_via_getpip(venv_python, venv_path):
     """Bootstrap pip using get-pip.py as a last resort."""
     import urllib.request
     print("    Trying get-pip.py ...")
+    getpip_path = str(venv_path / "get-pip.py")
     try:
-        getpip_path = str(venv_path / "get-pip.py")
-        urllib.request.urlretrieve("https://bootstrap.pypa.io/get-pip.py", getpip_path)
-        r = subprocess.run(
-            [venv_python, getpip_path, "--no-warn-script-location"],
-            capture_output=True, text=True, timeout=120,
-        )
+        try:
+            urllib.request.urlretrieve("https://bootstrap.pypa.io/get-pip.py", getpip_path)
+            r = subprocess.run(
+                [venv_python, getpip_path, "--no-warn-script-location"],
+                capture_output=True, text=True, timeout=120,
+            )
+            if r.returncode == 0:
+                print("    pip bootstrapped via get-pip.py.")
+                return True, ""
+            else:
+                err = (r.stderr or r.stdout or "").strip()
+                print(f"    get-pip.py failed: {err[:200]}")
+                return False, err
+        except Exception as e:
+            print(f"    get-pip.py error: {e}")
+            return False, str(e)
+    finally:
+        # BUG FIX #29: Always clean up get-pip.py
         try:
             os.remove(getpip_path)
         except Exception:
             pass
-        if r.returncode == 0:
-            print("    pip bootstrapped via get-pip.py.")
-            return True, ""
-        else:
-            err = (r.stderr or r.stdout or "").strip()
-            print(f"    get-pip.py failed: {err[:200]}")
-            return False, err
-    except Exception as e:
-        print(f"    get-pip.py error: {e}")
-        return False, str(e)
 
 
 def _diagnose_venv_failure(err=""):
     """Print platform-specific diagnostic hints when venv creation fails."""
-    system = platform.system()
     py_ver = f"{sys.version_info.major}.{sys.version_info.minor}"
     print()
     print("Diagnostic hints for venv creation failure:")
-    if system == "Darwin":
+    if sys.platform == "darwin":
         print("  macOS detected. Common fixes:")
         print("    1. Install Xcode CLI tools:  xcode-select --install")
         print(f"    2. If using Homebrew Python:  brew install python@{py_ver}")
         print("    3. If using pyenv:  pyenv install <ver> && pyenv local <ver>")
         print("    4. Try:  python3 -m pip install virtualenv && python3 -m virtualenv venv")
-    elif system == "Linux":
+    elif sys.platform.startswith("linux"):
         print("  Linux detected. Common fixes:")
         print(f"    1. sudo apt install python{py_ver}-venv")
         print(f"    2. sudo dnf install python{py_ver}-venv")
-    elif system == "Windows":
+    elif _is_windows():
         print("  Windows detected. Common fixes:")
         print("    1. Re-run the Python installer, ensure 'venv' is checked")
         print("    2. Use:  py -m venv venv")
@@ -720,12 +817,26 @@ def _try_create_venv(venv_path, python_exe):
             return True, ""
         err = (result.stderr or result.stdout or "").strip()
         print(f"    Failed: {err[:200]}")
+        # BUG FIX #19: Clean up partial venv on failure
+        if venv_path.exists():
+            try:
+                shutil.rmtree(venv_path)
+                print(f"    Cleaned up partial venv")
+            except Exception:
+                pass
         return False, err
     except FileNotFoundError:
         print(f"    Not found: {python_exe}")
         return False, "not found"
     except Exception as e:
         print(f"    Error: {e}")
+        # BUG FIX #19: Clean up partial venv on failure
+        if venv_path.exists():
+            try:
+                shutil.rmtree(venv_path)
+                print(f"    Cleaned up partial venv")
+            except Exception:
+                pass
         return False, str(e)
 
 
@@ -762,9 +873,14 @@ def _collect_python_candidates():
 
     # Dynamically discover Homebrew Python versions
     import glob as _glob
+    import re as _re
+    def _python_version_key(p):
+        """BUG FIX #3: Sort by version number, not lexicographically."""
+        m = _re.search(r'python3\.(\d+)', p)
+        return int(m.group(1)) if m else 0
     for hb_base in ("/opt/homebrew/bin", "/usr/local/bin"):
         for pattern in (f"{hb_base}/python3.*",):
-            for path in sorted(_glob.glob(pattern), reverse=True):
+            for path in sorted(_glob.glob(pattern), key=_python_version_key, reverse=True):
                 if os.path.isfile(path) and not os.path.islink(path):
                     if path not in candidates:
                         candidates.append(path)
@@ -811,11 +927,13 @@ def _create_venv_and_install():
     project_root = Path(__file__).parent.resolve()
     venv_path = project_root / "venv"
 
+    # BUG FIX #18: Always remove existing venv before creating a new one
     if venv_path.exists():
-        # FIX #7: Don't delete the venv without checking if it's actually broken.
-        # A transient issue (e.g. permission glitch) shouldn't nuke hours of installs.
-        # Only remove if this function was explicitly called for recreation.
-        pass  # Let the caller decide whether to remove; don't unconditionally delete
+        print(f"  Removing existing venv ...")
+        try:
+            shutil.rmtree(venv_path)
+        except Exception as _rm_err:
+            print(f"  WARNING: Could not fully remove venv: {_rm_err}")
 
     # Phase 1: Try multiple Python executables
     print(f"Creating virtual environment at {venv_path} ...")
@@ -988,8 +1106,13 @@ def repair_environment():
     if platform_deps:
         for mod_name, (pkg_name, min_ver) in platform_deps.items():
             try:
-                importlib.import_module(mod_name)
-                print(f"  {pkg_name}: already installed")
+                # BUG FIX #11: Check platform deps inside the venv
+                _r = subprocess.run(
+                    [venv_python, "-c",
+                     f"try:\n    import {mod_name}\n    print('ok')\nexcept ImportError:\n    print('missing')"],
+                    capture_output=True, text=True, timeout=30)
+                if _r.stdout.strip() == "ok":
+                    print(f"  {pkg_name}: already installed")
             except ImportError:
                 print(f"  {pkg_name}: installing...")
                 success, err = _pip_install(venv_python, [f"{pkg_name}>={min_ver}"], timeout=300)
@@ -1016,6 +1139,14 @@ def repair_environment():
     
     print("\nRepair complete. You can now run: Clio-Agent")
     print()
+
+    # BUG FIX #27: Restart into the venv after repair
+    run_py = str(Path(__file__).parent.resolve() / "run.py")
+    print(f"Restarting in virtual environment ({venv_python}) ...\n")
+    try:
+        os.execv(venv_python, [venv_python, run_py] + sys.argv[1:])
+    except (OSError, Exception) as _exec_err:
+        print(f"Warning: could not restart into venv ({_exec_err}). Running directly.")
 
 
 def _auto_bootstrap_venv():
@@ -1158,37 +1289,85 @@ def _auto_configure():
             _yaml.safe_load = lambda f: {}
             _yaml.dump = lambda *a, **kw: None
         else:
-            print("Installing PyYAML for config saving (system Python, pre-venv)...")
-            import subprocess
-            subprocess.run(
-                [sys.executable, "-m", "pip", "install", "--quiet", "PyYAML"],
-                capture_output=True, text=True, timeout=120,
+            # BUG FIX #15: Don't install PyYAML to system Python - wasteful
+            # since the process restarts into venv. Use a minimal YAML parser
+            # that handles the config structure we need.
+            print("Using minimal YAML parser (PyYAML will be in venv).")
+            import types as _types
+            import re as _re
+            _yaml = _types.ModuleType('yaml')
+            def _minimal_safe_load(f):
+                """Minimal YAML loader for flat/nested dict config files."""
+                if hasattr(f, 'read'):
+                    text = f.read()
+                else:
+                    with open(f, 'r', encoding='utf-8') as fh:
+                        text = fh.read()
+                # Use a simple approach: try to parse as JSON first (valid YAML)
+                try:
+                    import json as _json
+                    return _json.loads(text)
+                except Exception:
+                    pass
+                # Fallback: parse flat key: value pairs
+                result = {}
+                for line in text.splitlines():
+                    line = line.strip()
+                    if not line or line.startswith('#'):
+                        continue
+                    m = _re.match(r'^(\w[\w.]*)\s*:\s*(.*)', line)
+                    if m:
+                        key = m.group(1)
+                        val = m.group(2).strip().strip("'\"")
+                        result[key] = val
+                return result
+            _yaml.safe_load = _minimal_safe_load
+            def _minimal_dump(data, f=None, **kw):
+                """Minimal YAML dumper for config dicts."""
+                lines = []
+                if isinstance(data, dict):
+                    for k, v in data.items():
+                        if isinstance(v, dict):
+                            lines.append(f"{k}:")
+                            for k2, v2 in v.items():
+                                lines.append(f"  {k2}: {v2}")
+                        else:
+                            lines.append(f"{k}: {v}")
+                _out = "\n".join(lines) + "\n"
+                if f:
+                    f.write(_out)
+                return _out
+            _yaml.dump = lambda data, f=None, **kw: (
+                f.write(_minimal_dump(data, **kw)) if f else _minimal_dump(data, **kw)
             )
-            try:
-                import yaml as _yaml  # noqa: F401
-            except ImportError:
-                print("ERROR: PyYAML could not be installed. Config will not be saved.")
-                import types as _types
-                _yaml = _types.ModuleType('yaml')
-                _yaml.safe_load = lambda f: {}
-                _yaml.dump = lambda *a, **kw: None
 
     # ── Load existing config ──
     config = {}
     if config_path.exists():
         try:
             with open(config_path, "r", encoding="utf-8") as _f:
-                config = _yaml.safe_load(_f) or {}
+                _raw = _yaml.safe_load(_f)
+            if _raw is not None and isinstance(_raw, dict):
+                config = _raw
         except Exception:
             config = {}
 
-    api_cfg = config.setdefault("api", {})
+    # Guard: ensure api section exists and is a dict (handles malformed config)
+    _api_raw = config.get("api")
+    if not isinstance(_api_raw, dict):
+        config["api"] = {}
+    api_cfg = config["api"]
+
     existing_provider = api_cfg.get("preferred_provider", "")
-    existing_keys = api_cfg.get("api_keys", {}) or {}
-    existing_models = api_cfg.get("models", {}) or {}
+    existing_keys = api_cfg.get("api_keys") or {}
+    if not isinstance(existing_keys, dict):
+        existing_keys = {}
+    existing_models = api_cfg.get("models") or {}
+    if not isinstance(existing_models, dict):
+        existing_models = {}
 
     # ── Check if config is already valid ──
-    if existing_provider:
+    if existing_provider and isinstance(existing_provider, str):
         _prov_key = existing_keys.get(existing_provider, "")
         _prov_model = existing_models.get(existing_provider, "")
         if _prov_model and (existing_provider == "ollama" or _prov_key):
@@ -1218,9 +1397,12 @@ def _auto_configure():
                 if _lines:
                     model = _lines[0].split()[0]
                 else:
-                    model = "llama3.2:3b"
-                provider = "ollama"
-                print(f"[auto-config] Using Ollama with model: {model}")
+                    model = ""
+                    print("[auto-config] Ollama running but no models pulled. "
+                          "Run: ollama pull llama3.2")
+                if model:
+                    provider = "ollama"
+                    print(f"[auto-config] Using Ollama with model: {model}")
         except (subprocess.TimeoutExpired, FileNotFoundError, Exception) as _e:
             print(f"[auto-config] Ollama check failed: {_e}")
 
@@ -1229,7 +1411,6 @@ def _auto_configure():
         _CLOUD_PROVIDERS = [
             ("openai",      "gpt-4o",                  "OPENAI_API_KEY",      []),
             ("anthropic",   "claude-sonnet-4-20250514","ANTHROPIC_API_KEY",   []),
-            # FIX #24: Also check GEMINI_API_KEY for Google provider
             ("google",      "gemini-2.5-flash",        "GOOGLE_API_KEY",      ["GEMINI_API_KEY"]),
             ("groq",        "llama-3.3-70b-versatile",  "GROQ_API_KEY",        []),
             ("deepseek",    "deepseek-chat",           "DEEPSEEK_API_KEY",    []),
@@ -1248,7 +1429,8 @@ def _auto_configure():
                     _key = os.getenv(_alt_ev, "").strip()
                     if _key:
                         break
-            if _key:
+            # Reject whitespace-only or empty keys (defense in depth)
+            if _key and _key.strip():
                 provider = _pk
                 model = existing_models.get(_pk, _default_model)
                 api_key = _key
@@ -1346,8 +1528,10 @@ def _quick_bootstrap_config():
             print(f"  {i:2d}. {name}")
         print()
 
-        # Select provider
-        while True:
+        # Select provider — with retry limit to prevent infinite loop on non-TTY input
+        _max_retries = 100
+        _retries = 0
+        while _retries < _max_retries:
             try:
                 choice = input(f"Select a provider (1-{len(_CLOUD_PROVIDERS)}): ").strip()
                 idx = int(choice) - 1
@@ -1355,7 +1539,11 @@ def _quick_bootstrap_config():
                     break
             except (ValueError, EOFError):
                 pass
+            _retries += 1
             print("Invalid choice, try again.")
+        else:
+            print("Too many invalid attempts. Exiting quick setup.")
+            return
 
         pk, name, default_model, env_var, key_url = _CLOUD_PROVIDERS[idx]
         provider = pk
@@ -1382,20 +1570,19 @@ def _quick_bootstrap_config():
     if config_path.exists():
         try:
             with open(config_path, "r", encoding="utf-8") as _f:
-                config = _yaml.safe_load(_f) or {}
+                _raw = _yaml.safe_load(_f)
+            if _raw is not None and isinstance(_raw, dict):
+                config = _raw
         except Exception:
             config = {}
-    if "api" not in config:
+    if not isinstance(config.get("api"), dict):
         config["api"] = {}
     config["api"]["preferred_provider"] = provider
-    if "models" not in config["api"]:
+    if not isinstance(config["api"].get("models"), dict):
         config["api"]["models"] = {}
     config["api"]["models"][provider] = model
+    # BUG FIX #16: Do NOT write API key to config.yaml in plaintext.
     if api_key and provider != "ollama":
-        if "api_keys" not in config["api"]:
-            config["api"]["api_keys"] = {}
-        config["api"]["api_keys"][provider] = api_key
-
         _env_map = {
             "google": "GOOGLE_API_KEY", "groq": "GROQ_API_KEY",
             "openai": "OPENAI_API_KEY", "anthropic": "ANTHROPIC_API_KEY",
@@ -1463,7 +1650,10 @@ if "--help" in sys.argv or "-h" in sys.argv:
 # even when the venv is broken or missing.
 if "--health-check" in sys.argv:
     sys.argv.remove("--health-check")
-    _auto_bootstrap_venv()
+    try:
+        _auto_bootstrap_venv()
+    except SystemExit:
+        pass
     _run_health_check()
     sys.exit(0)
 
@@ -2303,7 +2493,7 @@ def _reset_config_yaml():
         "security": {
             "enable_command_blocking": False, "enable_confirmation_prompts": False,
             "enable_sudo_warning": False, "enable_shell_pipe_warning": False,
-            "enable_sandbox": False,
+            "enable_sandbox": True,
         },
         "execution": {
             "safety_mode": True, "dry_run": False, "verify_commands": True,

@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Optional, Dict, Any
 from dataclasses import dataclass, asdict
 
+from ..utils.config import _resolve_config_path, _atomic_write_yaml
 from ..utils.logger import get_logger
 
 
@@ -54,9 +55,9 @@ class APISettings:
 class SettingsManager:
     """Manages application settings and API keys with config.yaml persistence"""
 
-    def __init__(self):
+    def __init__(self, config_path: Optional[Union[str, Path]] = None):
         self.logger = get_logger("settings_manager")
-        self._config_path = Path(__file__).parent.parent.parent.parent / "config.yaml"
+        self._config_path = Path(config_path) if config_path else _resolve_config_path()
         # Initialize with default settings
         self._settings = APISettings()
         # Load from config.yaml if it exists
@@ -67,89 +68,108 @@ class SettingsManager:
         try:
             if self._config_path.exists():
                 with open(self._config_path, 'r') as f:
-                    config = yaml.safe_load(f) or {}
-                api_config = config.get('api', {})
+                    config = yaml.safe_load(f)
+                # Handle empty/whitespace-only YAML files
+                if config is None:
+                    config = {}
+                if not isinstance(config, dict):
+                    self.logger.warning(
+                        f"config.yaml has unexpected type {type(config).__name__}, expected dict. Skipping."
+                    )
+                    return
+                api_config = config.get('api') or {}
+                if not isinstance(api_config, dict):
+                    self.logger.warning(
+                        f"config.yaml 'api' section has unexpected type {type(api_config).__name__}. Skipping."
+                    )
+                    api_config = {}
 
                 # Load preferred provider
-                if api_config.get('preferred_provider'):
-                    self._settings.preferred_provider = api_config['preferred_provider']
+                _pp = api_config.get('preferred_provider')
+                if _pp and isinstance(_pp, str):
+                    self._settings.preferred_provider = _pp
 
                 # Load API keys
-                api_keys = api_config.get('api_keys', {})
-                for provider, key in api_keys.items():
-                    if key:
-                        provider_key_map = {
-                            "google": "google_api_key",
-                            "groq": "groq_api_key",
-                            "openai": "openai_api_key",
-                            "anthropic": "anthropic_api_key",
-                            "xai": "xai_api_key",
-                            "meta": "meta_api_key",
-                            "mistral": "mistral_api_key",
-                            "microsoft": "microsoft_api_key",
-                            "amazon": "amazon_access_key",
-                            "cohere": "cohere_api_key",
-                            "deepseek": "deepseek_api_key",
-                            "together": "together_api_key",
-                            "minimax": "minimax_api_key",
-                            "zhipuai": "zhipuai_api_key",
-                            "openrouter": "openrouter_api_key",
-                        }
-                        attr = provider_key_map.get(provider)
-                        if attr:
-                            setattr(self._settings, attr, key)
+                api_keys = api_config.get('api_keys') or {}
+                if isinstance(api_keys, dict):
+                    for provider, key in api_keys.items():
+                        if key and isinstance(key, str) and key.strip():
+                            provider_key_map = {
+                                "google": "google_api_key",
+                                "groq": "groq_api_key",
+                                "openai": "openai_api_key",
+                                "anthropic": "anthropic_api_key",
+                                "xai": "xai_api_key",
+                                "meta": "meta_api_key",
+                                "mistral": "mistral_api_key",
+                                "microsoft": "microsoft_api_key",
+                                "amazon": "amazon_access_key",
+                                "cohere": "cohere_api_key",
+                                "deepseek": "deepseek_api_key",
+                                "together": "together_api_key",
+                                "minimax": "minimax_api_key",
+                                "zhipuai": "zhipuai_api_key",
+                                "openrouter": "openrouter_api_key",
+                            }
+                            attr = provider_key_map.get(provider)
+                            if attr:
+                                setattr(self._settings, attr, key.strip())
 
                 # Load models
-                models = api_config.get('models', {})
-                for provider, model in models.items():
-                    if model:
-                        provider_model_map = {
-                            "google": "google_model",
-                            "groq": "groq_model",
-                            "openai": "openai_model",
-                            "anthropic": "anthropic_model",
-                            "xai": "xai_model",
-                            "meta": "meta_model",
-                            "mistral": "mistral_model",
-                            "microsoft": "microsoft_model",
-                            "amazon": "amazon_model",
-                            "cohere": "cohere_model",
-                            "deepseek": "deepseek_model",
-                            "together": "together_model",
-                            "minimax": "minimax_model",
-                            "zhipuai": "zhipuai_model",
-                            "ollama": "ollama_model",
-                            "openrouter": "openrouter_model",
-                        }
-                        attr = provider_model_map.get(provider)
-                        if attr:
-                            setattr(self._settings, attr, model)
+                models = api_config.get('models') or {}
+                if isinstance(models, dict):
+                    for provider, model in models.items():
+                        if model and isinstance(model, str) and model.strip():
+                            provider_model_map = {
+                                "google": "google_model",
+                                "groq": "groq_model",
+                                "openai": "openai_model",
+                                "anthropic": "anthropic_model",
+                                "xai": "xai_model",
+                                "meta": "meta_model",
+                                "mistral": "mistral_model",
+                                "microsoft": "microsoft_model",
+                                "amazon": "amazon_model",
+                                "cohere": "cohere_model",
+                                "deepseek": "deepseek_model",
+                                "together": "together_model",
+                                "minimax": "minimax_model",
+                                "zhipuai": "zhipuai_model",
+                                "ollama": "ollama_model",
+                                "openrouter": "openrouter_model",
+                            }
+                            attr = provider_model_map.get(provider)
+                            if attr:
+                                setattr(self._settings, attr, model.strip())
 
                 self.logger.info("Settings loaded from config.yaml")
         except Exception as e:
             self.logger.warning(f"Could not load settings from config.yaml: {e}")
 
     def _save_to_config(self):
-        """Save current settings to config.yaml."""
+        """Save current settings to config.yaml.
+
+        Uses atomic write to prevent corruption on concurrent access.
+        Clears stale API keys/models that have been unset (None/empty).
+        """
         try:
             config = {}
             if self._config_path.exists():
                 with open(self._config_path, 'r') as f:
-                    config = yaml.safe_load(f) or {}
-            else:
-                self._config_path.parent.mkdir(parents=True, exist_ok=True)
+                    raw = yaml.safe_load(f)
+                if raw is not None and isinstance(raw, dict):
+                    config = raw
 
-            if 'api' not in config:
+            if 'api' not in config or not isinstance(config['api'], dict):
                 config['api'] = {}
 
             # Save preferred provider
             if self._settings.preferred_provider:
                 config['api']['preferred_provider'] = self._settings.preferred_provider
+            else:
+                config['api'].pop('preferred_provider', None)
 
-            # Save API keys
-            if 'api_keys' not in config['api']:
-                config['api']['api_keys'] = {}
-
+            # Save API keys — overwrite the entire api_keys dict to clear stale entries
             provider_key_map = {
                 "google": "google_api_key",
                 "groq": "groq_api_key",
@@ -167,15 +187,14 @@ class SettingsManager:
                 "zhipuai": "zhipuai_api_key",
                 "openrouter": "openrouter_api_key",
             }
+            api_keys = {}
             for provider, attr in provider_key_map.items():
                 value = getattr(self._settings, attr, None)
-                if value:
-                    config['api']['api_keys'][provider] = value
+                if value and isinstance(value, str) and value.strip():
+                    api_keys[provider] = value.strip()
+            config['api']['api_keys'] = api_keys
 
-            # Save models
-            if 'models' not in config['api']:
-                config['api']['models'] = {}
-
+            # Save models — overwrite the entire models dict to clear stale entries
             provider_model_map = {
                 "google": "google_model",
                 "groq": "groq_model",
@@ -194,13 +213,14 @@ class SettingsManager:
                 "ollama": "ollama_model",
                 "openrouter": "openrouter_model",
             }
+            models = {}
             for provider, attr in provider_model_map.items():
                 value = getattr(self._settings, attr, None)
-                if value:
-                    config['api']['models'][provider] = value
+                if value and isinstance(value, str) and value.strip():
+                    models[provider] = value.strip()
+            config['api']['models'] = models
 
-            with open(self._config_path, 'w') as f:
-                yaml.dump(config, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+            _atomic_write_yaml(self._config_path, config)
 
             self.logger.info("Settings saved to config.yaml")
         except Exception as e:

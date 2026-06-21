@@ -17,15 +17,17 @@ Usage:
 import os
 import sys
 import time
-import signal
 import subprocess
 import threading
 import json
-import platform
+import fcntl
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .logger import get_logger
+from .platform_compat import (
+    is_process_alive, kill_process, spawn_detached, is_windows,
+)
 
 logger = get_logger("watchdog")
 
@@ -44,12 +46,22 @@ WATCHDOG_CHECK_INTERVAL = 15
 MAX_RESTARTS_PER_WINDOW = 10
 RESTART_WINDOW_SECONDS = 3600  # 1 hour
 
+# Minimum delay before first restart (prevents CPU spin on instant crashes)
+MIN_RESTART_DELAY = 2.0
+
 # Heartbeat file path
 HEARTBEAT_FILE = Path(".context") / "watchdog_heartbeat.json"
 
+# Restart counter file (file-locked for safe concurrent access)
+_RESTART_COUNTER_FILE = Path(".context") / "watchdog_restarts.json"
+
 
 def _write_heartbeat(pid: int, iteration: int, status: str = "alive") -> None:
-    """Write a heartbeat file so the watchdog knows we are alive."""
+    """Write a heartbeat file so the watchdog knows we are alive.
+
+    Uses atomic write (write to .tmp then rename) to prevent partial reads.
+    Cleans up any stale .tmp file first.
+    """
     try:
         HEARTBEAT_FILE.parent.mkdir(parents=True, exist_ok=True)
         data = {
@@ -57,11 +69,18 @@ def _write_heartbeat(pid: int, iteration: int, status: str = "alive") -> None:
             "iteration": iteration,
             "status": status,
             "timestamp": time.time(),
-            "platform": platform.system(),
         }
         tmp = HEARTBEAT_FILE.with_suffix(".tmp")
+        # Clean up any stale .tmp file first
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except OSError:
+            pass
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f)
+            f.flush()
+            os.fsync(f.fileno())
         tmp.replace(HEARTBEAT_FILE)
     except Exception:
         pass  # Heartbeat is best-effort
@@ -76,53 +95,6 @@ def _read_heartbeat() -> Optional[Dict[str, Any]]:
     except Exception:
         pass
     return None
-
-
-def _is_process_alive(pid: int) -> bool:
-    """Check if a process with the given PID is still running."""
-    if pid <= 0:
-        return False
-    if platform.system() == "Windows":
-        try:
-            import ctypes
-            kernel32 = ctypes.windll.kernel32
-            handle = kernel32.OpenProcess(0x1000, 0, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
-            if handle:
-                kernel32.CloseHandle(handle)
-                return True
-            return False
-        except Exception:
-            return False
-    else:
-        try:
-            os.kill(pid, 0)
-            return True
-        except ProcessLookupError:
-            return False
-        except PermissionError:
-            return True  # Process exists but we can't signal it
-        except Exception:
-            return False
-
-
-def _kill_process(pid: int) -> None:
-    """Force-kill a process."""
-    if platform.system() == "Windows":
-        try:
-            subprocess.run(
-                ["taskkill", "/F", "/PID", str(pid)],
-                capture_output=True, timeout=10,
-            )
-        except Exception:
-            pass
-    else:
-        try:
-            os.kill(pid, signal.SIGTERM)
-            time.sleep(2)
-            if _is_process_alive(pid):
-                os.kill(pid, signal.SIGKILL)
-        except Exception:
-            pass
 
 
 def _get_restart_count() -> Tuple[int, float]:
@@ -159,15 +131,57 @@ def _set_restart_count(count: int, window_start: float) -> None:
 
 
 def _increment_restart_count() -> int:
-    """Increment the restart counter. Returns the new count."""
-    count, window_start = _get_restart_count()
-    now = time.time()
-    if now - window_start > RESTART_WINDOW_SECONDS:
-        count = 0
-        window_start = now
-    count += 1
-    _set_restart_count(count, window_start)
-    return count
+    """Increment the restart counter with file locking. Returns the new count.
+
+    Uses advisory file locking to prevent TOCTOU races when multiple
+    watchdog instances or concurrent processes update the counter.
+    """
+    counter_file = Path(".context") / "watchdog_restarts.json"
+    try:
+        counter_file.parent.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+
+    try:
+        # Open (or create) the counter file and acquire an exclusive lock
+        with open(counter_file, "a+", encoding="utf-8") as f:
+            try:
+                fcntl.flock(f, fcntl.LOCK_EX)
+            except (AttributeError, OSError):
+                # fcntl not available on Windows — fall back to unlocked
+                pass
+            try:
+                f.seek(0)
+                raw = f.read()
+                data = json.loads(raw) if raw.strip() else {}
+                count = int(data.get("count", 0))
+                window_start = float(data.get("window_start", 0))
+            except Exception:
+                count = 0
+                window_start = 0.0
+
+            now = time.time()
+            if now - window_start > RESTART_WINDOW_SECONDS:
+                count = 0
+                window_start = now
+            count += 1
+
+            # Write back
+            f.seek(0)
+            f.truncate()
+            json.dump({"count": count, "window_start": window_start}, f)
+            f.flush()
+            try:
+                os.fsync(f.fileno())
+            except OSError:
+                pass
+            try:
+                fcntl.flock(f, fcntl.LOCK_UN)
+            except (AttributeError, OSError):
+                pass
+            return count
+    except Exception:
+        return 1  # conservative: assume at least 1 restart
 
 
 class WatchdogSupervisor:
@@ -222,6 +236,10 @@ class WatchdogSupervisor:
                 self._running = False
                 break
 
+            # Minimum delay before first restart to prevent CPU spin
+            if restart_count <= 1:
+                time.sleep(MIN_RESTART_DELAY)
+
             logger.info(f"Watchdog: spawning child process (restart #{restart_count})")
 
             # Spawn the child process
@@ -234,7 +252,7 @@ class WatchdogSupervisor:
             self._child_pid = child_pid
 
             # Monitor loop
-            while self._running and _is_process_alive(child_pid):
+            while self._running and is_process_alive(child_pid):
                 time.sleep(WATCHDOG_CHECK_INTERVAL)
 
                 # Check heartbeat
@@ -250,15 +268,15 @@ class WatchdogSupervisor:
                         f"Watchdog: child {child_pid} heartbeat stale "
                         f"({elapsed:.0f}s > {self.heartbeat_timeout}s). Killing."
                     )
-                    _kill_process(child_pid)
+                    kill_process(child_pid)
                     break
 
             if not self._running:
                 break
 
             # Child died — log and restart
-            if _is_process_alive(child_pid):
-                _kill_process(child_pid)
+            if is_process_alive(child_pid):
+                kill_process(child_pid)
 
             logger.warning(f"Watchdog: child {child_pid} exited. Restarting in 5s...")
             time.sleep(5)
@@ -269,25 +287,14 @@ class WatchdogSupervisor:
         Returns the child PID or None on failure.
         """
         try:
-            # We use subprocess to run the target in a separate process.
-            # The target_func must be picklable or we use run.py as entry.
-            # For simplicity, we re-exec run.py with the same arguments.
             script_dir = Path(__file__).resolve().parents[2]  # project root
             run_py = script_dir / "run.py"
 
             if run_py.exists():
-                # Re-run the current command
                 env = os.environ.copy()
                 env["CLIO_WATCHDOG_CHILD"] = "1"
-                proc = subprocess.Popen(
-                    [sys.executable, str(run_py), "--__watchdog_spawned__"] + sys.argv[1:],
-                    cwd=str(script_dir),
-                    env=env,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    start_new_session=True,
-                )
-                return proc.pid
+                cmd = [sys.executable, str(run_py), "--__watchdog_spawned__"] + sys.argv[1:]
+                return spawn_detached(cmd, cwd=str(script_dir), env=env)
             else:
                 logger.error(f"Watchdog: run.py not found at {run_py}")
                 return None

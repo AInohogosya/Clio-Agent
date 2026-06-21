@@ -292,18 +292,10 @@ def _extract_port(text: str) -> int:
 
 
 def _check_network() -> bool:
-    """Quick network connectivity check."""
-    import platform as _plat
+    """Quick network connectivity check (cross-platform)."""
+    from .platform_compat import ping_host
     try:
-        if _plat.system().lower() == "windows":
-            cmd = ["ping", "-n", "1", "-w", "3000", "8.8.8.8"]
-        else:
-            cmd = ["ping", "-c", "1", "-W", "3", "8.8.8.8"]
-        result = subprocess.run(
-            cmd,
-            capture_output=True, text=True, timeout=5,
-        )
-        return result.returncode == 0
+        return ping_host("8.8.8.8", timeout=3.0)
     except Exception:
         return False
 
@@ -326,9 +318,9 @@ def get_disk_usage(path: str = None) -> Dict[str, Any]:
     """Get disk usage information for a path."""
     try:
         import shutil
+        from .platform_compat import get_disk_root
         if path is None:
-            import platform
-            path = "C:\\" if platform.system() == "Windows" else "/"
+            path = str(get_disk_root())
         usage = shutil.disk_usage(path)
         return {
             "total_gb": usage.total / (1024 ** 3),
@@ -356,16 +348,11 @@ def get_memory_usage() -> Dict[str, Any]:
 
 def emergency_disk_cleanup(target_free_gb: float = 2.0) -> Tuple[bool, str]:
     """Emergency disk cleanup. Removes temp/cache files. Returns (success, msg)."""
+    from .platform_compat import get_cleanup_targets
     freed_mb = 0.0
     actions_taken = []
 
-    cleanup_targets = [
-        Path("/tmp"),
-        Path.home() / ".cache",
-        Path.home() / ".local" / "share" / "Trash",
-        Path.home() / ".npm" / "_cacache",
-        Path.home() / ".cache" / "pip",
-    ]
+    cleanup_targets = get_cleanup_targets()
 
     for target in cleanup_targets:
         if not target.exists():
@@ -485,19 +472,15 @@ def classify_api_error(error: Exception) -> Tuple[ErrorSeverity, ErrorCategory, 
 
     Returns (severity, category, is_retryable, suggested_delay_seconds).
     """
-    msg = str(error).lower()
-    error_type = type(error).__name__.lower()
+    # Collect all messages and types from the exception chain into a set
+    # to avoid duplicate concatenation while still checking all causes.
+    all_messages = set()
+    all_types = set()
 
-    # Walk the exception chain so that wrapped exceptions like
-    # "Max retries exceeded -> SSLEOFError" are classified by the
-    # *root* cause, not just the outermost message.
     _cause = error
     for _ in range(5):
-        _cause_msg = str(_cause).lower()
-        _cause_type = type(_cause).__name__.lower()
-        if _cause_msg != msg or _cause_type != error_type:
-            msg = msg + " " + _cause_msg
-            error_type = error_type + " " + _cause_type
+        all_messages.add(str(_cause).lower())
+        all_types.add(type(_cause).__name__.lower())
         # Follow the chain: prefer __cause__ over __context__
         _next = getattr(_cause, '__cause__', None) or getattr(_cause, '__context__', None)
         if _next is not None and _next is not _cause:
@@ -505,58 +488,65 @@ def classify_api_error(error: Exception) -> Tuple[ErrorSeverity, ErrorCategory, 
         else:
             break
 
+    # Combine all unique messages/types for keyword matching
+    combined_msg = " ".join(all_messages)
+    combined_type = " ".join(all_types)
+    # Use combined_msg for keyword matching; also check combined_type for
+    # exception-type-based classification (e.g., SSLEOFError class name)
+    search_text = combined_msg + " " + combined_type
+
     # Rate limit
-    if any(kw in msg for kw in ["429", "rate limit", "rate-limited", "too many requests", "throttl"]):
+    if any(kw in search_text for kw in ["429", "rate limit", "rate-limited", "too many requests", "throttl"]):
         return ErrorSeverity.HIGH, ErrorCategory.RATE_LIMIT, True, 30.0
 
     # Auth
-    if any(kw in msg for kw in ["401", "403", "unauthorized", "forbidden", "api key", "credential", "authentication"]):
+    if any(kw in search_text for kw in ["401", "403", "unauthorized", "forbidden", "api key", "credential", "authentication"]):
         return ErrorSeverity.CRITICAL, ErrorCategory.AUTHENTICATION, False, 0.0
 
     # Server error
-    if any(kw in msg for kw in ["500", "502", "503", "504", "internal server error", "bad gateway", "service unavailable"]):
+    if any(kw in search_text for kw in ["500", "502", "503", "504", "internal server error", "bad gateway", "service unavailable"]):
         return ErrorSeverity.HIGH, ErrorCategory.EXTERNAL, True, 5.0
 
     # Timeout
-    if any(kw in msg for kw in ["timeout", "timed out", "deadline exceeded"]):
+    if any(kw in search_text for kw in ["timeout", "timed out", "deadline exceeded"]):
         return ErrorSeverity.HIGH, ErrorCategory.TIMEOUT, True, 3.0
 
     # SSL / EOF errors (transient network issues) — checked BEFORE generic
     # network so that SSLEOFError, unexpected EOF, etc. get a longer delay.
-    if any(kw in msg for kw in ["ssl", "ssleoferror",
+    if any(kw in search_text for kw in ["ssl", "ssleoferror",
                                   "unexpected_eof", "eof occurred",
                                   "sslerror"]):
         return ErrorSeverity.HIGH, ErrorCategory.TRANSIENT, True, 5.0
 
     # Network
-    if any(kw in msg for kw in [
+    if any(kw in search_text for kw in [
         "connection", "network", "unreachable", "refused", "reset",
         "dns", "resolve", "socket", "certificate",
     ]):
         return ErrorSeverity.HIGH, ErrorCategory.TRANSIENT, True, 2.0
 
     # Output validation failure (empty model output) — transient, retryable
-    if any(kw in msg for kw in ["output is empty", "output validation failed"]):
+    if any(kw in search_text for kw in ["output is empty", "output validation failed"]):
         return ErrorSeverity.MEDIUM, ErrorCategory.TRANSIENT, True, 2.0
 
     # Validation / bad request
-    if any(kw in msg for kw in ["400", "bad request", "invalid", "validation"]):
+    if any(kw in search_text for kw in ["400", "bad request", "invalid", "validation"]):
         return ErrorSeverity.MEDIUM, ErrorCategory.VALIDATION, False, 0.0
 
     # Content filter / safety
-    if any(kw in msg for kw in ["content_filter", "safety", "blocked", "harmful"]):
+    if any(kw in search_text for kw in ["content_filter", "safety", "blocked", "harmful"]):
         return ErrorSeverity.MEDIUM, ErrorCategory.VALIDATION, False, 0.0
 
     # Context length
-    if any(kw in msg for kw in ["context length", "max_tokens", "token limit", "too long"]):
+    if any(kw in search_text for kw in ["context length", "max_tokens", "token limit", "too long"]):
         return ErrorSeverity.HIGH, ErrorCategory.RESOURCE, True, 0.0
 
     # Quota / billing
-    if any(kw in msg for kw in ["quota", "billing", "payment", "insufficient funds", "limit exceeded"]):
+    if any(kw in search_text for kw in ["quota", "billing", "payment", "insufficient funds", "limit exceeded"]):
         return ErrorSeverity.CRITICAL, ErrorCategory.RESOURCE, False, 0.0
 
     # Model not found
-    if any(kw in msg for kw in ["model", "not found", "does not exist", "unknown model"]):
+    if any(kw in search_text for kw in ["model", "not found", "does not exist", "unknown model"]):
         return ErrorSeverity.HIGH, ErrorCategory.CONFIGURATION, False, 0.0
 
     # Default: transient, retryable
@@ -983,6 +973,11 @@ class ResilienceEngine:
                 + exc_type.__name__ + ": " + str(exc_value) + "\n"
                 + "```\n" + short_tb + "\n```"
             )
+
+            # After logging and notifying, call the original excepthook to
+            # ensure the process exits (or raises) as expected
+            if engine._original_excepthook:
+                engine._original_excepthook(exc_type, exc_value, exc_tb)
 
         def _custom_excepthook(exc_type, exc_value, exc_tb):
             _handle_exception(exc_type, exc_value, exc_tb)

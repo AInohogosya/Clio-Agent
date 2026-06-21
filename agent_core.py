@@ -5,18 +5,22 @@ Retained for backward compatibility.  Primary entry is via run.py.
 """
 
 import os
-import platform
 import sys
 from pathlib import Path
+
+from ai_agent.utils.platform_compat import (
+    is_macos, is_windows, is_linux, is_unix, get_home_dir,
+)
 
 
 def get_os_context() -> str:
     """Get detailed OS context for the system prompt."""
     try:
-        system = platform.system()
-        release = platform.release()
-        version = platform.version()
-        machine = platform.machine()
+        import platform as _plat
+        system = _plat.system()
+        release = _plat.release()
+        version = _plat.version()
+        machine = _plat.machine()
 
         mem_info = ""
         disk_info = ""
@@ -29,15 +33,14 @@ def get_os_context() -> str:
                 f", Memory: {total_gb:.1f}GB total, "
                 f"{available_gb:.1f}GB available"
             )
-            disk = psutil.disk_usage(str(Path.home()))
+            home = get_home_dir()
+            disk = psutil.disk_usage(str(home))
             free_gb = disk.free / (1024 ** 3)
             disk_info = f", Disk free: {free_gb:.1f}GB"
         except Exception:
             pass
 
-        shell = os.environ.get("SHELL", "Unknown")
-
-        if system == "Linux":
+        if is_linux():
             try:
                 with open("/etc/os-release") as f:
                     lines = f.readlines()
@@ -51,15 +54,16 @@ def get_os_context() -> str:
                 os_str = f"{name} {ver} ({system} {release} {machine})"
             except Exception:
                 os_str = f"Linux {release} {machine}"
-        elif system == "Darwin":
+        elif is_macos():
             os_str = f"macOS {release} {machine}"
-        elif system == "Windows":
+        elif is_windows():
             os_str = f"Windows {release} {machine}"
         else:
             os_str = f"{system} {release} {machine}"
 
         parts = [os_str, mem_info, disk_info]
-        if system in ("Linux", "Darwin"):
+        if is_unix():
+            shell = os.environ.get("SHELL", "Unknown")
             parts.append(f"Shell: {shell}")
         # Filter empty
         parts = [p for p in parts if p]

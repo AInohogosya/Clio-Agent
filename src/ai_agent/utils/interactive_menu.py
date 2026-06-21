@@ -2,12 +2,21 @@
 """
 Interactive menu system with arrow key navigation and colored output.
 Now uses Rich for beautiful panels, tables, and styled output.
+
+On Windows (where tty/termios are unavailable), falls back to simple
+numbered input.
 """
 
 import sys
-import tty
-import termios
 from typing import List, Tuple, Optional
+
+# tty/termios are Unix-only; guard the import
+try:
+    import tty
+    import termios
+    _HAS_TTY = True
+except ImportError:
+    _HAS_TTY = False
 
 from rich.console import Console
 from rich.panel import Panel
@@ -88,7 +97,13 @@ class InteractiveMenu:
                 break
 
     def _get_key(self) -> str:
-        """Get a single keypress with improved arrow key handling"""
+        """Get a single keypress with improved arrow key handling.
+
+        Falls back to line-based input on platforms without tty/termios.
+        """
+        if not _HAS_TTY:
+            return self._get_key_simple()
+
         import select
         fd = sys.stdin.fileno()
         old_settings = termios.tcgetattr(fd)
@@ -121,6 +136,20 @@ class InteractiveMenu:
                 return ch
         finally:
             termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+
+    def _get_key_simple(self) -> str:
+        """Simple line-based key input for platforms without tty/termios."""
+        try:
+            line = input().strip()
+            if not line:
+                return '\r'
+            if line.lower() == 'q':
+                return 'q'
+            if line.isdigit():
+                return line
+            return 'UNKNOWN'
+        except (EOFError, KeyboardInterrupt):
+            return 'q'
 
     def _render_menu(self):
         """Render the menu using Rich components"""
@@ -198,10 +227,18 @@ class InteractiveMenu:
         self.console.print(self._render_menu())
 
     def show(self) -> Optional[str]:
-        """Display the interactive menu and return selected value"""
+        """Display the interactive menu and return selected value.
+
+        On platforms with tty/termios, uses arrow-key navigation.
+        On other platforms (e.g. Windows), falls back to numbered input.
+        """
         if not self.items:
             return None
 
+        if not _HAS_TTY:
+            return self._show_simple()
+
+        # ANSI clear-screen for Unix terminals
         print("\033[2J\033[H", end="")
 
         while not self._should_exit:
@@ -246,6 +283,30 @@ class InteractiveMenu:
                 return None
 
         return None
+
+    def _show_simple(self) -> Optional[str]:
+        """Simple numbered menu for platforms without tty/termios."""
+        self.console.print()
+        self.console.print(f"[bold]{self.title}[/]")
+        if self.subtitle:
+            self.console.print(f"[dim]{self.subtitle}[/]")
+        self.console.print()
+        for i, item in enumerate(self.items, 1):
+            self.console.print(f"  [bold]{i}.[/] {item.icon} {item.title}")
+            if item.description:
+                self.console.print(f"      [dim]{item.description}[/]")
+        self.console.print()
+        self.console.print("[dim]Enter number to select, or 'q' to cancel[/]")
+        try:
+            response = input("> ").strip()
+            if response.lower() == 'q':
+                return None
+            idx = int(response) - 1
+            if 0 <= idx < len(self.items):
+                return self.items[idx].value
+            return None
+        except (ValueError, EOFError, KeyboardInterrupt):
+            return None
 
 
 # ── Styled message helpers ──────────────────────────────────────────────

@@ -29,8 +29,10 @@
 **THE AGENT MUST NEVER GET STUCK IN A LOOP.**
 
 The engine monitors your action patterns. Repeating the same action signature
-3 times consecutively invokes the Curiosity Fairy. At 6 repeats, a forced
-sleep triggers. AVOID this by following these rules:
+3 times consecutively invokes the Curiosity Fairy (gentle suggestion).
+At 6 repeats, the Loop Breaker activates (hard enforcement warning).
+At 8 repeats of the same pattern across wake-ups, a forced sleep triggers.
+AVOID this by following these rules:
 
 ### Hard Rules:
 1. **NEVER run the same command with the same arguments more than 2 times consecutively.** If a command fails twice, TRY A DIFFERENT APPROACH — don't retry the same thing a third time.

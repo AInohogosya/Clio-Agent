@@ -163,70 +163,75 @@ class ProviderFallbackManager:
         current_provider = preferred_provider
         current_model = preferred_model
         
-        while current_provider:
+        max_total_attempts = len(self.config.fallback_order) * self.config.max_retries_per_provider
+        total_attempts = 0
+
+        while current_provider and total_attempts < max_total_attempts:
+            total_attempts += 1
+
             # Skip if circuit breaker is open
             health = self._get_health(current_provider)
             if health and health.is_circuit_open:
                 self.logger.info(f"Skipping {current_provider} - circuit breaker open")
                 attempted_providers.append(current_provider)
                 current_provider, _ = self.get_next_available_provider(
-                    preferred_provider, 
+                    preferred_provider,
                     excluded=attempted_providers
                 )
                 continue
-            
+
             try:
                 self.logger.info(f"Attempting execution with {current_provider}/{current_model}")
                 start_time = time.time()
-                
+
                 # Execute the function
                 result = execute_func(
                     provider=current_provider,
                     model=current_model,
                     *args, **kwargs
                 )
-                
+
                 latency = time.time() - start_time
-                
+
                 # Record success
                 self._record_success(current_provider, latency)
-                
+
                 self.logger.info(
                     f"Execution successful with {current_provider}",
                     latency=latency
                 )
-                
+
                 return result, current_provider
-                
+
             except Exception as e:
                 latency = time.time() - start_time if 'start_time' in locals() else 0.0
-                
+
                 # Classify error
                 context = ErrorHandler.classify_error(e, provider=current_provider)
-                
+
                 self.logger.warning(
                     f"Execution failed with {current_provider}",
                     error=str(e),
                     category=context.category.value if context else "unknown",
                     retryable=context.retryable if context else False
                 )
-                
+
                 # Record failure
                 self._record_failure(current_provider, latency)
-                
+
                 # Check if we should retry with same provider
                 if context and context.retryable and self._get_health(current_provider).consecutive_failures < self.config.max_retries_per_provider:
                     self.logger.info(f"Retrying with same provider {current_provider}")
                     time.sleep(context.backoff_seconds)
                     continue
-                
+
                 # Move to next provider
                 attempted_providers.append(current_provider)
                 next_provider, reason = self.get_next_available_provider(
                     preferred_provider,
                     excluded=attempted_providers
                 )
-                
+
                 if next_provider:
                     self.logger.info(
                         f"Falling back from {current_provider} to {next_provider}",
@@ -238,9 +243,12 @@ class ProviderFallbackManager:
                 else:
                     self.logger.error("All providers exhausted")
                     raise e
-        
-        # Should not reach here
-        raise RuntimeError("Unexpected exit from fallback loop")
+
+        # Exceeded max total attempts
+        raise RuntimeError(
+            f"Provider fallback exhausted after {total_attempts} attempts "
+            f"across {len(attempted_providers)} providers"
+        )
     
     def _get_health(self, provider: str) -> Optional[ProviderHealth]:
         """Get health record for a provider"""

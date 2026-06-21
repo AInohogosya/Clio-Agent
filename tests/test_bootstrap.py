@@ -34,22 +34,43 @@ if _SRC_PATH not in sys.path:
 
 def _version_tuple(value):
     """Parse a dotted version string into a comparable tuple of ints.
-    Mirror of run.py's _version_tuple().
+    Mirror of run.py's _version_tuple() with pre-release handling.
     """
     raw = str(value).split("+")[0]
-    raw = raw.split("-")[0]
+    _PRERELEASE_RANK = {"dev": 0, "a": 1, "alpha": 1, "b": 2, "beta": 2,
+                        "rc": 3, "c": 3, "post": 5, "r": 5, "rev": 5}
+    _FINAL_RANK = 4
+    _rank = None
     parts = []
     for chunk in raw.split("."):
-        num = ""
-        for ch in chunk:
+        num_str = ""
+        suffix_start = len(chunk)
+        for i, ch in enumerate(chunk):
             if ch.isdigit():
-                num += ch
+                num_str += ch
             else:
+                suffix_start = i
                 break
-        if num == "":
+        if num_str == "":
+            _chk = chunk.lower().strip().lstrip("-_")
+            if _chk:
+                for _mark, _r in _PRERELEASE_RANK.items():
+                    if _chk.startswith(_mark):
+                        _rank = _r
+                        break
             break
-        parts.append(int(num))
-    return tuple(parts) if parts else (0,)
+        parts.append(int(num_str))
+        remainder = chunk[suffix_start:].lower().strip()
+        if remainder:
+            remainder = remainder.lstrip("-_")
+            for _mark, _r in _PRERELEASE_RANK.items():
+                if remainder.startswith(_mark):
+                    _rank = _r
+                    break
+            break
+    if not parts:
+        return (0,)
+    return tuple(parts) + (_rank if _rank is not None else _FINAL_RANK,)
 
 
 def _is_in_venv():
@@ -58,6 +79,9 @@ def _is_in_venv():
         hasattr(sys, 'real_prefix')
         or (hasattr(sys, 'base_prefix') and sys.base_prefix != sys.prefix)
         or os.getenv('VIRTUAL_ENV') is not None
+        or os.getenv('PIPENV_ACTIVE') is not None
+        or os.getenv('POETRY_ACTIVE') is not None
+        or os.getenv('PYENV_VIRTUAL_ENV') is not None
     )
 
 
@@ -223,37 +247,37 @@ class TestVersionTuple:
     """Test _version_tuple handles edge cases."""
 
     def test_simple_version(self):
-        assert _version_tuple("1.2.3") == (1, 2, 3)
+        assert _version_tuple("1.2.3") == (1, 2, 3, 4)
 
     def test_two_part_version(self):
-        assert _version_tuple("3.14") == (3, 14)
+        assert _version_tuple("3.14") == (3, 14, 4)
 
     def test_single_part_version(self):
-        assert _version_tuple("42") == (42,)
+        assert _version_tuple("42") == (42, 4)
 
     def test_dev_version(self):
-        assert _version_tuple("1.0.0.dev0") == (1, 0, 0)
+        assert _version_tuple("1.0.0.dev0") == (1, 0, 0, 0)
 
     def test_dev_version_with_number(self):
-        assert _version_tuple("2.3.4.dev42") == (2, 3, 4)
+        assert _version_tuple("2.3.4.dev42") == (2, 3, 4, 0)
 
     def test_local_version(self):
-        assert _version_tuple("1.0.0+git.abc123") == (1, 0, 0)
+        assert _version_tuple("1.0.0+git.abc123") == (1, 0, 0, 4)
 
     def test_local_and_dev(self):
-        assert _version_tuple("1.0.0.dev0+local") == (1, 0, 0)
+        assert _version_tuple("1.0.0.dev0+local") == (1, 0, 0, 0)
 
     def test_post_release(self):
-        assert _version_tuple("2.0.0.post1") == (2, 0, 0)
+        assert _version_tuple("2.0.0.post1") == (2, 0, 0, 5)
 
     def test_rc_version(self):
-        assert _version_tuple("1.2.3rc1") == (1, 2, 3)
+        assert _version_tuple("1.2.3rc1") == (1, 2, 3, 3)
 
     def test_alpha_version(self):
-        assert _version_tuple("0.1.0a3") == (0, 1, 0)
+        assert _version_tuple("0.1.0a3") == (0, 1, 0, 1)
 
     def test_beta_version(self):
-        assert _version_tuple("3.0.0b10") == (3, 0, 0)
+        assert _version_tuple("3.0.0b10") == (3, 0, 0, 2)
 
     def test_empty_string(self):
         assert _version_tuple("") == (0,)
@@ -267,11 +291,12 @@ class TestVersionTuple:
         assert _version_tuple("2.0.0") > _version_tuple("1.99.99")
 
     def test_comparison_with_dev(self):
-        assert _version_tuple("1.0.0.dev0") == _version_tuple("1.0.0")
+        # Pre-release is now LESS than final (Bug #12 fix)
+        assert _version_tuple("1.0.0.dev0") < _version_tuple("1.0.0")
         assert _version_tuple("0.9.0") < _version_tuple("1.0.0")
 
     def test_numeric_input(self):
-        assert _version_tuple(3) == (3,)
+        assert _version_tuple(3) == (3, 4)
 
 
 # ===========================================================================

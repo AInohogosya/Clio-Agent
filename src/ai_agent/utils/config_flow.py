@@ -21,6 +21,8 @@ import curses
 from typing import Optional, List, Dict, Tuple
 from pathlib import Path
 
+from ai_agent.utils.config import _resolve_config_path, _atomic_write_yaml
+
 # ---------------------------------------------------------------------------
 # Color helpers
 # ---------------------------------------------------------------------------
@@ -1124,7 +1126,7 @@ def _input_discord_config(stdscr, existing=None):
 
 def get_discord_config(stdscr=None) -> Optional[Dict[str, str]]:
     """Get Discord config from user. Returns dict or None."""
-    config_path = Path(__file__).parent.parent.parent.parent / "config.yaml"
+    config_path = _resolve_config_path()
     existing = {}
     try:
         if config_path.exists():
@@ -1149,7 +1151,7 @@ def get_discord_config(stdscr=None) -> Optional[Dict[str, str]]:
 def get_telegram_config(stdscr=None) -> Optional[Dict[str, str]]:
     """Get Telegram config from user. Returns dict or None."""
     # Check config.yaml for existing values
-    config_path = Path(__file__).parent.parent.parent.parent / "config.yaml"
+    config_path = _resolve_config_path()
     existing = {}
     try:
         if config_path.exists():
@@ -1194,19 +1196,21 @@ def _save_messaging_config_to_yaml(app_key: str, app_config: Optional[Dict[str, 
     """
     import yaml as _yaml
 
-    config_path = Path(__file__).parent.parent.parent.parent / "config.yaml"
+    config_path = _resolve_config_path()
 
     config = {}
     if config_path.exists():
         try:
             with open(config_path, 'r') as f:
-                config = _yaml.safe_load(f) or {}
+                raw = _yaml.safe_load(f)
+            if raw is not None and isinstance(raw, dict):
+                config = raw
         except Exception:
             config = {}
 
-    if 'telegram' not in config:
+    if not isinstance(config.get('telegram'), dict):
         config['telegram'] = {}
-    if 'discord' not in config:
+    if not isinstance(config.get('discord'), dict):
         config['discord'] = {}
 
     if app_key == "telegram" and app_config:
@@ -1247,8 +1251,7 @@ def _save_messaging_config_to_yaml(app_key: str, app_config: Optional[Dict[str, 
         config['telegram']['enabled'] = False
         config['discord']['enabled'] = False
 
-    with open(config_path, 'w') as f:
-        _yaml.dump(config, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+    _atomic_write_yaml(config_path, config)
 
 
 # ---------------------------------------------------------------------------
@@ -1404,35 +1407,40 @@ def _show_message(stdscr, text: str):
 # Config sync
 # ---------------------------------------------------------------------------
 def _save_to_config_yaml(provider: str, model: str, api_key: Optional[str] = None):
-    """Save configuration directly to config.yaml file."""
+    """Save configuration directly to config.yaml file.
+
+    Uses atomic write and preserves all existing config sections.
+    """
     import yaml as _yaml
 
-    config_path = Path(__file__).parent.parent.parent.parent / "config.yaml"
+    config_path = _resolve_config_path()
 
     # Load existing config or create new
     config = {}
     if config_path.exists():
         try:
             with open(config_path, 'r') as f:
-                config = _yaml.safe_load(f) or {}
+                raw = _yaml.safe_load(f)
+            if raw is not None and isinstance(raw, dict):
+                config = raw
         except Exception:
             config = {}
 
-    # Ensure api section exists
-    if 'api' not in config:
+    # Ensure api section exists and is a dict
+    if not isinstance(config.get('api'), dict):
         config['api'] = {}
 
     # Set provider and model
     config['api']['preferred_provider'] = provider
 
     # Set model in models dict
-    if 'models' not in config['api']:
+    if not isinstance(config['api'].get('models'), dict):
         config['api']['models'] = {}
     config['api']['models'][provider] = model
 
     # Set API key if provided
     if api_key and provider != "ollama":
-        if 'api_keys' not in config['api']:
+        if not isinstance(config['api'].get('api_keys'), dict):
             config['api']['api_keys'] = {}
         config['api']['api_keys'][provider] = api_key
 
@@ -1441,9 +1449,8 @@ def _save_to_config_yaml(provider: str, model: str, api_key: Optional[str] = Non
         if env_var:
             os.environ[env_var] = api_key
 
-    # Write back to file
-    with open(config_path, 'w') as f:
-        _yaml.dump(config, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+    # Write back to file atomically
+    _atomic_write_yaml(config_path, config)
 
     if api_key and provider != "ollama":
         import sys as _sys

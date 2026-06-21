@@ -106,7 +106,7 @@ class OpenRouterProvider:
         try:
             from ..utils.settings_manager import get_settings_manager
             settings = get_settings_manager()
-            key = settings.get_openrouter_api_key()
+            key = settings.get_api_key("openrouter")
             if key:
                 self.api_key = key
                 return self.api_key

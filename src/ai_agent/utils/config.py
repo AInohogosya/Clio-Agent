@@ -6,10 +6,63 @@ Zero-defect policy: comprehensive configuration with validation
 import os
 import yaml
 import json
+import threading
+import tempfile
+import shutil
 from typing import Dict, Any, Optional, Union
 from pathlib import Path
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields, asdict
 from .exceptions import ConfigurationError, ValidationError
+
+# ---------------------------------------------------------------------------
+# Cross-platform config path resolution
+# ---------------------------------------------------------------------------
+
+def _resolve_config_path(config_path: Optional[Union[str, Path]] = None) -> Path:
+    """Resolve config.yaml path to a single canonical location. All modules
+    must use this to ensure they read/write the same file.
+    Priority: explicit path > env CLIO_CONFIG > project root.
+    """
+    if config_path is not None:
+        p = Path(config_path)
+        if p.is_dir():
+            p = p / "config.yaml"
+        return p.resolve()
+    env_path = os.environ.get("CLIO_CONFIG")
+    if env_path:
+        return Path(env_path).resolve()
+    return (Path(__file__).resolve().parents[3] / "config.yaml")
+
+
+# ---------------------------------------------------------------------------
+# Atomic writes with threading lock
+# ---------------------------------------------------------------------------
+
+_config_file_lock = threading.Lock()
+
+
+def _atomic_write_yaml(path: Path, data: Dict[str, Any]) -> None:
+    """Write YAML atomically via temp file + rename, with threading lock.
+    """
+    _config_file_lock.acquire()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_path = tempfile.mkstemp(
+            suffix=".yaml", prefix=".config_", dir=str(path.parent))
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as tmp_f:
+                yaml.dump(data, tmp_f, default_flow_style=False,
+                          sort_keys=False, allow_unicode=True)
+            shutil.move(tmp_path, path)
+        except BaseException:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+    finally:
+        _config_file_lock.release()
+
 
 
 def _get_ollama_model_from_settings() -> str:
@@ -221,16 +274,39 @@ class ConfigManager:
             self._validate_config()
         return self._config
     
+    def _get_default_raw_config(self) -> Dict[str, Any]:
+        """Build a complete default config dict from all dataclass field defaults.
+
+        This ensures save_config() never writes an incomplete file.
+        """
+        import dataclasses as _dc
+        def _dc_defaults(cls):
+            result = {}
+            for fld in fields(cls):
+                if fld.default is not _dc.MISSING:
+                    result[fld.name] = fld.default
+                elif fld.default_factory is not _dc.MISSING:
+                    result[fld.name] = fld.default_factory()
+            return result
+        return {
+            "logging": _dc_defaults(LoggingConfig),
+            "api": _dc_defaults(APIConfig),
+            "security": _dc_defaults(SecurityConfig),
+            "performance": _dc_defaults(PerformanceConfig),
+            "engine": _dc_defaults(EngineConfig),
+            "telegram": _dc_defaults(TelegramConfig),
+            "execution": _dc_defaults(ExecutionConfig),
+            "cache": _dc_defaults(CacheConfig),
+            "cost": _dc_defaults(CostConfig),
+            "user": _dc_defaults(UserConfig),
+            "custom_system_prompt": "",
+        }
+
     def _load_raw_config(self):
         """Load raw configuration from file"""
-        # Default configuration
-        self._raw_config = {
-            "logging": {"level": "INFO", "console": True},
-            "api": {"timeout": 30, "max_retries": 3},
-            "performance": {"max_concurrent_tasks": 1},
-            "engine": {"click_delay": 0.1, "typing_delay": 0.05},
-        }
-        
+        # Start with complete defaults derived from dataclass field defaults
+        self._raw_config = self._get_default_raw_config()
+
         # Load from file if exists
         if self.config_path and self.config_path.exists():
             try:
@@ -245,16 +321,33 @@ class ConfigManager:
                         f"Unsupported config file format: {self.config_path.suffix}",
                         config_file=str(self.config_path)
                     )
-                
+
+                # Handle empty/whitespace-only YAML files (safe_load returns None)
+                if file_config is None:
+                    file_config = {}
+                if not isinstance(file_config, dict):
+                    raise ConfigurationError(
+                        f"Config file must contain a YAML mapping, got {type(file_config).__name__}",
+                        config_file=str(self.config_path)
+                    )
+
+                # Replace None values for section keys with empty dicts so
+                # downstream .get() calls on sections don't crash.
+                for _sk, _sv in list(file_config.items()):
+                    if _sv is None:
+                        file_config[_sk] = {}
+
                 # Merge with default config
                 self._merge_config(self._raw_config, file_config)
-                
+
+            except ConfigurationError:
+                raise
             except Exception as e:
                 raise ConfigurationError(
                     f"Failed to load config file: {e}",
                     config_file=str(self.config_path)
                 )
-        
+
         # Override with environment variables
         self._load_from_environment()
     
@@ -345,13 +438,18 @@ class ConfigManager:
 
         FIX #20: Previously a no-op, this now actually persists the
         in-memory configuration (including any changes made via set()).
+        Uses atomic write to prevent corruption on concurrent access.
         """
-        import yaml as _yaml
         _path = Path(config_path) if config_path else self._config_path
+        if _path is None:
+            raise ConfigurationError(
+                "Cannot save config: no config_path specified and no default set",
+                config_key="save_config"
+            )
         try:
-            with open(_path, "w", encoding="utf-8") as f:
-                _yaml.dump(self._raw_config, f, default_flow_style=False,
-                           sort_keys=False, allow_unicode=True)
+            _atomic_write_yaml(_path, self._raw_config)
+        except ConfigurationError:
+            raise
         except Exception as e:
             raise ConfigurationError(
                 f"Failed to save config to {_path}: {e}",
@@ -409,29 +507,33 @@ _config_manager: Optional[ConfigManager] = None
 
 def load_config(config_path: Optional[Union[str, Path]] = None, force_reload: bool = False) -> Config:
     """Load configuration (singleton pattern)
-    
+
     Args:
-        config_path: Path to config file
-        force_reload: If True, reload config even if already loaded (useful for different config paths)
+        config_path: Path to config file. If None, uses _resolve_config_path().
+        force_reload: If True, reload config even if already loaded.
     """
     global _config_manager
-    
+
+    if config_path is None:
+        config_path = _resolve_config_path()
+
     if _config_manager is None or force_reload:
         _config_manager = ConfigManager(config_path)
-    
+
     if force_reload:
         _config_manager._config = None
-    
+        _config_manager._raw_config = {}
+
     return _config_manager.load_config()
 
 
 def get_config_manager() -> ConfigManager:
     """Get global config manager instance"""
     global _config_manager
-    
+
     if _config_manager is None:
-        _config_manager = ConfigManager()
-    
+        _config_manager = ConfigManager(_resolve_config_path())
+
     return _config_manager
 
 
@@ -442,4 +544,5 @@ def save_config(config_path: Optional[Union[str, Path]] = None):
     actually persists the configuration.
     """
     _mgr = get_config_manager()
-    _mgr.save_config(config_path)
+    _path = Path(config_path) if config_path else _resolve_config_path()
+    _mgr.save_config(_path)
