@@ -21,6 +21,17 @@ header(){ echo -e "\n${BOLD}$*${RESET}"; }
 
 header "Clio Agent Installer"
 
+# -- Stage 0: Bare-metal bootstrap --
+if ! command -v python3 &>/dev/null && ! command -v python &>/dev/null; then
+    warn "Python 3 not found - delegating to bootstrap.sh"
+    if [ -f "$PROJECT_DIR/bootstrap.sh" ]; then
+        exec bash "$PROJECT_DIR/bootstrap.sh" "$@"
+    else
+        fail "bootstrap.sh not found."
+        exit 1
+    fi
+fi
+
 # ── Python check ──
 if command -v python3 &>/dev/null; then
     PYTHON=python3
@@ -49,6 +60,13 @@ if [ "$PY_MINOR" -lt 8 ] 2>/dev/null; then
 fi
 
 ok "Python $PY_VERSION detected ($($PYTHON -c 'import sys; print(sys.executable)'))"
+
+# Verify pip is available
+if ! $PYTHON -m pip --version &>/dev/null; then
+    warn "pip not found. Attempting bootstrap..."
+    $PYTHON -m ensurepip --upgrade 2>/dev/null || true
+fi
+
 
 # ── Sudo password prompt (for system-level dependency installation) ──
 # Only prompt during initial setup. The password is used solely for installing

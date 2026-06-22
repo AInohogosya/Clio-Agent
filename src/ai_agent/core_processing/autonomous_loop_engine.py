@@ -43,6 +43,7 @@ from .context_manager import (
 )
 from ..sub_agents.manager import SubAgentManager
 from ..sub_agents.registry import get_global_registry
+from .external_loop_observer import ExternalObserver, ObserverConfig
 
 
 def _get_project_root() -> Path:
@@ -447,6 +448,24 @@ class AutonomousLoopEngine:
         # Tracks the last sleep reminder injected into the execution log,
         # so it can be removed on sleep/reset to prevent duplicate notifications
         self._last_sleep_reminder: Optional[str] = None
+
+        # ── External Loop Observer ──────────────────────────────────────
+        # An out-of-band loop detection system that watches the agent from
+        # outside the LLM's own reasoning. Resolves the self-referential
+        # paradox: the LLM cannot reliably detect its own loops.
+        self._external_observer: Optional[ExternalObserver] = None
+        try:
+            observer_config = ObserverConfig(
+                enable_intervention=True,
+                enable_persistence=True,
+            )
+            self._external_observer = ExternalObserver(
+                project_root=_get_project_root(),
+                config=observer_config,
+            )
+            self.logger.info("External Loop Observer initialized")
+        except Exception as e:
+            self.logger.warning(f"External Loop Observer init failed (non-fatal): {e}")
 
         self.logger.info("Autonomous Loop Engine initialized with enhanced resilience")
 
@@ -1073,6 +1092,40 @@ class AutonomousLoopEngine:
                                 f"🧚 Curiosity Fairy suggests: {suggestion[:120]}"
                             )
 
+                # --- External Loop Observer (out-of-band detection) ---
+                if self._external_observer is not None:
+                    try:
+                        obs_verdict = self._external_observer.on_iteration(
+                            commands=commands,
+                            output_text=think_output or "",
+                            iteration_number=ctx.iteration_count,
+                        )
+                        if obs_verdict.has_loop and obs_verdict.intervention_message:
+                            self._append_log(ctx, obs_verdict.intervention_message)
+                            self._term_log.thinking(
+                                f"🔍 External Observer: {obs_verdict.intervention_level_name} "
+                                f"at iteration {obs_verdict.iteration_number}"
+                            )
+                            self.logger.info(
+                                "External Observer intervention",
+                                level=obs_verdict.intervention_level_name,
+                                iteration=obs_verdict.iteration_number,
+                            )
+                        if obs_verdict.force_sleep:
+                            self.logger.warning(
+                                "External Observer forcing sleep",
+                                iteration=ctx.iteration_count,
+                            )
+                            self._notify_telegram_error(
+                                ctx,
+                                "🛑 External Observer: persistent loop detected. "
+                                "Forcing context reset and restart.",
+                            )
+                            self._handle_sleep(ctx)
+                    except Exception as _obs_err:
+                        # Observer must never break the main loop
+                        self.logger.debug(f"External Observer error (non-fatal): _obs_err")
+
                 # Check for forced sleep (persistent loop breaker from a
                 # PREVIOUS iteration — the model was given one chance but
                 # didn't execute sleep, so we force it now.)
@@ -1693,7 +1746,7 @@ class AutonomousLoopEngine:
                 "The user CANNOT see your terminal, logs, or thinking() output.\n\n"
                 "⚠️ CRITICAL: If the log below contains a ## 📥 INBOX section, your VERY FIRST\n"
                 "output line MUST be telegram() with an acknowledgement. This is ABSOLUTE.\n"
-                "Example: telegram(👋 承知しました！「[message]」について処理を開始します…)\n"
+                "Example: telegram(👋 Got it! Working on it now...)\n"
                 "Then proceed with the actual work.\n\n"
                 "MANDATORY RULES:\n"
                 "1. FIRST LINE = telegram() when INBOX has messages. ALWAYS. No exceptions.\n"
@@ -1877,7 +1930,7 @@ class AutonomousLoopEngine:
                 "When the execution log contains a ## 📥 INBOX section with user messages,\n"
                 "your VERY FIRST output line MUST ALWAYS be a telegram() command.\n"
                 "This is non-negotiable. No exceptions. Not even one iteration without it.\n"
-                "Format: telegram(👋 承知しました！「[user message preview]」について処理を開始します…)\n"
+                "Format: telegram(👋 Got it! Working on it now...)\n"
                 "After sending telegram(), then proceed with the actual work.\n\n"
                 "### Telegram Command Rules:\n"
                 "1. FIRST LINE = telegram(): When you see ## 📥 INBOX in the log, your FIRST\n"
@@ -2657,9 +2710,9 @@ class AutonomousLoopEngine:
         # Truncate long messages for the ack preview
         preview = user_message[:100] + ("…" if len(user_message) > 100 else "")
         ack_text = (
-            f"👋 メッセージを受け取りました！\n"
-            f"「{preview}」\n"
-            f"処理を開始します、少々お待ちください…"
+            f"👋 Got it!\n"
+            f'Processing: "{preview}"\n'
+            f"Working on it now…"
         )
         try:
             self.telegram_bot.queue_message(user_id, ack_text)
@@ -3020,6 +3073,13 @@ class AutonomousLoopEngine:
         self._empty_iterations = 0
         self._empty_drift_active = False
         self._previous_output_digest = ""
+        # Reset the external observer (but keep its persisted state for
+        # cross-session loop detection — it will reload on next init)
+        if getattr(self, '_external_observer', None) is not None:
+            try:
+                self._external_observer.reset()
+            except Exception:
+                pass
 
     def _handle_sleep(self, ctx: AutonomousContext) -> None:
         """

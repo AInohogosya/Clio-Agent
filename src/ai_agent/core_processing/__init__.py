@@ -12,6 +12,18 @@ from .context_manager import (
     display_context_in_terminal,
     clear_context_state,
 )
+from .external_loop_observer import (
+    ExternalObserver,
+    ObserverConfig,
+    ObserverVerdict,
+    ActionNormalizer,
+    NormalizedAction,
+    PatternAnalyzer,
+    PatternMatch,
+    PatternType,
+    Intervention,
+    InterventionLevel,
+)
 
 __all__ = [
     "AutonomousLoopEngine",
@@ -21,4 +33,14 @@ __all__ = [
     "get_context_for_prompt",
     "display_context_in_terminal",
     "clear_context_state",
+    "ExternalObserver",
+    "ObserverConfig",
+    "ObserverVerdict",
+    "ActionNormalizer",
+    "NormalizedAction",
+    "PatternAnalyzer",
+    "PatternMatch",
+    "PatternType",
+    "Intervention",
+    "InterventionLevel",
 ]

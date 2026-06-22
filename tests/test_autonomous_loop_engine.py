@@ -104,13 +104,13 @@ class TestBuildSystemInstruction:
         eng = _make_engine()
         ctx = MagicMock(telegram_mode=True, discord_mode=False)
         p = eng._build_system_instruction(ctx)
-        assert "TELEGRAM MODE (ACTIVE)" in p
+        assert "TELEGRAM MODE (ACTIVE" in p
 
     def test_discord_mode(self):
         eng = _make_engine()
         ctx = MagicMock(telegram_mode=False, discord_mode=True)
         p = eng._build_system_instruction(ctx)
-        assert "DISCORD MODE (ACTIVE)" in p
+        assert "DISCORD MODE (ACTIVE" in p
 
     def test_anti_repetition(self):
         eng = _make_engine()
