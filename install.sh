@@ -127,7 +127,14 @@ ok "pip/setuptools/wheel upgraded"
 
 # ── Install dependencies ──
 info "Installing Clio Agent (with all AI provider SDKs)..."
-"$VENV_PIP" install -e "$PROJECT_DIR" --quiet 2>/dev/null || "$VENV_PIP" install "$PROJECT_DIR" --quiet
+if ! "$VENV_PIP" install -e "$PROJECT_DIR" 2>&1; then
+    warn "Editable install failed, trying non-editable..."
+    if ! "$VENV_PIP" install "$PROJECT_DIR" 2>&1; then
+        fail "Could not install Clio Agent."
+        fail "Try: source venv/bin/activate && pip install -e ."
+        exit 1
+    fi
+fi
 ok "Clio Agent installed"
 
 # ── Register global commands ──
@@ -156,11 +163,16 @@ cp "$WRAPPER_DIR/Clio-Agent" "$WRAPPER_DIR/clio-agent"
 
 # Add to PATH if needed
 if [[ ":$PATH:" != *":$WRAPPER_DIR:"* ]]; then
-    echo "" >> "$RC_FILE"
-    echo "# Clio Agent" >> "$RC_FILE"
-    echo "export PATH=\"\$HOME/.local/bin:\$PATH\"" >> "$RC_FILE"
-    warn "Added $WRAPPER_DIR to PATH in $RC_FILE"
-    warn "Run: source $RC_FILE"
+    # Check if already in RC_FILE to avoid duplicates
+    if ! grep -q "Clio Agent" "$RC_FILE" 2>/dev/null; then
+        echo "" >> "$RC_FILE"
+        echo "# Clio Agent" >> "$RC_FILE"
+        echo "export PATH=\"\$HOME/.local/bin:\$PATH\"" >> "$RC_FILE"
+        warn "Added $WRAPPER_DIR to PATH in $RC_FILE"
+        warn "Run: source $RC_FILE"
+    else
+        ok "PATH already configured in $RC_FILE"
+    fi
 fi
 
 # ── Verify ──

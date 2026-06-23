@@ -66,20 +66,31 @@ if [[ -z "$PYTHON" ]]; then
         }
 
     elif [[ "$OS" == "linux" ]]; then
+        # Use a timeout for all package manager operations to prevent hangs
+        _install_with_timeout() {
+            timeout 300 sudo "$@" 2>&1 || {
+                local _rc=$?
+                if [[ $_rc -eq 124 ]]; then
+                    echo -e "${RED}  FAIL Package manager timed out (300s).${RESET}"
+                fi
+                return $_rc
+            }
+        }
         if command -v apt-get &>/dev/null; then
-            sudo apt-get update -y && sudo apt-get install -y python3 python3-pip python3-venv
+            _install_with_timeout apt-get update -y && _install_with_timeout apt-get install -y python3 python3-pip python3-venv
         elif command -v apt &>/dev/null; then
-            sudo apt update -y && sudo apt install -y python3 python3-pip python3-venv
+            _install_with_timeout apt update -y && _install_with_timeout apt install -y python3 python3-pip python3-venv
         elif command -v dnf &>/dev/null; then
-            sudo dnf install -y python3 python3-pip
+            _install_with_timeout dnf install -y python3 python3-pip
         elif command -v yum &>/dev/null; then
-            sudo yum install -y python3 python3-pip
+            _install_with_timeout yum install -y python3 python3-pip
         elif command -v pacman &>/dev/null; then
-            sudo pacman -Sy --noconfirm python python-pip
+            _install_with_timeout pacman -Sy --noconfirm python python-pip
         elif command -v zypper &>/dev/null; then
-            sudo zypper install -y python3 python3-pip python3-venv
+            _install_with_timeout zypper install -y python3 python3-pip python3-venv
         elif command -v apk &>/dev/null; then
-            apk add --no-cache python3 py3-pip
+            # apk doesn't use sudo
+            timeout 300 apk add --no-cache python3 py3-pip
         else
             fail "No supported package manager."; exit 1
         fi

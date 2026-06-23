@@ -627,35 +627,32 @@ def _get_sudo_password():
     return None
 
 
-
 def _run_fix_command(cmd, timeout=120, sudo_password=None):
     """Run a fix command and return True if it succeeded.
 
     Args:
         cmd: Command as list or string.
         timeout: Timeout in seconds.
-        sudo_password: If provided, use this password for sudo commands.
+        sudo_password: If provided, use this password for sudo commands via stdin.
                        Empty string "" means passwordless sudo is available.
                        None means no password available (skip sudo commands).
-
-    Uses SUDO_ASKPASS approach: instead of passing password via stdin (-S),
-    creates a temporary askpass script, sets SUDO_ASKPASS env var, and uses sudo -A.
-    This is more reliable and avoids TTY issues.
     """
     import shlex
-    import tempfile
     try:
+        # BUG FIX #24: Always use shell=False with properly split args
         if isinstance(cmd, str):
             cmd = shlex.split(cmd)
 
+        # Determine if this is a sudo command
         use_sudo = len(cmd) > 0 and cmd[0] == "sudo"
 
         if use_sudo:
             if sudo_password is None:
+                # No password available — skip this command
                 print(f"    (skipping: sudo requires password)")
                 return False
             elif sudo_password == "":
-                # Passwordless sudo
+                # Passwordless sudo — use -n flag
                 if len(cmd) > 1 and cmd[1] != "-n":
                     cmd = [cmd[0], "-n"] + cmd[1:]
                 result = subprocess.run(
@@ -663,30 +660,17 @@ def _run_fix_command(cmd, timeout=120, sudo_password=None):
                     shell=False,
                 )
             else:
-                # SUDO_ASKPASS approach: create a temporary script that echoes the password
-                askpass_script = None
-                try:
-                    askpass_fd, askpass_script = tempfile.mkstemp(prefix='askpass_', suffix='.sh')
-                    os.write(askpass_fd, b"#!/bin/sh\necho \"" + sudo_password.encode() + b"\"\n")
-                    os.close(askpass_fd)
-                    os.chmod(askpass_script, 0o700)
-
-                    env = os.environ.copy()
-                    env['SUDO_ASKPASS'] = askpass_script
-
-                    # Use -A flag to trigger SUDO_ASKPASS
-                    if len(cmd) > 1 and cmd[1] in ("-n", "-S"):
-                        cmd = [cmd[0], "-A"] + cmd[2:]
-                    elif len(cmd) > 1:
-                        cmd = [cmd[0], "-A"] + cmd[1:]
-
-                    result = subprocess.run(
-                        cmd, capture_output=True, text=True, timeout=timeout,
-                        shell=False, env=env,
-                    )
-                finally:
-                    if askpass_script and os.path.exists(askpass_script):
-                        os.unlink(askpass_script)
+                # We have a password — use -S to read from stdin
+                # Replace any -n flags with -S
+                if len(cmd) > 1 and cmd[1] == "-n":
+                    cmd = [cmd[0], "-S"] + cmd[2:]
+                elif len(cmd) > 1 and cmd[1] != "-S":
+                    cmd = [cmd[0], "-S"] + cmd[1:]
+                result = subprocess.run(
+                    cmd, input=sudo_password + "\n",
+                    capture_output=True, text=True, timeout=timeout,
+                    shell=False,
+                )
         else:
             result = subprocess.run(
                 cmd, capture_output=True, text=True, timeout=timeout,
@@ -707,115 +691,8 @@ def _run_fix_command(cmd, timeout=120, sudo_password=None):
         return False
 
 
-def _detect_linux_distro():
-    """Detect the Linux distribution by reading /etc/os-release.
-
-    Returns a tuple (distro_id, distro_like) where:
-      - distro_id is the ID field (e.g. 'ubuntu', 'debian', 'fedora')
-      - distro_like is the ID_LIKE field (e.g. 'debian', 'fedora', 'suse')
-    Both default to empty strings if detection fails.
-    """
-    distro_id = ""
-    distro_like = ""
-    try:
-        with open("/etc/os-release", "r") as osrel:
-            for line in osrel:
-                line = line.strip()
-                if line.startswith("ID="):
-                    distro_id = line.split("=", 1)[1].strip('"').lower()
-                elif line.startswith("ID_LIKE="):
-                    distro_like = line.split("=", 1)[1].strip('"').lower()
-    except Exception:
-        pass
-    return distro_id, distro_like
-
-
-def _linux_pkg_names(py_ver, distro_id="", distro_like=""):
-    """Determine the correct venv and pip package names for the detected distro.
-
-    Args:
-        py_ver: Python version string like "3.11"
-        distro_id: ID from /etc/os-release
-        distro_like: ID_LIKE from /etc-os-release
-
-    Returns (venv_pkg, pip_pkg, pkg_manager) where:
-      - venv_pkg: package name providing the venv module
-      - pip_pkg: package name providing pip
-      - pkg_manager: the binary name to use ('apt', 'dnf', 'yum', 'pacman', 'zypper', 'apk')
-    """
-    major_minor = py_ver  # e.g. "3.11"
-    short_ver = major_minor.replace(".", "")  # e.g. "311"
-
-    # Determine family
-    like_str = f"{distro_id} {distro_like}"
-
-    if "debian" in like_str or distro_id in ("debian", "ubuntu", "linuxmint", "pop"):
-        return (
-            f"python{major_minor}-venv",
-            f"python{major_minor}-pip",
-            "apt",
-        )
-    elif "fedora" in like_str or distro_id in ("fedora", "rhel", "centos", "rocky", "alma"):
-        if distro_id == "fedora" or "fedora" in like_str:
-            return (
-                f"python{short_ver}",
-                f"python{short_ver}-pip",
-                "dnf",
-            )
-        # RHEL/CentOS: use dnf if available, else yum
-        return (
-            f"python{major_minor}",
-            f"python{major_minor}-pip",
-            "dnf",
-        )
-    elif "suse" in like_str or distro_id in ("opensuse", "sles", "suse"):
-        return (
-            f"python{short_ver}-venv",
-            f"python{short_ver}-pip",
-            "zypper",
-        )
-    elif "arch" in like_str or distro_id in ("arch", "manjaro", "endeavouros"):
-        return (
-            "python",  # venv is part of core python package on Arch
-            "python-pip",
-            "pacman",
-        )
-    elif "alpine" in like_str or distro_id == "alpine":
-        return (
-            f"python{major_minor}-venv",
-            f"python{major_minor}-pip",
-            "apk",
-        )
-
-    # Fallback: generic names, try apt first
-    return (
-        f"python{major_minor}-venv",
-        f"python{major_minor}-pip",
-        "apt",
-    )
-
-
-def _create_sudo_askpass_script(password):
-    """Create a temporary SUDO_ASKPASS helper script.
-
-    Returns the path to the created script. The caller is responsible
-    for deleting it after use.
-    """
-    import tempfile
-    fd, path = tempfile.mkstemp(prefix="askpass_", suffix=".sh")
-    os.write(fd, f'#!/bin/sh\n{password}\n'.encode())
-    os.close(fd)
-    os.chmod(path, 0o700)
-    return path
-
-
 def _auto_fix_venv_failure(err="", sudo_password=None):
     """Attempt to automatically fix the venv creation failure.
-
-    Cross-platform auto-fix covering:
-      - macOS: xcode-select, Homebrew, user-level virtualenv
-      - Linux: apt, dnf, yum, pacman, zypper, apk (with distro detection)
-      - Windows: winget, choco, scoops fallbacks
 
     Args:
         err: Error message from the failed venv creation attempt.
@@ -842,6 +719,7 @@ def _auto_fix_venv_failure(err="", sudo_password=None):
             r = subprocess.run(["xcode-select", "-p"], capture_output=True, text=True, timeout=10)
             if r.returncode != 0:
                 print("[auto-fix] Xcode CLI tools not found. Installing (GUI dialog may appear)...")
+                # BUG FIX #23: xcode-select --install is blocking; use Popen
                 try:
                     subprocess.Popen(["xcode-select", "--install"])
                     fixed = True
@@ -860,13 +738,11 @@ def _auto_fix_venv_failure(err="", sudo_password=None):
                 fixed = True
                 print("[auto-fix] Homebrew Python installed.")
 
-        # Fix 3: Homebrew not installed — suggest installing it
-        if not fixed and not shutil.which("brew"):
-            print("[auto-fix] Homebrew not found. You may need to install it from https://brew.sh")
-
-        # Fix 4: virtualenv at user level (no sudo)
+        # Fix 3: virtualenv at user level (no sudo)
         if not fixed:
             print("[auto-fix] Installing virtualenv at user level ...")
+            # BUG FIX: --user installs fail inside an active virtualenv.
+            # When already in a venv, install without --user; otherwise use --user.
             _virtualenv_cmd = [sys.executable, "-m", "pip", "install", "virtualenv"]
             if not _is_in_venv():
                 _virtualenv_cmd.insert(4, "--user")
@@ -875,84 +751,56 @@ def _auto_fix_venv_failure(err="", sudo_password=None):
                 print("[auto-fix] virtualenv installed at user level.")
 
     elif sys.platform.startswith("linux"):
-        # Detect distro for correct package names
-        distro_id, distro_like = _detect_linux_distro()
-        venv_pkg, pip_pkg, preferred_pm = _linux_pkg_names(py_ver, distro_id, distro_like)
+        has_apt = shutil.which("apt") or shutil.which("apt-get")
+        has_dnf = shutil.which("dnf")
+        has_yum = shutil.which("yum")
+        venv_pkg = f"python{py_ver}-venv"
 
-        # Map all available package managers on this system
-        pm_commands = {}
-        if shutil.which("apt") or shutil.which("apt-get"):
-            pm_commands["apt"] = {
-                "update": ["sudo", "apt", "update"],
-                "install": ["sudo", "apt", "install", "-y"],
-            }
-        if shutil.which("dnf"):
-            pm_commands["dnf"] = {
-                "update": None,
-                "install": ["sudo", "dnf", "install", "-y"],
-            }
-        if shutil.which("yum"):
-            pm_commands["yum"] = {
-                "update": None,
-                "install": ["sudo", "yum", "install", "-y"],
-            }
-        if shutil.which("pacman"):
-            pm_commands["pacman"] = {
-                "update": ["sudo", "pacman", "-Sy"],
-                "install": ["sudo", "pacman", "-S", "--noconfirm"],
-            }
-        if shutil.which("zypper"):
-            pm_commands["zypper"] = {
-                "update": ["sudo", "zypper", "refresh"],
-                "install": ["sudo", "zypper", "install", "-y"],
-            }
-        if shutil.which("apk"):
-            pm_commands["apk"] = {
-                "update": ["sudo", "apk", "update"],
-                "install": ["sudo", "apk", "add"],
-            }
-
-        # Try preferred package manager first, then fall back to others
-        pm_order = []
-        if preferred_pm in pm_commands:
-            pm_order.append(preferred_pm)
-        for pm in pm_commands:
-            if pm not in pm_order:
-                pm_order.append(pm)
-
-        for pm in pm_order:
-            if fixed or not can_sudo:
-                break
-            cmds = pm_commands[pm]
-            print(f"[auto-fix] Trying {pm} to install {venv_pkg} ...")
-
-            # Run update first if applicable
-            if cmds.get("update"):
-                _run_fix_command(cmds["update"], timeout=120, sudo_password=sudo_password)
-
-            if _run_fix_command(cmds["install"] + [venv_pkg], timeout=300, sudo_password=sudo_password):
+        # Fix 1: apt (with password support)
+        if not fixed and has_apt and can_sudo:
+            print(f"[auto-fix] Installing {venv_pkg} via apt ...")
+            if _run_fix_command(["sudo", "apt", "update"], timeout=120,
+                                sudo_password=sudo_password) and \
+               _run_fix_command(["sudo", "apt", "install", "-y", venv_pkg], timeout=300,
+                                sudo_password=sudo_password):
                 fixed = True
-                print(f"[auto-fix] {venv_pkg} installed via {pm}.")
-                break
+                print(f"[auto-fix] {venv_pkg} installed via apt.")
 
-        # Fix: ensurepip package (if error mentions ensurepip)
+        # Fix 2: dnf (with password support)
+        if not fixed and has_dnf and can_sudo:
+            print(f"[auto-fix] Installing {venv_pkg} via dnf ...")
+            if _run_fix_command(["sudo", "dnf", "install", "-y", venv_pkg], timeout=300,
+                                sudo_password=sudo_password):
+                fixed = True
+                print(f"[auto-fix] {venv_pkg} installed via dnf.")
+
+        # Fix 3: yum (with password support)
+        if not fixed and has_yum and can_sudo:
+            print(f"[auto-fix] Installing {venv_pkg} via yum ...")
+            if _run_fix_command(["sudo", "yum", "install", "-y", venv_pkg], timeout=300,
+                                sudo_password=sudo_password):
+                fixed = True
+                print(f"[auto-fix] {venv_pkg} installed via yum.")
+
+        # Fix 4: ensurepip package (with password support)
         if not fixed and "ensurepip" in err and can_sudo:
-            for pm in pm_order:
-                if fixed:
-                    break
-                cmds = pm_commands.get(pm)
-                if not cmds:
-                    continue
-                print(f"[auto-fix] Trying {pm} to install {pip_pkg} ...")
-                if cmds.get("update"):
-                    _run_fix_command(cmds["update"], timeout=120, sudo_password=sudo_password)
-                if _run_fix_command(cmds["install"] + [pip_pkg], timeout=300, sudo_password=sudo_password):
+            pip_pkg = f"python{py_ver}-pip"
+            if has_apt:
+                print(f"[auto-fix] Installing {pip_pkg} via apt ...")
+                if _run_fix_command(["sudo", "apt", "install", "-y", pip_pkg], timeout=300,
+                                    sudo_password=sudo_password):
                     fixed = True
-                    print(f"[auto-fix] {pip_pkg} installed via {pm}.")
+            elif has_dnf:
+                print(f"[auto-fix] Installing {pip_pkg} via dnf ...")
+                if _run_fix_command(["sudo", "dnf", "install", "-y", pip_pkg], timeout=300,
+                                    sudo_password=sudo_password):
+                    fixed = True
 
-        # Last resort: virtualenv at user level (no sudo)
+        # Fix 5: virtualenv at user level (no sudo)
         if not fixed:
             print("[auto-fix] Installing virtualenv at user level ...")
+            # BUG FIX: --user installs fail inside an active virtualenv.
+            # When already in a venv, install without --user; otherwise use --user.
             _virtualenv_cmd = [sys.executable, "-m", "pip", "install", "virtualenv"]
             if not _is_in_venv():
                 _virtualenv_cmd.insert(4, "--user")
@@ -961,35 +809,7 @@ def _auto_fix_venv_failure(err="", sudo_password=None):
                 print("[auto-fix] virtualenv installed at user level.")
 
     elif _is_windows():
-        # Windows: try winget, choco, scoop
-        print("[auto-fix] On Windows, attempting package manager fixes ...")
-
-        if shutil.which("winget"):
-            print("[auto-fix] Trying winget to install Python ...")
-            if _run_fix_command(
-                ["winget", "install", "-e", "--id", "Python.Python.3",
-                 "--accept-package-agreements", "--accept-source-agreements"],
-                timeout=300
-            ):
-                fixed = True
-                print("[auto-fix] Python installed via winget.")
-
-        if not fixed and shutil.which("choco"):
-            print("[auto-fix] Trying choco to install Python ...")
-            if _run_fix_command(["choco", "install", "python", "-y"], timeout=300):
-                fixed = True
-                print("[auto-fix] Python installed via choco.")
-
-        if not fixed and shutil.which("scoop"):
-            print("[auto-fix] Trying scoop to install Python ...")
-            if _run_fix_command(["scoop", "install", "python"], timeout=300):
-                fixed = True
-                print("[auto-fix] Python installed via scoop.")
-
-        if not fixed:
-            print("[auto-fix] Could not auto-fix on Windows.")
-            print("[auto-fix] Please re-run the Python installer from https://python.org")
-            print("[auto-fix] and ensure 'Install for all users' and 'Add to PATH' are checked.")
+        print("[auto-fix] On Windows, re-run the Python installer and ensure 'venv' is checked.")
 
     if fixed:
         print("\n[auto-fix] Fix applied! The program will now retry.\n")
@@ -997,6 +817,7 @@ def _auto_fix_venv_failure(err="", sudo_password=None):
         print("\n[auto-fix] Could not automatically fix the issue.\n")
 
     return fixed
+
 
 def _try_create_venv_without_pip(venv_path, python_exe):
     """Create a venv with --without-pip, then bootstrap pip via ensurepip or get-pip.py.
@@ -1230,9 +1051,31 @@ def _create_venv_and_install(sudo_password=None):
     project_root = Path(__file__).parent.resolve()
     venv_path = project_root / "venv"
 
-    # BUG FIX #18: Always remove existing venv before creating a new one
+    # Only remove existing venv if it is broken or unhealthy.
     if venv_path.exists():
-        print(f"  Removing existing venv ...")
+        _existing_venv_python = None
+        if _is_windows():
+            _candidates = [venv_path / "Scripts" / "python.exe", venv_path / "Scripts" / "pythonw.exe"]
+        else:
+            _candidates = [venv_path / "bin" / "python", venv_path / "bin" / "python3"]
+        for _c in _candidates:
+            if _c.exists():
+                _existing_venv_python = str(_c)
+                break
+        if _existing_venv_python and _venv_python_is_healthy(_existing_venv_python):
+            _ok, _missing, _outdated = _inspect_venv_deps(_existing_venv_python)
+            if _ok:
+                print("  Existing virtual environment is healthy and up to date")
+                return _existing_venv_python
+            else:
+                print(f"  Existing venv needs repair (missing: {_missing}, outdated: {_outdated})")
+                print("  Attempting in-place repair...")
+                _ensure_pip(_existing_venv_python)
+                if _repair_venv_deps(_existing_venv_python, project_root):
+                    print("  In-place repair successful")
+                    return _existing_venv_python
+                print("  In-place repair failed -- will recreate venv")
+        print(f"  Removing broken/unhealthy venv ...")
         try:
             shutil.rmtree(venv_path)
         except Exception as _rm_err:
@@ -1510,8 +1353,8 @@ def _auto_bootstrap_venv():
         # Last-ditch auto-fix attempt before giving up
         if _auto_fix_venv_failure("", sudo_password=_sudo_pwd):
             print("Auto-fix applied on final attempt. One more bootstrap try ...")
-            # Reset the bootstrap counter for one last attempt
-            os.environ["_CLIO_BOOTSTRAP_ATTEMPTS"] = "0"
+            # Do NOT reset the bootstrap counter -- prevents infinite loop
+            # where auto-fix succeeds but venv creation still fails.
             # Remove stale venv so creation is clean
             venv_dir = project_root / "venv"
             if venv_dir.exists():
@@ -1535,6 +1378,10 @@ def _auto_bootstrap_venv():
         print("=" * 60)
         sys.exit(1)
     os.environ["_CLIO_BOOTSTRAP_ATTEMPTS"] = str(_bootstrap_count + 1)
+
+    # Clean up bootstrap counter on success
+    if "_CLIO_BOOTSTRAP_ATTEMPTS" in os.environ:
+        del os.environ["_CLIO_BOOTSTRAP_ATTEMPTS"]
 
     venv_python, needs_install, deps_ok = _resolve_venv_python()
 
@@ -1634,57 +1481,22 @@ def _auto_configure():
             _yaml.safe_load = lambda f: {}
             _yaml.dump = lambda *a, **kw: None
         else:
-            # BUG FIX #15: Don't install PyYAML to system Python - wasteful
-            # since the process restarts into venv. Use a minimal YAML parser
-            # that handles the config structure we need.
-            print("Using minimal YAML parser (PyYAML will be in venv).")
-            import types as _types
-            import re as _re
-            _yaml = _types.ModuleType('yaml')
-            def _minimal_safe_load(f):
-                """Minimal YAML loader for flat/nested dict config files."""
-                if hasattr(f, 'read'):
-                    text = f.read()
-                else:
-                    with open(f, 'r', encoding='utf-8') as fh:
-                        text = fh.read()
-                # Use a simple approach: try to parse as JSON first (valid YAML)
-                try:
-                    import json as _json
-                    return _json.loads(text)
-                except Exception:
-                    pass
-                # Fallback: parse flat key: value pairs
-                result = {}
-                for line in text.splitlines():
-                    line = line.strip()
-                    if not line or line.startswith('#'):
-                        continue
-                    m = _re.match(r'^(\w[\w.]*)\s*:\s*(.*)', line)
-                    if m:
-                        key = m.group(1)
-                        val = m.group(2).strip().strip("'\"")
-                        result[key] = val
-                return result
-            _yaml.safe_load = _minimal_safe_load
-            def _minimal_dump(data, f=None, **kw):
-                """Minimal YAML dumper for config dicts."""
-                lines = []
-                if isinstance(data, dict):
-                    for k, v in data.items():
-                        if isinstance(v, dict):
-                            lines.append(f"{k}:")
-                            for k2, v2 in v.items():
-                                lines.append(f"  {k2}: {v2}")
-                        else:
-                            lines.append(f"{k}: {v}")
-                _out = "\n".join(lines) + "\n"
-                if f:
-                    f.write(_out)
-                return _out
-            _yaml.dump = lambda data, f=None, **kw: (
-                f.write(_minimal_dump(data, **kw)) if f else _minimal_dump(data, **kw)
-            )
+            # PyYAML not available and not in venv yet.
+            # Install it to user site -- this is safe and the process will
+            # restart into venv afterward.
+            print("PyYAML not found. Installing to enable config saving...")
+            import subprocess as _sp
+            try:
+                _sp.run([sys.executable, "-m", "pip", "install", "--user", "PyYAML"],
+                        capture_output=True, text=True, timeout=120)
+                import yaml as _yaml
+            except Exception:
+                # Last resort: use a dummy that won't corrupt the config
+                print("WARNING: Could not install PyYAML. Config will not be saved.")
+                import types as _types
+                _yaml = _types.ModuleType('yaml')
+                _yaml.safe_load = lambda f: {}
+                _yaml.dump = lambda *a, **kw: None
 
     # ── Load existing config ──
     config = {}
@@ -3152,10 +2964,16 @@ def check_venv_prerequisites():
     try:
         import venv
         print("\u2713 venv module is available")
-        return True
     except ImportError:
         print("\u2717 venv module is not available")
         return False
+    try:
+        import ensurepip
+        print("\u2713 ensurepip module is available")
+    except ImportError:
+        print("\u26a0\ufe0f ensurepip not available -- venv may lack pip")
+        print("     Fix: sudo apt install python3-venv python3-pip")
+    return True
 
 
 def create_virtual_environment():
@@ -3210,6 +3028,7 @@ def restart_in_venv():
     # to avoid infinite loops (e.g. --repair calling restart calling repair).
     _SKIP_FLAGS = {"--repair", "--fix", "--check", "-c", "--health-check",
                    "--quick-setup", "--auto-config", "--install-sdks", "--sdk-status"}
+    _SKIP_FLAGS_VALUE = {"--max-iterations", "--instruction-file"}
     _filtered_args = []
     _skip_next = False
     for _arg in sys.argv[1:]:
@@ -3217,9 +3036,9 @@ def restart_in_venv():
             _skip_next = False
             continue
         if _arg in _SKIP_FLAGS:
-            # Also skip the next arg if this flag takes a value
-            if _arg in ("--max-iterations", "--instruction-file"):
-                _skip_next = True
+            continue
+        if _arg in _SKIP_FLAGS_VALUE:
+            _skip_next = True
             continue
         if _arg.startswith("--max-iterations=") or _arg.startswith("--instruction-file="):
             continue
