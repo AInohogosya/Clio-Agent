@@ -3337,6 +3337,111 @@ def _append_to_file_if_missing(filepath, line):
     return True
 
 
+def _prompt_user_profile(config_manager) -> None:
+    """Interactive user profile onboarding: collect 5-100 personal attributes.
+
+    Users define their own keys and values. Examples include:
+    - device: Mac Book Pro
+    - location: Tokyo, Japan
+    - skills: Python, machine learning
+    - hobbies: photography, hiking
+    - occupation: software engineer
+    - language: Japanese, English
+
+    The attributes are stored in config.yaml under user.attributes.
+    """
+    import yaml as _yaml
+
+    print()
+    print("=" * 60)
+    print("  \U0001f464 User Profile Setup")
+    print("=" * 60)
+    print()
+    print("  Tell us about yourself! You can add 5-100 personal attributes.")
+    print("  Examples: device, location, skills, hobbies, occupation, language")
+    print()
+    print("  - Type a key name and press Enter to add it")
+    print("  - Type 'done' when finished (minimum 5 attributes)")
+    print("  - Type 'skip' to skip this step")
+    print()
+
+    attributes = {}
+    min_attributes = 5
+    max_attributes = 100
+
+    while len(attributes) < max_attributes:
+        remaining = max_attributes - len(attributes)
+        prompt = f"  Attribute {len(attributes) + 1}/{max_attributes} (or 'done'/'skip'): "
+
+        try:
+            key = input(prompt).strip()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            break
+
+        if key.lower() == 'skip':
+            print("  Skipping profile setup.")
+            return
+
+        if key.lower() == 'done':
+            if len(attributes) < min_attributes:
+                print(f"  Please add at least {min_attributes} attributes ({len(attributes)} added so far).")
+                continue
+            break
+
+        if not key:
+            print("  Key cannot be empty. Try again.")
+            continue
+
+        if key in attributes:
+            print(f"  '{key}' already exists. Use a different name or type 'done'.")
+            continue
+
+        try:
+            value = input(f"  Value for '{key}': ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            break
+
+        if value:
+            attributes[key] = value
+            print(f"  \u2713 Added: {key} = {value}")
+        else:
+            print("  Value cannot be empty. Try again.")
+
+    if not attributes:
+        print("  No attributes added. Skipping profile setup.")
+        return
+
+    # Save to config
+    try:
+        config_path = Path(__file__).parent.resolve() / "config.yaml"
+        if config_path.exists():
+            with open(config_path, "r", encoding="utf-8") as f:
+                config = _yaml.safe_load(f) or {}
+        else:
+            config = {}
+
+        if "user" not in config or not isinstance(config["user"], dict):
+            config["user"] = {}
+
+        config["user"]["attributes"] = attributes
+
+        with open(config_path, "w", encoding="utf-8") as f:
+            _yaml.dump(config, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+
+        print()
+        print(f"  \u2713 Saved {len(attributes)} attributes to config.yaml")
+        print()
+        print("  Your profile:")
+        for k, v in attributes.items():
+            print(f"    - {k}: {v}")
+        print()
+
+    except Exception as e:
+        print(f"  Could not save profile: {e}")
+
+
 def main():
     if "--help" in sys.argv or "-h" in sys.argv:
         show_help()
@@ -3556,6 +3661,23 @@ def main():
         pass
 
     _restore_restart_settings_from_env()
+
+    # User profile onboarding (first-time setup)
+    try:
+        import yaml as _yaml
+        _cfg_path = current_dir / "config.yaml"
+        if _cfg_path.exists():
+            with open(_cfg_path, "r", encoding="utf-8") as _f:
+                _cfg = _yaml.safe_load(_f) or {}
+            _user_cfg = _cfg.get("user", {}) or {}
+            if not _user_cfg.get("name") and not _user_cfg.get("attributes"):
+                # First run — prompt for user profile
+                from ai_agent.utils.config import ConfigManager
+                _cfg_manager = ConfigManager(str(_cfg_path)) if _cfg_path.exists() else None
+                _prompt_user_profile(_cfg_manager)
+    except Exception:
+        pass
+
     # Check for plaintext API keys in config.yaml
     try:
         import yaml as _yaml

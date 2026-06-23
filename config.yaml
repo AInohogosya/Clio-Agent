@@ -1,0 +1,102 @@
+api:
+  preferred_provider: ''
+  api_keys:
+    google: ''
+    groq: ''
+    openai: ''
+    anthropic: ''
+    xai: ''
+    meta: ''
+    mistral: ''
+    microsoft: ''
+    cohere: ''
+    deepseek: ''
+    together: ''
+    minimax: ''
+    zhipuai: ''
+    openrouter: ''
+  local_endpoint: http://localhost:11434
+  local_model: llama3.2:3b
+  models:
+    ollama: llama3.2:3b
+    google: gemini-3.1-pro-preview
+    groq: llama-3.3-70b-versatile
+    openai: gpt-4o
+    anthropic: claude-opus-4-6-20260219
+    xai: grok-4.1
+    meta: llama-4-scout-17b-16e-instruct
+    mistral: mistral-large-latest
+    microsoft: gpt-4o
+    amazon: anthropic.claude-opus-4-6-20260219-v1:0
+    cohere: command-r-plus
+    deepseek: deepseek-chat
+    together: meta-llama/Llama-4-Scout-17B-16E-Instruct
+    minimax: MiniMax-Text-01
+    zhipuai: glm-5
+    openrouter: openrouter/owl-alpha
+  timeout: 120
+  max_retries: 3
+security:
+  enable_command_blocking: false
+  enable_confirmation_prompts: false
+  enable_sudo_warning: false
+  enable_shell_pipe_warning: false
+  enable_sandbox: false
+execution:
+  safety_mode: true
+  dry_run: false
+  verify_commands: true
+  command_timeout: 1800
+  task_timeout: 7200
+  max_iterations: 500
+  auto_recovery: true
+  show_thought_log: true
+  idle_behavior: fairy
+logging:
+  level: INFO
+  file: clio_agent.log
+  json_format: false
+  console: true
+cache:
+  enabled: true
+  max_size: 1000
+  ttl: 3600
+  persist_to_disk: true
+cost:
+  daily_budget: null
+  monthly_budget: null
+  per_request_budget: null
+  warning_threshold: 0.8
+  critical_threshold: 0.95
+performance:
+  max_concurrent_tasks: 1
+  memory_limit_mb: 1024
+user:
+  name: ''
+  preferred_style: detailed
+  auto_confirm: false
+  show_progress: true
+  attributes: {}
+    # Personal attributes (5-100 items)
+    # Examples: device, location, skills, hobbies, occupation, language
+telegram:
+  enabled: false
+  bot_token: ''
+  bot_username: ''
+  api_id: 0
+  api_hash: ''
+  session_name: clio_agent_telegram
+  authorized_users: []
+  allowed_user_ids: []
+  enable_input_listener: true
+  max_history_length: 50
+  bot_name: Clio Agent
+  telegram_user_id: ''
+discord:
+  enabled: false
+  bot_token: ''
+  authorized_users: []
+  allowed_user_ids: []
+  max_history_length: 50
+  bot_name: Clio Agent
+custom_system_prompt: ''

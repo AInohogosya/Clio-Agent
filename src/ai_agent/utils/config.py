@@ -215,6 +215,12 @@ class UserConfig:
     preferred_style: str = "detailed"
     auto_confirm: bool = False
     show_progress: bool = True
+    attributes: Dict[str, str] = field(default_factory=dict)
+    """Free-form personal attributes (5-100 items).
+    
+    Examples: device, location, skills, hobbies, language, occupation, etc.
+    Users define their own keys and values during onboarding.
+    """
 
 
 @dataclass
