@@ -963,6 +963,12 @@ class AutonomousLoopEngine:
         # continuously flushed to disk even if the process is killed.
         self._start_auto_save(ctx)
 
+        # CRITICAL: Error counter for continuous loop recovery.
+        # This tracks consecutive errors and triggers forced sleep reset
+        # if too many occur, preventing infinite error loops.
+        _critical_error_count = 0
+        _max_critical_errors_before_force_sleep = 50
+
         try:
             while True:
                 self._raise_if_cancelled(ctx)
@@ -1218,21 +1224,61 @@ class AutonomousLoopEngine:
                 pass
             return ctx
 
-        except Exception as e:
-            self.logger.error(f"Autonomous Loop execution failed: {e}")
-            ctx.current_phase = LoopPhase.FAILED
-            ctx.error = str(e)
-            ctx.end_time = time.time()
-            self._term_log.error(str(e))
-            self._notify_telegram_error(ctx, str(e))
-
-            # Attempt to save exit state for recovery
+        except Exception as outer_e:
+            # CRITICAL FIX: Catch ALL unhandled exceptions to prevent the agent from stopping.
+            # Log the error, attempt recovery, and RESTART the loop instead of returning.
+            # The agent should ONLY stop on explicit user cancellation or system kill.
+            self.logger.error(f"Autonomous Loop encountered critical error (restarting loop): {outer_e}")
+            self._term_log.error(f"Critical error caught: {outer_e}")
+            
+            # Increment error counter for potential forced sleep
+            _critical_error_count += 1
+            
+            # Attempt to notify user about the error
             try:
-                self._handle_exit(ctx, fast=True)
+                self._notify_telegram_error(ctx, f"⚠️ Critical error caught (iteration {ctx.iteration_count}): {type(outer_e).__name__} - {str(outer_e)[:200]}")
             except Exception:
                 pass
-
-            return ctx
+            
+            # Attempt to save state for recovery
+            try:
+                self._auto_save_context(ctx, force=True)
+            except Exception:
+                pass
+            
+            # If we've had too many consecutive critical errors, force a sleep to reset context
+            if _critical_error_count >= _max_critical_errors_before_force_sleep:
+                self.logger.warning(f"Too many consecutive critical errors ({_critical_error_count}), forcing sleep reset")
+                try:
+                    self._notify_telegram_error(ctx, f"🛑 Too many consecutive errors ({_critical_error_count}). Forcing context reset and restart.")
+                    self._handle_sleep(ctx)
+                    return ctx  # _handle_sleep does os.execv — never reached
+                except Exception as sleep_err:
+                    self.logger.error(f"Failed to execute forced sleep: {sleep_err}")
+                    # Reset counter and continue anyway
+                    _critical_error_count = 0
+            
+            # Clear the error state
+            ctx.error = None
+            ctx.current_phase = LoopPhase.THINKING
+            
+            # Add error info to execution log for model awareness
+            self._append_log(ctx, f"[SYSTEM CRITICAL ERROR RECOVERED] {type(outer_e).__name__}: {str(outer_e)[:300]}")
+            
+            # Small delay before retry to avoid tight error loops
+            time.sleep(2.0)
+            
+            # RESTART THE MAIN LOOP - This is the key fix!
+            # Instead of returning (which stops the agent), we restart the entire try block
+            # by using a nested try-except structure with continue
+            self.logger.info("Restarting autonomous loop after critical error recovery...")
+            
+            # Reset context for fresh start
+            ctx.current_phase = LoopPhase.THINKING
+            ctx.iteration_count += 1
+            
+            # Continue the outer while True loop
+            continue
 
         finally:
             self._stop_auto_save()
