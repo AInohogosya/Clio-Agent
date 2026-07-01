@@ -1,5 +1,23 @@
-(src/ai_agent/core_processing/autonomous_loop_engine.py is a source code file, and there are no build artifacts, dependencies, or temporary files in the provided changes. Therefore, no .gitignore rules need to be added or modified.)
-
-```python
-# No changes needed to .gitignore
+```
+# Dependencies
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+pip-log.txt
+pipenv.lock
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.log
+.git*
+!src/ai_agent/external_integration
 ```
