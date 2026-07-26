@@ -970,315 +970,318 @@ class AutonomousLoopEngine:
         _max_critical_errors_before_force_sleep = 50
 
         try:
+            # Outer try/finally for cleanup when the loop exits entirely
             while True:
-                self._raise_if_cancelled(ctx)
-
-                ctx.iteration_count += 1
-
-                # --- Write heartbeat for supervisor monitoring ---
-                if self._heartbeat:
-                    self._heartbeat.beat(ctx.iteration_count)
-
-                # --- Forced wake-up notification on first iteration
-                #     after a sleep restart. Uses self._resuming_from_sleep
-                #     (captured before clear_context_state deleted files).
-                if ctx.iteration_count == 1 and self._resuming_from_sleep:
-                    try:
-                        _wake_msg = (
-                            "\U0001f44b Woke up from sleep. Resuming work immediately."
-                        )
-                        if ctx.discord_mode:
-                            self._exec_discord(ctx, _wake_msg)
-                            self.logger.info("Forced wake-up discord message sent after sleep restart")
-                        elif ctx.telegram_mode:
-                            self._exec_telegram(ctx, _wake_msg)
-                            self.logger.info("Forced wake-up telegram sent after sleep restart")
-                    except Exception as _e:
-                        self.logger.warning(f"Failed to send wake-up message: {_e}")
-                    # Clear the resuming flag after first iteration to prevent
-                    # re-injection of saved context on subsequent iterations
-                    self._is_resuming = False
-
-                # --- Periodic auto-save (every 10 iterations as safety net) ---
-                if ctx.iteration_count % 10 == 0:
-                    self._auto_save_context(ctx)
-
-                # --- THINK ---
-                self._term_log.phase(ctx.iteration_count, "THINKING")
-                ctx.current_phase = LoopPhase.THINKING
-
+                # Inner try/except for error recovery WITHIN the loop
                 try:
-                    think_output = self._run_thinking(ctx)
-                except ExecutionError as e:
-                    # Use enhanced error recovery system
-                    if not self._classify_and_recover(e, ctx):
-                        raise
-                    ctx.iteration_count -= 1
-                    continue
-                except Exception as e:
-                    # Catch any other exception during thinking
-                    self.logger.error(f"Unexpected error during thinking: {e}")
-                    if not self._classify_and_recover(e, ctx):
-                        raise
-                    ctx.iteration_count -= 1
-                    continue
+                    self._raise_if_cancelled(ctx)
 
-                # Reset consecutive errors on success
-                self._record_successful_iteration()
+                    ctx.iteration_count += 1
 
-                self._raise_if_cancelled(ctx)
+                    # --- Write heartbeat for supervisor monitoring ---
+                    if self._heartbeat:
+                        self._heartbeat.beat(ctx.iteration_count)
 
-                # --- Parse commands from the model's response ---
-                # Guard against None/empty model output
-                if not think_output:
-                    self.logger.warning(
-                        "Model returned empty output",
-                        iteration=ctx.iteration_count,
-                    )
-                    # Give the model feedback so it can self-correct
-                    self._append_log(
-                        ctx,
-                        "[SYSTEM] Your last response was empty. "
-                        "You MUST output at least one command() or tool call "
-                        "(read/write/edit/glob/grep/bash) on every turn."
-                    )
-                    commands = []
-                else:
+                    # --- Forced wake-up notification on first iteration
+                    #     after a sleep restart. Uses self._resuming_from_sleep
+                    #     (captured before clear_context_state deleted files).
+                    if ctx.iteration_count == 1 and self._resuming_from_sleep:
+                        try:
+                            _wake_msg = (
+                                "\U0001f44b Woke up from sleep. Resuming work immediately."
+                            )
+                            if ctx.discord_mode:
+                                self._exec_discord(ctx, _wake_msg)
+                                self.logger.info("Forced wake-up discord message sent after sleep restart")
+                            elif ctx.telegram_mode:
+                                self._exec_telegram(ctx, _wake_msg)
+                                self.logger.info("Forced wake-up telegram sent after sleep restart")
+                        except Exception as _e:
+                            self.logger.warning(f"Failed to send wake-up message: {_e}")
+                        # Clear the resuming flag after first iteration to prevent
+                        # re-injection of saved context on subsequent iterations
+                        self._is_resuming = False
+
+                    # --- Periodic auto-save (every 10 iterations as safety net) ---
+                    if ctx.iteration_count % 10 == 0:
+                        self._auto_save_context(ctx)
+
+                    # --- THINK ---
+                    self._term_log.phase(ctx.iteration_count, "THINKING")
+                    ctx.current_phase = LoopPhase.THINKING
+
                     try:
-                        commands = self._parse_model_commands(think_output)
+                        think_output = self._run_thinking(ctx)
+                    except ExecutionError as e:
+                        # Use enhanced error recovery system
+                        if not self._classify_and_recover(e, ctx):
+                            raise
+                        ctx.iteration_count -= 1
+                        continue
                     except Exception as e:
-                        self.logger.error(f"Command parsing error: {e}")
-                        self._append_log(
-                            ctx,
-                            "[SYSTEM] Parse error: " + str(e) + ". "
-                            "Output ONLY valid commands like: "
-                            "command(ls), read(path='/file'), bash(command='cmd'). "
-                            "No explanations, no natural language."
-                        )
+                        # Catch any other exception during thinking
+                        self.logger.error(f"Unexpected error during thinking: {e}")
+                        if not self._classify_and_recover(e, ctx):
+                            raise
+                        ctx.iteration_count -= 1
                         continue
 
-                # --- Track model output for identical-output detection ---
-                output_hash = hashlib.md5((think_output or "").encode()).hexdigest()
-                if output_hash == self._last_output_hash and (think_output or "").strip():
-                    self._consecutive_identical_outputs += 1
-                else:
-                    self._consecutive_identical_outputs = 0
-                    # Reset the fairy guard when output genuinely changes.
-                    # This is the ONLY place where _curiosity_fairy_invoked
-                    # should be cleared based on output — the action-signature
-                    # tracking in _check_repetition_breaker and
-                    # _record_iteration_actions owns this flag otherwise.
-                    self._curiosity_fairy_invoked = False
-                self._last_output_hash = output_hash
+                    # Reset consecutive errors on success
+                    self._record_successful_iteration()
 
-                # --- Record action signature for repetition breaker ---
-                self._record_iteration_actions(commands)
+                    self._raise_if_cancelled(ctx)
 
-                # --- Repetition breaker: code-level loop intervention ---
-                break_msg = self._check_repetition_breaker(ctx)
-                if break_msg:
-                    self._append_log(ctx, break_msg)
-                    # If the breaker says to force sleep, give the model
-                    # one chance to execute sleep on its own next turn.
-                    # If it doesn't, we force it on the NEXT iteration.
-                    if "PERSISTENT LOOP" in break_msg:
-                        self.logger.warning("Persistent loop — will force sleep on next iteration if model doesn't")
-                        self._force_sleep_pending = True
-                    # If the Curiosity Fairy was invoked, call it now and
-                    # inject its suggestion into the execution log.
-                    if "CURIOSITY FAIRY ACTIVATED" in break_msg:
-                        suggestion = self._invoke_curiosity_fairy(ctx)
-                        if suggestion:
-                            fairy_msg = (
-                                f"[Message from the Curiosity Fairy] "
-                                f"```\n{suggestion}\n```"
-                            )
-                            self._append_log(ctx, fairy_msg)
-                            self._term_log.thinking(
-                                f"🧚 Curiosity Fairy suggests: {suggestion[:120]}"
-                            )
-
-                # --- External Loop Observer (out-of-band detection) ---
-                if self._external_observer is not None:
-                    try:
-                        obs_verdict = self._external_observer.on_iteration(
-                            commands=commands,
-                            output_text=think_output or "",
-                            iteration_number=ctx.iteration_count,
+                    # --- Parse commands from the model's response ---
+                    # Guard against None/empty model output
+                    if not think_output:
+                        self.logger.warning(
+                            "Model returned empty output",
+                            iteration=ctx.iteration_count,
                         )
-                        if obs_verdict.has_loop and obs_verdict.intervention_message:
-                            self._append_log(ctx, obs_verdict.intervention_message)
-                            self._term_log.thinking(
-                                f"🔍 External Observer: {obs_verdict.intervention_level_name} "
-                                f"at iteration {obs_verdict.iteration_number}"
+                        # Give the model feedback so it can self-correct
+                        self._append_log(
+                            ctx,
+                            "[SYSTEM] Your last response was empty. "
+                            "You MUST output at least one command() or tool call "
+                            "(read/write/edit/glob/grep/bash) on every turn."
+                        )
+                        commands = []
+                    else:
+                        try:
+                            commands = self._parse_model_commands(think_output)
+                        except Exception as e:
+                            self.logger.error(f"Command parsing error: {e}")
+                            self._append_log(
+                                ctx,
+                                "[SYSTEM] Parse error: " + str(e) + ". "
+                                "Output ONLY valid commands like: "
+                                "command(ls), read(path='/file'), bash(command='cmd'). "
+                                "No explanations, no natural language."
                             )
-                            self.logger.info(
-                                "External Observer intervention",
-                                level=obs_verdict.intervention_level_name,
-                                iteration=obs_verdict.iteration_number,
+                            continue
+
+                    # --- Track model output for identical-output detection ---
+                    output_hash = hashlib.md5((think_output or "").encode()).hexdigest()
+                    if output_hash == self._last_output_hash and (think_output or "").strip():
+                        self._consecutive_identical_outputs += 1
+                    else:
+                        self._consecutive_identical_outputs = 0
+                        # Reset the fairy guard when output genuinely changes.
+                        # This is the ONLY place where _curiosity_fairy_invoked
+                        # should be cleared based on output — the action-signature
+                        # tracking in _check_repetition_breaker and
+                        # _record_iteration_actions owns this flag otherwise.
+                        self._curiosity_fairy_invoked = False
+                    self._last_output_hash = output_hash
+
+                    # --- Record action signature for repetition breaker ---
+                    self._record_iteration_actions(commands)
+
+                    # --- Repetition breaker: code-level loop intervention ---
+                    break_msg = self._check_repetition_breaker(ctx)
+                    if break_msg:
+                        self._append_log(ctx, break_msg)
+                        # If the breaker says to force sleep, give the model
+                        # one chance to execute sleep on its own next turn.
+                        # If it doesn't, we force it on the NEXT iteration.
+                        if "PERSISTENT LOOP" in break_msg:
+                            self.logger.warning("Persistent loop — will force sleep on next iteration if model doesn't")
+                            self._force_sleep_pending = True
+                        # If the Curiosity Fairy was invoked, call it now and
+                        # inject its suggestion into the execution log.
+                        if "CURIOSITY FAIRY ACTIVATED" in break_msg:
+                            suggestion = self._invoke_curiosity_fairy(ctx)
+                            if suggestion:
+                                fairy_msg = (
+                                    f"[Message from the Curiosity Fairy] "
+                                    f"```\n{suggestion}\n```"
+                                )
+                                self._append_log(ctx, fairy_msg)
+                                self._term_log.thinking(
+                                    f"🧚 Curiosity Fairy suggests: {suggestion[:120]}"
+                                )
+
+                    # --- External Loop Observer (out-of-band detection) ---
+                    if self._external_observer is not None:
+                        try:
+                            obs_verdict = self._external_observer.on_iteration(
+                                commands=commands,
+                                output_text=think_output or "",
+                                iteration_number=ctx.iteration_count,
                             )
-                        if obs_verdict.force_sleep:
-                            self.logger.warning(
-                                "External Observer forcing sleep",
-                                iteration=ctx.iteration_count,
-                            )
+                            if obs_verdict.has_loop and obs_verdict.intervention_message:
+                                self._append_log(ctx, obs_verdict.intervention_message)
+                                self._term_log.thinking(
+                                    f"🔍 External Observer: {obs_verdict.intervention_level_name} "
+                                    f"at iteration {obs_verdict.iteration_number}"
+                                )
+                                self.logger.info(
+                                    "External Observer intervention",
+                                    level=obs_verdict.intervention_level_name,
+                                    iteration=obs_verdict.iteration_number,
+                                )
+                            if obs_verdict.force_sleep:
+                                self.logger.warning(
+                                    "External Observer forcing sleep",
+                                    iteration=ctx.iteration_count,
+                                )
+                                self._notify_telegram_error(
+                                    ctx,
+                                    "🛑 External Observer: persistent loop detected. "
+                                    "Forcing context reset and restart.",
+                                )
+                                self._handle_sleep(ctx)
+                        except Exception as _obs_err:
+                            # Observer must never break the main loop
+                            self.logger.debug(f"External Observer error (non-fatal): _obs_err")
+
+                    # Check for forced sleep (persistent loop breaker from a
+                    # PREVIOUS iteration — the model was given one chance but
+                    # didn't execute sleep, so we force it now.)
+                    if self._force_sleep_pending:
+                        # Did the model include sleep in its commands? If so,
+                        # let it proceed naturally — no need to force.
+                        if any(cmd[0] == "sleep" for cmd in commands):
+                            self._force_sleep_pending = False
+                            self.logger.info("Model executed sleep after persistent loop warning — no force needed")
+                        else:
+                            self._force_sleep_pending = False
+                            self.logger.warning("Force-sleep: model did not execute sleep after persistent loop warning")
+                            self._term_log.separator()
+                            self._term_log.error("🛑 Force-sleep: persistent loop not broken by model")
                             self._notify_telegram_error(
                                 ctx,
-                                "🛑 External Observer: persistent loop detected. "
-                                "Forcing context reset and restart.",
+                                "🛑 Force-sleep: persistent loop detected that the model "
+                                "could not break. Compressing context and restarting."
                             )
                             self._handle_sleep(ctx)
-                    except Exception as _obs_err:
-                        # Observer must never break the main loop
-                        self.logger.debug(f"External Observer error (non-fatal): _obs_err")
+                            # _handle_sleep does os.execv — never reached
 
-                # Check for forced sleep (persistent loop breaker from a
-                # PREVIOUS iteration — the model was given one chance but
-                # didn't execute sleep, so we force it now.)
-                if self._force_sleep_pending:
-                    # Did the model include sleep in its commands? If so,
-                    # let it proceed naturally — no need to force.
-                    if any(cmd[0] == "sleep" for cmd in commands):
-                        self._force_sleep_pending = False
-                        self.logger.info("Model executed sleep after persistent loop warning — no force needed")
-                    else:
-                        self._force_sleep_pending = False
-                        self.logger.warning("Force-sleep: model did not execute sleep after persistent loop warning")
+                    # --- Detect empty/repetitive iterations (anti-drift) ---
+                    nudge = self._detect_empty_iteration(ctx, think_output, commands)
+                    if nudge:
+                        # Move on so next thinking phase sees the Curiosity Fairy.
+                        # Keep the loop tight; the model will act on the nudge.
+                        continue
+
+                    # Check for sleep / exit first (they control the loop)
+                    if any(cmd[0] == "exit" for cmd in commands):
                         self._term_log.separator()
-                        self._term_log.error("🛑 Force-sleep: persistent loop not broken by model")
-                        self._notify_telegram_error(
-                            ctx,
-                            "🛑 Force-sleep: persistent loop detected that the model "
-                            "could not break. Compressing context and restarting."
-                        )
+                        self._term_log.thinking("Exit requested — saving context and shutting down...")
+                        self._handle_exit(ctx)
+                        ctx.end_time = time.time()
+                        return ctx
+
+                    if any(cmd[0] == "sleep" for cmd in commands):
+                        self._term_log.separator()
+                        self._term_log.thinking("Sleep requested — compressing context and restarting...")
                         self._handle_sleep(ctx)
-                        # _handle_sleep does os.execv — never reached
+                        return ctx
 
-                # --- Detect empty/repetitive iterations (anti-drift) ---
-                nudge = self._detect_empty_iteration(ctx, think_output, commands)
-                if nudge:
-                    # Move on so next thinking phase sees the Curiosity Fairy.
-                    # Keep the loop tight; the model will act on the nudge.
-                    continue
+                    # --- EXECUTE ---
+                    self._term_log.phase(ctx.iteration_count, "EXECUTING")
+                    ctx.current_phase = LoopPhase.EXECUTING
+                    try:
+                        self._execute_commands(ctx, commands)
+                    except Exception as e:
+                        self.logger.error(f"Command execution error: {e}")
+                        self._append_log(ctx, f"[execution error] {e}")
+                        # Continue to next iteration - don't let execution errors stop the loop
 
-                # Check for sleep / exit first (they control the loop)
-                if any(cmd[0] == "exit" for cmd in commands):
-                    self._term_log.separator()
-                    self._term_log.thinking("Exit requested — saving context and shutting down...")
-                    self._handle_exit(ctx)
+                    self._raise_if_cancelled(ctx)
+
+                    # Non-blocking check for new Telegram messages.  The agent
+                    # must never wait idly: a tiny timeout lets other threads
+                    # deliver messages without causing any perceptible dormancy.
+                    self._new_message_event.wait(timeout=0.05)
+                    self._new_message_event.clear()
+
+                    # --- Periodic resource health check (every 100 iterations) ---
+                    if ctx.iteration_count % 100 == 0:
+                        self._check_and_handle_resources(ctx)
+
+                    # --- Periodic self-diagnostic (every 50 iterations) ---
+                    if ctx.iteration_count % 50 == 0:
+                        self._run_self_diagnostic(ctx)
+
+                except _PipelineCancelledError as e:
+                    self.logger.info(f"Autonomous Loop cancelled: {e}")
+                    ctx.current_phase = LoopPhase.FAILED
+                    ctx.error = str(e)
+                    ctx.cancelled = True
                     ctx.end_time = time.time()
+                    self._term_log.cancelled()
                     return ctx
 
-                if any(cmd[0] == "sleep" for cmd in commands):
-                    self._term_log.separator()
-                    self._term_log.thinking("Sleep requested — compressing context and restarting...")
-                    self._handle_sleep(ctx)
+                except KeyboardInterrupt:
+                    self.logger.info("KeyboardInterrupt received - saving state and exiting")
+                    ctx.current_phase = LoopPhase.FAILED
+                    ctx.error = "KeyboardInterrupt"
+                    ctx.cancelled = True
+                    ctx.end_time = time.time()
+                    self._term_log.cancelled()
+                    # Save exit state for recovery
+                    try:
+                        self._handle_exit(ctx, fast=True)
+                    except Exception:
+                        pass
                     return ctx
 
-                # --- EXECUTE ---
-                self._term_log.phase(ctx.iteration_count, "EXECUTING")
-                ctx.current_phase = LoopPhase.EXECUTING
-                try:
-                    self._execute_commands(ctx, commands)
-                except Exception as e:
-                    self.logger.error(f"Command execution error: {e}")
-                    self._append_log(ctx, f"[execution error] {e}")
-                    # Continue to next iteration - don't let execution errors stop the loop
+                except Exception as outer_e:
+                    # CRITICAL FIX: Catch ALL unhandled exceptions to prevent the agent from stopping.
+                    # Log the error, attempt recovery, and RESTART the loop instead of returning.
+                    # The agent should ONLY stop on explicit user cancellation or system kill.
+                    self.logger.error(f"Autonomous Loop encountered critical error (restarting loop): {outer_e}")
+                    self._term_log.error(f"Critical error caught: {outer_e}")
 
-                self._raise_if_cancelled(ctx)
+                    # Increment error counter for potential forced sleep
+                    _critical_error_count += 1
 
-                # Non-blocking check for new Telegram messages.  The agent
-                # must never wait idly: a tiny timeout lets other threads
-                # deliver messages without causing any perceptible dormancy.
-                self._new_message_event.wait(timeout=0.05)
-                self._new_message_event.clear()
+                    # Attempt to notify user about the error
+                    try:
+                        self._notify_telegram_error(ctx, f"⚠️ Critical error caught (iteration {ctx.iteration_count}): {type(outer_e).__name__} - {str(outer_e)[:200]}")
+                    except Exception:
+                        pass
 
-                # --- Periodic resource health check (every 100 iterations) ---
-                if ctx.iteration_count % 100 == 0:
-                    self._check_and_handle_resources(ctx)
+                    # Attempt to save state for recovery
+                    try:
+                        self._auto_save_context(ctx, force=True)
+                    except Exception:
+                        pass
 
-                # --- Periodic self-diagnostic (every 50 iterations) ---
-                if ctx.iteration_count % 50 == 0:
-                    self._run_self_diagnostic(ctx)
+                    # If we've had too many consecutive critical errors, force a sleep to reset context
+                    if _critical_error_count >= _max_critical_errors_before_force_sleep:
+                        self.logger.warning(f"Too many consecutive critical errors ({_critical_error_count}), forcing sleep reset")
+                        try:
+                            self._notify_telegram_error(ctx, f"🛑 Too many consecutive errors ({_critical_error_count}). Forcing context reset and restart.")
+                            self._handle_sleep(ctx)
+                            return ctx  # _handle_sleep does os.execv — never reached
+                        except Exception as sleep_err:
+                            self.logger.error(f"Failed to execute forced sleep: {sleep_err}")
+                            # Reset counter and continue anyway
+                            _critical_error_count = 0
 
-        except _PipelineCancelledError as e:
-            self.logger.info(f"Autonomous Loop cancelled: {e}")
-            ctx.current_phase = LoopPhase.FAILED
-            ctx.error = str(e)
-            ctx.cancelled = True
-            ctx.end_time = time.time()
-            self._term_log.cancelled()
-            return ctx
+                    # Clear the error state
+                    ctx.error = None
+                    ctx.current_phase = LoopPhase.THINKING
 
-        except KeyboardInterrupt:
-            self.logger.info("KeyboardInterrupt received - saving state and exiting")
-            ctx.current_phase = LoopPhase.FAILED
-            ctx.error = "KeyboardInterrupt"
-            ctx.cancelled = True
-            ctx.end_time = time.time()
-            self._term_log.cancelled()
-            # Save exit state for recovery
-            try:
-                self._handle_exit(ctx, fast=True)
-            except Exception:
-                pass
-            return ctx
+                    # Add error info to execution log for model awareness
+                    self._append_log(ctx, f"[SYSTEM CRITICAL ERROR RECOVERED] {type(outer_e).__name__}: {str(outer_e)[:300]}")
 
-        except Exception as outer_e:
-            # CRITICAL FIX: Catch ALL unhandled exceptions to prevent the agent from stopping.
-            # Log the error, attempt recovery, and RESTART the loop instead of returning.
-            # The agent should ONLY stop on explicit user cancellation or system kill.
-            self.logger.error(f"Autonomous Loop encountered critical error (restarting loop): {outer_e}")
-            self._term_log.error(f"Critical error caught: {outer_e}")
-            
-            # Increment error counter for potential forced sleep
-            _critical_error_count += 1
-            
-            # Attempt to notify user about the error
-            try:
-                self._notify_telegram_error(ctx, f"⚠️ Critical error caught (iteration {ctx.iteration_count}): {type(outer_e).__name__} - {str(outer_e)[:200]}")
-            except Exception:
-                pass
-            
-            # Attempt to save state for recovery
-            try:
-                self._auto_save_context(ctx, force=True)
-            except Exception:
-                pass
-            
-            # If we've had too many consecutive critical errors, force a sleep to reset context
-            if _critical_error_count >= _max_critical_errors_before_force_sleep:
-                self.logger.warning(f"Too many consecutive critical errors ({_critical_error_count}), forcing sleep reset")
-                try:
-                    self._notify_telegram_error(ctx, f"🛑 Too many consecutive errors ({_critical_error_count}). Forcing context reset and restart.")
-                    self._handle_sleep(ctx)
-                    return ctx  # _handle_sleep does os.execv — never reached
-                except Exception as sleep_err:
-                    self.logger.error(f"Failed to execute forced sleep: {sleep_err}")
-                    # Reset counter and continue anyway
-                    _critical_error_count = 0
-            
-            # Clear the error state
-            ctx.error = None
-            ctx.current_phase = LoopPhase.THINKING
-            
-            # Add error info to execution log for model awareness
-            self._append_log(ctx, f"[SYSTEM CRITICAL ERROR RECOVERED] {type(outer_e).__name__}: {str(outer_e)[:300]}")
-            
-            # Small delay before retry to avoid tight error loops
-            time.sleep(2.0)
-            
-            # RESTART THE MAIN LOOP - This is the key fix!
-            # Instead of returning (which stops the agent), we restart the entire try block
-            # by using a nested try-except structure with continue
-            self.logger.info("Restarting autonomous loop after critical error recovery...")
-            
-            # Reset context for fresh start
-            ctx.current_phase = LoopPhase.THINKING
-            ctx.iteration_count += 1
-            
-            # Continue the outer while True loop
-            continue
+                    # Small delay before retry to avoid tight error loops
+                    time.sleep(2.0)
+
+                    # RESTART THE MAIN LOOP - This is the key fix!
+                    # Instead of returning (which stops the agent), we restart the entire try block
+                    # by using a nested try-except structure with continue
+                    self.logger.info("Restarting autonomous loop after critical error recovery...")
+
+                    # Reset context for fresh start
+                    ctx.current_phase = LoopPhase.THINKING
+                    ctx.iteration_count += 1
+
+                    # Continue the outer while True loop
+                    continue
 
         finally:
             self._stop_auto_save()
