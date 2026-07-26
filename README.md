@@ -1,4 +1,4 @@
-# Clio Agent 1
+# Clio Agent
 
 <img width="1280" height="720" alt="Clio Agent 1" src="https://github.com/user-attachments/assets/eae19b90-fe77-4d9c-9ebb-5a3f79566fd1" />
 
