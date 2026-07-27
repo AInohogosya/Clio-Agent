@@ -1,0 +1,35 @@
+# Code Owners
+
+# Global owners (review all PRs)
+* @clio-project/maintainers
+
+# Documentation
+/docs/ @clio-project/docs-maintainers
+/README.md @clio-project/docs-maintainers
+/CHANGELOG.md @clio-project/docs-maintainers
+/CONTRIBUTING.md @clio-project/docs-maintainers
+/CODE_OF_CONDUCT.md @clio-project/docs-maintainers
+
+# Core agent logic
+/src/ai_agent/core_processing/ @clio-project/core-maintainers
+
+# Tools & utilities
+/src/ai_agent/tools/ @clio-project/tools-maintainers
+/src/ai_agent/utils/ @clio-project/tools-maintainers
+
+# External integrations
+/external_integration/ @clio-project/integrations-maintainers
+
+# CI/CD & DevOps
+/.github/workflows/ @clio-project/devops-maintainers
+/.github/dependabot.yml @clio-project/devops-maintainers
+/Dockerfile @clio-project/devops-maintainers
+/docker/ @clio-project/devops-maintainers
+
+# Configuration
+/config.yaml.example @clio-project/core-maintainers
+/pyproject.toml @clio-project/core-maintainers
+/Makefile @clio-project/devops-maintainers
+
+# Tests
+/tests/ @clio-project/test-maintainers

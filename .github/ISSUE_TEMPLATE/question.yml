@@ -1,0 +1,81 @@
+name: Question / Support
+description: Ask a question or get help with Clio Agent
+title: "[QUESTION] "
+labels: ["question", "support"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Have a question? Need help? We're here to help!
+
+        Before asking, please check:
+        - [README](https://github.com/clio-project/Clio-Agent-1/blob/main/README.md)
+        - [QUICKSTART](https://github.com/clio-project/Clio-Agent-1/blob/main/QUICKSTART.md)
+        - [DEVELOPERS.md](https://github.com/clio-project/Clio-Agent-1/blob/main/DEVELOPERS.md)
+        - [Existing Issues](https://github.com/clio-project/Clio-Agent-1/issues)
+        - [Discussions](https://github.com/clio-project/Clio-Agent-1/discussions)
+
+  - type: textarea
+    id: question
+    attributes:
+      label: Your Question
+      description: What would you like to know or what problem are you facing?
+      placeholder: How do I configure... / Why does... / Can I...
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: What are you trying to achieve? What have you tried?
+      placeholder: I'm trying to... I've tried... I've read...
+    validations:
+      required: false
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating System
+      options:
+        - macOS
+        - Linux (Ubuntu/Debian)
+        - Linux (Arch/Manjaro)
+        - Linux (Fedora/RHEL)
+        - Windows
+        - Docker
+        - Other
+    validations:
+      required: false
+
+  - type: input
+    id: python_version
+    attributes:
+      label: Python Version
+      placeholder: "3.11.5"
+    validations:
+      required: false
+
+  - type: input
+    id: clio_version
+    attributes:
+      label: Clio Agent Version
+      placeholder: "3.0.0"
+    validations:
+      required: false
+
+  - type: dropdown
+    id: ai_provider
+    attributes:
+      label: AI Provider (if relevant)
+      options:
+        - Ollama (local)
+        - OpenRouter
+        - OpenAI
+        - Anthropic
+        - Google (Gemini)
+        - Groq
+        - Other
+        - Not applicable
+    validations:
+      required: false

@@ -43,7 +43,9 @@ class FileReadTool(ToolExecutor):
         except OSError as exc:
             raise FileAccessToolError(str(path), str(exc))
 
-        total_lines = content.count("\n") + (1 if content and not content.endswith("\n") else 0)
+        total_lines = content.count("\n") + (
+            1 if content and not content.endswith("\n") else 0
+        )
 
         # Apply optional line range
         if input.start_line is not None or input.end_line is not None:

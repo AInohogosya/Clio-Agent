@@ -41,6 +41,7 @@ logger = get_logger("tools.delegate_sub_agent")
 @dataclass
 class DelegateSubAgentInput(ToolInput):
     """Input for spawning a sub-agent."""
+
     agent_type: str = ""
     task: str = ""
     timeout_seconds: int = 600
@@ -51,6 +52,7 @@ class DelegateSubAgentInput(ToolInput):
 @dataclass
 class SubAgentResultInput(ToolInput):
     """Input for retrieving a sub-agent result."""
+
     agent_id: str = ""
 
 
@@ -67,7 +69,9 @@ class DelegateSubAgentTool(ToolExecutor):
     """
 
     name = "subagent"
-    description = "Delegate a task to a specialized sub-agent (research, review, architect)"
+    description = (
+        "Delegate a task to a specialized sub-agent (research, review, architect)"
+    )
     required_permission = Permission.EXECUTE
 
     def __init__(self, permissions: Optional[PermissionSet] = None) -> None:
@@ -90,6 +94,7 @@ class DelegateSubAgentTool(ToolExecutor):
             return
         try:
             from ..sub_agents.manager import SubAgentManager
+
             self._manager = SubAgentManager(config=self._config)
         except Exception as e:
             logger.warning(f"Could not create SubAgentManager: {e}")
@@ -143,6 +148,7 @@ class DelegateSubAgentTool(ToolExecutor):
 
             # Check if agent type is registered
             from ..sub_agents.registry import get_global_registry
+
             registry = get_global_registry()
             if not registry.is_registered(input.agent_type):
                 available = ", ".join(registry.list_types())
@@ -174,7 +180,7 @@ class DelegateSubAgentTool(ToolExecutor):
                 f"  Agent ID:   {handle.agent_id}\n"
                 f"  Agent Type: {handle.agent_type}\n"
                 f"  Task:       {input.task[:200]}\n\n"
-                f"Use subagent_result(agent_id=\"{handle.agent_id}\") "
+                f'Use subagent_result(agent_id="{handle.agent_id}") '
                 f"to check progress and retrieve results."
             )
 
@@ -420,6 +426,7 @@ class KillSubAgentTool(ToolExecutor):
 # Convenience functions for the Main Agent's loop engine
 # ════════════════════════════════════════════════════════════════
 
+
 def parse_subagent_command(command_str: str) -> Optional[ToolInput]:
     """Parse a subagent(...) command from the Main Agent's output.
 
@@ -445,7 +452,7 @@ def parse_subagent_command(command_str: str) -> Optional[ToolInput]:
         if extra_str:
             for m in re.finditer(r'(\w+)\s*=\s*"([^"]*)"', extra_str):
                 kwargs[m.group(1)] = m.group(2)
-            for m in re.finditer(r'(\w+)\s*=\s*(\d+)', extra_str):
+            for m in re.finditer(r"(\w+)\s*=\s*(\d+)", extra_str):
                 kwargs[m.group(1)] = int(m.group(2))
 
         return DelegateSubAgentInput(
@@ -465,7 +472,7 @@ def parse_subagent_command(command_str: str) -> Optional[ToolInput]:
         return SubAgentResultInput(agent_id=result_match.group(1))
 
     # Match subagent_list()
-    if re.match(r'subagent_list\(\s*\)', command_str):
+    if re.match(r"subagent_list\(\s*\)", command_str):
         return ToolInput()
 
     # Match subagent_kill(agent_id="...")
@@ -500,7 +507,7 @@ def get_subagent_tools_config() -> Dict[str, Any]:
                 ],
             },
             {
-                "pattern": r'subagent_list\(\s*\)',
+                "pattern": r"subagent_list\(\s*\)",
                 "description": "list all active sub-agents",
                 "examples": ["subagent_list()"],
             },

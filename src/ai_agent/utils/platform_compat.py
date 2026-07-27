@@ -1,17 +1,15 @@
 """
-Cross-platform compatibility utilities for Clio Agent.
-Provides consistent platform detection and operations across Windows, macOS, and Linux.
+Platform compatibility utilities for Clio Agent.
+Provides cross-platform abstractions for process management, filesystem, and network operations.
 """
 
 import os
 import sys
-import platform
-import subprocess
 import signal
+import subprocess
 import shutil
-import time
 from pathlib import Path
-from typing import Optional, List, Tuple, Union
+from typing import List, Optional, Tuple
 
 
 def is_windows() -> bool:
@@ -30,12 +28,12 @@ def is_linux() -> bool:
 
 
 def is_unix() -> bool:
-    """Check if running on a Unix-like system (Linux, macOS, BSD, etc.)."""
+    """Check if running on a Unix-like system (Linux, macOS, BSD)."""
     return not is_windows()
 
 
 def get_platform() -> str:
-    """Get platform identifier string."""
+    """Get a string identifier for the current platform."""
     if is_windows():
         return "windows"
     elif is_macos():
@@ -46,45 +44,136 @@ def get_platform() -> str:
         return "unknown"
 
 
-def get_home_dir() -> Path:
-    """Get the user's home directory in a cross-platform way."""
-    return Path.home()
+def is_process_alive(pid: int) -> bool:
+    """
+    Check if a process with the given PID is alive.
 
-
-def ping_host(host: str, timeout: float = 3.0) -> bool:
-    """Ping a host to check network connectivity.
-    
     Args:
-        host: Host to ping (IP or hostname)
-        timeout: Timeout in seconds
-        
+        pid: Process ID to check
+
     Returns:
-        True if ping succeeds, False otherwise
+        True if process exists and is running, False otherwise
+    """
+    if pid <= 0:
+        return False
+    try:
+        if is_windows():
+            import ctypes
+
+            kernel32 = ctypes.windll.kernel32
+            handle = kernel32.OpenProcess(0x001F0FFF, False, pid)  # PROCESS_ALL_ACCESS
+            if handle:
+                kernel32.CloseHandle(handle)
+                return True
+            return False
+        else:
+            # On Unix, send signal 0 to check existence
+            os.kill(pid, 0)
+            return True
+    except (OSError, ProcessLookupError):
+        return False
+
+
+def kill_process(pid: int, force: bool = False) -> bool:
+    """
+    Kill a process by PID.
+
+    Args:
+        pid: Process ID to kill
+        force: If True, use SIGKILL (SIGTERM otherwise on Unix)
+
+    Returns:
+        True if process was killed or didn't exist, False on error
+    """
+    if pid <= 0:
+        return False
+    try:
+        if is_windows():
+            # On Windows, use taskkill
+            result = subprocess.run(
+                ["taskkill", "/F" if force else "", "/PID", str(pid)],
+                capture_output=True,
+                timeout=5,
+            )
+            return result.returncode == 0
+        else:
+            # On Unix, send SIGTERM then SIGKILL if force
+            sig = signal.SIGKILL if force else signal.SIGTERM
+            os.kill(pid, sig)
+            return True
+    except (OSError, ProcessLookupError, subprocess.TimeoutExpired):
+        return False
+
+
+def spawn_detached(command: List[str], cwd: Optional[Path] = None) -> Optional[int]:
+    """
+    Spawn a detached child process.
+
+    Args:
+        command: Command and arguments as a list
+        cwd: Working directory for the child process
+
+    Returns:
+        PID of the child process, or None on failure
     """
     try:
         if is_windows():
-            # Windows ping: -n count, -w timeout in milliseconds
+            # On Windows, use CREATE_NEW_PROCESS_GROUP and DETACHED_PROCESS
+            creation_flags = (
+                0x00000200 | 0x00000008
+            )  # CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS
+            proc = subprocess.Popen(
+                command,
+                cwd=cwd,
+                creationflags=creation_flags,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        else:
+            # On Unix, use start_new_session to detach
+            proc = subprocess.Popen(
+                command,
+                cwd=cwd,
+                start_new_session=True,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        return proc.pid
+    except Exception:
+        return None
+
+
+def ping_host(host: str, timeout: float = 3.0) -> bool:
+    """
+    Ping a host to check network connectivity.
+
+    Args:
+        host: Host to ping (IP or hostname)
+        timeout: Timeout in seconds
+
+    Returns:
+        True if ping succeeded, False otherwise
+    """
+    try:
+        if is_windows():
             cmd = ["ping", "-n", "1", "-w", str(int(timeout * 1000)), host]
         else:
-            # Unix ping: -c count, -W timeout in seconds
             cmd = ["ping", "-c", "1", "-W", str(int(timeout)), host]
-        
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=timeout + 2
-        )
+
+        result = subprocess.run(cmd, capture_output=True, timeout=timeout + 1)
         return result.returncode == 0
     except Exception:
         return False
 
 
 def get_disk_root() -> Path:
-    """Get the root disk path for disk usage checks.
-    
+    """
+    Get the root disk path for the current platform.
+
     Returns:
-        Path to the root filesystem (C:\\ on Windows, / on Unix)
+        Path to the root filesystem
     """
     if is_windows():
         return Path("C:\\")
@@ -93,221 +182,37 @@ def get_disk_root() -> Path:
 
 
 def get_cleanup_targets() -> List[Path]:
-    """Get list of directories that can be safely cleaned up for disk space.
-    
+    """
+    Get a list of paths that can be safely cleaned up to free disk space.
+
     Returns:
-        List of Path objects for cleanup targets
+        List of Path objects that can be cleaned
     """
     targets = []
-    
+
+    # Common cache directories
     if is_windows():
-        # Windows temp directories
-        temp_dir = os.environ.get("TEMP") or os.environ.get("TMP")
-        if temp_dir:
-            targets.append(Path(temp_dir))
-        # Windows user cache
         local_app_data = os.environ.get("LOCALAPPDATA")
         if local_app_data:
             targets.append(Path(local_app_data) / "Temp")
-            targets.append(Path(local_app_data) / "Microsoft" / "Windows" / "INetCache")
+            targets.append(Path(local_app_data) / "pip" / "cache")
     else:
-        # Unix temp directories
+        # Unix-like systems
         targets.append(Path("/tmp"))
         targets.append(Path("/var/tmp"))
-        
+
         # User cache directories
-        home = get_home_dir()
-        targets.append(home / ".cache")
-        
+        home = Path.home()
+        targets.append(home / ".cache" / "pip")
+        targets.append(home / ".cache" / "huggingface")
+        targets.append(home / ".cache" / "torch")
+
         # XDG cache
-        xdg_cache = os.environ.get("XDG_CACHE_HOME")
-        if xdg_cache:
-            targets.append(Path(xdg_cache))
-    
-    # Common cache directories
-    home = get_home_dir()
-    targets.append(home / ".cache" / "pip")
-    targets.append(home / ".cache" / "npm")
-    targets.append(home / ".cache" / "yarn")
-    
+        xdg_cache = os.environ.get("XDG_CACHE_HOME", home / ".cache")
+        targets.append(Path(xdg_cache) / "pip")
+
+    # Python cache directories
+    targets.append(Path.cwd() / "__pycache__")
+
     # Filter to only existing directories
-    return [t for t in targets if t.exists() and t.is_dir()]
-
-
-def is_process_alive(pid: int) -> bool:
-    """Check if a process is alive.
-    
-    Args:
-        pid: Process ID to check
-        
-    Returns:
-        True if process exists and is running, False otherwise
-    """
-    try:
-        if is_windows():
-            # On Windows, use tasklist or OpenProcess
-            result = subprocess.run(
-                ["tasklist", "/FI", f"PID eq {pid}"],
-                capture_output=True,
-                text=True,
-                timeout=5
-            )
-            return str(pid) in result.stdout
-        else:
-            # On Unix, send signal 0 to check existence
-            os.kill(pid, 0)
-            return True
-    except (OSError, ProcessLookupError):
-        return False
-    except Exception:
-        return False
-
-
-def kill_process(pid: int, force: bool = False) -> bool:
-    """Kill a process.
-    
-    Args:
-        pid: Process ID to kill
-        force: If True, use SIGKILL (Unix) or /F (Windows)
-        
-    Returns:
-        True if process was killed, False otherwise
-    """
-    try:
-        if is_windows():
-            if force:
-                result = subprocess.run(
-                    ["taskkill", "/F", "/PID", str(pid)],
-                    capture_output=True,
-                    text=True,
-                    timeout=10
-                )
-            else:
-                result = subprocess.run(
-                    ["taskkill", "/PID", str(pid)],
-                    capture_output=True,
-                    text=True,
-                    timeout=10
-                )
-            return result.returncode == 0
-        else:
-            if force:
-                os.kill(pid, signal.SIGKILL)
-            else:
-                os.kill(pid, signal.SIGTERM)
-            return True
-    except (OSError, ProcessLookupError):
-        return False
-    except Exception:
-        return False
-
-
-def spawn_detached(cmd: Union[str, List[str]], cwd: Optional[Union[str, Path]] = None) -> int:
-    """Spawn a detached process that runs independently of the parent.
-    
-    Args:
-        cmd: Command to run (string or list of arguments)
-        cwd: Working directory for the process
-        
-    Returns:
-        PID of the spawned process
-    """
-    if is_windows():
-        # On Windows, use CREATE_NEW_PROCESS_GROUP and DETACHED_PROCESS
-        import subprocess as sp
-        creationflags = sp.CREATE_NEW_PROCESS_GROUP | sp.DETACHED_PROCESS
-        if isinstance(cmd, str):
-            proc = sp.Popen(
-                cmd,
-                shell=True,
-                cwd=cwd,
-                creationflags=creationflags,
-                stdout=sp.DEVNULL,
-                stderr=sp.DEVNULL,
-                stdin=sp.DEVNULL,
-            )
-        else:
-            proc = sp.Popen(
-                cmd,
-                cwd=cwd,
-                creationflags=creationflags,
-                stdout=sp.DEVNULL,
-                stderr=sp.DEVNULL,
-                stdin=sp.DEVNULL,
-            )
-        return proc.pid
-    else:
-        # On Unix, use double-fork or start_new_session
-        import subprocess as sp
-        if isinstance(cmd, str):
-            proc = sp.Popen(
-                cmd,
-                shell=True,
-                cwd=cwd,
-                start_new_session=True,
-                stdout=sp.DEVNULL,
-                stderr=sp.DEVNULL,
-                stdin=sp.DEVNULL,
-            )
-        else:
-            proc = sp.Popen(
-                cmd,
-                cwd=cwd,
-                start_new_session=True,
-                stdout=sp.DEVNULL,
-                stderr=sp.DEVNULL,
-                stdin=sp.DEVNULL,
-            )
-        return proc.pid
-
-
-def get_free_disk_space(path: Union[str, Path]) -> int:
-    """Get free disk space in bytes for a path.
-    
-    Args:
-        path: Path to check
-        
-    Returns:
-        Free space in bytes, or 0 on error
-    """
-    try:
-        usage = shutil.disk_usage(str(path))
-        return usage.free
-    except Exception:
-        return 0
-
-
-def get_total_disk_space(path: Union[str, Path]) -> int:
-    """Get total disk space in bytes for a path.
-    
-    Args:
-        path: Path to check
-        
-    Returns:
-        Total space in bytes, or 0 on error
-    """
-    try:
-        usage = shutil.disk_usage(str(path))
-        return usage.total
-    except Exception:
-        return 0
-
-
-def is_admin() -> bool:
-    """Check if running with admin/root privileges."""
-    try:
-        if is_windows():
-            import ctypes
-            return ctypes.windll.shell32.IsUserAnAdmin()
-        else:
-            return os.geteuid() == 0
-    except Exception:
-        return False
-
-
-def get_shell() -> str:
-    """Get the user's default shell."""
-    if is_windows():
-        return os.environ.get("COMSPEC", "cmd.exe")
-    else:
-        return os.environ.get("SHELL", "/bin/bash")
+    return [p for p in targets if p.exists() and p.is_dir()]

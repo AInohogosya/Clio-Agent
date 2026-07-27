@@ -51,7 +51,7 @@ class GoogleProvider:
                 content="",
                 model=self.default_model,
                 provider=self.name,
-                error="Google API key not configured"
+                error="Google API key not configured",
             )
 
         try:
@@ -61,41 +61,35 @@ class GoogleProvider:
             unique_prompt = f"Unique Request ID: {unique_id}\n\n{request.prompt}"
 
             payload = {
-                "contents": [{
-                    "parts": [
-                        {"text": unique_prompt}
-                    ]
-                }],
+                "contents": [{"parts": [{"text": unique_prompt}]}],
                 "generationConfig": {
                     "temperature": request.temperature,
                     "maxOutputTokens": request.max_tokens,
-                }
+                },
             }
 
             # Add image if provided
             if request.image_data:
                 # Convert image to base64
-                image_base64 = base64.b64encode(request.image_data).decode('utf-8')
+                image_base64 = base64.b64encode(request.image_data).decode("utf-8")
                 # Determine MIME type
                 image_format = request.image_format.lower()
-                mime_type = f"image/{image_format}" if image_format in ["jpeg", "jpg", "png", "webp", "gif"] else "image/png"
+                mime_type = (
+                    f"image/{image_format}"
+                    if image_format in ["jpeg", "jpg", "png", "webp", "gif"]
+                    else "image/png"
+                )
 
-                payload["contents"][0]["parts"].append({
-                    "inline_data": {
-                        "mime_type": mime_type,
-                        "data": image_base64
-                    }
-                })
+                payload["contents"][0]["parts"].append(
+                    {"inline_data": {"mime_type": mime_type, "data": image_base64}}
+                )
 
             # Make API call
             url = f"{self.endpoint}?key={self.api_key}"
             headers = {"Content-Type": "application/json"}
 
             response = requests.post(
-                url,
-                headers=headers,
-                json=payload,
-                timeout=self.timeout
+                url, headers=headers, json=payload, timeout=self.timeout
             )
 
             if response.status_code == 200:
@@ -120,7 +114,9 @@ class GoogleProvider:
                     content=content,
                     model=request.model or self.default_model,
                     provider=self.name,
-                    cost=self._calculate_cost(request.model or self.default_model, tokens_used),
+                    cost=self._calculate_cost(
+                        request.model or self.default_model, tokens_used
+                    ),
                     tokens_used=tokens_used,
                 )
             else:
@@ -142,7 +138,9 @@ class GoogleProvider:
                 error=str(e),
             )
 
-    def _calculate_cost(self, model: str, tokens: Optional[int] = None) -> Optional[float]:
+    def _calculate_cost(
+        self, model: str, tokens: Optional[int] = None
+    ) -> Optional[float]:
         """Calculate cost for Google Gemini API"""
         # Pricing for Gemini 1.5 Flash (as of 2024)
         # These are approximate costs and may change

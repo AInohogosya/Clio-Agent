@@ -11,16 +11,24 @@ from typing import Optional, Dict, Any, List
 from dataclasses import dataclass
 from enum import Enum
 
-from .multi_provider_vision_client import MultiProviderVisionAPIClient, APIRequest, APIProvider
+from .multi_provider_vision_client import (
+    MultiProviderVisionAPIClient,
+    APIRequest,
+    APIProvider,
+)
 from ..utils.exceptions import ValidationError, ErrorCategory
 from ..utils.logger import get_logger
 from ..utils.config import load_config
-from ..utils.resilience_engine import get_resilience_engine, classify_api_error, ErrorSeverity
-
+from ..utils.resilience_engine import (
+    get_resilience_engine,
+    classify_api_error,
+    ErrorSeverity,
+)
 
 
 class TaskType(Enum):
     """Task types for 5-Phase CLI Architecture"""
+
     PHASE1_COMMAND_SUGGESTION = "phase1_command_suggestion"
     INPUT_SUMMARIZATION = "input_summarization"
     PHASE2_COMMAND_EXTRACTION = "phase2_command_extraction"
@@ -32,6 +40,7 @@ class TaskType(Enum):
 @dataclass
 class ModelRequest:
     """Model request structure"""
+
     task_type: TaskType
     prompt: str
     image_data: Optional[bytes] = None
@@ -48,6 +57,7 @@ class ModelRequest:
 @dataclass
 class ModelResponse:
     """Model response structure"""
+
     success: bool
     content: str
     task_type: TaskType
@@ -69,7 +79,7 @@ class PromptTemplate:
     def _load_templates(self) -> Dict[str, str]:
         """Load prompt templates for 5-Phase CLI Architecture"""
         return {
-            TaskType.PHASE1_COMMAND_SUGGESTION.value: '''I have received the instruction: "{user_prompt}". What commands should I run to carry this out? Please tell me. I can only use terminal commands, so do not suggest GUI operations. The OS I am using is {os_info}.
+            TaskType.PHASE1_COMMAND_SUGGESTION.value: """I have received the instruction: "{user_prompt}". What commands should I run to carry this out? Please tell me. I can only use terminal commands, so do not suggest GUI operations. The OS I am using is {os_info}.
 
 CRITICAL: Plan for success by considering:
 1. The primary approach to accomplish this task
@@ -77,19 +87,16 @@ CRITICAL: Plan for success by considering:
 3. Common failure points and how to avoid them
 4. Verification steps to confirm the task succeeded (not just completed)
 
-Remember: The task is only successful when the goal is FULLY ACHIEVED. Provide comprehensive command suggestions with built-in fallback strategies.{conversation_history}''',
-
-            TaskType.INPUT_SUMMARIZATION.value: '''Please summarize the following input into a single sentence. This is critical - you must provide exactly one sentence that captures the essence of the input. Do not use multiple sentences. Do not add explanations. Just provide the summary in a single sentence.
+Remember: The task is only successful when the goal is FULLY ACHIEVED. Provide comprehensive command suggestions with built-in fallback strategies.{conversation_history}""",
+            TaskType.INPUT_SUMMARIZATION.value: """Please summarize the following input into a single sentence. This is critical - you must provide exactly one sentence that captures the essence of the input. Do not use multiple sentences. Do not add explanations. Just provide the summary in a single sentence.
 
 Input: {user_prompt}
 
-Summary (one sentence only):''',
+Summary (one sentence only):""",
+            TaskType.PHASE2_COMMAND_EXTRACTION.value: """Please look at this: {phase_1_output}. This is a relatively long text with many explanations, but please put all the necessary commands into a single code block. You may use only one code block.
 
-            TaskType.PHASE2_COMMAND_EXTRACTION.value: '''Please look at this: {phase_1_output}. This is a relatively long text with many explanations, but please put all the necessary commands into a single code block. You may use only one code block.
-
-IMPORTANT FOR LONG-RUNNING SERVICES: If the requested task starts a server, bot, watcher, scheduler, tunnel, or any process that should keep running after this pipeline response is sent, run it as an explicit background command by ending the command with `&` and include a separate verification command (for example `ps`, `curl`, or log inspection). Do not leave long-running services in the foreground, because foreground commands are subject to execution timeouts.{conversation_history}''',
-
-            TaskType.PHASE4_LOG_EVALUATION.value: '''I executed the commands to carry out the instruction {user_prompt}. This resulted in the following log: {full_terminal_log_so_far} However, since I am a beginner, I do not know if it succeeded or failed.
+IMPORTANT FOR LONG-RUNNING SERVICES: If the requested task starts a server, bot, watcher, scheduler, tunnel, or any process that should keep running after this pipeline response is sent, run it as an explicit background command by ending the command with `&` and include a separate verification command (for example `ps`, `curl`, or log inspection). Do not leave long-running services in the foreground, because foreground commands are subject to execution timeouts.{conversation_history}""",
+            TaskType.PHASE4_LOG_EVALUATION.value: """I executed the commands to carry out the instruction {user_prompt}. This resulted in the following log: {full_terminal_log_so_far} However, since I am a beginner, I do not know if it succeeded or failed.
 
 CRITICAL EVALUATION RULES:
 1. **Success vs Failure Definition** - The task is ONLY successful if the goal was FULLY ACHIEVED. Partial completion or workarounds that don't meet the original objective count as FAILURE.
@@ -101,9 +108,8 @@ CRITICAL EVALUATION RULES:
    - Confirm success without including any code blocks
    - Do NOT output code blocks under any circumstances when the task succeeds
 4. **Never Accept Defeat** - If the task failed, do not stop at analysis. Continue proposing alternative approaches until success is achieved.
-5. **Code Block Re-output** - On failure, you MUST re-output corrected code blocks. Success is determined by the absence of code blocks.{conversation_history}''',
-
-            TaskType.PHASE5_SUMMARY_GENERATION.value: '''I received the instruction "{user_prompt}" and have been executing commands. Here is the terminal log: {full_terminal_log}
+5. **Code Block Re-output** - On failure, you MUST re-output corrected code blocks. Success is determined by the absence of code blocks.{conversation_history}""",
+            TaskType.PHASE5_SUMMARY_GENERATION.value: """I received the instruction "{user_prompt}" and have been executing commands. Here is the terminal log: {full_terminal_log}
 
 Your task is to write a HUMAN-READABLE SUMMARY in plain English explaining what was done and the result.
 
@@ -134,8 +140,7 @@ cd $PROJECT_ROOT
 sed -i 's/old/new/' config.py
 ```"
 
-Write your summary now in plain English only:{conversation_history}''',
-
+Write your summary now in plain English only:{conversation_history}""",
         }
 
     def _build_autonomous_loop_template(self, telegram_mode: bool = False) -> str:
@@ -174,17 +179,25 @@ class ModelRunner:
     DEFAULT_GOOGLE_MODEL = "gemini-3.1-pro-preview"
     MAX_RETRIES = 3
 
-    def __init__(self, provider: str = None, model: str = None, config: Optional[Dict[str, Any]] = None, auto_install_sdks: bool = False):
+    def __init__(
+        self,
+        provider: str = None,
+        model: str = None,
+        config: Optional[Dict[str, Any]] = None,
+        auto_install_sdks: bool = False,
+    ):
         # Direct provider and model from runtime arguments
         self.provider = provider
         self.model = model
-        
+
         # Fallback to config if not provided
         self.config = config or load_config().api.__dict__
         self.logger = get_logger(__name__)
-        
+
         # Initialize multi-provider vision client with SDK installation support
-        self.vision_client = MultiProviderVisionAPIClient(self.config, auto_install_sdks=auto_install_sdks)
+        self.vision_client = MultiProviderVisionAPIClient(
+            self.config, auto_install_sdks=auto_install_sdks
+        )
         self.prompt_template = PromptTemplate()
 
         # Resilience engine
@@ -211,15 +224,20 @@ class ModelRunner:
             else:
                 # Fallback to settings for backward compatibility
                 from ..utils.settings_manager import get_settings_manager
+
                 settings = get_settings_manager()
                 provider_name = settings.get_preferred_provider()
                 model_name = settings.get_model(provider_name)
 
             if not provider_name:
-                raise ValidationError("No provider configured. Please select a provider first.")
+                raise ValidationError(
+                    "No provider configured. Please select a provider first."
+                )
 
             if not model_name:
-                raise ValidationError(f"No model configured for provider '{provider_name}'. Please select a model first.")
+                raise ValidationError(
+                    f"No model configured for provider '{provider_name}'. Please select a model first."
+                )
 
             # Retry loop for validation failures
             for attempt in range(self.MAX_RETRIES):
@@ -233,7 +251,9 @@ class ModelRunner:
                 if request.system_instruction is not None:
                     system_instructions = request.system_instruction
                 else:
-                    system_instructions = self._get_system_instructions(request.task_type)
+                    system_instructions = self._get_system_instructions(
+                        request.task_type
+                    )
 
                 # Add retry instruction if not first attempt
                 if attempt > 0:
@@ -260,8 +280,8 @@ class ModelRunner:
 
                     # Classify the error using the resilience engine
                     try:
-                        severity, category, is_retryable, suggested_delay = classify_api_error(
-                            Exception(error_text)
+                        severity, category, is_retryable, suggested_delay = (
+                            classify_api_error(Exception(error_text))
                         )
                     except Exception:
                         severity = ErrorSeverity.HIGH
@@ -302,8 +322,7 @@ class ModelRunner:
 
                 # API call succeeded, validate output format
                 is_valid, validation_error = self._validate_output_format(
-                    api_response.content,
-                    request.task_type
+                    api_response.content, request.task_type
                 )
 
                 if is_valid:
@@ -338,7 +357,7 @@ class ModelRunner:
                         max_retries=self.MAX_RETRIES,
                         validation_error=validation_error,
                     )
-                    
+
                     if attempt == self.MAX_RETRIES - 1:
                         # Last attempt failed, return the last response with validation error
                         model_response = ModelResponse(
@@ -374,29 +393,44 @@ class ModelRunner:
             raise ValidationError("Prompt cannot be empty", "prompt", request.prompt)
 
         if request.max_tokens < 1 or request.max_tokens > 128000:
-            raise ValidationError("Invalid max_tokens", "max_tokens", request.max_tokens)
+            raise ValidationError(
+                "Invalid max_tokens", "max_tokens", request.max_tokens
+            )
 
         if not (0.0 <= request.temperature <= 2.0):
-            raise ValidationError("Invalid temperature", "temperature", request.temperature)
+            raise ValidationError(
+                "Invalid temperature", "temperature", request.temperature
+            )
 
         if not isinstance(request.task_type, TaskType):
             raise ValidationError("Invalid task type", "task_type", request.task_type)
 
         if request.timeout < 1 or request.timeout > 300:
-            raise ValidationError("Invalid timeout (must be 1-300 seconds)", "timeout", request.timeout)
+            raise ValidationError(
+                "Invalid timeout (must be 1-300 seconds)", "timeout", request.timeout
+            )
 
-    def _handle_auth_error(self, provider_name: str, model_name: str, error_text: str) -> None:
+    def _handle_auth_error(
+        self, provider_name: str, model_name: str, error_text: str
+    ) -> None:
         """
         Handle authentication errors with user-friendly guidance.
         In Telegram mode or non-interactive mode, log only (never block).
         """
         try:
-            is_telegram_mode = os.getenv("CLIO_TELEGRAM_MODE", "").lower() in ("true", "1", "yes")
+            is_telegram_mode = os.getenv("CLIO_TELEGRAM_MODE", "").lower() in (
+                "true",
+                "1",
+                "yes",
+            )
 
             if provider_name == "ollama":
                 from ..utils.ollama_error_handler import handle_ollama_error
+
                 context = {"model_name": model_name, "operation": "model_execution"}
-                handle_ollama_error(error_text, context, display_to_user=not is_telegram_mode)
+                handle_ollama_error(
+                    error_text, context, display_to_user=not is_telegram_mode
+                )
 
                 # Never block on input() — daemon/CI environments have no interactive terminal.
                 # Sign-in must be done manually by the user.
@@ -424,8 +458,16 @@ class ModelRunner:
 
         telegram_mode = False
         if request.context and "telegram_mode" in request.context:
-            telegram_mode = request.context["telegram_mode"] in (True, "true", "True", 1, "1")
-        template = self.prompt_template.get_template(request.task_type, telegram_mode=telegram_mode)
+            telegram_mode = request.context["telegram_mode"] in (
+                True,
+                "true",
+                "True",
+                1,
+                "1",
+            )
+        template = self.prompt_template.get_template(
+            request.task_type, telegram_mode=telegram_mode
+        )
 
         if not template:
             return request.prompt
@@ -450,6 +492,7 @@ class ModelRunner:
             self.logger.warning(f"Template variable missing: {e}")
             # Fill in missing variables with empty string and retry
             import re
+
             # Handle both single and double quoted key names in error messages
             missing_keys = re.findall(r"'([^']+)'", str(e))
             if not missing_keys:
@@ -464,41 +507,47 @@ class ModelRunner:
             self.logger.error(f"Template formatting error: {e}")
             return request.prompt
 
-    def _validate_output_format(self, content: str, task_type: TaskType) -> tuple[bool, Optional[str]]:
+    def _validate_output_format(
+        self, content: str, task_type: TaskType
+    ) -> tuple[bool, Optional[str]]:
         """Validate that the output matches the expected format for the task type"""
         if not content or not content.strip():
             return False, "Output is empty"
 
         if task_type == TaskType.INPUT_SUMMARIZATION:
             # Must be exactly one sentence
-            sentences = [s.strip() for s in content.split('.') if s.strip()]
+            sentences = [s.strip() for s in content.split(".") if s.strip()]
             # Check if content ends with period and has no other sentence-ending punctuation
-            if content.count('.') > 1 or content.count('!') > 0 or content.count('?') > 0:
+            if (
+                content.count(".") > 1
+                or content.count("!") > 0
+                or content.count("?") > 0
+            ):
                 return False, "Summary must be exactly one sentence"
             # Check for code blocks
-            if '```' in content:
+            if "```" in content:
                 return False, "Summary must not contain code blocks"
             return True, None
 
         elif task_type == TaskType.PHASE2_COMMAND_EXTRACTION:
             # Must contain at least one code block
-            if '```' not in content:
+            if "```" not in content:
                 return False, "Command extraction must contain at least one code block"
             return True, None
 
         elif task_type == TaskType.PHASE4_LOG_EVALUATION:
             # Either success (no code blocks) or failure (with code blocks)
             # Both formats are valid as long as they're consistent
-            has_code_block = '```' in content
+            has_code_block = "```" in content
             # Just check that it's not empty
             return True, None
 
         elif task_type == TaskType.PHASE5_SUMMARY_GENERATION:
             # Must NOT contain code blocks
-            if '```' in content:
+            if "```" in content:
                 return False, "Summary must not contain code blocks"
             # Check for shell command patterns
-            suspicious_patterns = ['$', '#!', 'sudo ', 'apt ', 'npm ', 'pip ']
+            suspicious_patterns = ["$", "#!", "sudo ", "apt ", "npm ", "pip "]
             if any(pattern in content for pattern in suspicious_patterns):
                 return False, "Summary must not contain shell commands"
             return True, None
@@ -533,9 +582,9 @@ class ModelRunner:
             "ABSOLUTELY FORBIDDEN — if any line in your response matches these,\n"
             "YOUR RESPONSE IS INVALID AND WILL BE REJECTED:\n"
             "  ✗ Free natural-language text outside command()/telegram()/thinking()\n"
-            "  ✗ Sentences like \"Okay, I\'ll start coding\" or \"Let me work on that\"\n"
+            '  ✗ Sentences like "Okay, I\'ll start coding" or "Let me work on that"\n'
             "  ✗ Greetings, acknowledgments, or conversational filler\n"
-            "  ✗ Explanations or descriptions of what you\'re about to do\n"
+            "  ✗ Explanations or descriptions of what you're about to do\n"
             "  ✗ Summaries or progress reports in plain text\n"
             "  ✗ Questions directed at the user (unless inside telegram())\n"
             "  ✗ ANY natural language that is not wrapped in a command\n\n"
@@ -551,12 +600,12 @@ class ModelRunner:
             "  sleep                  — Compress context and restart\n"
             "  parallel_begin/end     — Run multiple commands concurrently\n\n"
             "Direct tool calls (faster than command() for file ops):\n"
-            "  read(path=\"/path/to/file\")\n"
-            "  write(path=\"/path\", content=\"text\")\n"
-            "  edit(path=\"/path\", old_string=\"orig\", new_string=\"repl\")\n"
-            "  glob(pattern=\"**/*.py\")\n"
-            "  grep(pattern=\"regex\", path=\".\")\n"
-            "  bash(command=\"any shell cmd\")\n\n"
+            '  read(path="/path/to/file")\n'
+            '  write(path="/path", content="text")\n'
+            '  edit(path="/path", old_string="orig", new_string="repl")\n'
+            '  glob(pattern="**/*.py")\n'
+            '  grep(pattern="regex", path=".")\n'
+            '  bash(command="any shell cmd")\n\n'
             "## 3. BEHAVIORAL RULES\n"
             "  a. ACT IMMEDIATELY — never output only thinking(), never an empty response.\n"
             "  b. PARALLELIZE — always batch independent calls with parallel_begin/end.\n"
@@ -564,7 +613,7 @@ class ModelRunner:
             "  d. NEVER GIVE UP — on failure, try a different approach.\n"
             "  e. OVER-COMMUNICATE — when in doubt, use telegram(). Silence > verbose plans.\n"
             "  f. thinking() is a BLACK HOLE — the user CANNOT see it.\n"
-            "  g. Execute sleep BEFORE hitting context limits — don\'t wait for the engine.\n"
+            "  g. Execute sleep BEFORE hitting context limits — don't wait for the engine.\n"
             "\n"
             "## 4. ANTI-REPETITION RULES — Avoid triggering the Curiosity Fairy\n"
             "The engine monitors your action patterns. If you repeat the same action\n"
@@ -601,10 +650,13 @@ class ModelRunner:
                 self.logger.warning(f"Failed to load custom system prompt: {e}")
 
         return base_instructions
-    def install_missing_sdks(self, providers: Optional[List[str]] = None, interactive: bool = True) -> Dict[str, bool]:
+
+    def install_missing_sdks(
+        self, providers: Optional[List[str]] = None, interactive: bool = True
+    ) -> Dict[str, bool]:
         """Install missing SDKs for specified providers"""
         return self.vision_client.install_missing_sdks(providers, interactive)
-    
+
     def show_sdk_status(self, providers: Optional[List[str]] = None):
         """Show SDK installation status"""
         self.vision_client.show_sdk_status(providers)

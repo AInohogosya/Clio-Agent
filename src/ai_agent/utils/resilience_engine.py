@@ -32,7 +32,18 @@ import traceback as _traceback_module
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from pathlib import Path
-from typing import Any, Callable, Coroutine, Dict, List, Optional, Sequence, Tuple, Type, Union
+from typing import (
+    Any,
+    Callable,
+    Coroutine,
+    Dict,
+    List,
+    Optional,
+    Sequence,
+    Tuple,
+    Type,
+    Union,
+)
 
 from .exceptions import (
     APIError,
@@ -51,16 +62,18 @@ logger = get_logger("resilience_engine")
 #  Error classification helpers
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 class ErrorSeverity(Enum):
-    LOW = auto()        # Can be ignored, logged only
-    MEDIUM = auto()     # Logged, may trigger retry
-    HIGH = auto()       # Triggers retry + failover
-    CRITICAL = auto()   # Triggers full recovery + user notification
+    LOW = auto()  # Can be ignored, logged only
+    MEDIUM = auto()  # Logged, may trigger retry
+    HIGH = auto()  # Triggers retry + failover
+    CRITICAL = auto()  # Triggers full recovery + user notification
 
 
 @dataclass
 class RecoveryAction:
     """A single recovery action that the engine can try."""
+
     name: str
     description: str
     func: Optional[Callable[..., Any]] = None
@@ -74,9 +87,11 @@ class RecoveryAction:
 #  Self-healing command suggestions
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 @dataclass
 class CommandFix:
     """Maps an error pattern to a suggested fix command."""
+
     pattern: re.Pattern
     description: str
     fix_commands: List[str]
@@ -100,7 +115,9 @@ _COMMAND_FIXES: List[CommandFix] = [
         fix_commands=[],  # No generic fix
     ),
     CommandFix(
-        pattern=re.compile(r"could not resolve host|name or service not known", re.IGNORECASE),
+        pattern=re.compile(
+            r"could not resolve host|name or service not known", re.IGNORECASE
+        ),
         description="DNS / network error",
         fix_commands=[],  # Will trigger network check
     ),
@@ -120,7 +137,10 @@ _COMMAND_FIXES: List[CommandFix] = [
         fix_commands=[],  # User intervention required
     ),
     CommandFix(
-        pattern=re.compile(r"pip.*ERROR.*(Could not find a version|No matching distribution)", re.IGNORECASE),
+        pattern=re.compile(
+            r"pip.*ERROR.*(Could not find a version|No matching distribution)",
+            re.IGNORECASE,
+        ),
         description="Python package not found — wrong name or version",
         fix_commands=[],
     ),
@@ -132,7 +152,9 @@ _COMMAND_FIXES: List[CommandFix] = [
 ]
 
 
-def classify_command_error(command: str, stderr: str, exit_code: int, system: str) -> Tuple[ErrorSeverity, List[RecoveryAction]]:
+def classify_command_error(
+    command: str, stderr: str, exit_code: int, system: str
+) -> Tuple[ErrorSeverity, List[RecoveryAction]]:
     """
     Classify a command execution error and suggest recovery actions.
 
@@ -153,85 +175,108 @@ def classify_command_error(command: str, stderr: str, exit_code: int, system: st
                 fix_cmd = f"brew install {pkg}"
             else:
                 fix_cmd = f"# Install {cmd_name} manually"
-            actions.append(RecoveryAction(
-                name=f"install_{cmd_name}",
-                description=f"Install missing command '{cmd_name}' ({fix_cmd})",
-                func=_run_shell,
-                func_args=(fix_cmd,),
-                max_retries=1,
-                retry_delay=0,
-            ))
+            actions.append(
+                RecoveryAction(
+                    name=f"install_{cmd_name}",
+                    description=f"Install missing command '{cmd_name}' ({fix_cmd})",
+                    func=_run_shell,
+                    func_args=(fix_cmd,),
+                    max_retries=1,
+                    retry_delay=0,
+                )
+            )
         return ErrorSeverity.MEDIUM, actions
 
     # -- Permission denied -----------------------------------------------
     if "permission denied" in combined:
         if "docker" in combined:
-            actions.append(RecoveryAction(
-                name="fix_docker_permission",
-                description="Add user to docker group",
-                func=_run_shell,
-                func_args=("sudo usermod -aG docker $USER",),
-                max_retries=1,
-            ))
+            actions.append(
+                RecoveryAction(
+                    name="fix_docker_permission",
+                    description="Add user to docker group",
+                    func=_run_shell,
+                    func_args=("sudo usermod -aG docker $USER",),
+                    max_retries=1,
+                )
+            )
         elif command.strip().startswith("sudo"):
             # Already using sudo — no auto fix
             pass
         else:
             new_cmd = f"sudo {command}"
-            actions.append(RecoveryAction(
-                name="retry_with_sudo",
-                description=f"Retry with sudo: {new_cmd}",
-                func=None,  # Signal: retry the command with sudo
-                max_retries=1,
-            ))
+            actions.append(
+                RecoveryAction(
+                    name="retry_with_sudo",
+                    description=f"Retry with sudo: {new_cmd}",
+                    func=None,  # Signal: retry the command with sudo
+                    max_retries=1,
+                )
+            )
         return ErrorSeverity.MEDIUM, actions
 
     # -- Network / DNS ---------------------------------------------------
-    if any(kw in combined for kw in ["could not resolve host", "name or service not known"]):
-        actions.append(RecoveryAction(
-            name="check_network",
-            description="Check network connectivity",
-            func=_check_network,
-            max_retries=1,
-        ))
+    if any(
+        kw in combined for kw in ["could not resolve host", "name or service not known"]
+    ):
+        actions.append(
+            RecoveryAction(
+                name="check_network",
+                description="Check network connectivity",
+                func=_check_network,
+                max_retries=1,
+            )
+        )
         return ErrorSeverity.HIGH, actions
 
     # -- Connection refused ----------------------------------------------
     if "connection refused" in combined:
         port = _extract_port(stderr + command)
-        actions.append(RecoveryAction(
-            name="check_service",
-            description=f"Check if service is running on port {port}",
-            func=_run_shell,
-            func_args=(f"lsof -i :{port}",),
-            max_retries=1,
-        ))
+        actions.append(
+            RecoveryAction(
+                name="check_service",
+                description=f"Check if service is running on port {port}",
+                func=_run_shell,
+                func_args=(f"lsof -i :{port}",),
+                max_retries=1,
+            )
+        )
         return ErrorSeverity.HIGH, actions
 
     # -- SSL -------------------------------------------------------------
     if any(kw in combined for kw in ["ssl", "certificate verify failed"]):
-        actions.append(RecoveryAction(
-            name="update_certifi",
-            description="Update SSL certificates",
-            func=_run_shell,
-            func_args=("pip install --upgrade certifi",),
-            max_retries=2,
-        ))
+        actions.append(
+            RecoveryAction(
+                name="update_certifi",
+                description="Update SSL certificates",
+                func=_run_shell,
+                func_args=("pip install --upgrade certifi",),
+                max_retries=2,
+            )
+        )
         return ErrorSeverity.MEDIUM, actions
 
     # -- Disk full -------------------------------------------------------
-    if any(kw in combined for kw in ["disk full", "no space left", "no space left on device"]):
-        actions.append(RecoveryAction(
-            name="check_disk",
-            description="Check disk space",
-            func=_run_shell,
-            func_args=("df -h",),
-            max_retries=1,
-        ))
+    if any(
+        kw in combined
+        for kw in ["disk full", "no space left", "no space left on device"]
+    ):
+        actions.append(
+            RecoveryAction(
+                name="check_disk",
+                description="Check disk space",
+                func=_run_shell,
+                func_args=("df -h",),
+                max_retries=1,
+            )
+        )
         return ErrorSeverity.CRITICAL, actions
 
     # -- Pip / package errors --------------------------------------------
-    if "pip" in combined and "error" in combined and "no matching distribution" in combined:
+    if (
+        "pip" in combined
+        and "error" in combined
+        and "no matching distribution" in combined
+    ):
         return ErrorSeverity.MEDIUM, []
 
     # -- Generic ----------------------------------------------------------
@@ -294,6 +339,7 @@ def _extract_port(text: str) -> int:
 def _check_network() -> bool:
     """Quick network connectivity check (cross-platform)."""
     from .platform_compat import ping_host
+
     try:
         return ping_host("8.8.8.8", timeout=3.0)
     except Exception:
@@ -303,29 +349,32 @@ def _check_network() -> bool:
 def _run_shell(cmd: str, timeout: float = 60.0) -> Tuple[bool, str]:
     """Run a shell command.  Returns (success, output)."""
     try:
-        r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
+        r = subprocess.run(
+            cmd, shell=True, capture_output=True, text=True, timeout=timeout
+        )
         return r.returncode == 0, (r.stdout + r.stderr).strip()
     except Exception as e:
         return False, str(e)
-
 
 
 # ==============================================================================
 #  Disk-full / OOM self-healing
 # ==============================================================================
 
+
 def get_disk_usage(path: str = None) -> Dict[str, Any]:
     """Get disk usage information for a path."""
     try:
         import shutil
         from .platform_compat import get_disk_root
+
         if path is None:
             path = str(get_disk_root())
         usage = shutil.disk_usage(path)
         return {
-            "total_gb": usage.total / (1024 ** 3),
-            "used_gb": usage.used / (1024 ** 3),
-            "free_gb": usage.free / (1024 ** 3),
+            "total_gb": usage.total / (1024**3),
+            "used_gb": usage.used / (1024**3),
+            "free_gb": usage.free / (1024**3),
             "percent_used": (usage.used / usage.total) * 100,
         }
     except Exception:
@@ -336,10 +385,11 @@ def get_memory_usage() -> Dict[str, Any]:
     """Get system memory usage information."""
     try:
         import psutil
+
         mem = psutil.virtual_memory()
         return {
-            "total_gb": mem.total / (1024 ** 3),
-            "available_gb": mem.available / (1024 ** 3),
+            "total_gb": mem.total / (1024**3),
+            "available_gb": mem.available / (1024**3),
             "percent_used": mem.percent,
         }
     except Exception:
@@ -349,6 +399,7 @@ def get_memory_usage() -> Dict[str, Any]:
 def emergency_disk_cleanup(target_free_gb: float = 2.0) -> Tuple[bool, str]:
     """Emergency disk cleanup. Removes temp/cache files. Returns (success, msg)."""
     from .platform_compat import get_cleanup_targets
+
     freed_mb = 0.0
     actions_taken = []
 
@@ -361,24 +412,27 @@ def emergency_disk_cleanup(target_free_gb: float = 2.0) -> Tuple[bool, str]:
             before = get_disk_usage(str(target.parent if target.is_dir() else target))
             if target == Path("/tmp"):
                 import glob
+
                 for f in glob.glob(str(target / "*")):
                     try:
                         p = Path(f)
                         if p.is_file() and (time.time() - p.stat().st_mtime) > 3600:
                             size = p.stat().st_size
                             p.unlink()
-                            freed_mb += size / (1024 ** 2)
+                            freed_mb += size / (1024**2)
                         elif p.is_dir() and (time.time() - p.stat().st_mtime) > 3600:
                             import shutil as _sh
+
                             _sh.rmtree(f, ignore_errors=True)
                     except Exception:
                         pass
             else:
                 import shutil as _sh
+
                 for item in list(target.iterdir()):
                     try:
                         if item.is_file():
-                            freed_mb += item.stat().st_size / (1024 ** 2)
+                            freed_mb += item.stat().st_size / (1024**2)
                             item.unlink()
                         elif item.is_dir():
                             _sh.rmtree(str(item), ignore_errors=True)
@@ -466,7 +520,10 @@ def check_system_resources() -> Dict[str, Any]:
 #  API error classification
 # ══════════════════════════════════════════════════════════════════════════════
 
-def classify_api_error(error: Exception) -> Tuple[ErrorSeverity, ErrorCategory, bool, float]:
+
+def classify_api_error(
+    error: Exception,
+) -> Tuple[ErrorSeverity, ErrorCategory, bool, float]:
     """
     Classify an API error.
 
@@ -482,7 +539,9 @@ def classify_api_error(error: Exception) -> Tuple[ErrorSeverity, ErrorCategory, 
         all_messages.add(str(_cause).lower())
         all_types.add(type(_cause).__name__.lower())
         # Follow the chain: prefer __cause__ over __context__
-        _next = getattr(_cause, '__cause__', None) or getattr(_cause, '__context__', None)
+        _next = getattr(_cause, "__cause__", None) or getattr(
+            _cause, "__context__", None
+        )
         if _next is not None and _next is not _cause:
             _cause = _next
         else:
@@ -496,15 +555,40 @@ def classify_api_error(error: Exception) -> Tuple[ErrorSeverity, ErrorCategory, 
     search_text = combined_msg + " " + combined_type
 
     # Rate limit
-    if any(kw in search_text for kw in ["429", "rate limit", "rate-limited", "too many requests", "throttl"]):
+    if any(
+        kw in search_text
+        for kw in ["429", "rate limit", "rate-limited", "too many requests", "throttl"]
+    ):
         return ErrorSeverity.HIGH, ErrorCategory.RATE_LIMIT, True, 30.0
 
     # Auth
-    if any(kw in search_text for kw in ["401", "403", "unauthorized", "forbidden", "api key", "credential", "authentication"]):
+    if any(
+        kw in search_text
+        for kw in [
+            "401",
+            "403",
+            "unauthorized",
+            "forbidden",
+            "api key",
+            "credential",
+            "authentication",
+        ]
+    ):
         return ErrorSeverity.CRITICAL, ErrorCategory.AUTHENTICATION, False, 0.0
 
     # Server error
-    if any(kw in search_text for kw in ["500", "502", "503", "504", "internal server error", "bad gateway", "service unavailable"]):
+    if any(
+        kw in search_text
+        for kw in [
+            "500",
+            "502",
+            "503",
+            "504",
+            "internal server error",
+            "bad gateway",
+            "service unavailable",
+        ]
+    ):
         return ErrorSeverity.HIGH, ErrorCategory.EXTERNAL, True, 5.0
 
     # Timeout
@@ -513,16 +597,27 @@ def classify_api_error(error: Exception) -> Tuple[ErrorSeverity, ErrorCategory, 
 
     # SSL / EOF errors (transient network issues) — checked BEFORE generic
     # network so that SSLEOFError, unexpected EOF, etc. get a longer delay.
-    if any(kw in search_text for kw in ["ssl", "ssleoferror",
-                                  "unexpected_eof", "eof occurred",
-                                  "sslerror"]):
+    if any(
+        kw in search_text
+        for kw in ["ssl", "ssleoferror", "unexpected_eof", "eof occurred", "sslerror"]
+    ):
         return ErrorSeverity.HIGH, ErrorCategory.TRANSIENT, True, 5.0
 
     # Network
-    if any(kw in search_text for kw in [
-        "connection", "network", "unreachable", "refused", "reset",
-        "dns", "resolve", "socket", "certificate",
-    ]):
+    if any(
+        kw in search_text
+        for kw in [
+            "connection",
+            "network",
+            "unreachable",
+            "refused",
+            "reset",
+            "dns",
+            "resolve",
+            "socket",
+            "certificate",
+        ]
+    ):
         return ErrorSeverity.HIGH, ErrorCategory.TRANSIENT, True, 2.0
 
     # Output validation failure (empty model output) — transient, retryable
@@ -534,19 +629,36 @@ def classify_api_error(error: Exception) -> Tuple[ErrorSeverity, ErrorCategory, 
         return ErrorSeverity.MEDIUM, ErrorCategory.VALIDATION, False, 0.0
 
     # Content filter / safety
-    if any(kw in search_text for kw in ["content_filter", "safety", "blocked", "harmful"]):
+    if any(
+        kw in search_text for kw in ["content_filter", "safety", "blocked", "harmful"]
+    ):
         return ErrorSeverity.MEDIUM, ErrorCategory.VALIDATION, False, 0.0
 
     # Context length
-    if any(kw in search_text for kw in ["context length", "max_tokens", "token limit", "too long"]):
+    if any(
+        kw in search_text
+        for kw in ["context length", "max_tokens", "token limit", "too long"]
+    ):
         return ErrorSeverity.HIGH, ErrorCategory.RESOURCE, True, 0.0
 
     # Quota / billing
-    if any(kw in search_text for kw in ["quota", "billing", "payment", "insufficient funds", "limit exceeded"]):
+    if any(
+        kw in search_text
+        for kw in [
+            "quota",
+            "billing",
+            "payment",
+            "insufficient funds",
+            "limit exceeded",
+        ]
+    ):
         return ErrorSeverity.CRITICAL, ErrorCategory.RESOURCE, False, 0.0
 
     # Model not found
-    if any(kw in search_text for kw in ["model", "not found", "does not exist", "unknown model"]):
+    if any(
+        kw in search_text
+        for kw in ["model", "not found", "does not exist", "unknown model"]
+    ):
         return ErrorSeverity.HIGH, ErrorCategory.CONFIGURATION, False, 0.0
 
     # Default: transient, retryable
@@ -557,9 +669,11 @@ def classify_api_error(error: Exception) -> Tuple[ErrorSeverity, ErrorCategory, 
 #  Resilience Engine — the main class
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 @dataclass
 class ResilienceConfig:
     """Configuration for the resilience engine."""
+
     # Retry
     max_retries: int = 3
     base_delay: float = 1.0
@@ -680,14 +794,19 @@ class ResilienceEngine:
                 return await func(*args, **kwargs)
             except retryable_exceptions as e:
                 last_error = e
-                severity, category, is_retryable, suggested_delay = classify_api_error(e)
+                severity, category, is_retryable, suggested_delay = classify_api_error(
+                    e
+                )
 
                 if not is_retryable or attempt >= self.config.max_retries:
                     self._log_error(e, severity, category, context_label, attempt)
                     raise
 
                 delay = min(
-                    max(suggested_delay, self.config.base_delay * (self.config.backoff_factor ** attempt)),
+                    max(
+                        suggested_delay,
+                        self.config.base_delay * (self.config.backoff_factor**attempt),
+                    ),
                     self.config.max_delay,
                 )
 
@@ -725,14 +844,19 @@ class ResilienceEngine:
                 return func(*args, **kwargs)
             except retryable_exceptions as e:
                 last_error = e
-                severity, category, is_retryable, suggested_delay = classify_api_error(e)
+                severity, category, is_retryable, suggested_delay = classify_api_error(
+                    e
+                )
 
                 if not is_retryable or attempt >= self.config.max_retries:
                     self._log_error(e, severity, category, context_label, attempt)
                     raise
 
                 delay = min(
-                    max(suggested_delay, self.config.base_delay * (self.config.backoff_factor ** attempt)),
+                    max(
+                        suggested_delay,
+                        self.config.base_delay * (self.config.backoff_factor**attempt),
+                    ),
                     self.config.max_delay,
                 )
 
@@ -814,7 +938,10 @@ class ResilienceEngine:
                     }
 
                 # Command failed — try to heal
-                if not self.config.enable_self_healing or healing_round >= max_healing_attempts:
+                if (
+                    not self.config.enable_self_healing
+                    or healing_round >= max_healing_attempts
+                ):
                     return {
                         "stdout": stdout,
                         "stderr": stderr,
@@ -823,7 +950,9 @@ class ResilienceEngine:
                         "healing_log": healing_log,
                     }
 
-                severity, actions = classify_command_error(current_cmd, stderr, rc, system)
+                severity, actions = classify_command_error(
+                    current_cmd, stderr, rc, system
+                )
 
                 if not actions:
                     return {
@@ -840,7 +969,9 @@ class ResilienceEngine:
 
                 if action.name == "retry_with_sudo":
                     current_cmd = f"sudo {command}"
-                    self.notify_telegram("\U0001f527 Permission denied — retrying with sudo: " + command)
+                    self.notify_telegram(
+                        "\U0001f527 Permission denied — retrying with sudo: " + command
+                    )
                     continue
 
                 if action.func:
@@ -853,13 +984,17 @@ class ResilienceEngine:
                                 stdout=asyncio.subprocess.PIPE,
                                 stderr=asyncio.subprocess.PIPE,
                             )
-                            await asyncio.wait_for(fix_result.communicate(), timeout=120)
+                            await asyncio.wait_for(
+                                fix_result.communicate(), timeout=120
+                            )
                             # Retry original command
                             continue
 
                     if action.name == "check_network":
                         if not _check_network():
-                            self.notify_telegram("\U0001f310 Network appears to be down. Waiting 10s before retry ...")
+                            self.notify_telegram(
+                                "\U0001f310 Network appears to be down. Waiting 10s before retry ..."
+                            )
                             await asyncio.sleep(10)
                         continue
 
@@ -870,7 +1005,10 @@ class ResilienceEngine:
                         else:
                             loop = asyncio.get_event_loop()
                             await loop.run_in_executor(
-                                None, lambda: action.func(*action.func_args, **action.func_kwargs)
+                                None,
+                                lambda: action.func(
+                                    *action.func_args, **action.func_kwargs
+                                ),
                             )
                         continue
 
@@ -918,7 +1056,9 @@ class ResilienceEngine:
 
     def record_success(self, key: str) -> None:
         with self._lock:
-            cb = self._circuit_breakers.setdefault(key, {"failures": 0, "open_until": None})
+            cb = self._circuit_breakers.setdefault(
+                key, {"failures": 0, "open_until": None}
+            )
             cb["failures"] = 0
             cb["open_until"] = None
 
@@ -927,11 +1067,15 @@ class ResilienceEngine:
         Record a failure.  Returns True if the circuit just opened.
         """
         with self._lock:
-            cb = self._circuit_breakers.setdefault(key, {"failures": 0, "open_until": None})
+            cb = self._circuit_breakers.setdefault(
+                key, {"failures": 0, "open_until": None}
+            )
             cb["failures"] += 1
             if cb["failures"] >= self.config.circuit_breaker_threshold:
                 cb["open_until"] = time.time() + self.config.circuit_breaker_timeout
-                logger.warning(f"Circuit breaker OPEN for {key} (cooldown {self.config.circuit_breaker_timeout}s)")
+                logger.warning(
+                    f"Circuit breaker OPEN for {key} (cooldown {self.config.circuit_breaker_timeout}s)"
+                )
                 return True
             return False
 
@@ -957,21 +1101,36 @@ class ResilienceEngine:
                     engine._original_excepthook(exc_type, exc_value, exc_tb)
                 return
 
-            tb_text = "".join(_traceback_module.format_exception(exc_type, exc_value, exc_tb))
+            tb_text = "".join(
+                _traceback_module.format_exception(exc_type, exc_value, exc_tb)
+            )
             thread_name = thread.name if thread else "main"
 
             logger.critical(
                 f"Uncaught exception in thread '{thread_name}': {exc_type.__name__}: {exc_value}\n{tb_text}"
             )
 
-            engine._log_error(exc_value, ErrorSeverity.CRITICAL, ErrorCategory.UNKNOWN, "uncaught:" + thread_name, 0)
+            engine._log_error(
+                exc_value,
+                ErrorSeverity.CRITICAL,
+                ErrorCategory.UNKNOWN,
+                "uncaught:" + thread_name,
+                0,
+            )
 
             # Notify Telegram
             short_tb = "\n".join(tb_text.strip().splitlines()[-5:])
             engine.notify_telegram(
-                "\U0001f6a8 Uncaught error in " + thread_name + ":\n"
-                + exc_type.__name__ + ": " + str(exc_value) + "\n"
-                + "```\n" + short_tb + "\n```"
+                "\U0001f6a8 Uncaught error in "
+                + thread_name
+                + ":\n"
+                + exc_type.__name__
+                + ": "
+                + str(exc_value)
+                + "\n"
+                + "```\n"
+                + short_tb
+                + "\n```"
             )
 
             # After logging and notifying, call the original excepthook to
@@ -983,7 +1142,9 @@ class ResilienceEngine:
             _handle_exception(exc_type, exc_value, exc_tb)
 
         def _custom_threading_excepthook(args):
-            _handle_exception(args.exc_type, args.exc_value, args.exc_traceback, args.thread)
+            _handle_exception(
+                args.exc_type, args.exc_value, args.exc_traceback, args.thread
+            )
 
         sys.excepthook = _custom_excepthook
         if self._threading_excepthook_available:
@@ -1015,8 +1176,19 @@ class ResilienceEngine:
 
         # Structured log
         logger.error(
-            "[resilience] " + context_label + ": " + type(error).__name__ + ": " + str(error)
-            + " (severity=" + severity.name + ", category=" + category.value + ", attempt=" + str(attempt) + ")"
+            "[resilience] "
+            + context_label
+            + ": "
+            + type(error).__name__
+            + ": "
+            + str(error)
+            + " (severity="
+            + severity.name
+            + ", category="
+            + category.value
+            + ", attempt="
+            + str(attempt)
+            + ")"
         )
 
         # JSONL file
@@ -1035,7 +1207,9 @@ class ResilienceEngine:
 _resilience_engine: Optional[ResilienceEngine] = None
 
 
-def get_resilience_engine(config: Optional[ResilienceConfig] = None) -> ResilienceEngine:
+def get_resilience_engine(
+    config: Optional[ResilienceConfig] = None,
+) -> ResilienceEngine:
     """Get the global ResilienceEngine singleton."""
     global _resilience_engine
     if _resilience_engine is None:

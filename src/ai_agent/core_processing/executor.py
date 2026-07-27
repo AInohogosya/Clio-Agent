@@ -26,8 +26,9 @@ from ..utils.logger import get_logger
 class Executor:
     """Executes: runs actions and records results."""
 
-    def __init__(self, telegram_bot=None, discord_bot=None,
-                 command_timeout: int = 1800):
+    def __init__(
+        self, telegram_bot=None, discord_bot=None, command_timeout: int = 1800
+    ):
         self.telegram_bot = telegram_bot
         self.discord_bot = discord_bot
         self.command_timeout = command_timeout
@@ -117,10 +118,12 @@ class Executor:
         parsed_actions = []
         for action_data in actions_data:
             if isinstance(action_data, dict):
-                parsed_actions.append(AgentAction(
-                    type=action_data.get("type", "command"),
-                    args=action_data.get("args", {}),
-                ))
+                parsed_actions.append(
+                    AgentAction(
+                        type=action_data.get("type", "command"),
+                        args=action_data.get("args", {}),
+                    )
+                )
 
         if not parsed_actions:
             return
@@ -188,9 +191,11 @@ class Executor:
             )
         return None
 
-    def _send_telegram(self, message: str, telegram_mode: bool, telegram_user_id: Optional[int] = None):
+    def _send_telegram(
+        self, message: str, telegram_mode: bool, telegram_user_id: Optional[int] = None
+    ):
         """Send a message via Telegram.
-        
+
         Args:
             message: The message to send
             telegram_mode: Whether Telegram mode is enabled
@@ -204,9 +209,11 @@ class Executor:
             except Exception as e:
                 self.logger.error(f"Telegram send failed: {e}")
 
-    def _send_discord(self, message: str, discord_mode: bool, telegram_user_id: Optional[int] = None):
+    def _send_discord(
+        self, message: str, discord_mode: bool, telegram_user_id: Optional[int] = None
+    ):
         """Send a message via Discord.
-        
+
         Args:
             message: The message to send
             discord_mode: Whether Discord mode is enabled

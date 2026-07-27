@@ -18,7 +18,11 @@ if _SRC_PATH not in sys.path:
     sys.path.insert(0, _SRC_PATH)
 
 from ai_agent.core_processing.autonomous_loop_engine import AutonomousLoopEngine
-from ai_agent.external_integration.model_runner import ModelRunner, ModelRequest, TaskType
+from ai_agent.external_integration.model_runner import (
+    ModelRunner,
+    ModelRequest,
+    TaskType,
+)
 
 
 def _make_engine():
@@ -180,31 +184,59 @@ class TestParseToolArgs:
 class TestAutoSave:
     def test_with_snapshot(self):
         eng = _make_engine()
-        ctx = MagicMock(execution_log=["a"], current_goal="t", user_prompt="t",
-                        iteration_count=1, telegram_mode=False, discord_mode=False,
-                        telegram_user_id=None, metadata={})
+        ctx = MagicMock(
+            execution_log=["a"],
+            current_goal="t",
+            user_prompt="t",
+            iteration_count=1,
+            telegram_mode=False,
+            discord_mode=False,
+            telegram_user_id=None,
+            metadata={},
+        )
         eng._auto_save_context(ctx, log_snapshot=["a"])
 
     def test_without_snapshot(self):
         eng = _make_engine()
-        ctx = MagicMock(execution_log=["a"], current_goal="t", user_prompt="t",
-                        iteration_count=1, telegram_mode=False, discord_mode=False,
-                        telegram_user_id=None, metadata={})
+        ctx = MagicMock(
+            execution_log=["a"],
+            current_goal="t",
+            user_prompt="t",
+            iteration_count=1,
+            telegram_mode=False,
+            discord_mode=False,
+            telegram_user_id=None,
+            metadata={},
+        )
         eng._auto_save_context(ctx)
 
 
 class TestHandleSleep:
     def test_failure_saves_state(self):
         eng = _make_engine()
-        ctx = MagicMock(current_goal="t", user_prompt="t", iteration_count=5,
-                        telegram_mode=False, discord_mode=False, telegram_user_id=None,
-                        metadata={"restart_provider": "t", "restart_model": "t"},
-                        execution_log=[])
+        ctx = MagicMock(
+            current_goal="t",
+            user_prompt="t",
+            iteration_count=5,
+            telegram_mode=False,
+            discord_mode=False,
+            telegram_user_id=None,
+            metadata={"restart_provider": "t", "restart_model": "t"},
+            execution_log=[],
+        )
         # First call (in try block) raises, second call (in except block) succeeds
-        aux_data = {"git_diff": "(none)", "metadata": "(none)", "errors": "(none)", "log_tail": "(empty)"}
+        aux_data = {
+            "git_diff": "(none)",
+            "metadata": "(none)",
+            "errors": "(none)",
+            "log_tail": "(empty)",
+        }
         with patch.object(eng, "_save_sleep_state") as ms:
-            with patch.object(eng, "_collect_auxiliary_context",
-                              side_effect=[Exception("f"), aux_data]):
+            with patch.object(
+                eng,
+                "_collect_auxiliary_context",
+                side_effect=[Exception("f"), aux_data],
+            ):
                 with patch.object(eng, "_restart_process", side_effect=Exception("r")):
                     with patch("sys.exit") as me:
                         eng._handle_sleep(ctx)
@@ -215,9 +247,17 @@ class TestHandleSleep:
 class TestHandleExit:
     def test_stops_auto_save(self):
         eng = _make_engine()
-        ctx = MagicMock(current_goal="t", user_prompt="t", iteration_count=5,
-                        telegram_mode=False, telegram_user_id=None, metadata={})
-        with patch.object(eng, "_collect_auxiliary_context", side_effect=Exception("f")):
+        ctx = MagicMock(
+            current_goal="t",
+            user_prompt="t",
+            iteration_count=5,
+            telegram_mode=False,
+            telegram_user_id=None,
+            metadata={},
+        )
+        with patch.object(
+            eng, "_collect_auxiliary_context", side_effect=Exception("f")
+        ):
             with patch.object(eng, "_stop_auto_save"):
                 eng._handle_exit(ctx, fast=True)
                 eng._stop_auto_save.assert_called()
@@ -228,7 +268,9 @@ class TestCollectAux:
         ctx = MagicMock(metadata={})
         with patch("subprocess.run") as mr:
             mr.return_value = MagicMock(returncode=1, stdout="", stderr="")
-            r = AutonomousLoopEngine._collect_auxiliary_context(ctx, ["error: something failed"])
+            r = AutonomousLoopEngine._collect_auxiliary_context(
+                ctx, ["error: something failed"]
+            )
         # The error line should be captured from the snapshot
         assert "error: something failed" in r["errors"]
 
@@ -251,13 +293,24 @@ class TestModelRunner:
         rr.config = {}
         rr.prompt_template = MagicMock()
         rr.prompt_template.get_template.return_value = ""
-        req = ModelRequest(task_type=TaskType.AUTONOMOUS_LOOP, prompt="x",
-                           system_instruction="CUSTOM")
-        ar = MagicMock(success=True, content="{}", model="t", provider="t",
-                      tokens_used=10, cost=0.001, error=None)
+        req = ModelRequest(
+            task_type=TaskType.AUTONOMOUS_LOOP, prompt="x", system_instruction="CUSTOM"
+        )
+        ar = MagicMock(
+            success=True,
+            content="{}",
+            model="t",
+            provider="t",
+            tokens_used=10,
+            cost=0.001,
+            error=None,
+        )
         rr.vision_client.generate_response.return_value = ar
         rr.run_model(req)
-        assert rr.vision_client.generate_response.call_args[0][0].system_instruction == "CUSTOM"
+        assert (
+            rr.vision_client.generate_response.call_args[0][0].system_instruction
+            == "CUSTOM"
+        )
 
     def test_none_default(self):
         req = ModelRequest(task_type=TaskType.AUTONOMOUS_LOOP, prompt="x")
@@ -275,9 +328,15 @@ class TestFormatPrompt:
 class TestRestart:
     def test_windows(self):
         eng = _make_engine()
-        ctx = MagicMock(metadata={"restart_provider": "t", "restart_model": "t",
-                                  "restart_telegram_mode": False, "restart_discord_mode": False,
-                                  "restart_telegram_user_id": None})
+        ctx = MagicMock(
+            metadata={
+                "restart_provider": "t",
+                "restart_model": "t",
+                "restart_telegram_mode": False,
+                "restart_discord_mode": False,
+                "restart_telegram_user_id": None,
+            }
+        )
         with patch("sys.platform", "win32"):
             with patch.object(AutonomousLoopEngine, "_git_pull"):
                 with patch("subprocess.Popen") as mp:
@@ -288,9 +347,15 @@ class TestRestart:
 
     def test_unix(self):
         eng = _make_engine()
-        ctx = MagicMock(metadata={"restart_provider": "t", "restart_model": "t",
-                                  "restart_telegram_mode": False, "restart_discord_mode": False,
-                                  "restart_telegram_user_id": None})
+        ctx = MagicMock(
+            metadata={
+                "restart_provider": "t",
+                "restart_model": "t",
+                "restart_telegram_mode": False,
+                "restart_discord_mode": False,
+                "restart_telegram_user_id": None,
+            }
+        )
         with patch("sys.platform", "linux"):
             with patch("os.execv") as me:
                 eng._restart_process(ctx)

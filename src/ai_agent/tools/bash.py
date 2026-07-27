@@ -119,8 +119,16 @@ class BashTool(ToolExecutor):
                 proc.wait()
             raise CommandTimeoutToolError(input.command, timeout)
 
-        stdout = stdout_bytes.decode("utf-8", errors="replace") if isinstance(stdout_bytes, bytes) else (stdout_bytes or "")
-        stderr = stderr_bytes.decode("utf-8", errors="replace") if isinstance(stderr_bytes, bytes) else (stderr_bytes or "")
+        stdout = (
+            stdout_bytes.decode("utf-8", errors="replace")
+            if isinstance(stdout_bytes, bytes)
+            else (stdout_bytes or "")
+        )
+        stderr = (
+            stderr_bytes.decode("utf-8", errors="replace")
+            if isinstance(stderr_bytes, bytes)
+            else (stderr_bytes or "")
+        )
         exit_code = proc.returncode
 
         output_parts = []

@@ -45,13 +45,19 @@ class FileEditTool(ToolExecutor):
             raise EditMismatchToolError(str(path), input.old_string, occurrences=0)
 
         if not input.replace_all and occurrences > 1:
-            raise EditMismatchToolError(str(path), input.old_string, occurrences=occurrences)
+            raise EditMismatchToolError(
+                str(path), input.old_string, occurrences=occurrences
+            )
 
         if input.replace_all:
             new_content = content.replace(input.old_string, input.new_string)
         else:
             idx = content.index(input.old_string)
-            new_content = content[:idx] + input.new_string + content[idx + len(input.old_string):]
+            new_content = (
+                content[:idx]
+                + input.new_string
+                + content[idx + len(input.old_string) :]
+            )
 
         try:
             path.write_text(new_content, encoding="utf-8")

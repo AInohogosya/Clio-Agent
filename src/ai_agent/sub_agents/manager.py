@@ -24,6 +24,7 @@ logger = get_logger("sub_agent.manager")
 @dataclass
 class SubAgentHandle:
     """Handle for tracking a spawned sub-agent."""
+
     agent_id: str
     agent_type: str
     future: Future[SubAgentResult]
@@ -138,9 +139,7 @@ class SubAgentManager:
             handle.future = future
             self._handles[handle.agent_id] = handle
 
-        logger.info(
-            f"Spawned sub-agent: type={agent_type}, id={handle.agent_id}"
-        )
+        logger.info(f"Spawned sub-agent: type={agent_type}, id={handle.agent_id}")
         return handle
 
     def _execute_agent(
@@ -193,9 +192,8 @@ class SubAgentManager:
         """
         with self._lock:
             futures = {
-                h.agent_id: h.future for h, h.future in (
-                    (h, h.future) for h in self._handles.values()
-                )
+                h.agent_id: h.future
+                for h, h.future in ((h, h.future) for h in self._handles.values())
                 if h.future is not None
             }
 
@@ -211,25 +209,25 @@ class SubAgentManager:
                 results.append(result)
                 self._results.append(result)
             except Exception as e:
-                agent_id = [
-                    aid for aid, f in futures.items() if f == future
-                ]
+                agent_id = [aid for aid, f in futures.items() if f == future]
                 aid = agent_id[0] if agent_id else "unknown"
-                results.append(SubAgentResult(
-                    agent_id=aid,
-                    agent_type="unknown",
-                    success=False,
-                    output="",
-                    error=f"Sub-agent execution failed: {e}",
-                ))
+                results.append(
+                    SubAgentResult(
+                        agent_id=aid,
+                        agent_type="unknown",
+                        success=False,
+                        output="",
+                        error=f"Sub-agent execution failed: {e}",
+                    )
+                )
 
         elapsed = time.monotonic() - start
-        logger.info(f"All sub-agents completed in {elapsed:.1f}s ({len(results)} results)")
+        logger.info(
+            f"All sub-agents completed in {elapsed:.1f}s ({len(results)} results)"
+        )
         return results
 
-    def collect_completed(
-        self, timeout: float = 0.1
-    ):
+    def collect_completed(self, timeout: float = 0.1):
         """
         Generator that yields results as they complete.
 
@@ -290,7 +288,9 @@ class SubAgentManager:
 
         # If running, mark for cleanup (thread-based execution)
         # The agent itself needs to check for a kill signal periodically
-        logger.warning(f"Cannot cancel running sub-agent {agent_id} — marking for cleanup")
+        logger.warning(
+            f"Cannot cancel running sub-agent {agent_id} — marking for cleanup"
+        )
         return False
 
     def kill_all(self) -> int:
@@ -398,6 +398,7 @@ class SubAgentManager:
         try:
             from ..external_integration.model_runner import ModelRunner
             from ..utils.config import load_config
+
             cfg = load_config()
             api_cfg = getattr(cfg, "api", None)
             provider = getattr(api_cfg, "preferred_provider", None) if api_cfg else None

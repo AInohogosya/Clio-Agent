@@ -72,8 +72,10 @@ logger = get_logger("sub_agent.architect")
 # Enums & Data Classes
 # ════════════════════════════════════════════════════════════════
 
+
 class ArchitectPhase(Enum):
     """Phases of the Architect Agent's reasoning loop."""
+
     DISCOVERY = auto()
     ANALYSIS = auto()
     DESIGN = auto()
@@ -108,18 +110,20 @@ class ArchitectPhase(Enum):
 
 class ScoreDimension(Enum):
     """Dimensions for quantitative architectural trade-off scoring."""
+
     SIMPLICITY = "simplicity"
     PERFORMANCE = "performance"
     MAINTAINABILITY = "maintainability"
     EXTENSIBILITY = "extensibility"
-    RISK = "risk"               # Higher = riskier
-    ALIGNMENT = "alignment"     # Alignment with existing codebase
+    RISK = "risk"  # Higher = riskier
+    ALIGNMENT = "alignment"  # Alignment with existing codebase
     TESTABILITY = "testability"
     SCALABILITY = "scalability"
 
 
 class RiskLikelihood(Enum):
     """Likelihood of a risk materializing."""
+
     VERY_LOW = "Very Low"
     LOW = "Low"
     MEDIUM = "Medium"
@@ -129,6 +133,7 @@ class RiskLikelihood(Enum):
 
 class RiskImpact(Enum):
     """Impact if a risk materializes."""
+
     NEGLIGIBLE = "Negligible"
     MINOR = "Minor"
     MODERATE = "Moderate"
@@ -139,18 +144,23 @@ class RiskImpact(Enum):
 @dataclass
 class Scorecard:
     """Multi-dimensional score for an architectural alternative."""
+
     alternative_name: str = ""
     scores: Dict[ScoreDimension, float] = field(default_factory=dict)
     notes: Dict[ScoreDimension, str] = field(default_factory=dict)
 
-    def set_score(self, dimension: ScoreDimension, value: float, note: str = "") -> None:
+    def set_score(
+        self, dimension: ScoreDimension, value: float, note: str = ""
+    ) -> None:
         if not (1.0 <= value <= 10.0):
             raise ValueError(f"Score must be 1-10, got {value}")
         self.scores[dimension] = value
         if note:
             self.notes[dimension] = note
 
-    def weighted_score(self, weights: Optional[Dict[ScoreDimension, float]] = None) -> float:
+    def weighted_score(
+        self, weights: Optional[Dict[ScoreDimension, float]] = None
+    ) -> float:
         if weights is None:
             weights = {
                 ScoreDimension.SIMPLICITY: 1.0,
@@ -180,13 +190,16 @@ class Scorecard:
         for dim in ScoreDimension:
             if dim in self.scores:
                 note = self.notes.get(dim, "")
-                lines.append(f"| {dim.value.capitalize()} | {self.scores[dim]:.1f}/10 | {note} |")
+                lines.append(
+                    f"| {dim.value.capitalize()} | {self.scores[dim]:.1f}/10 | {note} |"
+                )
         return "\n".join(lines)
 
 
 @dataclass
 class ArchitecturalAlternative:
     """A complete architectural design alternative."""
+
     name: str
     description: str = ""
     components: List[Dict[str, str]] = field(default_factory=list)
@@ -206,6 +219,7 @@ class ArchitecturalAlternative:
 @dataclass
 class RiskEntry:
     """A single entry in the risk register."""
+
     risk_id: str
     description: str
     likelihood: RiskLikelihood = RiskLikelihood.MEDIUM
@@ -218,6 +232,7 @@ class RiskEntry:
 @dataclass
 class ADR:
     """Architectural Decision Record."""
+
     adr_id: str
     title: str
     status: str = "Proposed"
@@ -253,19 +268,22 @@ class ADR:
                 if cons_list:
                     lines.append("   - Cons: " + "; ".join(cons_list))
             lines.append("")
-        lines.extend([
-            "**Consequences:**",
-            self.consequences,
-            "",
-            f"**Confidence:** {self.confidence}",
-            "",
-        ])
+        lines.extend(
+            [
+                "**Consequences:**",
+                self.consequences,
+                "",
+                f"**Confidence:** {self.confidence}",
+                "",
+            ]
+        )
         return "\n".join(lines)
 
 
 @dataclass
 class DependencyNode:
     """Node in a dependency graph."""
+
     file_path: str
     imports: List[str] = field(default_factory=list)
     imported_by: List[str] = field(default_factory=list)
@@ -277,6 +295,7 @@ class DependencyNode:
 @dataclass
 class DiscoveryFinding:
     """A single finding from the DISCOVERY phase."""
+
     file_path: str
     pattern: str = ""
     observation: str = ""
@@ -287,6 +306,7 @@ class DiscoveryFinding:
 # ════════════════════════════════════════════════════════════════
 # Supporting Engines
 # ════════════════════════════════════════════════════════════════
+
 
 class TradeOffScorer:
     """Engine for quantitative multi-dimensional architectural scoring.
@@ -378,41 +398,56 @@ class CritiqueEngine:
     """
 
     CRITIQUE_QUESTIONS = [
-        ("Assumptions", [
-            "What must be true for this design to work correctly?",
-            "Are all dependencies available in the current environment?",
-            "Does this assume a specific threading/asyncio model?",
-            "Does this assume unlimited resources (memory, disk, CPU)?",
-            "What implicit API contracts does this rely on?",
-        ]),
-        ("Edge Cases", [
-            "What happens when input data is empty or malformed?",
-            "What happens under concurrent access?",
-            "What happens when a dependency is unavailable?",
-            "What happens at scale (1000x current load)?",
-            "What happens when the system is partially migrated?",
-        ]),
-        ("Failure Modes", [
-            "What's the blast radius if the core component fails?",
-            "Is failure graceful or catastrophic?",
-            "Can the system recover automatically from failure?",
-            "What is the worst-case data loss scenario?",
-            "What is the worst-case downtime scenario?",
-        ]),
-        ("Hidden Costs", [
-            "How much existing code must change to adopt this?",
-            "What new dependencies or infrastructure are required?",
-            "What is the learning curve for the team?",
-            "How much ongoing operational complexity is added?",
-            "What is the migration window and can it be done incrementally?",
-        ]),
-        ("Technical Debt", [
-            "Does this design create coupling that will be hard to break later?",
-            "Are there any temporary workarounds that will need to be fixed?",
-            "Does this create inconsistent patterns with the rest of the codebase?",
-            "What documentation burden does this create?",
-            "How hard would it be to reverse this decision later?",
-        ]),
+        (
+            "Assumptions",
+            [
+                "What must be true for this design to work correctly?",
+                "Are all dependencies available in the current environment?",
+                "Does this assume a specific threading/asyncio model?",
+                "Does this assume unlimited resources (memory, disk, CPU)?",
+                "What implicit API contracts does this rely on?",
+            ],
+        ),
+        (
+            "Edge Cases",
+            [
+                "What happens when input data is empty or malformed?",
+                "What happens under concurrent access?",
+                "What happens when a dependency is unavailable?",
+                "What happens at scale (1000x current load)?",
+                "What happens when the system is partially migrated?",
+            ],
+        ),
+        (
+            "Failure Modes",
+            [
+                "What's the blast radius if the core component fails?",
+                "Is failure graceful or catastrophic?",
+                "Can the system recover automatically from failure?",
+                "What is the worst-case data loss scenario?",
+                "What is the worst-case downtime scenario?",
+            ],
+        ),
+        (
+            "Hidden Costs",
+            [
+                "How much existing code must change to adopt this?",
+                "What new dependencies or infrastructure are required?",
+                "What is the learning curve for the team?",
+                "How much ongoing operational complexity is added?",
+                "What is the migration window and can it be done incrementally?",
+            ],
+        ),
+        (
+            "Technical Debt",
+            [
+                "Does this design create coupling that will be hard to break later?",
+                "Are there any temporary workarounds that will need to be fixed?",
+                "Does this create inconsistent patterns with the rest of the codebase?",
+                "What documentation burden does this create?",
+                "How hard would it be to reverse this decision later?",
+            ],
+        ),
     ]
 
     @classmethod
@@ -424,8 +459,7 @@ class CritiqueEngine:
         critique: Dict[str, List[str]] = {}
         for category, questions in cls.CRITIQUE_QUESTIONS:
             critique[category] = [
-                f"{q}  [{alternative.name}: {'NEEDS ANALYSIS'}]"
-                for q in questions
+                f"{q}  [{alternative.name}: {'NEEDS ANALYSIS'}]" for q in questions
             ]
         return critique
 
@@ -489,7 +523,7 @@ class DependencyMapper:
 
             # Extract imports
             import_pattern = re.compile(
-                r'^(?:from\s+(\S+)\s+import|import\s+(\S+))',
+                r"^(?:from\s+(\S+)\s+import|import\s+(\S+))",
                 re.MULTILINE,
             )
             imports = []
@@ -499,8 +533,8 @@ class DependencyMapper:
 
             # Heuristic complexity: count lines, classes, functions
             lines = content.count("\n") + 1
-            classes = len(re.findall(r'^\s*class\s+\w+', content, re.MULTILINE))
-            functions = len(re.findall(r'^\s*def\s+\w+', content, re.MULTILINE))
+            classes = len(re.findall(r"^\s*class\s+\w+", content, re.MULTILINE))
+            functions = len(re.findall(r"^\s*def\s+\w+", content, re.MULTILINE))
             complexity = min(10, max(1, (lines // 100) + classes + functions))
 
             # Heuristic module type
@@ -659,12 +693,14 @@ class ADRGenerator:
         ]
 
         for i, alt in enumerate(alternatives, 1):
-            lines.extend([
-                f"### Alternative {chr(64 + i)}: {alt.name}",
-                "",
-                f"**Approach:** {alt.description}",
-                "",
-            ])
+            lines.extend(
+                [
+                    f"### Alternative {chr(64 + i)}: {alt.name}",
+                    "",
+                    f"**Approach:** {alt.description}",
+                    "",
+                ]
+            )
             if alt.components:
                 lines.append("**Components:**")
                 for comp in alt.components:
@@ -682,16 +718,18 @@ class ADRGenerator:
                     lines.append(f"- {pt}")
                 lines.append("")
 
-            lines.extend([
-                "**Scorecard:**",
-                "",
-                "| Dimension | Score | Notes |",
-                "|-----------|-------|-------|",
-                alt.scorecard.to_markdown_table(),
-                "",
-                f"**Weighted Score:** {alt.scorecard.weighted_score():.2f}/10",
-                "",
-            ])
+            lines.extend(
+                [
+                    "**Scorecard:**",
+                    "",
+                    "| Dimension | Score | Notes |",
+                    "|-----------|-------|-------|",
+                    alt.scorecard.to_markdown_table(),
+                    "",
+                    f"**Weighted Score:** {alt.scorecard.weighted_score():.2f}/10",
+                    "",
+                ]
+            )
 
             if alt.pros:
                 lines.append("**Pros:**")
@@ -705,33 +743,37 @@ class ADRGenerator:
                     lines.append(f"- ❌ {c}")
                 lines.append("")
 
-        lines.extend([
-            "---",
-            "",
-            "## Recommended Architecture",
-            "",
-            recommended,
-            "",
-            "---",
-            "",
-            "## Architectural Decision Records",
-            "",
-        ])
+        lines.extend(
+            [
+                "---",
+                "",
+                "## Recommended Architecture",
+                "",
+                recommended,
+                "",
+                "---",
+                "",
+                "## Architectural Decision Records",
+                "",
+            ]
+        )
 
         for adr in adrs:
             lines.append(adr.to_markdown())
             lines.append("---")
             lines.append("")
 
-        lines.extend([
-            "## Implementation Roadmap",
-            roadmap,
-            "",
-            "## Risk Register",
-            "",
-            "| Risk ID | Description | Likelihood | Impact | Mitigation | Trigger |",
-            "|---------|-------------|-----------|--------|------------|---------|",
-        ])
+        lines.extend(
+            [
+                "## Implementation Roadmap",
+                roadmap,
+                "",
+                "## Risk Register",
+                "",
+                "| Risk ID | Description | Likelihood | Impact | Mitigation | Trigger |",
+                "|---------|-------------|-----------|--------|------------|---------|",
+            ]
+        )
 
         for risk in risk_register:
             lines.append(
@@ -740,11 +782,13 @@ class ADRGenerator:
                 f"{risk.mitigation} | {risk.trigger} |"
             )
 
-        lines.extend([
-            "",
-            "## Trade-off Summary",
-            tradeoff_summary,
-        ])
+        lines.extend(
+            [
+                "",
+                "## Trade-off Summary",
+                tradeoff_summary,
+            ]
+        )
 
         return "\n".join(lines)
 
@@ -753,7 +797,11 @@ class ADRGenerator:
 # ArchitectAgent — Main Class
 # ════════════════════════════════════════════════════════════════
 
-@sub_agent("architect", description="Architectural analysis, design, ADR generation, and trade-off analysis")
+
+@sub_agent(
+    "architect",
+    description="Architectural analysis, design, ADR generation, and trade-off analysis",
+)
 class ArchitectAgent(SubAgentBase):
     """Masterpiece meta-reasoning sub-agent for architectural design.
 
@@ -837,9 +885,7 @@ class ArchitectAgent(SubAgentBase):
                         f"Phase {self._phase.name} iteration {self._iteration} "
                         f"failed: {e}"
                     )
-                    self._phase_history.append(
-                        f"[{self._phase.name}] ERROR: {e}"
-                    )
+                    self._phase_history.append(f"[{self._phase.name}] ERROR: {e}")
                     break
 
                 if phase_output:
@@ -880,6 +926,7 @@ class ArchitectAgent(SubAgentBase):
                 ModelRequest,
                 TaskType,
             )
+
             request = ModelRequest(
                 task_type=TaskType.AUTONOMOUS_LOOP,
                 prompt=prompt,
@@ -929,9 +976,9 @@ class ArchitectAgent(SubAgentBase):
             for root, _dirs, files in os.walk(full):
                 for fname in files:
                     if fname.endswith(".py"):
-                        py_files.append(os.path.relpath(
-                            os.path.join(root, fname), self._cwd
-                        ))
+                        py_files.append(
+                            os.path.relpath(os.path.join(root, fname), self._cwd)
+                        )
 
             findings.append(f"### {pd}/ — {len(py_files)} Python files")
 
@@ -957,11 +1004,13 @@ class ArchitectAgent(SubAgentBase):
                         f"complexity={node.complexity}, "
                         f"{'CORE' if node.is_core else 'leaf'}"
                     )
-                    self._discovery_findings.append(DiscoveryFinding(
-                        file_path=fpath,
-                        pattern=node.module_type,
-                        observation=f"{node.complexity} complexity, {len(node.imports)} imports",
-                    ))
+                    self._discovery_findings.append(
+                        DiscoveryFinding(
+                            file_path=fpath,
+                            pattern=node.module_type,
+                            observation=f"{node.complexity} complexity, {len(node.imports)} imports",
+                        )
+                    )
 
         # Detect circular deps
         if len(self._dependency_graph) > 1:
@@ -991,24 +1040,28 @@ class ArchitectAgent(SubAgentBase):
             files_by_type[ft].append(finding.file_path)
 
         for ftype, fpaths in files_by_type.items():
-            sub_problems.append({
-                "name": f"Refactor {ftype} layer",
-                "description": f"Files: {', '.join(fpaths[:5])}",
-                "complexity": "Medium" if len(fpaths) > 5 else "Low",
-                "impact": "High" if ftype in ("agent", "core") else "Medium",
-                "risk": "Medium",
-            })
+            sub_problems.append(
+                {
+                    "name": f"Refactor {ftype} layer",
+                    "description": f"Files: {', '.join(fpaths[:5])}",
+                    "complexity": "Medium" if len(fpaths) > 5 else "Low",
+                    "impact": "High" if ftype in ("agent", "core") else "Medium",
+                    "risk": "Medium",
+                }
+            )
 
         lines = ["## Problem Decomposition (Automated)", ""]
         for i, sp in enumerate(sub_problems, 1):
-            lines.extend([
-                f"### Sub-problem {i}: {sp['name']}",
-                f"- Description: {sp['description']}",
-                f"- Complexity: {sp['complexity']}",
-                f"- Impact: {sp['impact']}",
-                f"- Risk: {sp['risk']}",
-                "",
-            ])
+            lines.extend(
+                [
+                    f"### Sub-problem {i}: {sp['name']}",
+                    f"- Description: {sp['description']}",
+                    f"- Complexity: {sp['complexity']}",
+                    f"- Impact: {sp['impact']}",
+                    f"- Risk: {sp['risk']}",
+                    "",
+                ]
+            )
 
         result = "\n".join(lines)
         self._phase_outputs[self._phase] = result
@@ -1135,7 +1188,7 @@ class ArchitectAgent(SubAgentBase):
         """Parse architectural alternatives from DESIGN phase output."""
         # Look for structured alternative sections
         alt_pattern = re.compile(
-            r'###\s+(?:Alternative\s+[A-Z]|Alternative\s+\d+)[:\s-]*\s*(.+?)(?=###|\Z)',
+            r"###\s+(?:Alternative\s+[A-Z]|Alternative\s+\d+)[:\s-]*\s*(.+?)(?=###|\Z)",
             re.DOTALL | re.IGNORECASE,
         )
 
@@ -1143,7 +1196,7 @@ class ArchitectAgent(SubAgentBase):
         if not matches:
             # Try looser pattern
             alt_pattern2 = re.compile(
-                r'(?:Alternative|Option|Approach)\s+[A-Z\d][:\s-]*\s*(.+?)(?=(?:Alternative|Option|Approach)\s+[A-Z\d]|\Z)',
+                r"(?:Alternative|Option|Approach)\s+[A-Z\d][:\s-]*\s*(.+?)(?=(?:Alternative|Option|Approach)\s+[A-Z\d]|\Z)",
                 re.DOTALL | re.IGNORECASE,
             )
             matches = alt_pattern2.findall(output)
@@ -1190,7 +1243,7 @@ class ArchitectAgent(SubAgentBase):
     def _parse_adrs_from_output(self, output: str) -> None:
         """Parse ADRs from SYNTHESIS output."""
         adr_pattern = re.compile(
-            r'(?:###|##)\s*(ADR-\d+):\s*(.+?)(?=(?:###|##)\s*ADR-\d+:|\Z)',
+            r"(?:###|##)\s*(ADR-\d+):\s*(.+?)(?=(?:###|##)\s*ADR-\d+:|\Z)",
             re.DOTALL,
         )
 
@@ -1199,37 +1252,40 @@ class ArchitectAgent(SubAgentBase):
             adr = ADR(adr_id=adr_id.strip(), title=adr_content.split("\n")[0].strip())
 
             # Extract status
-            status_match = re.search(r'\*\*Status:\*\*\s*(.+)', adr_content)
+            status_match = re.search(r"\*\*Status:\*\*\s*(.+)", adr_content)
             if status_match:
                 adr.status = status_match.group(1).strip()
 
             # Extract context
             context_match = re.search(
-                r'\*\*Context:\*\*\s*\n(.+?)(?=\*\*Decision:\*\*|\Z)',
-                adr_content, re.DOTALL,
+                r"\*\*Context:\*\*\s*\n(.+?)(?=\*\*Decision:\*\*|\Z)",
+                adr_content,
+                re.DOTALL,
             )
             if context_match:
                 adr.context = context_match.group(1).strip()
 
             # Extract decision
             decision_match = re.search(
-                r'\*\*Decision:\*\*\s*\n(.+?)(?=\*\*(?:Alternatives|Consequences|Confidence):\*\*|\Z)',
-                adr_content, re.DOTALL,
+                r"\*\*Decision:\*\*\s*\n(.+?)(?=\*\*(?:Alternatives|Consequences|Confidence):\*\*|\Z)",
+                adr_content,
+                re.DOTALL,
             )
             if decision_match:
                 adr.decision = decision_match.group(1).strip()
 
             # Extract consequences
             cons_match = re.search(
-                r'\*\*Consequences:\*\*\s*\n(.+?)(?=\*\*(?:Confidence):\*\*|\Z)',
-                adr_content, re.DOTALL,
+                r"\*\*Consequences:\*\*\s*\n(.+?)(?=\*\*(?:Confidence):\*\*|\Z)",
+                adr_content,
+                re.DOTALL,
             )
             if cons_match:
                 adr.consequences = cons_match.group(1).strip()
 
             # Extract confidence
             conf_match = re.search(
-                r'\*\*Confidence:\*\*\s*(.+)',
+                r"\*\*Confidence:\*\*\s*(.+)",
                 adr_content,
             )
             if conf_match:
@@ -1241,7 +1297,7 @@ class ArchitectAgent(SubAgentBase):
         """Parse risk register entries from SYNTHESIS output."""
         # Look for risk table rows
         table_pattern = re.compile(
-            r'\|\s*(R\d+)\s*\|\s*(.+?)\s*\|\s*(.+?)\s*\|\s*(.+?)\s*\|\s*(.+?)\s*\|\s*(.*?)\s*\|',
+            r"\|\s*(R\d+)\s*\|\s*(.+?)\s*\|\s*(.+?)\s*\|\s*(.+?)\s*\|\s*(.+?)\s*\|\s*(.*?)\s*\|",
         )
 
         for match in table_pattern.finditer(output):
@@ -1264,7 +1320,7 @@ class ArchitectAgent(SubAgentBase):
         """Extract alternative name from text."""
         first_line = text.strip().split("\n")[0].strip()
         # Remove markdown formatting
-        first_line = re.sub(r'[*_#]', '', first_line).strip()
+        first_line = re.sub(r"[*_#]", "", first_line).strip()
         if first_line and len(first_line) < 80:
             return first_line
         return f"Alternative {chr(65 + index)}"
@@ -1273,8 +1329,9 @@ class ArchitectAgent(SubAgentBase):
     def _extract_alternative_description(text: str) -> str:
         """Extract description from alternative text."""
         desc_match = re.search(
-            r'(?:Description|Approach|Overview)[:\s-]*\s*\n?(.+?)(?=\n\n|\n(?:Components|Data Flow|Integration|Scorecard|Pros|Cons))',
-            text, re.DOTALL | re.IGNORECASE,
+            r"(?:Description|Approach|Overview)[:\s-]*\s*\n?(.+?)(?=\n\n|\n(?:Components|Data Flow|Integration|Scorecard|Pros|Cons))",
+            text,
+            re.DOTALL | re.IGNORECASE,
         )
         if desc_match:
             return desc_match.group(1).strip()
@@ -1284,7 +1341,12 @@ class ArchitectAgent(SubAgentBase):
         current = []
         for line in lines:
             line = line.strip()
-            if not line or line.startswith("#") or line.startswith("*") or line.startswith("-"):
+            if (
+                not line
+                or line.startswith("#")
+                or line.startswith("*")
+                or line.startswith("-")
+            ):
                 if current:
                     paragraphs.append(" ".join(current))
                     current = []
@@ -1303,7 +1365,7 @@ class ArchitectAgent(SubAgentBase):
         """Extract component list from alternative text."""
         components = []
         comp_pattern = re.compile(
-            r'[-*]\s*\*\*(.+?)\*\*[:\s]*(.+)',
+            r"[-*]\s*\*\*(.+?)\*\*[:\s]*(.+)",
         )
         for match in comp_pattern.finditer(text):
             name = match.group(1).strip()
@@ -1319,12 +1381,12 @@ class ArchitectAgent(SubAgentBase):
 
         # Look for table-like score entries
         score_pattern = re.compile(
-            r'(?:Simplicity|Performance|Maintainability|Extensibility|Risk|Alignment|Testability|Scalability)[:\s]*(\d+(?:\.\d+)?)\s*(?:/10)?',
+            r"(?:Simplicity|Performance|Maintainability|Extensibility|Risk|Alignment|Testability|Scalability)[:\s]*(\d+(?:\.\d+)?)\s*(?:/10)?",
             re.IGNORECASE,
         )
 
         for dim_str in ScoreDimension:
-            pattern = rf'{dim_str.value}[:\s]*(\d+(?:\.\d+)?)'
+            pattern = rf"{dim_str.value}[:\s]*(\d+(?:\.\d+)?)"
             m = re.search(pattern, text, re.IGNORECASE)
             if m:
                 scorecard.set_score(dim_str, min(10.0, max(1.0, float(m.group(1)))))
@@ -1349,14 +1411,18 @@ class ArchitectAgent(SubAgentBase):
                 in_cons = True
                 in_pros = False
                 continue
-            if line_lower.startswith("**") and not line_lower.startswith("**pros") and not line_lower.startswith("**cons"):
+            if (
+                line_lower.startswith("**")
+                and not line_lower.startswith("**pros")
+                and not line_lower.startswith("**cons")
+            ):
                 in_pros = False
                 in_cons = False
 
             if in_pros and line.strip().startswith(("-", "*", "✅")):
-                pros.append(re.sub(r'^[-*✅]\s*', '', line.strip()))
+                pros.append(re.sub(r"^[-*✅]\s*", "", line.strip()))
             if in_cons and line.strip().startswith(("-", "*", "❌")):
-                cons.append(re.sub(r'^[-*❌]\s*', '', line.strip()))
+                cons.append(re.sub(r"^[-*❌]\s*", "", line.strip()))
 
         return pros, cons
 
@@ -1468,6 +1534,7 @@ class ArchitectAgent(SubAgentBase):
             return
         try:
             import glob as glob_mod
+
             files = glob_mod.glob(pattern, root_dir=self._cwd, recursive=True)
             self.context.set_artifact(f"glob_{pattern}", files[:100])
             self.context.append_artifact_list("glob_searches", pattern)
@@ -1488,7 +1555,9 @@ class ArchitectAgent(SubAgentBase):
                         if fname.endswith(".py"):
                             fpath = os.path.join(root, fname)
                             try:
-                                with open(fpath, "r", encoding="utf-8", errors="replace") as f:
+                                with open(
+                                    fpath, "r", encoding="utf-8", errors="replace"
+                                ) as f:
                                     for i, fline in enumerate(f, 1):
                                         if re.search(pattern, fline):
                                             matches.append(
@@ -1512,14 +1581,21 @@ class ArchitectAgent(SubAgentBase):
             return
         try:
             result = subprocess.run(
-                cmd, shell=True, capture_output=True, text=True,
-                timeout=30, cwd=self._cwd,
+                cmd,
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                cwd=self._cwd,
             )
-            self.context.set_artifact(f"bash_{cmd[:30]}", {
-                "stdout": result.stdout[:2000],
-                "stderr": result.stderr[:2000],
-                "returncode": result.returncode,
-            })
+            self.context.set_artifact(
+                f"bash_{cmd[:30]}",
+                {
+                    "stdout": result.stdout[:2000],
+                    "stderr": result.stderr[:2000],
+                    "returncode": result.returncode,
+                },
+            )
             self.context.append_artifact_list("shell_commands", cmd)
         except subprocess.TimeoutExpired:
             logger.warning(f"bash({cmd[:30]}) timed out")
@@ -1574,8 +1650,7 @@ class ArchitectAgent(SubAgentBase):
 
     def _log_phase_start(self) -> None:
         logger.info(
-            f"ArchitectAgent [{self.agent_id}]: "
-            f"Starting {self._phase.name} phase"
+            f"ArchitectAgent [{self.agent_id}]: " f"Starting {self._phase.name} phase"
         )
 
     def _log_phase_complete(self) -> None:
@@ -1621,7 +1696,9 @@ class ArchitectAgent(SubAgentBase):
             title=self.context.task[:100],
             executive_summary=self._phase_outputs.get(
                 ArchitectPhase.SYNTHESIS,
-                self._phase_outputs.get(ArchitectPhase.DISCOVERY, "Analysis completed.")
+                self._phase_outputs.get(
+                    ArchitectPhase.DISCOVERY, "Analysis completed."
+                ),
             )[:2000],
             current_state=self._phase_outputs.get(
                 ArchitectPhase.DISCOVERY, "No discovery performed."
@@ -1637,12 +1714,16 @@ class ArchitectAgent(SubAgentBase):
             roadmap=self._phase_outputs.get(
                 ArchitectPhase.REFINEMENT, "See recommended architecture."
             )[:2000],
-            risk_register=self._risk_register if self._risk_register else [
-                RiskEntry(
-                    risk_id="R001",
-                    description="Insufficient analysis — no risks formally identified",
-                    mitigation="Perform manual risk assessment",
-                )
-            ],
+            risk_register=(
+                self._risk_register
+                if self._risk_register
+                else [
+                    RiskEntry(
+                        risk_id="R001",
+                        description="Insufficient analysis — no risks formally identified",
+                        mitigation="Perform manual risk assessment",
+                    )
+                ]
+            ),
             tradeoff_summary="See scorecards in Design Alternatives section above.",
         )

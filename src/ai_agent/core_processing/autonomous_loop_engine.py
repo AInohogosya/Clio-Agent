@@ -25,14 +25,24 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
-from ..external_integration.model_runner import ModelRunner, TaskType, ModelRequest, ModelResponse
+from ..external_integration.model_runner import (
+    ModelRunner,
+    TaskType,
+    ModelRequest,
+    ModelResponse,
+)
 from ..external_integration.telegram_bot import TelegramBotManager, ConversationHistory
 from ..tools.base import ParallelResult, ParallelTask
 from ..utils.exceptions import ExecutionError, ValidationError
 from ..utils.logger import get_logger
 from ..utils.resilience_engine import (
-    get_resilience_engine, classify_api_error, check_system_resources,
-    emergency_disk_cleanup, ErrorCategory, ErrorSeverity, ResilienceConfig,
+    get_resilience_engine,
+    classify_api_error,
+    check_system_resources,
+    emergency_disk_cleanup,
+    ErrorCategory,
+    ErrorSeverity,
+    ResilienceConfig,
 )
 from .terminal_history import TerminalHistory, get_terminal_history, TerminalEntryType
 from .context_manager import (
@@ -131,11 +141,7 @@ def _atomic_write_json(filepath: Path, data: dict) -> bool:
 
         # Write to temporary file in the same directory
         with tempfile.NamedTemporaryFile(
-            mode='w',
-            suffix='.tmp',
-            dir=filepath.parent,
-            delete=False,
-            encoding='utf-8'
+            mode="w", suffix=".tmp", dir=filepath.parent, delete=False, encoding="utf-8"
         ) as tmp_file:
             _json.dump(data, tmp_file, indent=2, ensure_ascii=False)
             tmp_path = Path(tmp_file.name)
@@ -144,12 +150,10 @@ def _atomic_write_json(filepath: Path, data: dict) -> bool:
         tmp_path.replace(filepath)
         return True
     except Exception as e:
-        get_logger("autonomous_loop_engine").error(
-            f"Failed to write {filepath}: {e}"
-        )
+        get_logger("autonomous_loop_engine").error(f"Failed to write {filepath}: {e}")
         # Clean up temp file if it exists
         try:
-            if 'tmp_path' in locals() and tmp_path.exists():
+            if "tmp_path" in locals() and tmp_path.exists():
                 tmp_path.unlink(missing_ok=True)
         except Exception:
             pass
@@ -171,11 +175,7 @@ def _atomic_write_text(filepath: Path, content: str) -> bool:
         filepath.parent.mkdir(parents=True, exist_ok=True)
 
         with tempfile.NamedTemporaryFile(
-            mode='w',
-            suffix='.tmp',
-            dir=filepath.parent,
-            delete=False,
-            encoding='utf-8'
+            mode="w", suffix=".tmp", dir=filepath.parent, delete=False, encoding="utf-8"
         ) as tmp_file:
             tmp_file.write(content)
             tmp_path = Path(tmp_file.name)
@@ -183,11 +183,9 @@ def _atomic_write_text(filepath: Path, content: str) -> bool:
         tmp_path.replace(filepath)
         return True
     except Exception as e:
-        get_logger("autonomous_loop_engine").error(
-            f"Failed to write {filepath}: {e}"
-        )
+        get_logger("autonomous_loop_engine").error(f"Failed to write {filepath}: {e}")
         try:
-            if 'tmp_path' in locals() and tmp_path.exists():
+            if "tmp_path" in locals() and tmp_path.exists():
                 tmp_path.unlink(missing_ok=True)
         except Exception:
             pass
@@ -196,6 +194,7 @@ def _atomic_write_text(filepath: Path, content: str) -> bool:
 
 class LoopPhase(Enum):
     """Autonomous Loop phases"""
+
     THINKING = "thinking"
     EXECUTING = "executing"
     SLEEPING = "sleeping"
@@ -206,6 +205,7 @@ class LoopPhase(Enum):
 @dataclass
 class AutonomousContext:
     """Context for tracking autonomous loop execution"""
+
     user_prompt: str = ""
     current_goal: str = ""
     execution_log: List[str] = field(default_factory=list)
@@ -257,10 +257,14 @@ class AutonomousLoopEngine:
     # is emitted (separate from the context log).  Reset by sleep.
     NOTIFICATION_THRESHOLD = 100
 
-    def __init__(self, provider: str = None, model: str = None,
-                 config: Optional[Dict[str, Any]] = None,
-                 telegram_bot: Optional[TelegramBotManager] = None,
-                 discord_bot=None):
+    def __init__(
+        self,
+        provider: str = None,
+        model: str = None,
+        config: Optional[Dict[str, Any]] = None,
+        telegram_bot: Optional[TelegramBotManager] = None,
+        discord_bot=None,
+    ):
         self.config = config or {}
         self.logger = get_logger("autonomous_loop_engine")
 
@@ -268,7 +272,9 @@ class AutonomousLoopEngine:
         self.terminal_history = get_terminal_history()
 
         # Initialize model runner with runtime provider and model
-        self.model_runner = ModelRunner(provider=provider, model=model, config=self.config)
+        self.model_runner = ModelRunner(
+            provider=provider, model=model, config=self.config
+        )
 
         # Telegram bot manager
         self.telegram_bot = telegram_bot
@@ -310,6 +316,7 @@ class AutonomousLoopEngine:
         show_thought_log = True
         try:
             from ..utils.config import load_config
+
             cfg = load_config()
             exec_cfg = getattr(cfg, "execution", None)
             if exec_cfg:
@@ -350,6 +357,7 @@ class AutonomousLoopEngine:
         self._heartbeat = None
         try:
             from ..utils.eternal_supervisor import AgentHeartbeat
+
             self._heartbeat = AgentHeartbeat(interval=30.0)
             self._heartbeat.start()
         except Exception:
@@ -358,7 +366,7 @@ class AutonomousLoopEngine:
         # Periodic auto-save: writes exit_state.json + context_log.txt
         # every N seconds so that even a hard crash (kill -9, power loss)
         # leaves recoverable context on disk.
-        self._auto_save_interval = 60.0   # seconds between auto-saves
+        self._auto_save_interval = 60.0  # seconds between auto-saves
 
         # Loop detection: tracks recent command signatures to detect
         # when the agent is repeating itself.
@@ -368,7 +376,9 @@ class AutonomousLoopEngine:
         self._loop_warning_active = False  # True when loop detected
         self._auto_save_thread = None
         self._auto_save_running = False
-        self._auto_save_lock = threading.Lock()  # protects ctx.execution_log during auto-save
+        self._auto_save_lock = (
+            threading.Lock()
+        )  # protects ctx.execution_log during auto-save
 
         # ── Proactive work / anti-drift tracking ───────────────────
         # Consecutive iterations with no command()/tool_call()/telegram()
@@ -404,7 +414,7 @@ class AutonomousLoopEngine:
         self._action_history: List[str] = []  # signatures from recent iterations
         self._max_action_history: int = 50  # how many iterations to keep
         self._consecutive_same_action: int = 0  # how many times current sig repeated
-        self._last_action_signature: str = ""   # normalized sig of last iteration
+        self._last_action_signature: str = ""  # normalized sig of last iteration
         # How many consecutive identical-action iterations trigger a forced break.
         # Must be HIGHER than _curiosity_fairy_threshold (3) so the Fairy fires first.
         self._repetition_break_threshold: int = 6
@@ -505,6 +515,7 @@ class AutonomousLoopEngine:
 
         # Classify the error first so we can make informed decisions
         from ..utils.resilience_engine import classify_api_error, ErrorCategory
+
         severity, category, is_retryable, delay = classify_api_error(error)
 
         # If the error is fundamentally not retryable (auth, validation, config),
@@ -525,10 +536,12 @@ class AutonomousLoopEngine:
 
         # For retryable errors, check if we've exceeded the max consecutive error limit
         if self._consecutive_errors > self._max_consecutive_errors:
-            self.logger.error(f"Too many consecutive errors ({self._consecutive_errors})")
+            self.logger.error(
+                f"Too many consecutive errors ({self._consecutive_errors})"
+            )
             self._notify_telegram_error(
                 ctx,
-                f"⚠️ Too many consecutive errors ({self._consecutive_errors}). Entering degraded mode."
+                f"⚠️ Too many consecutive errors ({self._consecutive_errors}). Entering degraded mode.",
             )
             self._enter_degraded_mode()
             # In degraded mode, stop retrying — don't keep hammering the same
@@ -547,52 +560,70 @@ class AutonomousLoopEngine:
         }
 
         strategy_name = strategy_map.get(category, "unknown_error")
-        strategy = self._error_recovery_strategies.get(strategy_name, self._recover_unknown_error)
+        strategy = self._error_recovery_strategies.get(
+            strategy_name, self._recover_unknown_error
+        )
 
         self.logger.info(f"Attempting recovery with strategy: {strategy_name}")
         return strategy(error, ctx, delay)
 
-    def _recover_network_error(self, error: Exception, ctx: AutonomousContext, delay: float) -> bool:
+    def _recover_network_error(
+        self, error: Exception, ctx: AutonomousContext, delay: float
+    ) -> bool:
         """Recover from network errors with exponential backoff."""
         # Limit retries for network errors — if we've tried too many times, give up
         if self._consecutive_errors > 10:
             self.logger.error("Network error: exceeded max retries, propagating")
             return False
         wait = min(delay * (2 ** min(self._consecutive_errors - 1, 4)), 60.0)
-        self.logger.warning(f"Network error - waiting {wait:.1f}s before retry (attempt {self._consecutive_errors})")
+        self.logger.warning(
+            f"Network error - waiting {wait:.1f}s before retry (attempt {self._consecutive_errors})"
+        )
         self._term_log.error(f"⚠️ Network error - retrying in {wait:.0f}s...")
-        self._notify_telegram_error(ctx, f"⚠️ Network error - retrying in {wait:.0f}s...")
+        self._notify_telegram_error(
+            ctx, f"⚠️ Network error - retrying in {wait:.0f}s..."
+        )
 
         self._raise_if_cancelled(ctx)
         time.sleep(wait)
         return True
 
-    def _recover_rate_limit(self, error: Exception, ctx: AutonomousContext, delay: float) -> bool:
+    def _recover_rate_limit(
+        self, error: Exception, ctx: AutonomousContext, delay: float
+    ) -> bool:
         """Recover from rate limit errors with longer backoff."""
         wait = min(delay * (2 ** min(self._consecutive_errors - 1, 3)), 120.0)
         self.logger.warning(f"Rate limited - waiting {wait:.1f}s before retry")
         self._term_log.error(f"⏳ Rate limited - retrying in {wait:.0f}s...")
-        self._notify_telegram_error(ctx, f"⏳ Rate limited - retrying in {wait:.0f}s...")
+        self._notify_telegram_error(
+            ctx, f"⏳ Rate limited - retrying in {wait:.0f}s..."
+        )
 
         self._raise_if_cancelled(ctx)
         time.sleep(wait)
         return True
 
-    def _recover_auth_error(self, error: Exception, ctx: AutonomousContext, delay: float) -> bool:
+    def _recover_auth_error(
+        self, error: Exception, ctx: AutonomousContext, delay: float
+    ) -> bool:
         """Recover from auth errors by switching provider."""
         self.logger.warning("Authentication error - attempting provider switch")
         self._term_log.error("🔑 Authentication error - switching provider...")
 
         next_provider = self._try_switch_provider(ctx, str(error))
         if next_provider:
-            self._notify_telegram_error(ctx, f"🔑 Switched to provider: {next_provider}")
+            self._notify_telegram_error(
+                ctx, f"🔑 Switched to provider: {next_provider}"
+            )
             return True
 
         # No fallback available - enter degraded mode
         self._enter_degraded_mode(["api_calls"])
         return True
 
-    def _recover_timeout_error(self, error: Exception, ctx: AutonomousContext, delay: float) -> bool:
+    def _recover_timeout_error(
+        self, error: Exception, ctx: AutonomousContext, delay: float
+    ) -> bool:
         """Recover from timeout errors."""
         wait = min(delay * (2 ** min(self._consecutive_errors - 1, 3)), 30.0)
         self.logger.warning(f"Timeout error - waiting {wait:.1f}s before retry")
@@ -602,7 +633,9 @@ class AutonomousLoopEngine:
         time.sleep(wait)
         return True
 
-    def _recover_resource_error(self, error: Exception, ctx: AutonomousContext, delay: float) -> bool:
+    def _recover_resource_error(
+        self, error: Exception, ctx: AutonomousContext, delay: float
+    ) -> bool:
         """Recover from resource errors by freeing resources."""
         self.logger.warning("Resource error - attempting cleanup")
         self._term_log.error("🧹 Resource error - running cleanup...")
@@ -610,6 +643,7 @@ class AutonomousLoopEngine:
         # Attempt disk cleanup
         try:
             from ..utils.resilience_engine import emergency_disk_cleanup
+
             ok, msg = emergency_disk_cleanup(target_free_gb=2.0)
             self.logger.info(f"Cleanup result: {msg}")
         except Exception:
@@ -620,7 +654,9 @@ class AutonomousLoopEngine:
         self._handle_sleep(ctx)
         return True
 
-    def _recover_model_error(self, error: Exception, ctx: AutonomousContext, delay: float) -> bool:
+    def _recover_model_error(
+        self, error: Exception, ctx: AutonomousContext, delay: float
+    ) -> bool:
         """Recover from model/API errors by switching provider."""
         self.logger.warning("Model error - attempting provider switch")
         self._term_log.error("🔄 Model error - switching provider...")
@@ -634,7 +670,9 @@ class AutonomousLoopEngine:
         time.sleep(wait)
         return True
 
-    def _recover_command_error(self, error: Exception, ctx: AutonomousContext, delay: float) -> bool:
+    def _recover_command_error(
+        self, error: Exception, ctx: AutonomousContext, delay: float
+    ) -> bool:
         """Recover from command execution errors."""
         self.logger.warning(f"Command error: {error}")
         # Command errors are usually not retryable at this level
@@ -642,7 +680,9 @@ class AutonomousLoopEngine:
         self._consecutive_errors = max(0, self._consecutive_errors - 1)
         return True
 
-    def _recover_unknown_error(self, error: Exception, ctx: AutonomousContext, delay: float) -> bool:
+    def _recover_unknown_error(
+        self, error: Exception, ctx: AutonomousContext, delay: float
+    ) -> bool:
         """Recovery strategy for unknown errors."""
         self.logger.warning(f"Unknown error type: {type(error).__name__}: {error}")
 
@@ -660,12 +700,18 @@ class AutonomousLoopEngine:
         self._enter_degraded_mode()
         return True
 
-    def _enter_degraded_mode(self, disabled_features: Optional[List[str]] = None) -> None:
+    def _enter_degraded_mode(
+        self, disabled_features: Optional[List[str]] = None
+    ) -> None:
         """Enter degraded mode with reduced functionality."""
         self._degraded_mode = True
         self._degraded_features = disabled_features or []
-        self.logger.warning(f"Entering degraded mode. Disabled features: {self._degraded_features}")
-        self._term_log.error("⚠️ Entering degraded mode - some features may be unavailable")
+        self.logger.warning(
+            f"Entering degraded mode. Disabled features: {self._degraded_features}"
+        )
+        self._term_log.error(
+            "⚠️ Entering degraded mode - some features may be unavailable"
+        )
 
     def _exit_degraded_mode(self) -> None:
         """Exit degraded mode and restore full functionality."""
@@ -700,7 +746,9 @@ class AutonomousLoopEngine:
             name="auto_save",
         )
         self._auto_save_thread.start()
-        self.logger.info("Auto-save thread started", interval_s=self._auto_save_interval)
+        self.logger.info(
+            "Auto-save thread started", interval_s=self._auto_save_interval
+        )
 
     def _stop_auto_save(self) -> None:
         """Stop the auto-save background thread."""
@@ -725,8 +773,9 @@ class AutonomousLoopEngine:
             except Exception as e:
                 self.logger.warning(f"Auto-save failed (non-critical): {e}")
 
-    def _auto_save_context(self, ctx: AutonomousContext,
-                            log_snapshot: Optional[List[str]] = None) -> None:
+    def _auto_save_context(
+        self, ctx: AutonomousContext, log_snapshot: Optional[List[str]] = None
+    ) -> None:
         """
         Lightweight, LLM-free context flush to disk.
 
@@ -747,7 +796,9 @@ class AutonomousLoopEngine:
             context_dir.mkdir(parents=True, exist_ok=True)
 
             # Use the provided snapshot or read directly (main-thread call)
-            execution_log = log_snapshot if log_snapshot is not None else ctx.execution_log
+            execution_log = (
+                log_snapshot if log_snapshot is not None else ctx.execution_log
+            )
 
             aux = self._collect_auxiliary_context(ctx, execution_log)
             compressed = self._heuristic_compress(ctx, aux)
@@ -800,13 +851,15 @@ class AutonomousLoopEngine:
     #  Main entry point — the agent's eternal loop                      #
     # ------------------------------------------------------------------ #
 
-    def execute_instruction(self, user_prompt: str,
-                            conversation_history: Optional[ConversationHistory] = None,
-                            telegram_mode: bool = False,
-                            discord_mode: bool = False,
-                            telegram_user_id: Optional[int] = None,
-                            cancel_event: Optional[threading.Event] = None
-                            ) -> AutonomousContext:
+    def execute_instruction(
+        self,
+        user_prompt: str,
+        conversation_history: Optional[ConversationHistory] = None,
+        telegram_mode: bool = False,
+        discord_mode: bool = False,
+        telegram_user_id: Optional[int] = None,
+        cancel_event: Optional[threading.Event] = None,
+    ) -> AutonomousContext:
         """
         Enter the autonomous loop.  The agent thinks and acts continuously,
         never exiting on its own.  The only ways out are:
@@ -826,8 +879,11 @@ class AutonomousLoopEngine:
         Returns:
             AutonomousContext (only on sleep or cancellation)
         """
-        self.logger.info("Starting Autonomous Loop execution",
-                         user_prompt=user_prompt, telegram_mode=telegram_mode)
+        self.logger.info(
+            "Starting Autonomous Loop execution",
+            user_prompt=user_prompt,
+            telegram_mode=telegram_mode,
+        )
 
         # ---- Load context from .context/ BEFORE clearing files ----
         # We must read the saved context into memory first so that it can
@@ -848,6 +904,7 @@ class AutonomousLoopEngine:
         if self._is_resuming:
             try:
                 from .context_manager import load_context_state
+
                 _st = load_context_state()
                 if _st and "sleep" in _st.get("status", "").lower():
                     self._resuming_from_sleep = True
@@ -860,8 +917,11 @@ class AutonomousLoopEngine:
         if context_files_exist():
             try:
                 from .context_manager import clear_context_state
+
                 clear_context_state()
-                self._term_log.thinking("Context state files cleared after consumption.")
+                self._term_log.thinking(
+                    "Context state files cleared after consumption."
+                )
             except Exception:
                 pass
 
@@ -900,8 +960,12 @@ class AutonomousLoopEngine:
             )
 
         self._term_log.separator()
-        self._term_log.thinking(f"Initial prompt: {user_prompt or '(none — self-directed)'}")
-        self._term_log.thinking("No task boundary. I think continuously and act on what matters.")
+        self._term_log.thinking(
+            f"Initial prompt: {user_prompt or '(none — self-directed)'}"
+        )
+        self._term_log.thinking(
+            "No task boundary. I think continuously and act on what matters."
+        )
 
         # Restore terminal history from disk so the agent sees previous
         # session activity even after a force-kill or signal interruption.
@@ -933,7 +997,8 @@ class AutonomousLoopEngine:
 
         ctx = AutonomousContext(
             user_prompt=user_prompt,
-            current_goal=_original_instruction or "Self-directed: observe, explore, and act.",
+            current_goal=_original_instruction
+            or "Self-directed: observe, explore, and act.",
             execution_log=_restored_log,
             conversation_history=conversation_history,
             telegram_mode=telegram_mode,
@@ -969,331 +1034,368 @@ class AutonomousLoopEngine:
         _critical_error_count = 0
         _max_critical_errors_before_force_sleep = 50
 
-        try:
-            # Outer try/finally for cleanup when the loop exits entirely
-            while True:
-                # Inner try/except for error recovery WITHIN the loop
+        while True:
+            try:
+                self._raise_if_cancelled(ctx)
+
+                ctx.iteration_count += 1
+
+                # --- Write heartbeat for supervisor monitoring ---
+                if self._heartbeat:
+                    self._heartbeat.beat(ctx.iteration_count)
+
+                # --- Forced wake-up notification on first iteration
+                #     after a sleep restart. Uses self._resuming_from_sleep
+                #     (captured before clear_context_state deleted files).
+                if ctx.iteration_count == 1 and self._resuming_from_sleep:
+                    try:
+                        _wake_msg = (
+                            "\U0001f44b Woke up from sleep. Resuming work immediately."
+                        )
+                        if ctx.discord_mode:
+                            self._exec_discord(ctx, _wake_msg)
+                            self.logger.info(
+                                "Forced wake-up discord message sent after sleep restart"
+                            )
+                        elif ctx.telegram_mode:
+                            self._exec_telegram(ctx, _wake_msg)
+                            self.logger.info(
+                                "Forced wake-up telegram sent after sleep restart"
+                            )
+                    except Exception as _e:
+                        self.logger.warning(f"Failed to send wake-up message: {_e}")
+                    # Clear the resuming flag after first iteration to prevent
+                    # re-injection of saved context on subsequent iterations
+                    self._is_resuming = False
+
+                # --- Periodic auto-save (every 10 iterations as safety net) ---
+                if ctx.iteration_count % 10 == 0:
+                    self._auto_save_context(ctx)
+
+                # --- THINK ---
+                self._term_log.phase(ctx.iteration_count, "THINKING")
+                ctx.current_phase = LoopPhase.THINKING
+
                 try:
-                    self._raise_if_cancelled(ctx)
-
-                    ctx.iteration_count += 1
-
-                    # --- Write heartbeat for supervisor monitoring ---
-                    if self._heartbeat:
-                        self._heartbeat.beat(ctx.iteration_count)
-
-                    # --- Forced wake-up notification on first iteration
-                    #     after a sleep restart. Uses self._resuming_from_sleep
-                    #     (captured before clear_context_state deleted files).
-                    if ctx.iteration_count == 1 and self._resuming_from_sleep:
-                        try:
-                            _wake_msg = (
-                                "\U0001f44b Woke up from sleep. Resuming work immediately."
-                            )
-                            if ctx.discord_mode:
-                                self._exec_discord(ctx, _wake_msg)
-                                self.logger.info("Forced wake-up discord message sent after sleep restart")
-                            elif ctx.telegram_mode:
-                                self._exec_telegram(ctx, _wake_msg)
-                                self.logger.info("Forced wake-up telegram sent after sleep restart")
-                        except Exception as _e:
-                            self.logger.warning(f"Failed to send wake-up message: {_e}")
-                        # Clear the resuming flag after first iteration to prevent
-                        # re-injection of saved context on subsequent iterations
-                        self._is_resuming = False
-
-                    # --- Periodic auto-save (every 10 iterations as safety net) ---
-                    if ctx.iteration_count % 10 == 0:
-                        self._auto_save_context(ctx)
-
-                    # --- THINK ---
-                    self._term_log.phase(ctx.iteration_count, "THINKING")
-                    ctx.current_phase = LoopPhase.THINKING
-
-                    try:
-                        think_output = self._run_thinking(ctx)
-                    except ExecutionError as e:
-                        # Use enhanced error recovery system
-                        if not self._classify_and_recover(e, ctx):
-                            raise
-                        ctx.iteration_count -= 1
-                        continue
-                    except Exception as e:
-                        # Catch any other exception during thinking
-                        self.logger.error(f"Unexpected error during thinking: {e}")
-                        if not self._classify_and_recover(e, ctx):
-                            raise
-                        ctx.iteration_count -= 1
-                        continue
-
-                    # Reset consecutive errors on success
-                    self._record_successful_iteration()
-
-                    self._raise_if_cancelled(ctx)
-
-                    # --- Parse commands from the model's response ---
-                    # Guard against None/empty model output
-                    if not think_output:
-                        self.logger.warning(
-                            "Model returned empty output",
-                            iteration=ctx.iteration_count,
-                        )
-                        # Give the model feedback so it can self-correct
-                        self._append_log(
-                            ctx,
-                            "[SYSTEM] Your last response was empty. "
-                            "You MUST output at least one command() or tool call "
-                            "(read/write/edit/glob/grep/bash) on every turn."
-                        )
-                        commands = []
-                    else:
-                        try:
-                            commands = self._parse_model_commands(think_output)
-                        except Exception as e:
-                            self.logger.error(f"Command parsing error: {e}")
-                            self._append_log(
-                                ctx,
-                                "[SYSTEM] Parse error: " + str(e) + ". "
-                                "Output ONLY valid commands like: "
-                                "command(ls), read(path='/file'), bash(command='cmd'). "
-                                "No explanations, no natural language."
-                            )
-                            continue
-
-                    # --- Track model output for identical-output detection ---
-                    output_hash = hashlib.md5((think_output or "").encode()).hexdigest()
-                    if output_hash == self._last_output_hash and (think_output or "").strip():
-                        self._consecutive_identical_outputs += 1
-                    else:
-                        self._consecutive_identical_outputs = 0
-                        # Reset the fairy guard when output genuinely changes.
-                        # This is the ONLY place where _curiosity_fairy_invoked
-                        # should be cleared based on output — the action-signature
-                        # tracking in _check_repetition_breaker and
-                        # _record_iteration_actions owns this flag otherwise.
-                        self._curiosity_fairy_invoked = False
-                    self._last_output_hash = output_hash
-
-                    # --- Record action signature for repetition breaker ---
-                    self._record_iteration_actions(commands)
-
-                    # --- Repetition breaker: code-level loop intervention ---
-                    break_msg = self._check_repetition_breaker(ctx)
-                    if break_msg:
-                        self._append_log(ctx, break_msg)
-                        # If the breaker says to force sleep, give the model
-                        # one chance to execute sleep on its own next turn.
-                        # If it doesn't, we force it on the NEXT iteration.
-                        if "PERSISTENT LOOP" in break_msg:
-                            self.logger.warning("Persistent loop — will force sleep on next iteration if model doesn't")
-                            self._force_sleep_pending = True
-                        # If the Curiosity Fairy was invoked, call it now and
-                        # inject its suggestion into the execution log.
-                        if "CURIOSITY FAIRY ACTIVATED" in break_msg:
-                            suggestion = self._invoke_curiosity_fairy(ctx)
-                            if suggestion:
-                                fairy_msg = (
-                                    f"[Message from the Curiosity Fairy] "
-                                    f"```\n{suggestion}\n```"
-                                )
-                                self._append_log(ctx, fairy_msg)
-                                self._term_log.thinking(
-                                    f"🧚 Curiosity Fairy suggests: {suggestion[:120]}"
-                                )
-
-                    # --- External Loop Observer (out-of-band detection) ---
-                    if self._external_observer is not None:
-                        try:
-                            obs_verdict = self._external_observer.on_iteration(
-                                commands=commands,
-                                output_text=think_output or "",
-                                iteration_number=ctx.iteration_count,
-                            )
-                            if obs_verdict.has_loop and obs_verdict.intervention_message:
-                                self._append_log(ctx, obs_verdict.intervention_message)
-                                self._term_log.thinking(
-                                    f"🔍 External Observer: {obs_verdict.intervention_level_name} "
-                                    f"at iteration {obs_verdict.iteration_number}"
-                                )
-                                self.logger.info(
-                                    "External Observer intervention",
-                                    level=obs_verdict.intervention_level_name,
-                                    iteration=obs_verdict.iteration_number,
-                                )
-                            if obs_verdict.force_sleep:
-                                self.logger.warning(
-                                    "External Observer forcing sleep",
-                                    iteration=ctx.iteration_count,
-                                )
-                                self._notify_telegram_error(
-                                    ctx,
-                                    "🛑 External Observer: persistent loop detected. "
-                                    "Forcing context reset and restart.",
-                                )
-                                self._handle_sleep(ctx)
-                        except Exception as _obs_err:
-                            # Observer must never break the main loop
-                            self.logger.debug(f"External Observer error (non-fatal): _obs_err")
-
-                    # Check for forced sleep (persistent loop breaker from a
-                    # PREVIOUS iteration — the model was given one chance but
-                    # didn't execute sleep, so we force it now.)
-                    if self._force_sleep_pending:
-                        # Did the model include sleep in its commands? If so,
-                        # let it proceed naturally — no need to force.
-                        if any(cmd[0] == "sleep" for cmd in commands):
-                            self._force_sleep_pending = False
-                            self.logger.info("Model executed sleep after persistent loop warning — no force needed")
-                        else:
-                            self._force_sleep_pending = False
-                            self.logger.warning("Force-sleep: model did not execute sleep after persistent loop warning")
-                            self._term_log.separator()
-                            self._term_log.error("🛑 Force-sleep: persistent loop not broken by model")
-                            self._notify_telegram_error(
-                                ctx,
-                                "🛑 Force-sleep: persistent loop detected that the model "
-                                "could not break. Compressing context and restarting."
-                            )
-                            self._handle_sleep(ctx)
-                            # _handle_sleep does os.execv — never reached
-
-                    # --- Detect empty/repetitive iterations (anti-drift) ---
-                    nudge = self._detect_empty_iteration(ctx, think_output, commands)
-                    if nudge:
-                        # Move on so next thinking phase sees the Curiosity Fairy.
-                        # Keep the loop tight; the model will act on the nudge.
-                        continue
-
-                    # Check for sleep / exit first (they control the loop)
-                    if any(cmd[0] == "exit" for cmd in commands):
-                        self._term_log.separator()
-                        self._term_log.thinking("Exit requested — saving context and shutting down...")
-                        self._handle_exit(ctx)
-                        ctx.end_time = time.time()
-                        return ctx
-
-                    if any(cmd[0] == "sleep" for cmd in commands):
-                        self._term_log.separator()
-                        self._term_log.thinking("Sleep requested — compressing context and restarting...")
-                        self._handle_sleep(ctx)
-                        return ctx
-
-                    # --- EXECUTE ---
-                    self._term_log.phase(ctx.iteration_count, "EXECUTING")
-                    ctx.current_phase = LoopPhase.EXECUTING
-                    try:
-                        self._execute_commands(ctx, commands)
-                    except Exception as e:
-                        self.logger.error(f"Command execution error: {e}")
-                        self._append_log(ctx, f"[execution error] {e}")
-                        # Continue to next iteration - don't let execution errors stop the loop
-
-                    self._raise_if_cancelled(ctx)
-
-                    # Non-blocking check for new Telegram messages.  The agent
-                    # must never wait idly: a tiny timeout lets other threads
-                    # deliver messages without causing any perceptible dormancy.
-                    self._new_message_event.wait(timeout=0.05)
-                    self._new_message_event.clear()
-
-                    # --- Periodic resource health check (every 100 iterations) ---
-                    if ctx.iteration_count % 100 == 0:
-                        self._check_and_handle_resources(ctx)
-
-                    # --- Periodic self-diagnostic (every 50 iterations) ---
-                    if ctx.iteration_count % 50 == 0:
-                        self._run_self_diagnostic(ctx)
-
-                except _PipelineCancelledError as e:
-                    self.logger.info(f"Autonomous Loop cancelled: {e}")
-                    ctx.current_phase = LoopPhase.FAILED
-                    ctx.error = str(e)
-                    ctx.cancelled = True
-                    ctx.end_time = time.time()
-                    self._term_log.cancelled()
-                    return ctx
-
-                except KeyboardInterrupt:
-                    self.logger.info("KeyboardInterrupt received - saving state and exiting")
-                    ctx.current_phase = LoopPhase.FAILED
-                    ctx.error = "KeyboardInterrupt"
-                    ctx.cancelled = True
-                    ctx.end_time = time.time()
-                    self._term_log.cancelled()
-                    # Save exit state for recovery
-                    try:
-                        self._handle_exit(ctx, fast=True)
-                    except Exception:
-                        pass
-                    return ctx
-
-                except Exception as outer_e:
-                    # CRITICAL FIX: Catch ALL unhandled exceptions to prevent the agent from stopping.
-                    # Log the error, attempt recovery, and RESTART the loop instead of returning.
-                    # The agent should ONLY stop on explicit user cancellation or system kill.
-                    self.logger.error(f"Autonomous Loop encountered critical error (restarting loop): {outer_e}")
-                    self._term_log.error(f"Critical error caught: {outer_e}")
-
-                    # Increment error counter for potential forced sleep
-                    _critical_error_count += 1
-
-                    # Attempt to notify user about the error
-                    try:
-                        self._notify_telegram_error(ctx, f"⚠️ Critical error caught (iteration {ctx.iteration_count}): {type(outer_e).__name__} - {str(outer_e)[:200]}")
-                    except Exception:
-                        pass
-
-                    # Attempt to save state for recovery
-                    try:
-                        self._auto_save_context(ctx, force=True)
-                    except Exception:
-                        pass
-
-                    # If we've had too many consecutive critical errors, force a sleep to reset context
-                    if _critical_error_count >= _max_critical_errors_before_force_sleep:
-                        self.logger.warning(f"Too many consecutive critical errors ({_critical_error_count}), forcing sleep reset")
-                        try:
-                            self._notify_telegram_error(ctx, f"🛑 Too many consecutive errors ({_critical_error_count}). Forcing context reset and restart.")
-                            self._handle_sleep(ctx)
-                            return ctx  # _handle_sleep does os.execv — never reached
-                        except Exception as sleep_err:
-                            self.logger.error(f"Failed to execute forced sleep: {sleep_err}")
-                            # Reset counter and continue anyway
-                            _critical_error_count = 0
-
-                    # Clear the error state
-                    ctx.error = None
-                    ctx.current_phase = LoopPhase.THINKING
-
-                    # Add error info to execution log for model awareness
-                    self._append_log(ctx, f"[SYSTEM CRITICAL ERROR RECOVERED] {type(outer_e).__name__}: {str(outer_e)[:300]}")
-
-                    # Small delay before retry to avoid tight error loops
-                    time.sleep(2.0)
-
-                    # RESTART THE MAIN LOOP - This is the key fix!
-                    # Instead of returning (which stops the agent), we restart the entire try block
-                    # by using a nested try-except structure with continue
-                    self.logger.info("Restarting autonomous loop after critical error recovery...")
-
-                    # Reset context for fresh start
-                    ctx.current_phase = LoopPhase.THINKING
-                    ctx.iteration_count += 1
-
-                    # Continue the outer while True loop
+                    think_output = self._run_thinking(ctx)
+                except ExecutionError as e:
+                    # Use enhanced error recovery system
+                    if not self._classify_and_recover(e, ctx):
+                        raise
+                    ctx.iteration_count -= 1
+                    continue
+                except Exception as e:
+                    # Catch any other exception during thinking
+                    self.logger.error(f"Unexpected error during thinking: {e}")
+                    if not self._classify_and_recover(e, ctx):
+                        raise
+                    ctx.iteration_count -= 1
                     continue
 
-        finally:
-            self._stop_auto_save()
-            # Shut down sub-agent manager to release thread pool resources
-            try:
-                if self.sub_agent_manager:
-                    self.sub_agent_manager.shutdown(wait=False, cancel_pending=True)
-            except Exception:
-                pass
-            with self._cancel_lock:
-                if self._active_cancel_event is ctx.cancel_event:
-                    self._active_cancel_event = None
+                # Reset consecutive errors on success
+                self._record_successful_iteration()
+
+                self._raise_if_cancelled(ctx)
+
+                # --- Parse commands from the model's response ---
+                # Guard against None/empty model output
+                if not think_output:
+                    self.logger.warning(
+                        "Model returned empty output",
+                        iteration=ctx.iteration_count,
+                    )
+                    # Give the model feedback so it can self-correct
+                    self._append_log(
+                        ctx,
+                        "[SYSTEM] Your last response was empty. "
+                        "You MUST output at least one command() or tool call "
+                        "(read/write/edit/glob/grep/bash) on every turn.",
+                    )
+                    commands = []
+                else:
+                    try:
+                        commands = self._parse_model_commands(think_output)
+                    except Exception as e:
+                        self.logger.error(f"Command parsing error: {e}")
+                        self._append_log(
+                            ctx,
+                            "[SYSTEM] Parse error: " + str(e) + ". "
+                            "Output ONLY valid commands like: "
+                            "command(ls), read(path='/file'), bash(command='cmd'). "
+                            "No explanations, no natural language.",
+                        )
+                        continue
+
+                # --- Track model output for identical-output detection ---
+                output_hash = hashlib.md5((think_output or "").encode()).hexdigest()
+                if (
+                    output_hash == self._last_output_hash
+                    and (think_output or "").strip()
+                ):
+                    self._consecutive_identical_outputs += 1
+                else:
+                    self._consecutive_identical_outputs = 0
+                    # Reset the fairy guard when output genuinely changes.
+                    # This is the ONLY place where _curiosity_fairy_invoked
+                    # should be cleared based on output — the action-signature
+                    # tracking in _check_repetition_breaker and
+                    # _record_iteration_actions owns this flag otherwise.
+                    self._curiosity_fairy_invoked = False
+                self._last_output_hash = output_hash
+
+                # --- Record action signature for repetition breaker ---
+                self._record_iteration_actions(commands)
+
+                # --- Repetition breaker: code-level loop intervention ---
+                break_msg = self._check_repetition_breaker(ctx)
+                if break_msg:
+                    self._append_log(ctx, break_msg)
+                    # If the breaker says to force sleep, give the model
+                    # one chance to execute sleep on its own next turn.
+                    # If it doesn't, we force it on the NEXT iteration.
+                    if "PERSISTENT LOOP" in break_msg:
+                        self.logger.warning(
+                            "Persistent loop — will force sleep on next iteration if model doesn't"
+                        )
+                        self._force_sleep_pending = True
+                    # If the Curiosity Fairy was invoked, call it now and
+                    # inject its suggestion into the execution log.
+                    if "CURIOSITY FAIRY ACTIVATED" in break_msg:
+                        suggestion = self._invoke_curiosity_fairy(ctx)
+                        if suggestion:
+                            fairy_msg = (
+                                f"[Message from the Curiosity Fairy] "
+                                f"```\n{suggestion}\n```"
+                            )
+                            self._append_log(ctx, fairy_msg)
+                            self._term_log.thinking(
+                                f"🧚 Curiosity Fairy suggests: {suggestion[:120]}"
+                            )
+
+                # --- External Loop Observer (out-of-band detection) ---
+                if self._external_observer is not None:
+                    try:
+                        obs_verdict = self._external_observer.on_iteration(
+                            commands=commands,
+                            output_text=think_output or "",
+                            iteration_number=ctx.iteration_count,
+                        )
+                        if obs_verdict.has_loop and obs_verdict.intervention_message:
+                            self._append_log(ctx, obs_verdict.intervention_message)
+                            self._term_log.thinking(
+                                f"🔍 External Observer: {obs_verdict.intervention_level_name} "
+                                f"at iteration {obs_verdict.iteration_number}"
+                            )
+                            self.logger.info(
+                                "External Observer intervention",
+                                level=obs_verdict.intervention_level_name,
+                                iteration=obs_verdict.iteration_number,
+                            )
+                        if obs_verdict.force_sleep:
+                            self.logger.warning(
+                                "External Observer forcing sleep",
+                                iteration=ctx.iteration_count,
+                            )
+                            self._notify_telegram_error(
+                                ctx,
+                                "🛑 External Observer: persistent loop detected. "
+                                "Forcing context reset and restart.",
+                            )
+                            self._handle_sleep(ctx)
+                    except Exception as _obs_err:
+                        # Observer must never break the main loop
+                        self.logger.debug(
+                            f"External Observer error (non-fatal): _obs_err"
+                        )
+
+                # Check for forced sleep (persistent loop breaker from a
+                # PREVIOUS iteration — the model was given one chance but
+                # didn't execute sleep, so we force it now.)
+                if self._force_sleep_pending:
+                    # Did the model include sleep in its commands? If so,
+                    # let it proceed naturally — no need to force.
+                    if any(cmd[0] == "sleep" for cmd in commands):
+                        self._force_sleep_pending = False
+                        self.logger.info(
+                            "Model executed sleep after persistent loop warning — no force needed"
+                        )
+                    else:
+                        self._force_sleep_pending = False
+                        self.logger.warning(
+                            "Force-sleep: model did not execute sleep after persistent loop warning"
+                        )
+                        self._term_log.separator()
+                        self._term_log.error(
+                            "🛑 Force-sleep: persistent loop not broken by model"
+                        )
+                        self._notify_telegram_error(
+                            ctx,
+                            "🛑 Force-sleep: persistent loop detected that the model "
+                            "could not break. Compressing context and restarting.",
+                        )
+                        self._handle_sleep(ctx)
+                        # _handle_sleep does os.execv — never reached
+
+                # --- Detect empty/repetitive iterations (anti-drift) ---
+                nudge = self._detect_empty_iteration(ctx, think_output, commands)
+                if nudge:
+                    # Move on so next thinking phase sees the Curiosity Fairy.
+                    # Keep the loop tight; the model will act on the nudge.
+                    continue
+
+                # Check for sleep / exit first (they control the loop)
+                if any(cmd[0] == "exit" for cmd in commands):
+                    self._term_log.separator()
+                    self._term_log.thinking(
+                        "Exit requested — saving context and shutting down..."
+                    )
+                    self._handle_exit(ctx)
+                    ctx.end_time = time.time()
+                    return ctx
+
+                if any(cmd[0] == "sleep" for cmd in commands):
+                    self._term_log.separator()
+                    self._term_log.thinking(
+                        "Sleep requested — compressing context and restarting..."
+                    )
+                    self._handle_sleep(ctx)
+                    return ctx
+
+                # --- EXECUTE ---
+                self._term_log.phase(ctx.iteration_count, "EXECUTING")
+                ctx.current_phase = LoopPhase.EXECUTING
+                try:
+                    self._execute_commands(ctx, commands)
+                except Exception as e:
+                    self.logger.error(f"Command execution error: {e}")
+                    self._append_log(ctx, f"[execution error] {e}")
+                    # Continue to next iteration - don't let execution errors stop the loop
+
+                self._raise_if_cancelled(ctx)
+
+                # Non-blocking check for new Telegram messages.  The agent
+                # must never wait idly: a tiny timeout lets other threads
+                # deliver messages without causing any perceptible dormancy.
+                self._new_message_event.wait(timeout=0.05)
+                self._new_message_event.clear()
+
+                # --- Periodic resource health check (every 100 iterations) ---
+                if ctx.iteration_count % 100 == 0:
+                    self._check_and_handle_resources(ctx)
+
+                # --- Periodic self-diagnostic (every 50 iterations) ---
+                if ctx.iteration_count % 50 == 0:
+                    self._run_self_diagnostic(ctx)
+
+            except _PipelineCancelledError as e:
+                self.logger.info(f"Autonomous Loop cancelled: {e}")
+                ctx.current_phase = LoopPhase.FAILED
+                ctx.error = str(e)
+                ctx.cancelled = True
+                ctx.end_time = time.time()
+                self._term_log.cancelled()
+                return ctx
+
+            except KeyboardInterrupt:
+                self.logger.info(
+                    "KeyboardInterrupt received - saving state and exiting"
+                )
+                ctx.current_phase = LoopPhase.FAILED
+                ctx.error = "KeyboardInterrupt"
+                ctx.cancelled = True
+                ctx.end_time = time.time()
+                self._term_log.cancelled()
+                # Save exit state for recovery
+                try:
+                    self._handle_exit(ctx, fast=True)
+                except Exception:
+                    pass
+                return ctx
+
+            except Exception as outer_e:
+                # CRITICAL FIX: Catch ALL unhandled exceptions to prevent the agent from stopping.
+                # Log the error, attempt recovery, and RESTART the loop instead of returning.
+                # The agent should ONLY stop on explicit user cancellation or system kill.
+                self.logger.error(
+                    f"Autonomous Loop encountered critical error (restarting loop): {outer_e}"
+                )
+                self._term_log.error(f"Critical error caught: {outer_e}")
+
+                # Increment error counter for potential forced sleep
+                _critical_error_count += 1
+
+                # Attempt to notify user about the error
+                try:
+                    self._notify_telegram_error(
+                        ctx,
+                        f"⚠️ Critical error caught (iteration {ctx.iteration_count}): {type(outer_e).__name__} - {str(outer_e)[:200]}",
+                    )
+                except Exception:
+                    pass
+
+                # Attempt to save state for recovery
+                try:
+                    self._auto_save_context(ctx, force=True)
+                except Exception:
+                    pass
+
+                # If we've had too many consecutive critical errors, force a sleep to reset context
+                if _critical_error_count >= _max_critical_errors_before_force_sleep:
+                    self.logger.warning(
+                        f"Too many consecutive critical errors ({_critical_error_count}), forcing sleep reset"
+                    )
+                    try:
+                        self._notify_telegram_error(
+                            ctx,
+                            f"🛑 Too many consecutive errors ({_critical_error_count}). Forcing context reset and restart.",
+                        )
+                        self._handle_sleep(ctx)
+                        return ctx  # _handle_sleep does os.execv — never reached
+                    except Exception as sleep_err:
+                        self.logger.error(
+                            f"Failed to execute forced sleep: {sleep_err}"
+                        )
+                        # Reset counter and continue anyway
+                        _critical_error_count = 0
+
+                # Clear the error state
+                ctx.error = None
+                ctx.current_phase = LoopPhase.THINKING
+
+                # Add error info to execution log for model awareness
+                self._append_log(
+                    ctx,
+                    f"[SYSTEM CRITICAL ERROR RECOVERED] {type(outer_e).__name__}: {str(outer_e)[:300]}",
+                )
+
+                # Small delay before retry to avoid tight error loops
+                time.sleep(2.0)
+
+                # RESTART THE MAIN LOOP - This is the key fix!
+                # Instead of returning (which stops the agent), we restart the entire try block
+                # by using a nested try-except structure with continue
+                self.logger.info(
+                    "Restarting autonomous loop after critical error recovery..."
+                )
+
+                # Reset context for fresh start
+                ctx.current_phase = LoopPhase.THINKING
+                ctx.iteration_count += 1
+
+                # Continue the outer while True loop
+                continue
+
+            finally:
+                self._stop_auto_save()
+                # Shut down sub-agent manager to release thread pool resources
+                try:
+                    if self.sub_agent_manager:
+                        self.sub_agent_manager.shutdown(wait=False, cancel_pending=True)
+                except Exception:
+                    pass
+                with self._cancel_lock:
+                    if self._active_cancel_event is ctx.cancel_event:
+                        self._active_cancel_event = None
 
     # ------------------------------------------------------------------ #
     #  Thinking phase                                                    #
@@ -1308,10 +1410,11 @@ class AutonomousLoopEngine:
             return None
 
         # Check if the last N commands are all the same
-        recent = self._recent_commands[-self._loop_detection_window:]
+        recent = self._recent_commands[-self._loop_detection_window :]
 
         # Count occurrences of each command signature
         from collections import Counter
+
         counts = Counter(recent)
         most_common_cmd, most_common_count = counts.most_common(1)[0]
 
@@ -1336,7 +1439,9 @@ class AutonomousLoopEngine:
         self._recent_commands.append(sig)
         # Keep only the last N commands
         if len(self._recent_commands) > self._loop_detection_window * 3:
-            self._recent_commands = self._recent_commands[-self._loop_detection_window * 2:]
+            self._recent_commands = self._recent_commands[
+                -self._loop_detection_window * 2 :
+            ]
 
     # ------------------------------------------------------------------ #
     #  Repetition breaker — code-level loop prevention                   #
@@ -1363,18 +1468,27 @@ class AutonomousLoopEngine:
             if cmd_type == "tool_call":
                 try:
                     import json
+
                     args = json.loads(cmd_arg)
                     tool = args.get("__tool__", "")
                     # Hash the primary argument so long content doesn't
                     # make signatures incomparable
-                    primary_key = {"read": "path", "write": "path", "edit": "path",
-                                   "glob": "pattern", "grep": "pattern",
-                                   "bash": "command", "todo": "action",
-                                   "memo": "key"}.get(tool, "")
+                    primary_key = {
+                        "read": "path",
+                        "write": "path",
+                        "edit": "path",
+                        "glob": "pattern",
+                        "grep": "pattern",
+                        "bash": "command",
+                        "todo": "action",
+                        "memo": "key",
+                    }.get(tool, "")
                     primary_val = args.get(primary_key, "")
                     sig_part = f"tool:{tool}:{hashlib.md5(primary_val.encode()).hexdigest()[:8]}"
                 except Exception:
-                    sig_part = f"tool:unknown:{hashlib.md5(cmd_arg.encode()).hexdigest()[:8]}"
+                    sig_part = (
+                        f"tool:unknown:{hashlib.md5(cmd_arg.encode()).hexdigest()[:8]}"
+                    )
             elif cmd_type == "thinking":
                 # thinking() content varies — only count the type, not the content
                 sig_part = "thinking"
@@ -1398,7 +1512,7 @@ class AutonomousLoopEngine:
 
         self._action_history.append(sig)
         if len(self._action_history) > self._max_action_history:
-            self._action_history = self._action_history[-self._max_action_history:]
+            self._action_history = self._action_history[-self._max_action_history :]
 
         # Track consecutive identical iterations.
         # _consecutive_same_action counts the TOTAL number of consecutive
@@ -1424,8 +1538,7 @@ class AutonomousLoopEngine:
             if len(self._persistent_loop_patterns) > 20:
                 # Keep only patterns seen ≥2 times
                 self._persistent_loop_patterns = {
-                    k: v for k, v in self._persistent_loop_patterns.items()
-                    if v >= 2
+                    k: v for k, v in self._persistent_loop_patterns.items() if v >= 2
                 }
 
     def _check_repetition_breaker(self, ctx: AutonomousContext) -> Optional[str]:
@@ -1447,8 +1560,10 @@ class AutonomousLoopEngine:
            intervention won't work).
         """
         # Level 0: Curiosity Fairy — fires at threshold=3 (early warning).
-        if (self._consecutive_same_action >= self._curiosity_fairy_threshold
-                and not self._curiosity_fairy_invoked):
+        if (
+            self._consecutive_same_action >= self._curiosity_fairy_threshold
+            and not self._curiosity_fairy_invoked
+        ):
             self.logger.warning(
                 f"Curiosity Fairy trigger: {self._consecutive_same_action} "
                 f"consecutive identical command signatures "
@@ -1522,8 +1637,10 @@ class AutonomousLoopEngine:
 
         Returns a suggestion string to inject into the execution log.
         """
-        self.logger.info("Curiosity Fairy invoked -- breaking command loop",
-                         consecutive=self._consecutive_same_action)
+        self.logger.info(
+            "Curiosity Fairy invoked -- breaking command loop",
+            consecutive=self._consecutive_same_action,
+        )
 
         suggestions: list = []
 
@@ -1534,8 +1651,8 @@ class AutonomousLoopEngine:
         files_edited: list = []
         commands_run: list = []
         _path_pattern = re.compile(r'\bpath\s*=\s*["\']([^"\']+)["\']')
-        _dollar_pattern = re.compile(r'^\$\s+(.+)$ ')
-        _cmd_pattern = re.compile(r'\b(command|bash)\((.+)\) ', re.DOTALL)
+        _dollar_pattern = re.compile(r"^\$\s+(.+)$ ")
+        _cmd_pattern = re.compile(r"\b(command|bash)\((.+)\) ", re.DOTALL)
         for line in ctx.execution_log[-100:]:
             ls = line.strip()
             if "read(" in ls:
@@ -1570,14 +1687,38 @@ class AutonomousLoopEngine:
 
         try:
             _find = subprocess.run(
-                ["find", ".", "-maxdepth", "3", "-type", "f",
-                 "-name", "*.py", "-o", "-name", "*.md", "-o", "-name", "*.yaml",
-                 "-o", "-name", "*.json", "-o", "-name", "*.txt"],
-                capture_output=True, text=True, timeout=5,
-                cwd=str(_project_root)
+                [
+                    "find",
+                    ".",
+                    "-maxdepth",
+                    "3",
+                    "-type",
+                    "f",
+                    "-name",
+                    "*.py",
+                    "-o",
+                    "-name",
+                    "*.md",
+                    "-o",
+                    "-name",
+                    "*.yaml",
+                    "-o",
+                    "-name",
+                    "*.json",
+                    "-o",
+                    "-name",
+                    "*.txt",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                cwd=str(_project_root),
             )
-            all_files = [f for f in _find.stdout.strip().splitlines()
-                         if f and not f.startswith("./.git/")]
+            all_files = [
+                f
+                for f in _find.stdout.strip().splitlines()
+                if f and not f.startswith("./.git/")
+            ]
             unread = [f for f in all_files if f not in files_read][:5]
         except Exception as _e:
             self.logger.debug(f"Curiosity Fairy find failed: {_e}")
@@ -1586,8 +1727,11 @@ class AutonomousLoopEngine:
         try:
             _git = subprocess.run(
                 ["git", "status", "--short"],
-                capture_output=True, text=True, timeout=5,
-                cwd=str(_project_root))
+                capture_output=True,
+                text=True,
+                timeout=5,
+                cwd=str(_project_root),
+            )
             git_changes = _git.stdout.strip()[:300] if _git.returncode == 0 else ""
         except Exception as _e:
             self.logger.debug(f"Curiosity Fairy git failed: {_e}")
@@ -1595,18 +1739,26 @@ class AutonomousLoopEngine:
 
         try:
             _todos = subprocess.run(
-                ["grep", "-r", "--include=*.py", "-l",
-                 "TODO|FIXME|HACK|XXX",
-                 ".", "--exclude-dir=.git", "--exclude-dir=venv",
-                 "--exclude-dir=__pycache__"],
-                capture_output=True, text=True, timeout=5,
-                cwd=str(_project_root)
+                [
+                    "grep",
+                    "-r",
+                    "--include=*.py",
+                    "-l",
+                    "TODO|FIXME|HACK|XXX",
+                    ".",
+                    "--exclude-dir=.git",
+                    "--exclude-dir=venv",
+                    "--exclude-dir=__pycache__",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                cwd=str(_project_root),
             )
             todo_files = [f for f in _todos.stdout.strip().splitlines() if f][:5]
         except Exception as _e:
             self.logger.debug(f"Curiosity Fairy grep failed: {_e}")
             todo_files = []
-
 
         # 3. Build concrete suggestion
         suggestion_parts = [
@@ -1614,18 +1766,12 @@ class AutonomousLoopEngine:
         ]
 
         if unread:
-            suggestion_parts.append(
-                f"READ a new file: {unread[0]}"
-            )
+            suggestion_parts.append(f"READ a new file: {unread[0]}")
             if len(unread) > 1:
-                suggestion_parts.append(
-                    f"  (also: {', '.join(unread[1:3])})"
-                )
+                suggestion_parts.append(f"  (also: {', '.join(unread[1:3])})")
 
         if todo_files:
-            suggestion_parts.append(
-                f"CHECK for TODOs in: {todo_files[0]}"
-            )
+            suggestion_parts.append(f"CHECK for TODOs in: {todo_files[0]}")
 
         if git_changes:
             suggestion_parts.append(f"GIT CHANGES: {git_changes}")
@@ -1633,17 +1779,11 @@ class AutonomousLoopEngine:
 
         if not unread and not todo_files and not git_changes:
             suggestion_parts.append("Try something completely different:")
-            suggestion_parts.append(
-                "  bash(command='ls -la') to see current directory"
-            )
-            suggestion_parts.append(
-                "  glob(pattern='**/*') to discover files"
-            )
+            suggestion_parts.append("  bash(command='ls -la') to see current directory")
+            suggestion_parts.append("  glob(pattern='**/*') to discover files")
 
         if commands_run:
-            suggestion_parts.append(
-                f"AVOID repeating: {commands_run[-1]}"
-            )
+            suggestion_parts.append(f"AVOID repeating: {commands_run[-1]}")
 
         suggestion = "\n".join(suggestion_parts)
         self.logger.info("Curiosity Fairy generated deterministic suggestion")
@@ -1653,9 +1793,9 @@ class AutonomousLoopEngine:
     #  Proactive Anti-Drift — never idle, always do something new       #
     # ------------------------------------------------------------------ #
 
-    def _detect_empty_iteration(self, ctx: AutonomousContext,
-                                 model_output: str,
-                                 commands: List[Tuple[str, str]]) -> Optional[str]:
+    def _detect_empty_iteration(
+        self, ctx: AutonomousContext, model_output: str, commands: List[Tuple[str, str]]
+    ) -> Optional[str]:
         """
         Detect iterations where no meaningful work was done.
 
@@ -1678,13 +1818,15 @@ class AutonomousLoopEngine:
 
         # Check for identical model output (exact repetition)
         digest = hashlib.md5((model_output or "").encode()).hexdigest()
-        is_repeat = (digest == self._previous_output_digest)
+        is_repeat = digest == self._previous_output_digest
         self._previous_output_digest = digest
 
         # Check for semantically identical actions
         is_semantic_repeat = False
         current_sig = self._last_action_signature
-        if current_sig and current_sig == getattr(self, '_prev_iteration_action_sig', ''):
+        if current_sig and current_sig == getattr(
+            self, "_prev_iteration_action_sig", ""
+        ):
             is_semantic_repeat = True
         self._prev_iteration_action_sig = current_sig
 
@@ -1725,10 +1867,9 @@ class AutonomousLoopEngine:
 
     def _run_thinking(self, ctx: AutonomousContext) -> str:
         """Send current context to the model and get its decision."""
-        self.logger.info("Thinking phase started",
-                         iteration=ctx.iteration_count)
+        self.logger.info("Thinking phase started", iteration=ctx.iteration_count)
 
-        model_name  = self.model_runner.model or "?"
+        model_name = self.model_runner.model or "?"
         provider_name = self.model_runner.provider or "?"
         self._term_log.model_request(ctx.iteration_count, model_name, provider_name)
 
@@ -1768,9 +1909,7 @@ class AutonomousLoopEngine:
                 f"Execute `sleep` when it reaches {self.NOTIFICATION_THRESHOLD}.\n"
             )
         else:
-            sleep_instruction = (
-                f"\n[Sleep at {self.NOTIFICATION_THRESHOLD} lines. Current: {log_line_count}]\n"
-            )
+            sleep_instruction = f"\n[Sleep at {self.NOTIFICATION_THRESHOLD} lines. Current: {log_line_count}]\n"
 
         # Loop detection: check if the agent is repeating commands
         loop_warning = ""
@@ -1829,7 +1968,10 @@ class AutonomousLoopEngine:
 
         # Self-directed mode hint
         self_directed_section = ""
-        if not ctx.user_prompt or ctx.user_prompt == "Self-directed: observe, explore, and act.":
+        if (
+            not ctx.user_prompt
+            or ctx.user_prompt == "Self-directed: observe, explore, and act."
+        ):
             self_directed_section = (
                 "\n## SELF-DIRECTED MODE\n"
                 "No instruction given. Act autonomously:\n"
@@ -1894,8 +2036,7 @@ class AutonomousLoopEngine:
         latency = getattr(response, "latency", 0) or 0
         self._term_log.model_response(ctx.iteration_count, out_len, latency)
 
-        self.logger.info("Thinking phase completed",
-                         output_length=out_len)
+        self.logger.info("Thinking phase completed", output_length=out_len)
         return response.content
 
     # ------------------------------------------------------------------ #
@@ -1920,7 +2061,7 @@ class AutonomousLoopEngine:
             "ABSOLUTELY FORBIDDEN — if any line in your response matches these,\n"
             "YOUR RESPONSE IS INVALID AND WILL BE REJECTED:\n"
             "  ✗ Free natural-language text outside command()/telegram()/thinking()\n"
-            "  ✗ Sentences like \"Okay, I'll start coding\" or \"Let me work on that\"\n"
+            '  ✗ Sentences like "Okay, I\'ll start coding" or "Let me work on that"\n'
             "  ✗ Greetings, acknowledgments, or conversational filler\n"
             "  ✗ Explanations or descriptions of what you're about to do\n"
             "  ✗ Summaries or progress reports in plain text\n"
@@ -1938,12 +2079,12 @@ class AutonomousLoopEngine:
             "  sleep                  — Compress context and restart\n"
             "  parallel_begin/end     — Run multiple commands concurrently\n\n"
             "Direct tool calls (faster than command() for file ops):\n"
-            "  read(path=\"/path/to/file\")\n"
-            "  write(path=\"/path\", content=\"text\")\n"
-            "  edit(path=\"/path\", old_string=\"orig\", new_string=\"repl\")\n"
-            "  glob(pattern=\"**/*.py\")\n"
-            "  grep(pattern=\"regex\", path=\".\")\n"
-            "  bash(command=\"any shell cmd\")\n\n"
+            '  read(path="/path/to/file")\n'
+            '  write(path="/path", content="text")\n'
+            '  edit(path="/path", old_string="orig", new_string="repl")\n'
+            '  glob(pattern="**/*.py")\n'
+            '  grep(pattern="regex", path=".")\n'
+            '  bash(command="any shell cmd")\n\n'
             "## 3. BEHAVIORAL RULES\n"
             "  a. ACT IMMEDIATELY — never output only thinking(), never an empty response.\n"
             "  b. PARALLELIZE — always batch independent calls with parallel_begin/end.\n"
@@ -2034,36 +2175,16 @@ class AutonomousLoopEngine:
     # ------------------------------------------------------------------ #
 
     # Regexes for the recognised commands
-    _CMD_COMMAND = re.compile(
-        r'^command\((.*?)\)\s*$', re.DOTALL
-    )
-    _CMD_THINKING = re.compile(
-        r'^thinking\((.*?)\)\s*$', re.DOTALL
-    )
-    _CMD_TELEGRAM = re.compile(
-        r'^telegram\((.*?)\)\s*$', re.DOTALL
-    )
-    _CMD_DISCORD = re.compile(
-        r'^discord\((.*?)\)\s*$', re.DOTALL
-    )
-    _CMD_TELEGRAM_LOG = re.compile(
-        r'^Telegram_log\((\d+)\)\s*$', re.DOTALL
-    )
-    _CMD_SLEEP = re.compile(
-        r'^sleep\s*$'
-    )
-    _CMD_EXIT = re.compile(
-        r'^exit\s*$'
-    )
-    _CMD_CURIOSITY_FAIRY = re.compile(
-        r'^curiosity_fairy\s*$'
-    )
-    _CMD_PARALLEL_BEGIN = re.compile(
-        r'^parallel_begin\s*$'
-    )
-    _CMD_PARALLEL_END = re.compile(
-        r'^parallel_end\s*$'
-    )
+    _CMD_COMMAND = re.compile(r"^command\((.*?)\)\s*$", re.DOTALL)
+    _CMD_THINKING = re.compile(r"^thinking\((.*?)\)\s*$", re.DOTALL)
+    _CMD_TELEGRAM = re.compile(r"^telegram\((.*?)\)\s*$", re.DOTALL)
+    _CMD_DISCORD = re.compile(r"^discord\((.*?)\)\s*$", re.DOTALL)
+    _CMD_TELEGRAM_LOG = re.compile(r"^Telegram_log\((\d+)\)\s*$", re.DOTALL)
+    _CMD_SLEEP = re.compile(r"^sleep\s*$")
+    _CMD_EXIT = re.compile(r"^exit\s*$")
+    _CMD_CURIOSITY_FAIRY = re.compile(r"^curiosity_fairy\s*$")
+    _CMD_PARALLEL_BEGIN = re.compile(r"^parallel_begin\s*$")
+    _CMD_PARALLEL_END = re.compile(r"^parallel_end\s*$")
 
     # ── Direct tool invocation regex ───────────────────────────────────
     # Matches lines like:  read(path="/tmp/file.txt")
@@ -2073,22 +2194,32 @@ class AutonomousLoopEngine:
     #                      edit(path="/tmp/f.txt", old="foo", new="bar")
     #                      bash(command="ls -la")
     _CMD_TOOL_CALL = re.compile(
-        r'^(?P<tool>[a-zA-Z_][a-zA-Z0-9_]*)\((?P<args>.*)\)\s*$', re.DOTALL
+        r"^(?P<tool>[a-zA-Z_][a-zA-Z0-9_]*)\((?P<args>.*)\)\s*$", re.DOTALL
     )
 
     # Known tool names that can be invoked directly (lowercase).
     # Any matching line is converted to ("tool_call", json_dict).
-    _DIRECT_TOOL_NAMES = frozenset({
-        "read", "write", "edit", "bash", "glob", "grep",
-        "todo", "memo", "subagent", "subagent_result", "subagent_list", "subagent_kill",
-    })
+    _DIRECT_TOOL_NAMES = frozenset(
+        {
+            "read",
+            "write",
+            "edit",
+            "bash",
+            "glob",
+            "grep",
+            "todo",
+            "memo",
+            "subagent",
+            "subagent_result",
+            "subagent_list",
+            "subagent_kill",
+        }
+    )
 
     # ── Bullet / numbered list prefix stripper ──────────────────────────
     # Lines like "- command(...)" or "1. command(...)" or "* command(...)"
     # have the prefix stripped before matching.
-    _CMD_LIST_PREFIX = re.compile(
-        r'^(?:[-*•]|\d+[.)])\s+'
-    )
+    _CMD_LIST_PREFIX = re.compile(r"^(?:[-*•]|\d+[.)])\s+")
 
     def _parse_model_commands(self, text: str) -> List[Tuple[str, str]]:
         """
@@ -2141,7 +2272,7 @@ class AutonomousLoopEngine:
 
         def _strip_list_prefix(line: str) -> str:
             """Remove bullet / numbered list prefixes."""
-            return self._CMD_LIST_PREFIX.sub('', line).strip()
+            return self._CMD_LIST_PREFIX.sub("", line).strip()
 
         def _try_parse_lines(source: str) -> None:
             in_parallel = False
@@ -2169,9 +2300,7 @@ class AutonomousLoopEngine:
 
                 if self._CMD_PARALLEL_END.match(match_line):
                     if in_parallel and parallel_buf:
-                        commands.append(
-                            ("parallel", _json.dumps(parallel_buf))
-                        )
+                        commands.append(("parallel", _json.dumps(parallel_buf)))
                     in_parallel = False
                     parallel_buf = []
                     continue
@@ -2200,11 +2329,9 @@ class AutonomousLoopEngine:
 
         # 1. Extract code blocks (fenced with triple backticks)
         # Handle: ```lang\n...\n```  and  ```\n...\n```
-        code_blocks = re.findall(
-            r'```[a-zA-Z]*\n(.*?)```', text, re.DOTALL
-        )
+        code_blocks = re.findall(r"```[a-zA-Z]*\n(.*?)```", text, re.DOTALL)
         if not code_blocks:
-            code_blocks = re.findall(r'```(.*?)```', text, re.DOTALL)
+            code_blocks = re.findall(r"```(.*?)```", text, re.DOTALL)
 
         if code_blocks:
             for block in code_blocks:
@@ -2212,8 +2339,8 @@ class AutonomousLoopEngine:
             # 2. Also parse text outside code blocks.
             # Remove entire ```...``` blocks (including fences) to avoid
             # parsing fence lines as commands.
-            text_outside = re.sub(r'```[a-zA-Z]*\n.*?```', '', text, flags=re.DOTALL)
-            text_outside = re.sub(r'```.*?```', '', text_outside, flags=re.DOTALL)
+            text_outside = re.sub(r"```[a-zA-Z]*\n.*?```", "", text, flags=re.DOTALL)
+            text_outside = re.sub(r"```.*?```", "", text_outside, flags=re.DOTALL)
             _try_parse_lines(text_outside)
         else:
             # No code blocks — parse the full text
@@ -2254,6 +2381,7 @@ class AutonomousLoopEngine:
                 args_dict = self._parse_tool_args(args_str)
                 args_dict["__tool__"] = tool_name
                 import json
+
                 return ("tool_call", json.dumps(args_dict))
 
         return None
@@ -2324,11 +2452,11 @@ class AutonomousLoopEngine:
             depth = 0
             while i < length:
                 ch = text[i]
-                if ch in ('(', '[', '{'):
+                if ch in ("(", "[", "{"):
                     depth += 1
-                elif ch in (')', ']', '}'):
+                elif ch in (")", "]", "}"):
                     depth -= 1
-                elif ch == ',' and depth <= 0:
+                elif ch == "," and depth <= 0:
                     break
                 raw.append(ch)
                 i += 1
@@ -2380,8 +2508,9 @@ class AutonomousLoopEngine:
     #  Command execution                                                 #
     # ------------------------------------------------------------------ #
 
-    def _execute_commands(self, ctx: AutonomousContext,
-                          commands: List[Tuple[str, str]]) -> None:
+    def _execute_commands(
+        self, ctx: AutonomousContext, commands: List[Tuple[str, str]]
+    ) -> None:
         """Execute a list of parsed commands, including parallel batches.
 
         Each command is executed in isolation — if one command raises an
@@ -2417,12 +2546,8 @@ class AutonomousLoopEngine:
             except Exception as _cmd_err:
                 # Log and continue — don't let one failing command
                 # prevent the rest of the batch from executing.
-                self.logger.error(
-                    f"Command execution error ({cmd_type}): {_cmd_err}"
-                )
-                self._append_log(
-                    ctx, f"  [execution error] {cmd_type}: {_cmd_err}"
-                )
+                self.logger.error(f"Command execution error ({cmd_type}): {_cmd_err}")
+                self._append_log(ctx, f"  [execution error] {cmd_type}: {_cmd_err}")
 
     def _exec_command(self, ctx: AutonomousContext, command_str: str) -> None:
         """Execute a shell command and record the result."""
@@ -2454,9 +2579,11 @@ class AutonomousLoopEngine:
                 self._append_log(ctx, f"  stderr: {stderr[:500]}")
             self._append_log(ctx, f"  exit code: {rc}")
 
-            self.logger.info("Command completed",
-                             return_code=rc,
-                             success=result.get("success", False))
+            self.logger.info(
+                "Command completed",
+                return_code=rc,
+                success=result.get("success", False),
+            )
 
         except Exception as e:
             error_msg = f"Command execution error: {e}"
@@ -2473,7 +2600,6 @@ class AutonomousLoopEngine:
         and dispatched through the loop tool registry.
         """
         import json
-
 
         try:
             args_dict: Dict[str, str] = json.loads(arg)
@@ -2565,30 +2691,39 @@ class AutonomousLoopEngine:
             )
         elif tool_name in ("subagent", "sub_agent"):
             from ..tools.sub_agent import SubAgentInput
+
             return SubAgentInput(
                 action="spawn",
                 agent_type=args.get("agent_type", args.get("type", "")),
                 task=args.get("task", args.get("instruction", "")),
-                max_iterations=int(args.get("max_iterations", args.get("iterations", "50"))),
-                timeout_seconds=int(args.get("timeout_seconds", args.get("timeout", "600"))),
+                max_iterations=int(
+                    args.get("max_iterations", args.get("iterations", "50"))
+                ),
+                timeout_seconds=int(
+                    args.get("timeout_seconds", args.get("timeout", "600"))
+                ),
             )
         elif tool_name == "subagent_result":
             from ..tools.sub_agent import SubAgentInput
+
             return SubAgentInput(
                 action="status",
                 agent_id=args.get("agent_id", args.get("id", "")),
             )
         elif tool_name == "subagent_kill":
             from ..tools.sub_agent import SubAgentInput
+
             return SubAgentInput(
                 action="kill",
                 agent_id=args.get("agent_id", args.get("id", "")),
             )
         elif tool_name == "subagent_list":
             from ..tools.sub_agent import SubAgentInput
+
             return SubAgentInput(action="list")
         elif tool_name == "sub_agent_types":
             from ..tools.sub_agent import SubAgentInput
+
             return SubAgentInput(action="list_types")
         else:
             raise ValueError(f"Unsupported direct tool: {tool_name}")
@@ -2608,6 +2743,7 @@ class AutonomousLoopEngine:
         # Check memory usage
         try:
             import psutil
+
             mem = psutil.virtual_memory()
             if mem.percent > 90:
                 issues.append(f"High memory usage: {mem.percent:.0f}%")
@@ -2617,12 +2753,14 @@ class AutonomousLoopEngine:
         # Check disk space
         try:
             import shutil
+
             disk = shutil.disk_usage(str(Path.cwd()))
-            free_gb = disk.free / (1024 ** 3)
+            free_gb = disk.free / (1024**3)
             if free_gb < 2.0:
                 issues.append(f"Low disk space: {free_gb:.1f}GB free")
                 # Attempt cleanup
                 from ..utils.resilience_engine import emergency_disk_cleanup
+
                 emergency_disk_cleanup(target_free_gb=2.0)
         except Exception:
             pass
@@ -2644,8 +2782,9 @@ class AutonomousLoopEngine:
         self._term_log.thinking(text)
         self._append_log(ctx, f"[thought] {text}")
 
-    def add_user_message(self, user_message: str,
-                          user_id: Optional[int] = None) -> None:
+    def add_user_message(
+        self, user_message: str, user_id: Optional[int] = None
+    ) -> None:
         """
         Add a user message to the context log and IMMEDIATELY send a
         telegram() acknowledgement — do NOT wait for the LLM.
@@ -2660,8 +2799,9 @@ class AutonomousLoopEngine:
         if user_id is not None:
             tag = f"[user message from {user_id} received]"
         entry = f"{tag} {user_message}"
-        self.logger.info("User message received",
-                         user_message=user_message, user_id=user_id)
+        self.logger.info(
+            "User message received", user_message=user_message, user_id=user_id
+        )
         self._term_log.thinking(f"User message: {user_message}")
 
         # ── IMMEDIATE code-level acknowledgement (no LLM involved) ──
@@ -2698,7 +2838,7 @@ class AutonomousLoopEngine:
                 "Unless there's a very good reason not to. "
                 "Whenever possible, send an initial acknowledgement (e.g. "
                 "'Got it, working on it…') before carrying out instructions "
-                "or thinking them through."
+                "or thinking them through.",
             )
             # Signal the main loop so it wakes up immediately and enters
             # the THINKING phase on the next iteration.
@@ -2714,6 +2854,7 @@ class AutonomousLoopEngine:
             timestamp = time.strftime("%H:%M:%S", time.localtime())
             try:
                 from .terminal_history import get_terminal_history, TerminalEntry
+
                 th = get_terminal_history()
                 th.terminal_session.entries.append(
                     TerminalEntry(
@@ -2746,7 +2887,9 @@ class AutonomousLoopEngine:
             except Exception:
                 pass  # best-effort only
 
-    def _send_immediate_ack(self, ctx: AutonomousContext, user_id: int, user_message: str) -> bool:
+    def _send_immediate_ack(
+        self, ctx: AutonomousContext, user_id: int, user_message: str
+    ) -> bool:
         """
         Send an immediate acknowledgement via telegram() — called directly
         from add_user_message(), NOT via the LLM.  This guarantees the user
@@ -2758,11 +2901,7 @@ class AutonomousLoopEngine:
             return False
         # Truncate long messages for the ack preview
         preview = user_message[:100] + ("…" if len(user_message) > 100 else "")
-        ack_text = (
-            f"👋 Got it!\n"
-            f'Processing: "{preview}"\n'
-            f"Working on it now…"
-        )
+        ack_text = f"👋 Got it!\n" f'Processing: "{preview}"\n' f"Working on it now…"
         try:
             self.telegram_bot.queue_message(user_id, ack_text)
             if hasattr(self.telegram_bot, "_trigger_queue_flush"):
@@ -2785,7 +2924,10 @@ class AutonomousLoopEngine:
         # attempt to auto-initialize it from the repository `config.yaml`.
         if ctx.telegram_mode and not self.telegram_bot:
             try:
-                from ..external_integration.telegram_bot import create_telegram_bot, TELEGRAM_AVAILABLE
+                from ..external_integration.telegram_bot import (
+                    create_telegram_bot,
+                    TELEGRAM_AVAILABLE,
+                )
 
                 if TELEGRAM_AVAILABLE:
                     cfg_path = Path(__file__).resolve().parents[3] / "config.yaml"
@@ -2794,7 +2936,9 @@ class AutonomousLoopEngine:
                         if tb:
                             self.telegram_bot = tb
                             if self.telegram_bot.terminal_history is None:
-                                self.telegram_bot.terminal_history = self.terminal_history
+                                self.telegram_bot.terminal_history = (
+                                    self.terminal_history
+                                )
                             try:
                                 # Ensure resilience engine knows about the bot
                                 self._resilience.set_telegram_bot(self.telegram_bot)
@@ -2861,11 +3005,10 @@ class AutonomousLoopEngine:
             try:
                 self.discord_bot.queue_message(target_user, content)
                 import asyncio as _asyncio
+
                 try:
                     loop = _asyncio.get_running_loop()
-                    _asyncio.ensure_future(
-                        self.discord_bot.process_message_queue()
-                    )
+                    _asyncio.ensure_future(self.discord_bot.process_message_queue())
                 except RuntimeError:
                     pass
                 self._term_log.telegram(content)
@@ -2924,7 +3067,9 @@ class AutonomousLoopEngine:
         recent_messages = messages[-count:] if count < len(messages) else messages
 
         # Format the log output
-        output_lines = [f"Telegram Conversation History (last {len(recent_messages)} messages):"]
+        output_lines = [
+            f"Telegram Conversation History (last {len(recent_messages)} messages):"
+        ]
         output_lines.append("=" * 60)
 
         for msg in recent_messages:
@@ -2938,7 +3083,9 @@ class AutonomousLoopEngine:
         output_lines.append("=" * 60)
         log_entry = "\n".join(output_lines)
         self._append_log(ctx, log_entry)
-        self.logger.info(f"Telegram_log displayed {len(recent_messages)} messages for user {target_user}")
+        self.logger.info(
+            f"Telegram_log displayed {len(recent_messages)} messages for user {target_user}"
+        )
 
     def _exec_curiosity_fairy(self, ctx: AutonomousContext) -> None:
         """
@@ -2957,14 +3104,9 @@ class AutonomousLoopEngine:
         # voluntarily asked for help; it should get a fresh start.
         self._curiosity_fairy_invoked = False
         if suggestion:
-            fairy_msg = (
-                f"[Message from the Curiosity Fairy] "
-                f"```\n{suggestion}\n```"
-            )
+            fairy_msg = f"[Message from the Curiosity Fairy] " f"```\n{suggestion}\n```"
             self._append_log(ctx, fairy_msg)
-            self._term_log.thinking(
-                f"🧚 Curiosity Fairy suggests: {suggestion[:120]}"
-            )
+            self._term_log.thinking(f"🧚 Curiosity Fairy suggests: {suggestion[:120]}")
             # Reset identical-output counter so the automatic trigger
             # doesn't fire immediately after a voluntary invocation.
             self._consecutive_identical_outputs = 0
@@ -3010,11 +3152,13 @@ class AutonomousLoopEngine:
 
         for i, (ct, ca) in enumerate(raw_commands):
             if ct == "command":
-                parallel_tasks.append(ParallelTask(
-                    tool_name="bash",
-                    input=_bash_input_from_command(ca),
-                    label=ca[:80],
-                ))
+                parallel_tasks.append(
+                    ParallelTask(
+                        tool_name="bash",
+                        input=_bash_input_from_command(ca),
+                        label=ca[:80],
+                    )
+                )
             elif first_cmd is None or i < first_cmd:
                 ordered_pre.append((ct, ca))
             elif last_cmd is not None and i > last_cmd:
@@ -3034,16 +3178,12 @@ class AutonomousLoopEngine:
 
         # Execute the parallel batch
         if parallel_tasks:
-            self.logger.info(
-                f"Parallel batch: {len(parallel_tasks)} commands starting"
-            )
+            self.logger.info(f"Parallel batch: {len(parallel_tasks)} commands starting")
             self._term_log.parallel_start(len(parallel_tasks))
 
             registry = _get_or_create_loop_tool_registry()
             try:
-                par_result: ParallelResult = registry.execute_parallel(
-                    parallel_tasks
-                )
+                par_result: ParallelResult = registry.execute_parallel(parallel_tasks)
                 self._term_log.parallel_result(par_result)
 
                 # Log each result into the execution log
@@ -3051,7 +3191,7 @@ class AutonomousLoopEngine:
                     ctx,
                     f"  [parallel batch] {par_result.success_count} ok, "
                     f"{par_result.fail_count} failed, "
-                    f"{par_result.total_duration_ms:.0f}ms"
+                    f"{par_result.total_duration_ms:.0f}ms",
                 )
                 for task, res in par_result.results:
                     tag = task.label or task.tool_name
@@ -3060,12 +3200,9 @@ class AutonomousLoopEngine:
                     if res.success:
                         self._term_log.command_result(0, snippet, "")
                     else:
-                        err = (res.error.message if res.error else "unknown error")
+                        err = res.error.message if res.error else "unknown error"
                         self._term_log.command_result(1, "", err)
-                    self._append_log(
-                        ctx,
-                        f"    [{status}] {tag}: {snippet}"
-                    )
+                    self._append_log(ctx, f"    [{status}] {tag}: {snippet}")
 
                 self.logger.info(
                     "Parallel batch done",
@@ -3124,7 +3261,7 @@ class AutonomousLoopEngine:
         self._previous_output_digest = ""
         # Reset the external observer (but keep its persisted state for
         # cross-session loop detection — it will reload on next init)
-        if getattr(self, '_external_observer', None) is not None:
+        if getattr(self, "_external_observer", None) is not None:
             try:
                 self._external_observer.reset()
             except Exception:
@@ -3156,7 +3293,8 @@ class AutonomousLoopEngine:
         # duplicate notifications after restart
         if self._last_sleep_reminder is not None:
             ctx.execution_log = [
-                entry for entry in ctx.execution_log
+                entry
+                for entry in ctx.execution_log
                 if entry != self._last_sleep_reminder
             ]
             self._last_sleep_reminder = None
@@ -3169,8 +3307,7 @@ class AutonomousLoopEngine:
             compressed = self._compress_context(ctx, aux)
 
             # 3. Save to context folder
-            self._save_sleep_state(ctx, compressed, aux,
-                                   project_root=_project_root)
+            self._save_sleep_state(ctx, compressed, aux, project_root=_project_root)
 
             # 4. Write resume instruction file for the restarted process
             self._set_sleep_restart_flag(compressed, project_root=_project_root)
@@ -3202,9 +3339,12 @@ class AutonomousLoopEngine:
             # Note: repetition state is NOT cleared on failure, preserving
             # loop-detection history for the restarted process.
             try:
-                self._save_sleep_state(ctx, f"(compression failed: {e})",
-                                       self._collect_auxiliary_context(ctx),
-                                       project_root=_project_root)
+                self._save_sleep_state(
+                    ctx,
+                    f"(compression failed: {e})",
+                    self._collect_auxiliary_context(ctx),
+                    project_root=_project_root,
+                )
             except Exception as save_err:
                 self.logger.error(f"Failed to save emergency sleep state: {save_err}")
 
@@ -3224,9 +3364,12 @@ class AutonomousLoopEngine:
                 # and the user needs to intervene. Exit with a distinctive code.
                 sys.exit(127)
 
-    def _handle_exit(self, ctx: AutonomousContext,
-                       fast: bool = False,
-                       project_root: Optional[Path] = None) -> None:
+    def _handle_exit(
+        self,
+        ctx: AutonomousContext,
+        fast: bool = False,
+        project_root: Optional[Path] = None,
+    ) -> None:
         """
         Graceful-exit workflow (no restart):
         1. Collect auxiliary context (git diff, metadata, recent entries)
@@ -3264,7 +3407,9 @@ class AutonomousLoopEngine:
             # 3. Save to context folder (different file from sleep)
             self._save_exit_state(ctx, compressed, aux, project_root=project_root)
 
-            self.logger.info("Exit-save workflow complete – state persisted, exiting now")
+            self.logger.info(
+                "Exit-save workflow complete – state persisted, exiting now"
+            )
 
         except Exception as e:
             self.logger.error(f"Exit-save workflow error: {e}")
@@ -3275,8 +3420,7 @@ class AutonomousLoopEngine:
             self._stop_auto_save()
 
     @staticmethod
-    def _heuristic_compress(ctx: AutonomousContext,
-                            aux: Dict[str, str]) -> str:
+    def _heuristic_compress(ctx: AutonomousContext, aux: Dict[str, str]) -> str:
         """Fast, LLM-free context compression for signal handling."""
         sections = [
             f"## WORK IN PROGRESS: {ctx.current_goal}",
@@ -3292,10 +3436,13 @@ class AutonomousLoopEngine:
         ]
         return "\n".join(sections)
 
-    def _save_exit_state(self, ctx: AutonomousContext,
-                         compressed: str,
-                         aux: Dict[str, str],
-                         project_root: Optional[Path] = None) -> None:
+    def _save_exit_state(
+        self,
+        ctx: AutonomousContext,
+        compressed: str,
+        aux: Dict[str, str],
+        project_root: Optional[Path] = None,
+    ) -> None:
         """Persist the current state for an exit (non-restarting) shutdown."""
         if project_root is not None:
             context_dir = project_root / ".context"
@@ -3325,6 +3472,7 @@ class AutonomousLoopEngine:
         state_file = context_dir / "exit_state.json"
         try:
             import json
+
             with open(state_file, "w", encoding="utf-8") as f:
                 json.dump(state, f, indent=2, ensure_ascii=False)
             self.logger.info(f"Exit state saved to {state_file}")
@@ -3350,8 +3498,9 @@ class AutonomousLoopEngine:
             self.logger.error(f"Failed to save context log: {e}")
 
     @staticmethod
-    def _collect_auxiliary_context(ctx: AutonomousContext,
-                                   execution_log: Optional[List[str]] = None) -> Dict[str, str]:
+    def _collect_auxiliary_context(
+        ctx: AutonomousContext, execution_log: Optional[List[str]] = None
+    ) -> Dict[str, str]:
         """
         Gather extra context that is not inside ctx.execution_log but is
         essential for a lossless restart: git diff statistics, metadata,
@@ -3369,9 +3518,12 @@ class AutonomousLoopEngine:
         git_diff = ""
         try:
             import subprocess
+
             result = subprocess.run(
                 ["git", "diff", "--stat"],
-                capture_output=True, text=True, timeout=15,
+                capture_output=True,
+                text=True,
+                timeout=15,
             )
             if result.returncode == 0 and result.stdout.strip():
                 git_diff = result.stdout.strip()[:2000]
@@ -3397,16 +3549,18 @@ class AutonomousLoopEngine:
 
         # --- All error lines ---------------------------------------------------
         error_lines = [
-            line for line in log
-            if any(marker in line.lower()
-                   for marker in ("error", "exception", "failed", "traceback"))
+            line
+            for line in log
+            if any(
+                marker in line.lower()
+                for marker in ("error", "exception", "failed", "traceback")
+            )
         ]
         aux["errors"] = "\n".join(error_lines) if error_lines else "(none)"
 
         return aux
 
-    def _compress_context(self, ctx: AutonomousContext,
-                          aux: Dict[str, str]) -> str:
+    def _compress_context(self, ctx: AutonomousContext, aux: Dict[str, str]) -> str:
         """
         Multi-level context compression:
           Level 1 — LLM compression with structured prompt + aux data (truncated log).
@@ -3446,8 +3600,10 @@ class AutonomousLoopEngine:
             )
             response = self.model_runner.run_model(request)
             if response.success and response.content.strip():
-                self.logger.info("Level-1 compression: LLM succeeded",
-                                 output_len=len(response.content))
+                self.logger.info(
+                    "Level-1 compression: LLM succeeded",
+                    output_len=len(response.content),
+                )
                 return response.content.strip()
         except Exception as e:
             self.logger.warning(f"Level-1 compression (LLM) failed: {e}")
@@ -3475,10 +3631,13 @@ class AutonomousLoopEngine:
         self.logger.info("Level-3 compression: raw log tail")
         return log_text
 
-    def _save_sleep_state(self, ctx: AutonomousContext,
-                          compressed: str,
-                          aux: Dict[str, str],
-                          project_root: Optional[Path] = None) -> None:
+    def _save_sleep_state(
+        self,
+        ctx: AutonomousContext,
+        compressed: str,
+        aux: Dict[str, str],
+        project_root: Optional[Path] = None,
+    ) -> None:
         """Persist the current execution state and auxiliary data."""
         if project_root is not None:
             context_dir = project_root / ".context"
@@ -3534,22 +3693,28 @@ class AutonomousLoopEngine:
         """Best-effort git pull to update the program."""
         try:
             import subprocess
+
             result = subprocess.run(
                 ["git", "pull"],
-                capture_output=True, text=True, timeout=60,
+                capture_output=True,
+                text=True,
+                timeout=60,
             )
             if result.returncode == 0:
                 _get_logger = get_logger("autonomous_loop_engine")
                 _get_logger.info("Git pull succeeded")
             else:
                 _get_logger = get_logger("autonomous_loop_engine")
-                _get_logger.warning(f"Git pull returned non-zero: {result.stderr[:200]}")
+                _get_logger.warning(
+                    f"Git pull returned non-zero: {result.stderr[:200]}"
+                )
         except Exception as e:
             get_logger("autonomous_loop_engine").warning(f"Git pull failed: {e}")
 
     @staticmethod
-    def _set_sleep_restart_flag(compressed: str,
-                                project_root: Optional[Path] = None) -> None:
+    def _set_sleep_restart_flag(
+        compressed: str, project_root: Optional[Path] = None
+    ) -> None:
         """
         Write a flag that tells the restarted process to rebuild the venv
         and restore context.
@@ -3638,8 +3803,11 @@ class AutonomousLoopEngine:
             if sys.platform == "win32":
                 # Windows: spawn a new process and exit the parent
                 import subprocess
+
                 subprocess.Popen(new_args, cwd=str(_project_root))
-                self.logger.info("Windows restart: spawned child process, exiting parent")
+                self.logger.info(
+                    "Windows restart: spawned child process, exiting parent"
+                )
                 sys.exit(0)
             else:
                 # Unix: os.execv replaces the current process (same PID)
@@ -3668,9 +3836,7 @@ class AutonomousLoopEngine:
                 _atomic_write_json(_emergency_file, _emergency_state)
                 self.logger.info("Emergency state saved before exit")
             except Exception as _save_err:
-                self.logger.critical(
-                    f"Failed to save emergency state: {_save_err}"
-                )
+                self.logger.critical(f"Failed to save emergency state: {_save_err}")
             # Exit with a distinctive code that external supervisors can detect
             sys.exit(127)
 
@@ -3703,6 +3869,7 @@ class AutonomousLoopEngine:
 
         try:
             import json
+
             with open(state_file, "r", encoding="utf-8") as f:
                 state = json.load(f)
 
@@ -3739,8 +3906,7 @@ class AutonomousLoopEngine:
             except Exception as log_err:
                 logger.warning(f"Failed to update context log: {log_err}")
 
-            logger.info("Sleep restart state restored",
-                        goal=state.get("goal", ""))
+            logger.info("Sleep restart state restored", goal=state.get("goal", ""))
             return state
 
         except Exception as e:
@@ -3790,12 +3956,16 @@ class AutonomousLoopEngine:
             if not after["healthy"]:
                 critical = any("CRITICAL" in i for i in after["issues"])
                 if critical:
-                    self.logger.warning("Resources still critical after cleanup — forcing sleep")
-                    self._term_log.error("🛏 Resources critical — forcing sleep to recover ...")
+                    self.logger.warning(
+                        "Resources still critical after cleanup — forcing sleep"
+                    )
+                    self._term_log.error(
+                        "🛏 Resources critical — forcing sleep to recover ..."
+                    )
                     self._notify_telegram_error(
                         ctx,
                         "🛏 Resources (disk/memory) are critically low. "
-                        "Forcing sleep to recover. Will restart automatically."
+                        "Forcing sleep to recover. Will restart automatically.",
                     )
                     # Trigger the sleep workflow
                     self._handle_sleep(ctx)
@@ -3857,7 +4027,9 @@ class AutonomousLoopEngine:
             # Build final output: INBOX first, then the rest chronologically
             parts = []
             if inbox_lines:
-                parts.append("## 📥 INBOX (user messages — ALWAYS reply with telegram() first)")
+                parts.append(
+                    "## 📥 INBOX (user messages — ALWAYS reply with telegram() first)"
+                )
                 parts.extend(inbox_lines)
                 parts.append("## END INBOX\n")
             parts.append("## EXECUTION LOG (chronological)")
@@ -3901,7 +4073,9 @@ class AutonomousLoopEngine:
         # Track the reminder so it can be removed on sleep/reset to prevent
         # duplicate notifications after restart
         self._last_sleep_reminder = reminder
-        self.logger.info("Sleep reminder injected into execution log — log exceeded 100 lines")
+        self.logger.info(
+            "Sleep reminder injected into execution log — log exceeded 100 lines"
+        )
 
     # Compress log every N appends to prevent unbounded growth
     _LOG_COMPRESS_INTERVAL = 50  # compress after every 50 appends
@@ -3920,7 +4094,7 @@ class AutonomousLoopEngine:
             return  # not worth compressing yet
 
         old_count = len(log) - self._LOG_KEEP_RECENT
-        recent = log[-self._LOG_KEEP_RECENT:]
+        recent = log[-self._LOG_KEEP_RECENT :]
 
         # Count entry types in the old portion for a summary
         user_msgs = sum(1 for l in log[:old_count] if "[user message" in l.lower())
@@ -3953,7 +4127,9 @@ class AutonomousLoopEngine:
                 "Task cancelled because a newer user request was received"
             )
 
-    def _notify_telegram_error(self, ctx: AutonomousContext, error: str, is_recovery: bool = False) -> None:
+    def _notify_telegram_error(
+        self, ctx: AutonomousContext, error: str, is_recovery: bool = False
+    ) -> None:
         """Send an error/recovery notification to the user via the active bot."""
         icon = "✅" if is_recovery else "❌"
         notification = f"{icon} {error}"
@@ -3964,12 +4140,16 @@ class AutonomousLoopEngine:
             # last-inbound, and boot user ids safely).
             target_user = ctx.telegram_user_id
             try:
-                resolved = getattr(active_bot, "_resolve_chat_id", lambda x=None: x)(ctx.telegram_user_id)
+                resolved = getattr(active_bot, "_resolve_chat_id", lambda x=None: x)(
+                    ctx.telegram_user_id
+                )
                 if resolved is not None:
                     target_user = resolved
             except Exception:
                 # Resolution failed — fall back to boot user id
-                target_user = getattr(active_bot, "_boot_user_id", None) or getattr(self, "_telegram_boot_user_id", None)
+                target_user = getattr(active_bot, "_boot_user_id", None) or getattr(
+                    self, "_telegram_boot_user_id", None
+                )
             if target_user is None:
                 target_user = getattr(self, "_telegram_boot_user_id", None)
             if target_user is None:
@@ -3999,6 +4179,7 @@ class AutonomousLoopEngine:
         log_lines: list = []
         try:
             from .terminal_history import get_terminal_history
+
             th = get_terminal_history()
             entries = getattr(getattr(th, "terminal_session", None), "entries", [])
             if not entries:
@@ -4029,9 +4210,10 @@ class AutonomousLoopEngine:
             memory_info = ""
             try:
                 import psutil
+
                 mem = psutil.virtual_memory()
-                total_gb = mem.total / (1024 ** 3)
-                available_gb = mem.available / (1024 ** 3)
+                total_gb = mem.total / (1024**3)
+                available_gb = mem.available / (1024**3)
                 memory_info = (
                     f", Memory: {total_gb:.1f}GB total, "
                     f"{available_gb:.1f}GB available"
@@ -4043,8 +4225,9 @@ class AutonomousLoopEngine:
             disk_info = ""
             try:
                 import psutil
+
                 disk = psutil.disk_usage(str(Path.home()))
-                free_gb = disk.free / (1024 ** 3)
+                free_gb = disk.free / (1024**3)
                 disk_info = f", Disk free: {free_gb:.1f}GB"
             except Exception:
                 pass
@@ -4090,6 +4273,7 @@ class AutonomousLoopEngine:
 def _bash_input_from_command(command_str: str):
     """Build a BashInput from a raw command string, picking up timeout from config."""
     from ..tools.bash import BashInput
+
     return BashInput(command=command_str)
 
 
@@ -4144,6 +4328,7 @@ class _TerminalLogSink:
         self._enabled = enabled and self._stderr_is_tty()
         if self._enabled:
             from ..utils.rich_console import StyledLogSink
+
             self._styled = StyledLogSink(enabled=True)
         else:
             self._styled = None
@@ -4175,7 +4360,9 @@ class _TerminalLogSink:
         if self._styled:
             self._styled.model_request(iteration, model, provider)
 
-    def model_response(self, iteration: int, output_length: int, latency: float = 0) -> None:
+    def model_response(
+        self, iteration: int, output_length: int, latency: float = 0
+    ) -> None:
         if self._styled:
             self._styled.model_response(iteration, output_length, latency)
 
@@ -4214,4 +4401,5 @@ class _TerminalLogSink:
 
 class _PipelineCancelledError(Exception):
     """Raised when a newer user request cancels the active loop."""
+
     pass

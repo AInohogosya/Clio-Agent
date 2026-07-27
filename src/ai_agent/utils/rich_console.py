@@ -61,6 +61,7 @@ def get_console() -> Console:
 
 # ── Theme palette ──────────────────────────────────────────────────────────
 
+
 class Theme:
     """Design tokens — mirrors gui/theme.py palette for CLI consistency."""
 
@@ -91,13 +92,20 @@ class Theme:
 
     # Shimmer gradient stops (for the loading animation)
     SHIMMER_COLORS = [
-        "#6c5ce7", "#7c6ff7", "#8c82ff", "#a29bfe",
-        "#8c82ff", "#7c6ff7", "#6c5ce7", "#5c4bd7",
+        "#6c5ce7",
+        "#7c6ff7",
+        "#8c82ff",
+        "#a29bfe",
+        "#8c82ff",
+        "#7c6ff7",
+        "#6c5ce7",
+        "#5c4bd7",
         "#6c5ce7",
     ]
 
 
 # ── ShimmerLoader ──────────────────────────────────────────────────────────
+
 
 class ShimmerLoader:
     """
@@ -186,6 +194,7 @@ class ShimmerLoader:
 
 # ── StreamingPrinter ──────────────────────────────────────────────────────
 
+
 class StreamingPrinter:
     """
     Print text with a smooth typing-style animation.
@@ -229,6 +238,7 @@ class StreamingPrinter:
 
 
 # ── Styled log sink (replaces _TerminalLogSink) ───────────────────────────
+
 
 class StyledLogSink:
     """
@@ -296,9 +306,7 @@ class StyledLogSink:
         self._console.print(t)
         if stdout.strip():
             for line in stdout.strip().splitlines():
-                self._console.print(
-                    Text(f"    │ {line}", style=Theme.TEXT_TERTIARY)
-                )
+                self._console.print(Text(f"    │ {line}", style=Theme.TEXT_TERTIARY))
         if stderr.strip():
             for line in stderr.strip().splitlines():
                 self._console.print(Text(f"    │ {line}", style=Theme.ERROR))
@@ -315,7 +323,9 @@ class StyledLogSink:
         t.append(f"{provider}/{model}", style=f"bold {Theme.ACCENT}")
         self._console.print(t)
 
-    def model_response(self, iteration: int, output_length: int, latency: float = 0) -> None:
+    def model_response(
+        self, iteration: int, output_length: int, latency: float = 0
+    ) -> None:
         if not self._enabled:
             return
         t = Text()
@@ -439,6 +449,7 @@ class StyledLogSink:
 
 # ── Helper: status panel ──────────────────────────────────────────────────
 
+
 def status_panel(
     title: str,
     rows: Sequence[tuple[str, str]],
@@ -467,6 +478,7 @@ def status_panel(
 
 # ── Helper: step indicator ────────────────────────────────────────────────
 
+
 def step(current: int, total: int, label: str = "") -> Text:
     """Render a step indicator like [●───○───○] Step label."""
     parts: list[str] = []
@@ -487,6 +499,7 @@ def step(current: int, total: int, label: str = "") -> Text:
 
 # ── Helper: gradient text ─────────────────────────────────────────────────
 
+
 def gradient_text(text: str, colors: Sequence[str] | None = None) -> Text:
     """Render text with a smooth color gradient across characters."""
     if colors is None:
@@ -499,6 +512,7 @@ def gradient_text(text: str, colors: Sequence[str] | None = None) -> Text:
 
 
 # ── Helper: banner ────────────────────────────────────────────────────────
+
 
 def banner(text: str, *, style: str = f"bold {Theme.ACCENT}") -> Panel:
     """Render a centered banner panel."""

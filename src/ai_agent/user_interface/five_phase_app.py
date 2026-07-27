@@ -29,11 +29,18 @@ class AutonomousAIAgent:
     it does not stop after completing a task — it keeps going.
     """
 
-    def __init__(self, provider: str = None, model: str = None,
-                 config_path: Optional[str] = None, telegram_bot=None, discord_bot=None):
+    def __init__(
+        self,
+        provider: str = None,
+        model: str = None,
+        config_path: Optional[str] = None,
+        telegram_bot=None,
+        discord_bot=None,
+    ):
         self.config = (
             load_config(config_path, force_reload=bool(config_path))
-            if config_path else load_config()
+            if config_path
+            else load_config()
         )
         self.logger = get_logger("autonomous_app")
 
@@ -69,8 +76,13 @@ class AutonomousAIAgent:
             if name in options and options[name] is not None:
                 setattr(self.engine, name, options[name])
 
-    def run(self, instruction: Optional[str], options: Dict[str, Any],
-            conversation_history=None, cancel_event=None) -> int:
+    def run(
+        self,
+        instruction: Optional[str],
+        options: Dict[str, Any],
+        conversation_history=None,
+        cancel_event=None,
+    ) -> int:
         """Run the agent in perpetual autonomous mode.
 
         Whether or not an *instruction* is provided, the agent enters its
@@ -96,6 +108,7 @@ class AutonomousAIAgent:
 
             # Determine messaging mode from environment variables set by run.py
             import os as _os
+
             _env_telegram = _os.environ.get("CLIO_TELEGRAM_MODE", "").lower() == "true"
             _env_discord = _os.environ.get("CLIO_DISCORD_MODE", "").lower() == "true"
             _telegram_mode = _env_telegram
@@ -128,11 +141,14 @@ class AutonomousAIAgent:
             print(f"Unexpected error: {e}", file=sys.stderr)
             return 4
 
-    def run_autonomous_boot(self, options: Dict[str, Any],
-                            conversation_history=None,
-                            telegram_bot=None,
-                            discord_bot=None,
-                            initial_instruction: str = None) -> int:
+    def run_autonomous_boot(
+        self,
+        options: Dict[str, Any],
+        conversation_history=None,
+        telegram_bot=None,
+        discord_bot=None,
+        initial_instruction: str = None,
+    ) -> int:
         """Run the agent in perpetual autonomous mode.
 
         The agent boots, observes its environment, picks work to do,
@@ -165,6 +181,7 @@ class AutonomousAIAgent:
             # explicit mode selection propagated via environment variables
             # (set by run.py), falling back to bot availability otherwise.
             import os
+
             _env_telegram = os.environ.get("CLIO_TELEGRAM_MODE", "").lower() == "true"
             _env_discord = os.environ.get("CLIO_DISCORD_MODE", "").lower() == "true"
             if _env_discord and discord_bot is not None:
@@ -181,9 +198,15 @@ class AutonomousAIAgent:
                 "conversation_history": conversation_history,
                 "telegram_mode": _telegram_mode,
                 "discord_mode": _discord_mode,
-                "telegram_user_id": getattr(
-                    discord_bot if _discord_mode else telegram_bot, "_boot_user_id", None
-                ) if (telegram_bot or discord_bot) else None,
+                "telegram_user_id": (
+                    getattr(
+                        discord_bot if _discord_mode else telegram_bot,
+                        "_boot_user_id",
+                        None,
+                    )
+                    if (telegram_bot or discord_bot)
+                    else None
+                ),
             }
 
             ctx = self.engine.execute_instruction(
@@ -218,7 +241,9 @@ class AutonomousAIAgent:
                             ctx, fast=True, project_root=_project_root
                         )
                     except Exception as save_err:
-                        self.logger.error(f"Failed to save exit state on signal: {save_err}")
+                        self.logger.error(
+                            f"Failed to save exit state on signal: {save_err}"
+                        )
                 self.engine.request_cancel()
         except Exception as e:
             self.logger.error(f"Error during cancellation: {e}")
@@ -237,11 +262,17 @@ class AutonomousAIAgent:
 def main():
     """CLI entry point (retained for backward compatibility)."""
     import argparse
+
     parser = argparse.ArgumentParser(
         description="Clio-Agent-1 Autonomous Loop AI Agent",
     )
-    parser.add_argument("instruction", type=str, nargs="?", default="",
-                        help="Initial thought seed (optional — agent works without it)")
+    parser.add_argument(
+        "instruction",
+        type=str,
+        nargs="?",
+        default="",
+        help="Initial thought seed (optional — agent works without it)",
+    )
     parser.add_argument("--config", type=str, help="Path to config file")
     parser.add_argument("--verbose", "-v", action="store_true")
     parser.add_argument("--quiet", "-q", action="store_true")

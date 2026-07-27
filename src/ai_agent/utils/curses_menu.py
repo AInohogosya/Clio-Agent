@@ -27,14 +27,18 @@ class CursesMenu:
         self.current_index = 0
         self.scroll_offset = 0
 
-    def add_item(self, display_name: str, description: str, value: Any, icon: str = "\U0001f4cb"):
+    def add_item(
+        self, display_name: str, description: str, value: Any, icon: str = "\U0001f4cb"
+    ):
         """Add an item to the menu"""
-        self.items.append({
-            "display_name": display_name,
-            "description": description,
-            "value": value,
-            "icon": icon
-        })
+        self.items.append(
+            {
+                "display_name": display_name,
+                "description": description,
+                "value": value,
+                "icon": icon,
+            }
+        )
 
     def _calculate_viewport(self, max_y: int) -> tuple:
         """Calculate visible viewport bounds to prevent overflow"""
@@ -77,20 +81,51 @@ class CursesMenu:
 
             # Title
             if len(self.title) < max_x:
-                stdscr.addstr(0, 0, self.title, curses.A_BOLD | curses.color_pair(COLOR_TITLE) if curses.has_colors() else curses.A_BOLD)
+                stdscr.addstr(
+                    0,
+                    0,
+                    self.title,
+                    (
+                        curses.A_BOLD | curses.color_pair(COLOR_TITLE)
+                        if curses.has_colors()
+                        else curses.A_BOLD
+                    ),
+                )
 
             # Separator
             separator = "=" * min(50, max_x - 1)
-            stdscr.addstr(1, 0, separator, curses.color_pair(COLOR_TITLE) if curses.has_colors() else curses.A_DIM)
+            stdscr.addstr(
+                1,
+                0,
+                separator,
+                curses.color_pair(COLOR_TITLE) if curses.has_colors() else curses.A_DIM,
+            )
 
             # Description
             if self.description and len(self.description) < max_x:
-                stdscr.addstr(2, 0, self.description, curses.color_pair(COLOR_NORMAL) if curses.has_colors() else curses.A_NORMAL)
+                stdscr.addstr(
+                    2,
+                    0,
+                    self.description,
+                    (
+                        curses.color_pair(COLOR_NORMAL)
+                        if curses.has_colors()
+                        else curses.A_NORMAL
+                    ),
+                )
 
             # Instructions
             if max_y > 4:
-                stdscr.addstr(4, 0, "Use arrows to navigate - Enter to select - Q to quit",
-                             curses.color_pair(COLOR_FOOTER) if curses.has_colors() else curses.A_DIM)
+                stdscr.addstr(
+                    4,
+                    0,
+                    "Use arrows to navigate - Enter to select - Q to quit",
+                    (
+                        curses.color_pair(COLOR_FOOTER)
+                        if curses.has_colors()
+                        else curses.A_DIM
+                    ),
+                )
 
             # Menu items - only draw visible items within viewport
             start_y = 6
@@ -99,8 +134,16 @@ class CursesMenu:
 
             # Draw scroll-up indicator
             if self.scroll_offset > 0 and start_y > 5:
-                stdscr.addstr(start_y - 1, 0, "  ^ More above ^",
-                             curses.color_pair(COLOR_FOOTER) if curses.has_colors() else curses.A_DIM)
+                stdscr.addstr(
+                    start_y - 1,
+                    0,
+                    "  ^ More above ^",
+                    (
+                        curses.color_pair(COLOR_FOOTER)
+                        if curses.has_colors()
+                        else curses.A_DIM
+                    ),
+                )
 
             for display_idx in range(visible_end - visible_start):
                 list_idx = visible_start + display_idx
@@ -114,32 +157,89 @@ class CursesMenu:
                 if y >= max_y - 4:
                     break
 
-                is_selected = (list_idx == self.current_index)
-                line1 = "  %s %s %s" % (">" if is_selected else " ", item['icon'], item['display_name'])
-                line2 = "     %s" % item['description']
+                is_selected = list_idx == self.current_index
+                line1 = "  %s %s %s" % (
+                    ">" if is_selected else " ",
+                    item["icon"],
+                    item["display_name"],
+                )
+                line2 = "     %s" % item["description"]
 
                 if is_selected:
                     if len(line1) < max_x:
-                        stdscr.addstr(y, 0, line1, curses.color_pair(COLOR_HIGHLIGHT) | curses.A_BOLD if curses.has_colors() else curses.A_REVERSE)
+                        stdscr.addstr(
+                            y,
+                            0,
+                            line1,
+                            (
+                                curses.color_pair(COLOR_HIGHLIGHT) | curses.A_BOLD
+                                if curses.has_colors()
+                                else curses.A_REVERSE
+                            ),
+                        )
                     if len(line2) < max_x:
-                        stdscr.addstr(y + 1, 0, line2, curses.color_pair(COLOR_HIGHLIGHT) if curses.has_colors() else curses.A_REVERSE)
+                        stdscr.addstr(
+                            y + 1,
+                            0,
+                            line2,
+                            (
+                                curses.color_pair(COLOR_HIGHLIGHT)
+                                if curses.has_colors()
+                                else curses.A_REVERSE
+                            ),
+                        )
                 else:
                     if len(line1) < max_x:
-                        stdscr.addstr(y, 0, line1, curses.color_pair(COLOR_NORMAL) if curses.has_colors() else curses.A_NORMAL)
+                        stdscr.addstr(
+                            y,
+                            0,
+                            line1,
+                            (
+                                curses.color_pair(COLOR_NORMAL)
+                                if curses.has_colors()
+                                else curses.A_NORMAL
+                            ),
+                        )
                     if len(line2) < max_x:
-                        stdscr.addstr(y + 1, 0, line2, curses.color_pair(COLOR_NORMAL) if curses.has_colors() else curses.A_DIM)
+                        stdscr.addstr(
+                            y + 1,
+                            0,
+                            line2,
+                            (
+                                curses.color_pair(COLOR_NORMAL)
+                                if curses.has_colors()
+                                else curses.A_DIM
+                            ),
+                        )
 
             # Draw scroll-down indicator
             if visible_end < len(self.items):
                 scroll_indicator_y = start_y + ((visible_end - visible_start) * 3)
                 if scroll_indicator_y < max_y - 3:
-                    stdscr.addstr(scroll_indicator_y, 0, "  v More below v",
-                                 curses.color_pair(COLOR_FOOTER) if curses.has_colors() else curses.A_DIM)
+                    stdscr.addstr(
+                        scroll_indicator_y,
+                        0,
+                        "  v More below v",
+                        (
+                            curses.color_pair(COLOR_FOOTER)
+                            if curses.has_colors()
+                            else curses.A_DIM
+                        ),
+                    )
 
             # Footer - clamp to screen bounds
             footer_y = max_y - 2
             if footer_y > start_y and footer_y < max_y:
-                stdscr.addstr(footer_y, 0, separator, curses.color_pair(COLOR_TITLE) if curses.has_colors() else curses.A_DIM)
+                stdscr.addstr(
+                    footer_y,
+                    0,
+                    separator,
+                    (
+                        curses.color_pair(COLOR_TITLE)
+                        if curses.has_colors()
+                        else curses.A_DIM
+                    ),
+                )
 
             stdscr.refresh()
 
@@ -155,14 +255,16 @@ class CursesMenu:
             elif key == curses.KEY_PPAGE:  # Page Up
                 self.current_index = max(0, self.current_index - items_per_page)
             elif key == curses.KEY_NPAGE:  # Page Down
-                self.current_index = min(len(self.items) - 1, self.current_index + items_per_page)
+                self.current_index = min(
+                    len(self.items) - 1, self.current_index + items_per_page
+                )
             elif key == curses.KEY_HOME:
                 self.current_index = 0
             elif key == curses.KEY_END:
                 self.current_index = max(0, len(self.items) - 1)
             elif key in [10, 13]:  # Enter key
                 return self.items[self.current_index]["value"]
-            elif key in [ord('q'), ord('Q'), 27]:  # Q or ESC
+            elif key in [ord("q"), ord("Q"), 27]:  # Q or ESC
                 return None
 
         return None
@@ -189,14 +291,14 @@ class CursesHierarchicalMenu:
                 self.subfamilies[family_key][subfamily_key] = {
                     "name": subfamily_data["name"],
                     "icon": subfamily_data.get("icon", "\U0001f4c2"),
-                    "description": subfamily_data["description"]
+                    "description": subfamily_data["description"],
                 }
                 self.models[subfamily_key] = {}
                 for model_key, model_data in subfamily_data["models"].items():
                     self.models[subfamily_key][model_key] = {
                         "name": model_data.get("name", model_key),
                         "desc": model_data.get("desc", model_key),
-                        "icon": model_data.get("icon", "\U0001f9e0")
+                        "icon": model_data.get("icon", "\U0001f9e0"),
                     }
 
     def run(self, stdscr) -> Optional[str]:
@@ -261,10 +363,27 @@ class CursesHierarchicalMenu:
             stdscr.clear()
             max_y, max_x = stdscr.getmaxyx()
 
-            stdscr.addstr(0, 0, "Custom Model Input", curses.A_BOLD | curses.color_pair(COLOR_TITLE))
-            stdscr.addstr(1, 0, "=" * min(50, max_x - 1), curses.color_pair(COLOR_TITLE))
-            stdscr.addstr(2, 0, "Enter the exact Ollama model name:", curses.color_pair(COLOR_NORMAL))
-            stdscr.addstr(3, 0, "Type - Enter to confirm - Esc to cancel", curses.color_pair(COLOR_FOOTER))
+            stdscr.addstr(
+                0,
+                0,
+                "Custom Model Input",
+                curses.A_BOLD | curses.color_pair(COLOR_TITLE),
+            )
+            stdscr.addstr(
+                1, 0, "=" * min(50, max_x - 1), curses.color_pair(COLOR_TITLE)
+            )
+            stdscr.addstr(
+                2,
+                0,
+                "Enter the exact Ollama model name:",
+                curses.color_pair(COLOR_NORMAL),
+            )
+            stdscr.addstr(
+                3,
+                0,
+                "Type - Enter to confirm - Esc to cancel",
+                curses.color_pair(COLOR_FOOTER),
+            )
 
             if error_message:
                 stdscr.addstr(5, 0, error_message, curses.color_pair(COLOR_HIGHLIGHT))
@@ -272,7 +391,9 @@ class CursesHierarchicalMenu:
             else:
                 y_pos = 5
 
-            stdscr.addstr(y_pos, 0, "Model name: %s" % input_text, curses.color_pair(COLOR_NORMAL))
+            stdscr.addstr(
+                y_pos, 0, "Model name: %s" % input_text, curses.color_pair(COLOR_NORMAL)
+            )
 
             if input_text:
                 cursor_x = len("Model name: ") + len(input_text)
@@ -323,9 +444,9 @@ class CursesHierarchicalMenu:
             result = []
             for i in range(len(items)):
                 key, data = items[i]
-                icon = data.get('icon', '\U0001f4cb')
-                name = data.get('name', key)
-                desc = data.get('description', '')
+                icon = data.get("icon", "\U0001f4cb")
+                name = data.get("name", key)
+                desc = data.get("description", "")
                 if ft in name.lower() or ft in key.lower() or ft in desc.lower():
                     result.append(i)
             return result
@@ -356,14 +477,25 @@ class CursesHierarchicalMenu:
                 scroll = 0
 
             stdscr.addstr(0, 0, title, curses.A_BOLD | curses.color_pair(COLOR_TITLE))
-            stdscr.addstr(1, 0, "=" * min(50, max_x - 1), curses.color_pair(COLOR_TITLE))
+            stdscr.addstr(
+                1, 0, "=" * min(50, max_x - 1), curses.color_pair(COLOR_TITLE)
+            )
 
             # Filter status line
             if filter_text:
                 total = len(items)
                 showing = len(filtered_indices)
-                filter_display = "  Filter: '%s_'  %d/%d" % (filter_text, showing, total)
-                stdscr.addstr(3, 0, filter_display[:max_x - 1], curses.color_pair(COLOR_FILTER) | curses.A_BOLD)
+                filter_display = "  Filter: '%s_'  %d/%d" % (
+                    filter_text,
+                    showing,
+                    total,
+                )
+                stdscr.addstr(
+                    3,
+                    0,
+                    filter_display[: max_x - 1],
+                    curses.color_pair(COLOR_FILTER) | curses.A_BOLD,
+                )
             else:
                 stdscr.addstr(3, 0, "  Type to search", curses.color_pair(COLOR_FOOTER))
 
@@ -374,7 +506,9 @@ class CursesHierarchicalMenu:
             visible_end = min(scroll + items_per_page, len(filtered_indices))
 
             if scroll > 0:
-                stdscr.addstr(start_y - 1, 0, "  ^ More above ^", curses.color_pair(COLOR_FOOTER))
+                stdscr.addstr(
+                    start_y - 1, 0, "  ^ More above ^", curses.color_pair(COLOR_FOOTER)
+                )
 
             for display_idx in range(visible_end - visible_start):
                 list_idx = visible_start + display_idx
@@ -386,21 +520,34 @@ class CursesHierarchicalMenu:
                     break
 
                 key, data = items[idx]
-                icon = data.get('icon', '\U0001f4cb')
-                name = data.get('name', key)
-                desc = data.get('description', '')
+                icon = data.get("icon", "\U0001f4cb")
+                name = data.get("name", key)
+                desc = data.get("description", "")
 
                 if list_idx == current:
-                    stdscr.addstr(y, 0, "  > %s %s" % (icon, name), curses.color_pair(COLOR_HIGHLIGHT) | curses.A_BOLD)
-                    stdscr.addstr(y + 1, 0, "     %s" % desc, curses.color_pair(COLOR_HIGHLIGHT))
+                    stdscr.addstr(
+                        y,
+                        0,
+                        "  > %s %s" % (icon, name),
+                        curses.color_pair(COLOR_HIGHLIGHT) | curses.A_BOLD,
+                    )
+                    stdscr.addstr(
+                        y + 1, 0, "     %s" % desc, curses.color_pair(COLOR_HIGHLIGHT)
+                    )
                 else:
-                    stdscr.addstr(y, 0, "  %s %s" % (icon, name), curses.color_pair(COLOR_NORMAL))
-                    stdscr.addstr(y + 1, 0, "     %s" % desc, curses.color_pair(COLOR_NORMAL))
+                    stdscr.addstr(
+                        y, 0, "  %s %s" % (icon, name), curses.color_pair(COLOR_NORMAL)
+                    )
+                    stdscr.addstr(
+                        y + 1, 0, "     %s" % desc, curses.color_pair(COLOR_NORMAL)
+                    )
 
             if visible_end < len(filtered_indices):
                 scroll_y = start_y + ((visible_end - visible_start) * 3)
                 if scroll_y < max_y - 3:
-                    stdscr.addstr(scroll_y, 0, "  v More below v", curses.color_pair(COLOR_FOOTER))
+                    stdscr.addstr(
+                        scroll_y, 0, "  v More below v", curses.color_pair(COLOR_FOOTER)
+                    )
 
             stdscr.refresh()
             key = stdscr.getch()
@@ -426,7 +573,7 @@ class CursesHierarchicalMenu:
                 if filtered_indices:
                     return ("select", items[filtered_indices[current]][0])
                 return ("back", None)
-            elif key in [ord('q'), ord('Q'), 27]:
+            elif key in [ord("q"), ord("Q"), 27]:
                 return ("quit", None)
             elif key == curses.KEY_BACKSPACE or key == 127 or key == 8:
                 if filter_text:
@@ -442,9 +589,12 @@ class CursesHierarchicalMenu:
     def _show_family_selection(self, stdscr) -> Optional[str]:
         """Show family selection screen with scrolling"""
         family_items = list(self.model_families.items())
-        result, value = self._show_list(stdscr, family_items,
+        result, value = self._show_list(
+            stdscr,
+            family_items,
             "Select Model Family",
-            "Use arrows - Enter to select - Q to quit")
+            "Use arrows - Enter to select - Q to quit",
+        )
         if result == "quit":
             return None
         return value
@@ -454,27 +604,43 @@ class CursesHierarchicalMenu:
         if family_key not in self.subfamilies:
             return None
         subfamily_items = list(self.subfamilies[family_key].items())
-        family_name = self.model_families[family_key]['name']
-        result, value = self._show_list(stdscr, subfamily_items,
+        family_name = self.model_families[family_key]["name"]
+        result, value = self._show_list(
+            stdscr,
+            subfamily_items,
             "%s Subfamilies" % family_name,
-            "Use arrows - <- to go back - Enter to select")
+            "Use arrows - <- to go back - Enter to select",
+        )
         if result == "back":
             return "back"
         if result == "quit":
             return None
         return value
 
-    def _show_model_selection(self, stdscr, family_key: str, subfamily_key: str) -> Optional[str]:
+    def _show_model_selection(
+        self, stdscr, family_key: str, subfamily_key: str
+    ) -> Optional[str]:
         """Show model selection screen with scrolling"""
         if subfamily_key not in self.models:
             return None
         model_items = list(self.models[subfamily_key].items())
-        subfamily_name = self.subfamilies[family_key][subfamily_key]['name']
+        subfamily_name = self.subfamilies[family_key][subfamily_key]["name"]
         result, value = self._show_list(
             stdscr,
-            [(k, {"name": v.get("name", k), "description": v.get("desc", ""), "icon": v.get("icon", "\U0001f9e0")}) for k, v in model_items],
+            [
+                (
+                    k,
+                    {
+                        "name": v.get("name", k),
+                        "description": v.get("desc", ""),
+                        "icon": v.get("icon", "\U0001f9e0"),
+                    },
+                )
+                for k, v in model_items
+            ],
             "%s Models" % subfamily_name,
-            "Use arrows - <- to go back - Enter to select")
+            "Use arrows - <- to go back - Enter to select",
+        )
         if result == "back":
             return "back"
         if result == "quit":

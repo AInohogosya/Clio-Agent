@@ -34,6 +34,7 @@ logger = get_logger("tools.sub_agent")
 @dataclass
 class SubAgentInput(ToolInput):
     """Input for the SubAgentTool."""
+
     action: str = "spawn"  # spawn, list, status, kill, list_types
     agent_type: str = ""
     task: str = ""
@@ -104,7 +105,7 @@ class SubAgentTool(ToolExecutor):
                     error=ToolError(
                         code=ToolErrorCode.EXECUTION_ERROR,
                         message=f"Unknown sub-agent action: {action}. "
-                                f"Valid: spawn, list, status, kill, list_types",
+                        f"Valid: spawn, list, status, kill, list_types",
                     ),
                     tool_name=self.name,
                 )
@@ -143,7 +144,7 @@ class SubAgentTool(ToolExecutor):
                 error=ToolError(
                     code=ToolErrorCode.EXECUTION_ERROR,
                     message=f"Unknown agent type: {input.agent_type}. "
-                            f"Available: {available}",
+                    f"Available: {available}",
                 ),
                 tool_name=self.name,
             )
@@ -174,7 +175,11 @@ class SubAgentTool(ToolExecutor):
             )
 
         result = results[0]
-        output = json.dumps(result.to_dict(), indent=2) if not result.success else result.output
+        output = (
+            json.dumps(result.to_dict(), indent=2)
+            if not result.success
+            else result.output
+        )
 
         return ToolResult.ok(
             output=output,
@@ -239,10 +244,12 @@ class SubAgentTool(ToolExecutor):
         manager = self._get_manager()
         killed = manager.kill(input.agent_id)
         return ToolResult.ok(
-            output=json.dumps({
-                "agent_id": input.agent_id,
-                "killed": killed,
-            }),
+            output=json.dumps(
+                {
+                    "agent_id": input.agent_id,
+                    "killed": killed,
+                }
+            ),
             tool_name=self.name,
         )
 
@@ -256,9 +263,12 @@ class SubAgentTool(ToolExecutor):
             if meta:
                 metadata[t] = meta
         return ToolResult.ok(
-            output=json.dumps({
-                "types": types,
-                "metadata": metadata,
-            }, indent=2),
+            output=json.dumps(
+                {
+                    "types": types,
+                    "metadata": metadata,
+                },
+                indent=2,
+            ),
             tool_name=self.name,
         )

@@ -18,6 +18,7 @@ from .exceptions import ConfigurationError, ValidationError
 # Cross-platform config path resolution
 # ---------------------------------------------------------------------------
 
+
 def _resolve_config_path(config_path: Optional[Union[str, Path]] = None) -> Path:
     """Resolve config.yaml path to a single canonical location. All modules
     must use this to ensure they read/write the same file.
@@ -31,7 +32,7 @@ def _resolve_config_path(config_path: Optional[Union[str, Path]] = None) -> Path
     env_path = os.environ.get("CLIO_CONFIG")
     if env_path:
         return Path(env_path).resolve()
-    return (Path(__file__).resolve().parents[3] / "config.yaml")
+    return Path(__file__).resolve().parents[3] / "config.yaml"
 
 
 # ---------------------------------------------------------------------------
@@ -42,17 +43,22 @@ _config_file_lock = threading.Lock()
 
 
 def _atomic_write_yaml(path: Path, data: Dict[str, Any]) -> None:
-    """Write YAML atomically via temp file + rename, with threading lock.
-    """
+    """Write YAML atomically via temp file + rename, with threading lock."""
     _config_file_lock.acquire()
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp_path = tempfile.mkstemp(
-            suffix=".yaml", prefix=".config_", dir=str(path.parent))
+            suffix=".yaml", prefix=".config_", dir=str(path.parent)
+        )
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as tmp_f:
-                yaml.dump(data, tmp_f, default_flow_style=False,
-                          sort_keys=False, allow_unicode=True)
+                yaml.dump(
+                    data,
+                    tmp_f,
+                    default_flow_style=False,
+                    sort_keys=False,
+                    allow_unicode=True,
+                )
             shutil.move(tmp_path, path)
         except BaseException:
             try:
@@ -64,11 +70,11 @@ def _atomic_write_yaml(path: Path, data: Dict[str, Any]) -> None:
         _config_file_lock.release()
 
 
-
 def _get_ollama_model_from_settings() -> str:
     """Get the Ollama model from settings manager, with fallback to default"""
     try:
         from .settings_manager import get_settings_manager
+
         settings = get_settings_manager()
         model = settings.get_ollama_model()
         return model if model else "qwen3.5:2b"
@@ -79,6 +85,7 @@ def _get_ollama_model_from_settings() -> str:
 @dataclass
 class LoggingConfig:
     """Logging configuration"""
+
     level: str = "INFO"
     file: Optional[str] = None
     json_format: bool = False
@@ -90,19 +97,20 @@ class LoggingConfig:
 @dataclass
 class APIConfig:
     """API configuration"""
+
     # Local Ollama configuration
     local_endpoint: str = "http://localhost:11434"
     local_model: str = "llama3.2:latest"
-    
+
     # OpenRouter configuration
     openrouter_api_key: str = ""
-    
+
     # API keys for multiple providers
     api_keys: Dict[str, str] = field(default_factory=dict)
-    
+
     # Model configurations for multiple providers
     models: Dict[str, str] = field(default_factory=dict)
-    
+
     # General settings
     timeout: int = 30
     max_retries: int = 3
@@ -113,25 +121,27 @@ class APIConfig:
 @dataclass
 class SecurityConfig:
     """Security configuration"""
-    allowed_commands: list = field(default_factory=lambda: [
-        "cli_command", "end", "regenerate_step"
-    ])
+
+    allowed_commands: list = field(
+        default_factory=lambda: ["cli_command", "end", "regenerate_step"]
+    )
     sanitize_text_input: bool = True
     validate_file_paths: bool = True
     max_text_length: int = 1000
     command_timeout: int = 600
-    
+
     # Command blocking settings (default: disabled for user freedom)
-    enable_command_blocking: bool = False      # Block dangerous commands like 'rm -rf /'
+    enable_command_blocking: bool = False  # Block dangerous commands like 'rm -rf /'
     enable_confirmation_prompts: bool = False  # Require confirmation for risky commands
-    enable_sudo_warning: bool = False          # Show warning for sudo commands
-    enable_shell_pipe_warning: bool = False    # Show warning for 'curl ... | bash'
-    enable_sandbox: bool = True                # Use sandbox tools (firejail, etc.) when available
+    enable_sudo_warning: bool = False  # Show warning for sudo commands
+    enable_shell_pipe_warning: bool = False  # Show warning for 'curl ... | bash'
+    enable_sandbox: bool = True  # Use sandbox tools (firejail, etc.) when available
 
 
 @dataclass
 class PerformanceConfig:
     """Performance configuration"""
+
     max_concurrent_tasks: int = 1
     task_timeout: int = 7200
     command_timeout: int = 600
@@ -142,6 +152,7 @@ class PerformanceConfig:
 @dataclass
 class EngineConfig:
     """Five-phase engine configuration"""
+
     click_delay: float = 0.1
     typing_delay: float = 0.05
     scroll_duration: float = 0.5
@@ -158,6 +169,7 @@ class EngineConfig:
 @dataclass
 class TelegramConfig:
     """Telegram bot configuration"""
+
     enabled: bool = False
     bot_token: str = ""
     bot_username: str = ""
@@ -177,6 +189,7 @@ class TelegramConfig:
 @dataclass
 class ExecutionConfig:
     """Execution mode configuration"""
+
     mode: str = "auto"  # "auto", "normal", or "telegram"
     safety_mode: bool = True
     dry_run: bool = False
@@ -192,6 +205,7 @@ class ExecutionConfig:
 @dataclass
 class CacheConfig:
     """Cache configuration"""
+
     enabled: bool = False
     max_size: int = 1000
     ttl: int = 3600
@@ -201,6 +215,7 @@ class CacheConfig:
 @dataclass
 class CostConfig:
     """Cost management configuration"""
+
     daily_budget: Optional[float] = None
     monthly_budget: Optional[float] = None
     per_request_budget: Optional[float] = None
@@ -211,6 +226,7 @@ class CostConfig:
 @dataclass
 class UserConfig:
     """User preferences configuration"""
+
     name: str = ""
     preferred_style: str = "detailed"
     auto_confirm: bool = False
@@ -226,6 +242,7 @@ class UserConfig:
 @dataclass
 class Config:
     """Main configuration class"""
+
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     api: APIConfig = field(default_factory=APIConfig)
     security: SecurityConfig = field(default_factory=SecurityConfig)
@@ -236,21 +253,21 @@ class Config:
     cache: CacheConfig = field(default_factory=CacheConfig)
     cost: CostConfig = field(default_factory=CostConfig)
     user: UserConfig = field(default_factory=UserConfig)
-    
+
     # Platform-specific settings
     platform: Dict[str, Any] = field(default_factory=dict)
-    
+
     # Custom settings
     custom: Dict[str, Any] = field(default_factory=dict)
-    
+
     # Custom System Prompts (Amore configuration)
     custom_system_prompt: str = ""  # Custom prompt to inject into Phase 1 system prompt
-    
+
     def get(self, key: str, default: Any = None) -> Any:
         """Get configuration value by dot notation key"""
-        keys = key.split('.')
+        keys = key.split(".")
         value = self
-        
+
         try:
             for k in keys:
                 if hasattr(value, k):
@@ -266,12 +283,12 @@ class Config:
 
 class ConfigManager:
     """Configuration manager with validation and environment support"""
-    
+
     def __init__(self, config_path: Optional[Union[str, Path]] = None):
         self.config_path = Path(config_path) if config_path else None
         self._config: Optional[Config] = None
         self._raw_config: Dict[str, Any] = {}
-    
+
     def load_config(self) -> Config:
         """Load configuration from file and environment"""
         if self._config is None:
@@ -279,13 +296,14 @@ class ConfigManager:
             self._config = self._create_config_from_raw()
             self._validate_config()
         return self._config
-    
+
     def _get_default_raw_config(self) -> Dict[str, Any]:
         """Build a complete default config dict from all dataclass field defaults.
 
         This ensures save_config() never writes an incomplete file.
         """
         import dataclasses as _dc
+
         def _dc_defaults(cls):
             result = {}
             for fld in fields(cls):
@@ -294,6 +312,7 @@ class ConfigManager:
                 elif fld.default_factory is not _dc.MISSING:
                     result[fld.name] = fld.default_factory()
             return result
+
         return {
             "logging": _dc_defaults(LoggingConfig),
             "api": _dc_defaults(APIConfig),
@@ -316,16 +335,16 @@ class ConfigManager:
         # Load from file if exists
         if self.config_path and self.config_path.exists():
             try:
-                if self.config_path.suffix.lower() in ['.yaml', '.yml']:
-                    with open(self.config_path, 'r') as f:
+                if self.config_path.suffix.lower() in [".yaml", ".yml"]:
+                    with open(self.config_path, "r") as f:
                         file_config = yaml.safe_load(f)
-                elif self.config_path.suffix.lower() == '.json':
-                    with open(self.config_path, 'r') as f:
+                elif self.config_path.suffix.lower() == ".json":
+                    with open(self.config_path, "r") as f:
                         file_config = json.load(f)
                 else:
                     raise ConfigurationError(
                         f"Unsupported config file format: {self.config_path.suffix}",
-                        config_file=str(self.config_path)
+                        config_file=str(self.config_path),
                     )
 
                 # Handle empty/whitespace-only YAML files (safe_load returns None)
@@ -334,7 +353,7 @@ class ConfigManager:
                 if not isinstance(file_config, dict):
                     raise ConfigurationError(
                         f"Config file must contain a YAML mapping, got {type(file_config).__name__}",
-                        config_file=str(self.config_path)
+                        config_file=str(self.config_path),
                     )
 
                 # Replace None values for section keys with empty dicts so
@@ -351,12 +370,12 @@ class ConfigManager:
             except Exception as e:
                 raise ConfigurationError(
                     f"Failed to load config file: {e}",
-                    config_file=str(self.config_path)
+                    config_file=str(self.config_path),
                 )
 
         # Override with environment variables
         self._load_from_environment()
-    
+
     def _merge_config(self, base: Dict[str, Any], override: Dict[str, Any]):
         """Recursively merge configuration dictionaries"""
         for key, value in override.items():
@@ -364,7 +383,7 @@ class ConfigManager:
                 self._merge_config(base[key], value)
             else:
                 base[key] = value
-    
+
     def _load_from_environment(self):
         """Load configuration from environment variables"""
         env_mappings = {
@@ -380,65 +399,99 @@ class ConfigManager:
             "AI_AGENT_MAX_CONCURRENT_TASKS": ("performance", "max_concurrent_tasks"),
             "AI_AGENT_TASK_TIMEOUT": ("performance", "task_timeout"),
         }
-        
+
         for env_var, (section, key) in env_mappings.items():
             value = os.getenv(env_var)
             if value is not None:
                 # Type conversion
-                if key in ["timeout", "max_retries", "command_timeout", "max_concurrent_tasks", "task_timeout"]:
+                if key in [
+                    "timeout",
+                    "max_retries",
+                    "command_timeout",
+                    "max_concurrent_tasks",
+                    "task_timeout",
+                ]:
                     try:
-                        if '.' in value:
+                        if "." in value:
                             value = float(value)
                         else:
                             value = int(value)
                     except ValueError:
                         continue
                 elif key in ["json_format", "console", "enabled"]:
-                    value = value.lower() in ['true', '1', 'yes', 'on']
-                
+                    value = value.lower() in ["true", "1", "yes", "on"]
+
                 # Set in config
                 if section not in self._raw_config:
                     self._raw_config[section] = {}
                 self._raw_config[section][key] = value
-    
+
     def _create_config_from_raw(self) -> Config:
         """Create Config object from raw configuration"""
         try:
             # Get API config dict
             api_config_dict = self._raw_config.get("api", {})
-            
+
             def _filter_dc_dict(dc_cls, raw):
                 import dataclasses
+
                 valid = {f.name for f in dataclasses.fields(dc_cls)}
                 return {k: v for k, v in raw.items() if k in valid}
 
             return Config(
-                logging=LoggingConfig(**_filter_dc_dict(LoggingConfig, self._raw_config.get("logging", {}))),
+                logging=LoggingConfig(
+                    **_filter_dc_dict(
+                        LoggingConfig, self._raw_config.get("logging", {})
+                    )
+                ),
                 api=APIConfig(**_filter_dc_dict(APIConfig, api_config_dict)),
-                security=SecurityConfig(**_filter_dc_dict(SecurityConfig, self._raw_config.get("security", {}))),
-                performance=PerformanceConfig(**_filter_dc_dict(PerformanceConfig, self._raw_config.get("performance", {}))),
-                engine=EngineConfig(**_filter_dc_dict(EngineConfig, self._raw_config.get("engine", {}))),
-                telegram=TelegramConfig(**_filter_dc_dict(TelegramConfig, self._raw_config.get("telegram", {}))),
-                execution=ExecutionConfig(**_filter_dc_dict(ExecutionConfig, self._raw_config.get("execution", {}))),
-                cache=CacheConfig(**_filter_dc_dict(CacheConfig, self._raw_config.get("cache", {}))),
-                cost=CostConfig(**_filter_dc_dict(CostConfig, self._raw_config.get("cost", {}))),
-                user=UserConfig(**_filter_dc_dict(UserConfig, self._raw_config.get("user", {}))),
+                security=SecurityConfig(
+                    **_filter_dc_dict(
+                        SecurityConfig, self._raw_config.get("security", {})
+                    )
+                ),
+                performance=PerformanceConfig(
+                    **_filter_dc_dict(
+                        PerformanceConfig, self._raw_config.get("performance", {})
+                    )
+                ),
+                engine=EngineConfig(
+                    **_filter_dc_dict(EngineConfig, self._raw_config.get("engine", {}))
+                ),
+                telegram=TelegramConfig(
+                    **_filter_dc_dict(
+                        TelegramConfig, self._raw_config.get("telegram", {})
+                    )
+                ),
+                execution=ExecutionConfig(
+                    **_filter_dc_dict(
+                        ExecutionConfig, self._raw_config.get("execution", {})
+                    )
+                ),
+                cache=CacheConfig(
+                    **_filter_dc_dict(CacheConfig, self._raw_config.get("cache", {}))
+                ),
+                cost=CostConfig(
+                    **_filter_dc_dict(CostConfig, self._raw_config.get("cost", {}))
+                ),
+                user=UserConfig(
+                    **_filter_dc_dict(UserConfig, self._raw_config.get("user", {}))
+                ),
                 platform=self._raw_config.get("platform", {}),
                 custom=self._raw_config.get("custom", {}),
                 custom_system_prompt=self._raw_config.get("custom_system_prompt", ""),
             )
         except Exception as e:
             raise ConfigurationError(
-                f"Failed to create config object: {e}",
-                config_key="config_creation"
+                f"Failed to create config object: {e}", config_key="config_creation"
             )
-    
+
     def _validate_config(self):
         """Validate configuration"""
         # Basic validation - no complex schema validation needed
         if not isinstance(self._raw_config, dict):
             raise ConfigurationError("Configuration must be a dictionary")
-    
+
     def save_config(self, config_path: Optional[Union[str, Path]] = None):
         """Save current configuration state to config.yaml.
 
@@ -450,7 +503,7 @@ class ConfigManager:
         if _path is None:
             raise ConfigurationError(
                 "Cannot save config: no config_path specified and no default set",
-                config_key="save_config"
+                config_key="save_config",
             )
         try:
             _atomic_write_yaml(_path, self._raw_config)
@@ -458,18 +511,17 @@ class ConfigManager:
             raise
         except Exception as e:
             raise ConfigurationError(
-                f"Failed to save config to {_path}: {e}",
-                config_key="save_config"
+                f"Failed to save config to {_path}: {e}", config_key="save_config"
             )
-    
+
     def get(self, key: str, default: Any = None) -> Any:
         """Get configuration value by dot notation key"""
         if not self._config:
             self.load_config()
-        
-        keys = key.split('.')
+
+        keys = key.split(".")
         value = self._config
-        
+
         try:
             for k in keys:
                 if hasattr(value, k):
@@ -481,15 +533,15 @@ class ConfigManager:
             return value
         except (AttributeError, KeyError):
             return default
-    
+
     def set(self, key: str, value: Any):
         """Set configuration value by dot notation key"""
         if not self._config:
             self.load_config()
-        
-        keys = key.split('.')
+
+        keys = key.split(".")
         config_obj = self._config
-        
+
         # Navigate to parent
         for k in keys[:-1]:
             if hasattr(config_obj, k):
@@ -498,7 +550,7 @@ class ConfigManager:
                 if k not in config_obj:
                     config_obj[k] = {}
                 config_obj = config_obj[k]
-        
+
         # Set value
         final_key = keys[-1]
         if hasattr(config_obj, final_key):
@@ -511,7 +563,9 @@ class ConfigManager:
 _config_manager: Optional[ConfigManager] = None
 
 
-def load_config(config_path: Optional[Union[str, Path]] = None, force_reload: bool = False) -> Config:
+def load_config(
+    config_path: Optional[Union[str, Path]] = None, force_reload: bool = False
+) -> Config:
     """Load configuration (singleton pattern)
 
     Args:

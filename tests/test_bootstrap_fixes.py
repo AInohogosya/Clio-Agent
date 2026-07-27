@@ -22,6 +22,7 @@ if _SRC_PATH not in sys.path:
 # Bug #12: Pre-release version comparison tests
 # ===========================================================================
 
+
 class TestVersionTuple:
     """Test the _version_tuple function from run.py with pre-release handling."""
 
@@ -97,6 +98,7 @@ class TestVersionTuple:
 # Bug #30: Virtual environment detection tests
 # ===========================================================================
 
+
 class TestIsInVenv:
     """Test _is_in_venv with various environment types."""
 
@@ -136,17 +138,27 @@ class TestIsInVenv:
             assert self.is_in_venv() is True
 
     def test_no_venv_returns_false(self):
-        env = {k: v for k, v in os.environ.items()
-               if k not in ("VIRTUAL_ENV", "CONDA_PREFIX", "PIPENV_ACTIVE",
-                           "POETRY_ACTIVE", "PYENV_VIRTUAL_ENV")}
+        env = {
+            k: v
+            for k, v in os.environ.items()
+            if k
+            not in (
+                "VIRTUAL_ENV",
+                "CONDA_PREFIX",
+                "PIPENV_ACTIVE",
+                "POETRY_ACTIVE",
+                "PYENV_VIRTUAL_ENV",
+            )
+        }
         with mock.patch.dict(os.environ, env, clear=True):
-            with mock.patch.object(sys, 'base_prefix', sys.prefix):
+            with mock.patch.object(sys, "base_prefix", sys.prefix):
                 assert self.is_in_venv() is False
 
 
 # ===========================================================================
 # Bug #3: Python candidate sorting tests
 # ===========================================================================
+
 
 class TestCollectPythonCandidates:
     """Test that _collect_python_candidates sorts by version number."""
@@ -159,23 +171,32 @@ class TestCollectPythonCandidates:
         if end == -1:
             end = source.find("\n\n", start + 100)
         func_source = source[start:end]
-        ns = {"os": os, "sys": sys, "shutil": __import__("shutil"),
-              "platform": platform}
+        ns = {
+            "os": os,
+            "sys": sys,
+            "shutil": __import__("shutil"),
+            "platform": platform,
+        }
         exec(func_source, ns)
         return ns["_collect_python_candidates"]
 
     def test_version_sort_higher_first(self):
         """python3.14 should come before python3.9 in the candidate list."""
         fn = self._get_collect_fn()
-        with mock.patch("os.path.isfile", return_value=True), \
-             mock.patch("os.path.islink", return_value=False), \
-             mock.patch("glob.glob", return_value=[
-                 "/opt/homebrew/bin/python3.9",
-                 "/opt/homebrew/bin/python3.14",
-                 "/opt/homebrew/bin/python3.12",
-             ]), \
-             mock.patch.object(sys, "executable", "/usr/bin/python3"), \
-             mock.patch("shutil.which", return_value=None):
+        with mock.patch("os.path.isfile", return_value=True), mock.patch(
+            "os.path.islink", return_value=False
+        ), mock.patch(
+            "glob.glob",
+            return_value=[
+                "/opt/homebrew/bin/python3.9",
+                "/opt/homebrew/bin/python3.14",
+                "/opt/homebrew/bin/python3.12",
+            ],
+        ), mock.patch.object(
+            sys, "executable", "/usr/bin/python3"
+        ), mock.patch(
+            "shutil.which", return_value=None
+        ):
             candidates = fn()
             hb = [c for c in candidates if "homebrew" in c]
             assert hb[0] == "/opt/homebrew/bin/python3.14"
@@ -186,6 +207,7 @@ class TestCollectPythonCandidates:
 # ===========================================================================
 # Bug #24: Shell injection prevention in _run_fix_command
 # ===========================================================================
+
 
 class TestRunFixCommand:
     """Test that _run_fix_command uses safe command execution."""
@@ -198,8 +220,7 @@ class TestRunFixCommand:
         if end == -1:
             end = source.find("\n\n", start + 100)
         func_source = source[start:end]
-        ns = {"subprocess": subprocess, "shlex": __import__("shlex"),
-              "print": print}
+        ns = {"subprocess": subprocess, "shlex": __import__("shlex"), "print": print}
         exec(func_source, ns)
         return ns["_run_fix_command"]
 
@@ -231,6 +252,7 @@ class TestRunFixCommand:
 # Bug #4: Dep inspection graceful error handling
 # ===========================================================================
 
+
 class TestInspectVenvDeps:
     """Test that _inspect_venv_deps handles errors gracefully."""
 
@@ -248,8 +270,12 @@ class TestInspectVenvDeps:
             "yaml": ("PyYAML", "6.0.0"),
             "requests": ("requests", "2.31.0"),
         }
-        ns = {"_json_mod": json, "subprocess": subprocess, "print": print,
-              "CORE_DEPENDENCIES": _DEPS}
+        ns = {
+            "_json_mod": json,
+            "subprocess": subprocess,
+            "print": print,
+            "CORE_DEPENDENCIES": _DEPS,
+        }
         exec(func_source, ns)
         return ns["_inspect_venv_deps"]
 
@@ -267,8 +293,10 @@ class TestInspectVenvDeps:
 
     def test_timeout_returns_empty(self):
         fn = self._get_fn()
-        with mock.patch("subprocess.run",
-                        side_effect=subprocess.TimeoutExpired(cmd="test", timeout=120)):
+        with mock.patch(
+            "subprocess.run",
+            side_effect=subprocess.TimeoutExpired(cmd="test", timeout=120),
+        ):
             ok, missing, outdated = fn("/some/python")
             assert ok is False
             assert missing == []
@@ -300,6 +328,7 @@ class TestInspectVenvDeps:
 # ===========================================================================
 # Structural tests: verify fix patterns exist in run.py source
 # ===========================================================================
+
 
 class TestStructuralFixes:
     """Verify that fix patterns are present in run.py source code."""
@@ -339,8 +368,8 @@ class TestStructuralFixes:
 
     # Bug #17: --health-check wraps in try/except
     def test_health_check_wraps_bootstrap(self):
-        hc = self.source[self.source.find('if "--health-check" in sys.argv:'):]
-        hc = hc[:hc.find("\n\n")]
+        hc = self.source[self.source.find('if "--health-check" in sys.argv:') :]
+        hc = hc[: hc.find("\n\n")]
         assert "try:" in hc
         assert "except SystemExit:" in hc
 
@@ -382,4 +411,4 @@ class TestStructuralFixes:
     def test_no_system_pyyaml_in_autoconfig(self):
         func = self._get_func("_auto_configure")
         # Should not have pip install --quiet PyYAML for system
-        assert 'pip.*install.*--quiet.*PyYAML' not in func
+        assert "pip.*install.*--quiet.*PyYAML" not in func

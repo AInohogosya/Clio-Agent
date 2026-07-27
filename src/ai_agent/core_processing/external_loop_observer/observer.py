@@ -24,13 +24,16 @@ from typing import Any, Dict, List, Optional, Tuple
 from .action_normalizer import ActionNormalizer, NormalizedIteration
 from .pattern_analyzer import PatternAnalyzer, PatternMatch
 from .intervention import (
-    Intervention, InterventionLevel, decide_intervention,
+    Intervention,
+    InterventionLevel,
+    decide_intervention,
 )
 
 
 @dataclass
 class ObserverConfig:
     """Configuration for the ExternalObserver."""
+
     control_file: str = ".context/observer_control.json"
     state_file: str = ".context/observer_state.json"
     log_file: str = "logs/observer.log"
@@ -45,6 +48,7 @@ class ObserverConfig:
 @dataclass
 class ObserverVerdict:
     """The observer's assessment after analyzing an iteration."""
+
     iteration_number: int
     has_loop: bool
     intervention_level: int
@@ -92,8 +96,10 @@ class ExternalObserver:
             force_sleep=False,
         )
 
-        if (iter_num >= self._config.min_iterations_before_analysis
-                and iter_num % self._config.analysis_interval == 0):
+        if (
+            iter_num >= self._config.min_iterations_before_analysis
+            and iter_num % self._config.analysis_interval == 0
+        ):
             patterns = self._analyzer.analyze()
             if patterns:
                 verdict = self._evaluate(patterns, iter_num)
@@ -107,9 +113,11 @@ class ExternalObserver:
         intervention = decide_intervention(patterns)
         self._intervention_cooldown += 1
 
-        if (intervention.level <= self._last_intervention_level
-                and self._intervention_cooldown < 3
-                and intervention.level < InterventionLevel.INTERRUPT):
+        if (
+            intervention.level <= self._last_intervention_level
+            and self._intervention_cooldown < 3
+            and intervention.level < InterventionLevel.INTERRUPT
+        ):
             return ObserverVerdict(
                 iteration_number=iteration_number,
                 has_loop=True,

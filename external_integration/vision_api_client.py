@@ -22,6 +22,7 @@ from .ollama_provider import SimpleOllamaProvider
 
 class APIProvider(Enum):
     """Supported API providers"""
+
     OLLAMA = "ollama"
     GOOGLE = "google"
 
@@ -29,6 +30,7 @@ class APIProvider(Enum):
 @dataclass
 class APIResponse:
     """API response structure"""
+
     success: bool
     content: str
     model: str
@@ -42,6 +44,7 @@ class APIResponse:
 @dataclass
 class APIRequest:
     """API request structure"""
+
     prompt: str
     image_data: Optional[bytes] = None
     image_format: str = "PNG"
@@ -68,6 +71,7 @@ class VisionAPIClient:
         self.google_provider = None
         if self.config.get("google_api_key"):
             from .google_provider import GoogleProvider
+
             self.google_provider = GoogleProvider(self.config)
 
         self.logger.info(
@@ -102,7 +106,7 @@ class VisionAPIClient:
             model=model,
             temperature=request.temperature,
             max_tokens=request.max_tokens,
-            system_instructions=request.system_instruction
+            system_instructions=request.system_instruction,
         )
 
         if result.success:
@@ -116,31 +120,52 @@ class VisionAPIClient:
             )
         else:
             self.logger.error("Ollama analysis failed", error=result.error)
-            
+
             # Enhanced error handling for authentication issues
             if "Authentication required" in result.error:
                 try:
                     from ..utils.ollama_error_handler import handle_ollama_error
+
                     context = {
-                        'model_name': result.model,
-                        'operation': 'vision_analysis'
+                        "model_name": result.model,
+                        "operation": "vision_analysis",
                     }
                     handle_ollama_error(result.error, context, display_to_user=True)
-                    
+
                     # Prompt user to sign in (only in terminal - NEVER in Telegram mode)
                     import sys
                     import os
+
                     # Check if running in Telegram mode via environment variable
-                    is_telegram_mode = os.getenv('CLIO_TELEGRAM_MODE', '').lower() in ('true', '1', 'yes')
-                    if sys.stdin.isatty() and not is_telegram_mode:  # Only prompt if in terminal AND not in Telegram mode
+                    is_telegram_mode = os.getenv("CLIO_TELEGRAM_MODE", "").lower() in (
+                        "true",
+                        "1",
+                        "yes",
+                    )
+                    if (
+                        sys.stdin.isatty() and not is_telegram_mode
+                    ):  # Only prompt if in terminal AND not in Telegram mode
                         try:
-                            choice = input("\nWould you like to sign in to Ollama now? (y/n): ").lower().strip()
-                            if choice in ['y', 'yes']:
+                            choice = (
+                                input(
+                                    "\nWould you like to sign in to Ollama now? (y/n): "
+                                )
+                                .lower()
+                                .strip()
+                            )
+                            if choice in ["y", "yes"]:
                                 import subprocess
+
                                 print("\n🔐 Opening Ollama sign-in...")
-                                signin_result = subprocess.run(["ollama", "signin"], capture_output=False, text=True)
+                                signin_result = subprocess.run(
+                                    ["ollama", "signin"],
+                                    capture_output=False,
+                                    text=True,
+                                )
                                 if signin_result.returncode == 0:
-                                    print("✓ Sign-in initiated. Please complete it in your browser.")
+                                    print(
+                                        "✓ Sign-in initiated. Please complete it in your browser."
+                                    )
                                     print("Then try running your command again.")
                                 else:
                                     print("✗ Failed to initiate sign-in.")
@@ -148,7 +173,9 @@ class VisionAPIClient:
                             print("\nOperation cancelled.")
                     elif is_telegram_mode:
                         # In Telegram mode, log the issue but don't block execution
-                        self.logger.info("Ollama authentication required but running in Telegram mode - skipping interactive sign-in prompt")
+                        self.logger.info(
+                            "Ollama authentication required but running in Telegram mode - skipping interactive sign-in prompt"
+                        )
                 except ImportError:
                     pass  # Fallback to just logging the error
             return APIResponse(
@@ -191,19 +218,27 @@ class VisionAPIClient:
 
         if request.image_data:
             if len(request.image_data) > 20 * 1024 * 1024:  # 20MB limit
-                raise ValidationError("Image too large", "image_data", len(request.image_data))
+                raise ValidationError(
+                    "Image too large", "image_data", len(request.image_data)
+                )
 
             # Validate image format
             try:
                 Image.open(io.BytesIO(request.image_data))
             except Exception as e:
-                raise ValidationError(f"Invalid image format: {e}", "image_data", "format_error")
+                raise ValidationError(
+                    f"Invalid image format: {e}", "image_data", "format_error"
+                )
 
         if request.max_tokens < 1 or request.max_tokens > 7000:
-            raise ValidationError("Invalid max_tokens", "max_tokens", request.max_tokens)
+            raise ValidationError(
+                "Invalid max_tokens", "max_tokens", request.max_tokens
+            )
 
         if not (0.0 <= request.temperature <= 2.0):
-            raise ValidationError("Invalid temperature", "temperature", request.temperature)
+            raise ValidationError(
+                "Invalid temperature", "temperature", request.temperature
+            )
 
     def get_available_providers(self) -> List[str]:
         """Get list of available providers"""

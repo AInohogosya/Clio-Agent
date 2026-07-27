@@ -111,9 +111,7 @@ class GrepTool(ToolExecutor):
                         break
 
         if not matches:
-            ext_info = (
-                f" (extensions: {', '.join(extensions)})" if extensions else ""
-            )
+            ext_info = f" (extensions: {', '.join(extensions)})" if extensions else ""
             output = f"No matches for '{input.pattern}' in {base}{ext_info}"
         else:
             # Group matches by file
@@ -160,4 +158,3 @@ class GrepTool(ToolExecutor):
                 "truncated": len(matches) >= max_matches,
             },
         )
-

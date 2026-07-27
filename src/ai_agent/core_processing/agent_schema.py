@@ -17,6 +17,7 @@ from enum import Enum
 
 class ActionType(str, Enum):
     """All possible action types the agent can emit."""
+
     READ = "read"
     WRITE = "write"
     EDIT = "edit"
@@ -35,6 +36,7 @@ class ActionType(str, Enum):
 @dataclass
 class AgentAction:
     """A single action emitted by the agent."""
+
     type: str  # ActionType value
     args: dict = field(default_factory=dict)
     # For PARALLEL type, args contains {"actions": [AgentAction, ...]}
@@ -43,15 +45,22 @@ class AgentAction:
 @dataclass
 class AgentPlan:
     """The complete output from the planner — a structured plan."""
+
     thinking: Optional[str] = None  # Optional internal reasoning
     actions: List[AgentAction] = field(default_factory=list)
 
     def has_real_work(self) -> bool:
         """Check if this plan contains any meaningful actions."""
         real_types = {
-            ActionType.READ, ActionType.WRITE, ActionType.EDIT,
-            ActionType.GLOB, ActionType.GREP, ActionType.BASH,
-            ActionType.COMMAND, ActionType.TELEGRAM, ActionType.DISCORD,
+            ActionType.READ,
+            ActionType.WRITE,
+            ActionType.EDIT,
+            ActionType.GLOB,
+            ActionType.GREP,
+            ActionType.BASH,
+            ActionType.COMMAND,
+            ActionType.TELEGRAM,
+            ActionType.DISCORD,
         }
         return any(a.type in real_types for a in self.actions)
 
@@ -66,6 +75,7 @@ class AgentPlan:
             else:
                 # Hash the args for dedup
                 import hashlib, json
+
                 arg_hash = hashlib.md5(
                     json.dumps(a.args, sort_keys=True).encode()
                 ).hexdigest()[:8]
@@ -81,7 +91,7 @@ AGENT_PLAN_SCHEMA = {
     "properties": {
         "thinking": {
             "type": "string",
-            "description": "Brief internal reasoning (1-2 sentences max). Optional."
+            "description": "Brief internal reasoning (1-2 sentences max). Optional.",
         },
         "actions": {
             "type": "array",
@@ -93,23 +103,33 @@ AGENT_PLAN_SCHEMA = {
                     "type": {
                         "type": "string",
                         "enum": [
-                            "read", "write", "edit", "glob", "grep",
-                            "bash", "command", "thinking", "telegram",
-                            "discord", "sleep", "exit", "parallel"
-                        ]
+                            "read",
+                            "write",
+                            "edit",
+                            "glob",
+                            "grep",
+                            "bash",
+                            "command",
+                            "thinking",
+                            "telegram",
+                            "discord",
+                            "sleep",
+                            "exit",
+                            "parallel",
+                        ],
                     },
                     "args": {
                         "type": "object",
-                        "description": "Action-specific arguments"
-                    }
+                        "description": "Action-specific arguments",
+                    },
                 },
                 "required": ["type"],
-                "additionalProperties": False
-            }
-        }
+                "additionalProperties": False,
+            },
+        },
     },
     "required": ["actions"],
-    "additionalProperties": False
+    "additionalProperties": False,
 }
 
 
@@ -119,6 +139,7 @@ def parse_plan_from_json(raw: str) -> AgentPlan:
     This replaces the entire regex-based _parse_model_commands().
     """
     import json
+
     # Strip markdown code blocks if present
     text = raw.strip()
     if text.startswith("```"):
@@ -140,9 +161,6 @@ def parse_plan_from_json(raw: str) -> AgentPlan:
     plan = AgentPlan()
     plan.thinking = data.get("thinking")
     for action_data in data.get("actions", []):
-        action = AgentAction(
-            type=action_data["type"],
-            args=action_data.get("args", {})
-        )
+        action = AgentAction(type=action_data["type"], args=action_data.get("args", {}))
         plan.actions.append(action)
     return plan

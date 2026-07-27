@@ -14,6 +14,7 @@ from typing import List, Tuple, Optional
 try:
     import tty
     import termios
+
     _HAS_TTY = True
 except ImportError:
     _HAS_TTY = False
@@ -30,39 +31,43 @@ from .rich_console import Theme, get_console, status_panel, step
 
 class Colors:
     """ANSI color codes for terminal output (kept for backward compat)"""
-    RESET = '\033[0m'
-    BOLD = '\033[1m'
-    BLACK = '\033[30m'
-    RED = '\033[31m'
-    GREEN = '\033[32m'
-    YELLOW = '\033[33m'
-    BLUE = '\033[34m'
-    MAGENTA = '\033[35m'
-    CYAN = '\033[36m'
-    WHITE = '\033[37m'
-    BRIGHT_BLACK = '\033[90m'
-    BRIGHT_RED = '\033[91m'
-    BRIGHT_GREEN = '\033[92m'
-    BRIGHT_YELLOW = '\033[93m'
-    BRIGHT_BLUE = '\033[94m'
-    BRIGHT_MAGENTA = '\033[95m'
-    BRIGHT_CYAN = '\033[96m'
-    BRIGHT_WHITE = '\033[97m'
-    BG_BLACK = '\033[40m'
-    BG_RED = '\033[41m'
-    BG_GREEN = '\033[42m'
-    BG_YELLOW = '\033[43m'
-    BG_BLUE = '\033[44m'
-    BG_MAGENTA = '\033[45m'
-    BG_CYAN = '\033[46m'
-    BG_WHITE = '\033[47m'
-    BG_BRIGHT_BLACK = '\033[100m'
-    BG_BRIGHT_BLUE = '\033[104m'
+
+    RESET = "\033[0m"
+    BOLD = "\033[1m"
+    BLACK = "\033[30m"
+    RED = "\033[31m"
+    GREEN = "\033[32m"
+    YELLOW = "\033[33m"
+    BLUE = "\033[34m"
+    MAGENTA = "\033[35m"
+    CYAN = "\033[36m"
+    WHITE = "\033[37m"
+    BRIGHT_BLACK = "\033[90m"
+    BRIGHT_RED = "\033[91m"
+    BRIGHT_GREEN = "\033[92m"
+    BRIGHT_YELLOW = "\033[93m"
+    BRIGHT_BLUE = "\033[94m"
+    BRIGHT_MAGENTA = "\033[95m"
+    BRIGHT_CYAN = "\033[96m"
+    BRIGHT_WHITE = "\033[97m"
+    BG_BLACK = "\033[40m"
+    BG_RED = "\033[41m"
+    BG_GREEN = "\033[42m"
+    BG_YELLOW = "\033[43m"
+    BG_BLUE = "\033[44m"
+    BG_MAGENTA = "\033[45m"
+    BG_CYAN = "\033[46m"
+    BG_WHITE = "\033[47m"
+    BG_BRIGHT_BLACK = "\033[100m"
+    BG_BRIGHT_BLUE = "\033[104m"
 
 
 class MenuItem:
     """Represents a single menu item"""
-    def __init__(self, title: str, description: str = "", value: str = None, icon: str = ""):
+
+    def __init__(
+        self, title: str, description: str = "", value: str = None, icon: str = ""
+    ):
         self.title = title
         self.description = description
         self.value = value if value is not None else title
@@ -83,7 +88,9 @@ class InteractiveMenu:
         self.live = None
         self._should_exit = False
 
-    def add_item(self, title: str, description: str = "", value: str = None, icon: str = ""):
+    def add_item(
+        self, title: str, description: str = "", value: str = None, icon: str = ""
+    ):
         """Add a menu item"""
         self.items.append(MenuItem(title, description, value, icon))
 
@@ -105,31 +112,32 @@ class InteractiveMenu:
             return self._get_key_simple()
 
         import select
+
         fd = sys.stdin.fileno()
         old_settings = termios.tcgetattr(fd)
         try:
             tty.setraw(sys.stdin.fileno())
             ch = sys.stdin.read(1)
 
-            if ch == '\x1b':  # ESC
+            if ch == "\x1b":  # ESC
                 if select.select([sys.stdin], [], [], 0.05)[0]:
                     ch += sys.stdin.read(2)
-                    if ch == '\x1b[A':
-                        return 'UP'
-                    elif ch == '\x1b[B':
-                        return 'DOWN'
-                    elif ch == '\x1b[C':
-                        return 'RIGHT'
-                    elif ch == '\x1b[D':
-                        return 'LEFT'
+                    if ch == "\x1b[A":
+                        return "UP"
+                    elif ch == "\x1b[B":
+                        return "DOWN"
+                    elif ch == "\x1b[C":
+                        return "RIGHT"
+                    elif ch == "\x1b[D":
+                        return "LEFT"
                     else:
                         return ch
                 else:
-                    return 'ESC'
-            elif ch in ['\r', '\n']:
-                return '\r'
-            elif ch.lower() in ['q', 'Q']:
-                return 'q'
+                    return "ESC"
+            elif ch in ["\r", "\n"]:
+                return "\r"
+            elif ch.lower() in ["q", "Q"]:
+                return "q"
             elif ch.isdigit():
                 return ch
             else:
@@ -142,14 +150,14 @@ class InteractiveMenu:
         try:
             line = input().strip()
             if not line:
-                return '\r'
-            if line.lower() == 'q':
-                return 'q'
+                return "\r"
+            if line.lower() == "q":
+                return "q"
             if line.isdigit():
                 return line
-            return 'UNKNOWN'
+            return "UNKNOWN"
         except (EOFError, KeyboardInterrupt):
-            return 'q'
+            return "q"
 
     def _render_menu(self):
         """Render the menu using Rich components"""
@@ -248,11 +256,15 @@ class InteractiveMenu:
             try:
                 key = self._get_key()
 
-                if key == 'UP':
-                    self.current_selection = (self.current_selection - 1) % len(self.items)
-                elif key == 'DOWN':
-                    self.current_selection = (self.current_selection + 1) % len(self.items)
-                elif key in ['\r', '\n']:
+                if key == "UP":
+                    self.current_selection = (self.current_selection - 1) % len(
+                        self.items
+                    )
+                elif key == "DOWN":
+                    self.current_selection = (self.current_selection + 1) % len(
+                        self.items
+                    )
+                elif key in ["\r", "\n"]:
                     selected_item = self.items[self.current_selection]
                     self._should_exit = True
                     print("\033[H\033[J", end="")
@@ -260,12 +272,12 @@ class InteractiveMenu:
                         f"[bold {Theme.SUCCESS}]✓ Selected: {selected_item.icon} {selected_item.title}[/]"
                     )
                     return selected_item.value
-                elif key.lower() == 'q' or key == 'ESC':
+                elif key.lower() == "q" or key == "ESC":
                     self._should_exit = True
                     print("\033[H\033[J", end="")
                     self.console.print(f"[bold {Theme.WARNING}]Operation cancelled[/]")
                     return None
-                elif key == '\x03':
+                elif key == "\x03":
                     self._should_exit = True
                     print("\033[H\033[J", end="")
                     self.console.print(f"[bold {Theme.WARNING}]Operation cancelled[/]")
@@ -299,7 +311,7 @@ class InteractiveMenu:
         self.console.print("[dim]Enter number to select, or 'q' to cancel[/]")
         try:
             response = input("> ").strip()
-            if response.lower() == 'q':
+            if response.lower() == "q":
                 return None
             idx = int(response) - 1
             if 0 <= idx < len(self.items):
@@ -310,6 +322,7 @@ class InteractiveMenu:
 
 
 # ── Styled message helpers ──────────────────────────────────────────────
+
 
 def confirm_dialog(message: str, default: bool = False) -> bool:
     """Show a confirmation dialog with Rich styling."""
@@ -323,7 +336,7 @@ def confirm_dialog(message: str, default: bool = False) -> bool:
         response = input().strip().lower()
         if not response:
             return default
-        return response.startswith('y')
+        return response.startswith("y")
     except KeyboardInterrupt:
         console.print(f"[bold {Theme.WARNING}]Operation cancelled[/]")
         return False

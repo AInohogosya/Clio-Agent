@@ -24,7 +24,6 @@ from typing import Any, Dict, List, Optional
 
 from ..utils.logger import get_logger
 
-
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -37,6 +36,7 @@ def set_context_dir(path: Path) -> None:
     """Override the global context directory (e.g. to project root)."""
     global CONTEXT_DIR
     CONTEXT_DIR = Path(path)
+
 
 STATE_FILES = (
     "sleep_state.json",
@@ -56,6 +56,7 @@ MAX_LOG_LINES_IN_PROMPT = 80
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
 
 def _read_json_file(path: Path) -> Optional[Dict[str, Any]]:
     """Safely read a JSON file, returning None on any error."""
@@ -265,7 +266,8 @@ def get_context_for_prompt() -> str:
     if log_tail:
         tail_lines = [l for l in log_tail.splitlines() if l.strip()]
         sections.append(
-            "## EXECUTION LOG (tail)\n" + "\n".join(tail_lines[-MAX_LOG_LINES_IN_PROMPT:])
+            "## EXECUTION LOG (tail)\n"
+            + "\n".join(tail_lines[-MAX_LOG_LINES_IN_PROMPT:])
         )
 
     if sections:
@@ -273,9 +275,7 @@ def get_context_for_prompt() -> str:
             "\n\n"
             "════════════════════════════════════════\n"
             "  CONTEXT FROM .context/ FOLDER\n"
-            "════════════════════════════════════════\n"
-            + "\n\n".join(sections)
-            + "\n"
+            "════════════════════════════════════════\n" + "\n\n".join(sections) + "\n"
             "════════════════════════════════════════\n"
         )
     return ""
@@ -289,6 +289,7 @@ def display_context_in_terminal() -> None:
     summary = get_context_summary()
     try:
         import sys
+
         sys.stderr.write(summary + "\n")
         sys.stderr.flush()
     except Exception:

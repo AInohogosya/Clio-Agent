@@ -26,6 +26,7 @@ class ToolErrorCode(str, Enum):
 @dataclass
 class ToolError:
     """Structured error returned inside ToolResult on failure."""
+
     code: ToolErrorCode
     message: str
     details: Dict[str, Any] = field(default_factory=dict)

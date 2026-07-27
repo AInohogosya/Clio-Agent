@@ -19,6 +19,7 @@ from ..utils.logger import get_logger
 
 class SubAgentStatus(Enum):
     """Status of a sub-agent."""
+
     PENDING = "pending"
     RUNNING = "running"
     COMPLETED = "completed"
@@ -29,6 +30,7 @@ class SubAgentStatus(Enum):
 
 class SubAgentState(Enum):
     """Lifecycle state of a sub-agent."""
+
     SPAWNED = "spawned"
     INITIALIZING = "initializing"
     EXECUTING = "executing"
@@ -39,6 +41,7 @@ class SubAgentState(Enum):
 @dataclass
 class SubAgentResult:
     """Result returned by a sub-agent after execution."""
+
     agent_id: str
     agent_type: str
     success: bool
@@ -134,7 +137,9 @@ class SubAgentBase(ABC):
 
         return result
 
-    def _build_result(self, output: str, success: bool, error: Optional[str] = None) -> SubAgentResult:
+    def _build_result(
+        self, output: str, success: bool, error: Optional[str] = None
+    ) -> SubAgentResult:
         """Build the result dataclass from execution output."""
         return SubAgentResult(
             agent_id=self.agent_id,
@@ -145,8 +150,11 @@ class SubAgentBase(ABC):
             artifacts=self.context.artifacts,
             metadata={
                 "state": self.state.value,
-                "duration_ms": (self._end_time - self._start_time) * 1000
-                if self._end_time else 0.0,
+                "duration_ms": (
+                    (self._end_time - self._start_time) * 1000
+                    if self._end_time
+                    else 0.0
+                ),
             },
         )
 

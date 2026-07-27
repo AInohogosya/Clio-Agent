@@ -34,7 +34,9 @@ class FileWriteTool(ToolExecutor):
         except OSError as exc:
             raise FileWriteToolError(str(path), str(exc))
 
-        lines = input.content.count("\n") + (1 if input.content and not input.content.endswith("\n") else 0)
+        lines = input.content.count("\n") + (
+            1 if input.content and not input.content.endswith("\n") else 0
+        )
 
         return ToolResult.ok(
             output=f"File written: {path} ({lines} lines, {len(input.content)} bytes)",

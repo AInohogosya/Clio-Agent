@@ -33,6 +33,7 @@ COLOR_FOOTER = 4
 COLOR_ERROR = 5
 COLOR_FILTER = 6
 
+
 def _setup_colors():
     if curses.has_colors():
         curses.start_color()
@@ -42,6 +43,7 @@ def _setup_colors():
         curses.init_pair(COLOR_FOOTER, curses.COLOR_YELLOW, curses.COLOR_BLACK)
         curses.init_pair(COLOR_ERROR, curses.COLOR_RED, curses.COLOR_BLACK)
         curses.init_pair(COLOR_FILTER, curses.COLOR_GREEN, curses.COLOR_BLACK)
+
 
 def _attr(pair, bold=False):
     if curses.has_colors():
@@ -190,19 +192,19 @@ CUSTOM_MODEL_ID = "__custom_model__"
 
 _PROVIDER_SDK_PACKAGES = {
     "google": "google-genai",
-    "openai": None,        # already in core deps
+    "openai": None,  # already in core deps
     "anthropic": "anthropic",
-    "deepseek": None,      # uses openai SDK
+    "deepseek": None,  # uses openai SDK
     "groq": "groq",
     "mistral": "mistralai",
-    "xai": None,           # uses openai SDK
-    "meta": None,          # uses openai SDK
+    "xai": None,  # uses openai SDK
+    "meta": None,  # uses openai SDK
     "cohere": "cohere",
-    "openrouter": None,    # uses openai SDK
-    "together": None,      # uses openai SDK
-    "minimax": None,       # uses openai SDK
+    "openrouter": None,  # uses openai SDK
+    "together": None,  # uses openai SDK
+    "minimax": None,  # uses openai SDK
     "zhipuai": "zhipuai",
-    "microsoft": None,     # uses openai SDK
+    "microsoft": None,  # uses openai SDK
     "amazon": "boto3",
 }
 
@@ -210,7 +212,9 @@ _PROVIDER_SDK_PACKAGES = {
 # ---------------------------------------------------------------------------
 # Scrolling curses list helper
 # ---------------------------------------------------------------------------
-def _scrolling_list(stdscr, items: list, title: str, subtitle: str = "") -> Optional[int]:
+def _scrolling_list(
+    stdscr, items: list, title: str, subtitle: str = ""
+) -> Optional[int]:
     """
     Display a scrollable list and return the selected index, or None if cancelled.
     Each item: {id, name, description, icon?}
@@ -263,11 +267,11 @@ def _scrolling_list(stdscr, items: list, title: str, subtitle: str = "") -> Opti
         else:
             scroll_offset = 0
 
-        stdscr.addstr(0, 0, title[:max_x - 1], _attr(COLOR_TITLE, True))
+        stdscr.addstr(0, 0, title[: max_x - 1], _attr(COLOR_TITLE, True))
         sep = "=" * min(50, max_x - 1)
         stdscr.addstr(1, 0, sep, _attr(COLOR_TITLE))
         if subtitle:
-            stdscr.addstr(2, 0, subtitle[:max_x - 1], _attr(COLOR_NORMAL))
+            stdscr.addstr(2, 0, subtitle[: max_x - 1], _attr(COLOR_NORMAL))
 
         # Show filter status line
         filter_y = header_lines
@@ -275,11 +279,20 @@ def _scrolling_list(stdscr, items: list, title: str, subtitle: str = "") -> Opti
             total = len(items)
             showing = len(filtered_indices)
             filter_display = "  Filter: '%s_'  %d/%d" % (filter_text, showing, total)
-            stdscr.addstr(filter_y, 0, filter_display[:max_x - 1], _attr(COLOR_FILTER, True))
+            stdscr.addstr(
+                filter_y, 0, filter_display[: max_x - 1], _attr(COLOR_FILTER, True)
+            )
         else:
-            stdscr.addstr(filter_y, 0, "  Type to search"[:max_x - 1], _attr(COLOR_FOOTER))
+            stdscr.addstr(
+                filter_y, 0, "  Type to search"[: max_x - 1], _attr(COLOR_FOOTER)
+            )
 
-        stdscr.addstr(max_y - 1, 0, "Arrows:Navigate  Type:Search  Enter:Select  BS:Clear  Q:Quit", _attr(COLOR_FOOTER))
+        stdscr.addstr(
+            max_y - 1,
+            0,
+            "Arrows:Navigate  Type:Search  Enter:Select  BS:Clear  Q:Quit",
+            _attr(COLOR_FOOTER),
+        )
 
         start_y = header_lines + 1 + filter_height
         vis_start = scroll_offset
@@ -300,12 +313,22 @@ def _scrolling_list(stdscr, items: list, title: str, subtitle: str = "") -> Opti
             icon = item.get("icon", "")
             name = item.get("name", item.get("id", ""))
             desc = item.get("description", "")
-            sel = (list_idx == current)
+            sel = list_idx == current
             prefix = "> " if sel else "  "
             l1 = "%s%s %s" % (prefix, icon, name)
             l2 = "    %s" % desc
-            stdscr.addstr(y, 0, l1[:max_x - 1], _attr(COLOR_HIGHLIGHT, True) if sel else _attr(COLOR_NORMAL))
-            stdscr.addstr(y + 1, 0, l2[:max_x - 1], _attr(COLOR_HIGHLIGHT) if sel else _attr(COLOR_NORMAL))
+            stdscr.addstr(
+                y,
+                0,
+                l1[: max_x - 1],
+                _attr(COLOR_HIGHLIGHT, True) if sel else _attr(COLOR_NORMAL),
+            )
+            stdscr.addstr(
+                y + 1,
+                0,
+                l2[: max_x - 1],
+                _attr(COLOR_HIGHLIGHT) if sel else _attr(COLOR_NORMAL),
+            )
 
         if vis_end < len(filtered_indices):
             iy = start_y + (vis_end - vis_start) * 3
@@ -334,7 +357,7 @@ def _scrolling_list(stdscr, items: list, title: str, subtitle: str = "") -> Opti
             if filtered_indices:
                 return filtered_indices[current]
             return None
-        elif key in (ord('q'), ord('Q'), 27):
+        elif key in (ord("q"), ord("Q"), 27):
             return None
         elif key == curses.KEY_BACKSPACE or key == 127 or key == 8:
             if filter_text:
@@ -346,6 +369,7 @@ def _scrolling_list(stdscr, items: list, title: str, subtitle: str = "") -> Opti
                 filter_text += chr(key)
                 current = 0
                 scroll_offset = 0
+
 
 # ---------------------------------------------------------------------------
 # Custom model name input
@@ -362,16 +386,33 @@ def _input_custom_model(stdscr, provider_name: str) -> Optional[str]:
         stdscr.clear()
         max_y, max_x = stdscr.getmaxyx()
 
-        stdscr.addstr(0, 0, "Custom Model for %s" % provider_name, _attr(COLOR_TITLE, True))
+        stdscr.addstr(
+            0, 0, "Custom Model for %s" % provider_name, _attr(COLOR_TITLE, True)
+        )
         stdscr.addstr(1, 0, "=" * min(50, max_x - 1), _attr(COLOR_TITLE))
-        stdscr.addstr(2, 0, "Enter any model name supported by this provider.", _attr(COLOR_NORMAL))
-        stdscr.addstr(3, 0, "This will be used directly - no validation is performed.", _attr(COLOR_NORMAL))
+        stdscr.addstr(
+            2,
+            0,
+            "Enter any model name supported by this provider.",
+            _attr(COLOR_NORMAL),
+        )
+        stdscr.addstr(
+            3,
+            0,
+            "This will be used directly - no validation is performed.",
+            _attr(COLOR_NORMAL),
+        )
 
         if provider_key_hint(provider_name):
-            stdscr.addstr(4, 0, "Example: %s" % provider_key_hint(provider_name), _attr(COLOR_FOOTER))
+            stdscr.addstr(
+                4,
+                0,
+                "Example: %s" % provider_key_hint(provider_name),
+                _attr(COLOR_FOOTER),
+            )
 
         if error_msg:
-            stdscr.addstr(6, 0, error_msg[:max_x - 1], _attr(COLOR_ERROR))
+            stdscr.addstr(6, 0, error_msg[: max_x - 1], _attr(COLOR_ERROR))
 
         y = 8 if error_msg else 6
         stdscr.addstr(y, 0, "Model name: ", _attr(COLOR_NORMAL))
@@ -428,10 +469,19 @@ def select_provider(stdscr=None) -> Optional[str]:
     items = []
     for key in sorted(PROVIDERS.keys()):
         p = PROVIDERS[key]
-        items.append({"id": key, "icon": p["icon"], "name": p["name"], "description": p["description"]})
+        items.append(
+            {
+                "id": key,
+                "icon": p["icon"],
+                "name": p["name"],
+                "description": p["description"],
+            }
+        )
 
     if stdscr:
-        idx = _scrolling_list(stdscr, items, "Select AI Provider", "Choose your AI provider:")
+        idx = _scrolling_list(
+            stdscr, items, "Select AI Provider", "Choose your AI provider:"
+        )
         return items[idx]["id"] if idx is not None else None
     else:
         return curses.wrapper(lambda s: select_provider(s))
@@ -440,7 +490,9 @@ def select_provider(stdscr=None) -> Optional[str]:
 # ---------------------------------------------------------------------------
 # API key input
 # ---------------------------------------------------------------------------
-def _input_api_key(stdscr, provider_name: str, existing_key: Optional[str] = None) -> Optional[str]:
+def _input_api_key(
+    stdscr, provider_name: str, existing_key: Optional[str] = None
+) -> Optional[str]:
     """Curses-based API key input. Returns key string or None to cancel."""
     curses.curs_set(1)
     _setup_colors()
@@ -454,18 +506,22 @@ def _input_api_key(stdscr, provider_name: str, existing_key: Optional[str] = Non
 
         stdscr.addstr(0, 0, "%s API Key" % provider_name, _attr(COLOR_TITLE, True))
         stdscr.addstr(1, 0, "=" * min(50, max_x - 1), _attr(COLOR_TITLE))
-        stdscr.addstr(2, 0, "Enter your API key to fetch available models.", _attr(COLOR_NORMAL))
-        stdscr.addstr(3, 0, "(Leave empty and press Enter to cancel)", _attr(COLOR_NORMAL))
+        stdscr.addstr(
+            2, 0, "Enter your API key to fetch available models.", _attr(COLOR_NORMAL)
+        )
+        stdscr.addstr(
+            3, 0, "(Leave empty and press Enter to cancel)", _attr(COLOR_NORMAL)
+        )
 
         if error_msg:
-            stdscr.addstr(5, 0, error_msg[:max_x - 1], _attr(COLOR_ERROR))
+            stdscr.addstr(5, 0, error_msg[: max_x - 1], _attr(COLOR_ERROR))
 
         y = 7 if error_msg else 5
         masked = "*" * len(key_input) if key_input else ""
         # Clamp masked length and cursor position to screen width
         max_cursor_x = max_x - 1
         if len(masked) > max_cursor_x - 9:
-            masked = masked[:max_cursor_x - 9]
+            masked = masked[: max_cursor_x - 9]
         stdscr.addstr(y, 0, "API Key: ", _attr(COLOR_NORMAL))
         stdscr.addstr(y, 9, masked, _attr(COLOR_NORMAL))
         stdscr.move(y, min(9 + len(masked), max_cursor_x))
@@ -506,6 +562,7 @@ def get_api_key(provider_key: str, stdscr=None) -> Optional[str]:
     # Check settings manager
     try:
         from ai_agent.utils.settings_manager import get_settings_manager
+
         mgr = get_settings_manager()
         existing = mgr.get_api_key(provider_key)
         if existing:
@@ -529,6 +586,7 @@ def fetch_models_ollama() -> Optional[List[Dict]]:
     """Fetch installed models from Ollama."""
     try:
         import requests
+
         resp = requests.get("http://localhost:11434/api/tags", timeout=5)
         if resp.status_code != 200:
             return None
@@ -538,16 +596,21 @@ def fetch_models_ollama() -> Optional[List[Dict]]:
             name = m.get("name", "")
             if name:
                 size = m.get("size", 0)
-                size_gb = size / (1024 ** 3) if size else 0
-                models.append({
-                    "id": name,
-                    "name": name,
-                    "description": "Size: %.1f GB" % size_gb if size_gb else "Local model",
-                    "icon": "O",
-                })
+                size_gb = size / (1024**3) if size else 0
+                models.append(
+                    {
+                        "id": name,
+                        "name": name,
+                        "description": (
+                            "Size: %.1f GB" % size_gb if size_gb else "Local model"
+                        ),
+                        "icon": "O",
+                    }
+                )
         return models if models else None
     except Exception:
         return None
+
 
 def _model_desc(m) -> str:
     """Build a model description with context window and pricing."""
@@ -589,27 +652,45 @@ def _model_desc(m) -> str:
         return " ".join(parts)
     return getattr(m, "description", None) or mid
 
+
 def fetch_models_from_api(provider_key: str, api_key: str) -> Optional[List[Dict]]:
     """Fetch models from a cloud provider's API. Returns None on failure."""
     try:
         if provider_key == "google":
-            sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent / "peripherals" / "api"))
+            sys.path.insert(
+                0,
+                str(Path(__file__).parent.parent.parent.parent / "peripherals" / "api"),
+            )
             from api.google_client import GoogleLLMClient
+
             client = GoogleLLMClient(api_key=api_key)
             infos = client.list_models()
-            return [{"id": m.id, "name": m.id, "description": _model_desc(m), "icon": "G"} for m in infos]
+            return [
+                {"id": m.id, "name": m.id, "description": _model_desc(m), "icon": "G"}
+                for m in infos
+            ]
 
         elif provider_key == "openai":
-            sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent / "peripherals" / "api"))
+            sys.path.insert(
+                0,
+                str(Path(__file__).parent.parent.parent.parent / "peripherals" / "api"),
+            )
             from api.openai_client import OpenAILLMClient
+
             client = OpenAILLMClient(api_key=api_key)
             infos = client.list_models()
-            return [{"id": m.id, "name": m.id, "description": _model_desc(m), "icon": "O"} for m in infos]
+            return [
+                {"id": m.id, "name": m.id, "description": _model_desc(m), "icon": "O"}
+                for m in infos
+            ]
 
         elif provider_key == "openrouter":
             import requests
+
             headers = {"Authorization": "Bearer %s" % api_key}
-            resp = requests.get("https://openrouter.ai/api/v1/models", headers=headers, timeout=10)
+            resp = requests.get(
+                "https://openrouter.ai/api/v1/models", headers=headers, timeout=10
+            )
             if resp.status_code != 200:
                 return None
             data = resp.json()
@@ -623,17 +704,26 @@ def fetch_models_from_api(provider_key: str, api_key: str) -> Optional[List[Dict
                 prompt_price = float(pricing.get("prompt", 0)) * 1_000_000
                 output_price = float(pricing.get("completion", 0)) * 1_000_000
                 if ctx:
-                    desc = "ctx:%d in:$%.2f/M out:$%.2f/M" % (ctx, prompt_price, output_price)
+                    desc = "ctx:%d in:$%.2f/M out:$%.2f/M" % (
+                        ctx,
+                        prompt_price,
+                        output_price,
+                    )
                 else:
                     desc = "in:$%.2f/M out:$%.2f/M" % (prompt_price, output_price)
-                models.append({"id": mid, "name": mid, "description": desc, "icon": "O"})
+                models.append(
+                    {"id": mid, "name": mid, "description": desc, "icon": "O"}
+                )
             models.sort(key=lambda m: m["id"])
             return models if models else None
 
         elif provider_key == "together":
             import requests
+
             headers = {"Authorization": "Bearer %s" % api_key}
-            resp = requests.get("https://api.together.xyz/v1/models", headers=headers, timeout=10)
+            resp = requests.get(
+                "https://api.together.xyz/v1/models", headers=headers, timeout=10
+            )
             if resp.status_code == 200:
                 data = resp.json()
                 models = []
@@ -645,99 +735,337 @@ def fetch_models_from_api(provider_key: str, api_key: str) -> Optional[List[Dict
                         input_price = float(pricing.get("input", 0))
                         output_price = float(pricing.get("output", 0))
                         if ctx:
-                            desc = "ctx:%d in:$%.2f/M out:$%.2f/M" % (ctx, input_price, output_price)
+                            desc = "ctx:%d in:$%.2f/M out:$%.2f/M" % (
+                                ctx,
+                                input_price,
+                                output_price,
+                            )
                         else:
-                            desc = "in:$%.2f/M out:$%.2f/M" % (input_price, output_price)
-                        models.append({"id": mid, "name": mid, "description": desc, "icon": "T"})
+                            desc = "in:$%.2f/M out:$%.2f/M" % (
+                                input_price,
+                                output_price,
+                            )
+                        models.append(
+                            {"id": mid, "name": mid, "description": desc, "icon": "T"}
+                        )
                 models.sort(key=lambda m: m["id"])
                 return models if models else None
             return None
 
         elif provider_key == "anthropic":
             return [
-                {"id": "claude-opus-4-20250514", "name": "Claude Opus 4", "description": "Most capable model", "icon": "A"},
-                {"id": "claude-sonnet-4-20250514", "name": "Claude Sonnet 4", "description": "Balanced performance", "icon": "A"},
-                {"id": "claude-3-5-sonnet-20241022", "name": "Claude 3.5 Sonnet", "description": "Strong performance", "icon": "A"},
-                {"id": "claude-3-5-haiku-20241022", "name": "Claude 3.5 Haiku", "description": "Fast & efficient", "icon": "A"},
-                {"id": "claude-3-opus-20240229", "name": "Claude 3 Opus", "description": "Legacy powerful model", "icon": "A"},
+                {
+                    "id": "claude-opus-4-20250514",
+                    "name": "Claude Opus 4",
+                    "description": "Most capable model",
+                    "icon": "A",
+                },
+                {
+                    "id": "claude-sonnet-4-20250514",
+                    "name": "Claude Sonnet 4",
+                    "description": "Balanced performance",
+                    "icon": "A",
+                },
+                {
+                    "id": "claude-3-5-sonnet-20241022",
+                    "name": "Claude 3.5 Sonnet",
+                    "description": "Strong performance",
+                    "icon": "A",
+                },
+                {
+                    "id": "claude-3-5-haiku-20241022",
+                    "name": "Claude 3.5 Haiku",
+                    "description": "Fast & efficient",
+                    "icon": "A",
+                },
+                {
+                    "id": "claude-3-opus-20240229",
+                    "name": "Claude 3 Opus",
+                    "description": "Legacy powerful model",
+                    "icon": "A",
+                },
             ]
 
         elif provider_key == "groq":
             return [
-                {"id": "llama-3.3-70b-versatile", "name": "Llama 3.3 70B", "description": "Ultra-fast on Groq", "icon": "G"},
-                {"id": "llama-3.1-8b-instant", "name": "Llama 3.1 8B", "description": "Low latency", "icon": "G"},
-                {"id": "llama-3.1-70b-versatile", "name": "Llama 3.1 70B", "description": "Fast on Groq", "icon": "G"},
-                {"id": "mixtral-8x7b-32768", "name": "Mixtral 8x7B", "description": "MoE architecture", "icon": "G"},
-                {"id": "gemma2-9b-it", "name": "Gemma 2 9B", "description": "Fast inference", "icon": "G"},
-                {"id": "llama-guard-3-8b", "name": "Llama Guard 3 8B", "description": "Safety classifier", "icon": "G"},
+                {
+                    "id": "llama-3.3-70b-versatile",
+                    "name": "Llama 3.3 70B",
+                    "description": "Ultra-fast on Groq",
+                    "icon": "G",
+                },
+                {
+                    "id": "llama-3.1-8b-instant",
+                    "name": "Llama 3.1 8B",
+                    "description": "Low latency",
+                    "icon": "G",
+                },
+                {
+                    "id": "llama-3.1-70b-versatile",
+                    "name": "Llama 3.1 70B",
+                    "description": "Fast on Groq",
+                    "icon": "G",
+                },
+                {
+                    "id": "mixtral-8x7b-32768",
+                    "name": "Mixtral 8x7B",
+                    "description": "MoE architecture",
+                    "icon": "G",
+                },
+                {
+                    "id": "gemma2-9b-it",
+                    "name": "Gemma 2 9B",
+                    "description": "Fast inference",
+                    "icon": "G",
+                },
+                {
+                    "id": "llama-guard-3-8b",
+                    "name": "Llama Guard 3 8B",
+                    "description": "Safety classifier",
+                    "icon": "G",
+                },
             ]
 
         elif provider_key == "mistral":
             return [
-                {"id": "mistral-large-latest", "name": "Mistral Large 2", "description": "Flagship 123B model", "icon": "M"},
-                {"id": "mistral-medium-latest", "name": "Mistral Medium", "description": "Balanced performance", "icon": "M"},
-                {"id": "mistral-small-latest", "name": "Mistral Small", "description": "Fast & efficient", "icon": "M"},
-                {"id": "ministral-3b-latest", "name": "Ministral 3B", "description": "Edge deployment", "icon": "M"},
-                {"id": "ministral-8b-latest", "name": "Ministral 8B", "description": "Edge deployment", "icon": "M"},
-                {"id": "mixtral-8x7b-instruct", "name": "Mixtral 8x7B", "description": "MoE instruction", "icon": "M"},
-                {"id": "codestral-latest", "name": "Codestral", "description": "Code generation", "icon": "M"},
-
+                {
+                    "id": "mistral-large-latest",
+                    "name": "Mistral Large 2",
+                    "description": "Flagship 123B model",
+                    "icon": "M",
+                },
+                {
+                    "id": "mistral-medium-latest",
+                    "name": "Mistral Medium",
+                    "description": "Balanced performance",
+                    "icon": "M",
+                },
+                {
+                    "id": "mistral-small-latest",
+                    "name": "Mistral Small",
+                    "description": "Fast & efficient",
+                    "icon": "M",
+                },
+                {
+                    "id": "ministral-3b-latest",
+                    "name": "Ministral 3B",
+                    "description": "Edge deployment",
+                    "icon": "M",
+                },
+                {
+                    "id": "ministral-8b-latest",
+                    "name": "Ministral 8B",
+                    "description": "Edge deployment",
+                    "icon": "M",
+                },
+                {
+                    "id": "mixtral-8x7b-instruct",
+                    "name": "Mixtral 8x7B",
+                    "description": "MoE instruction",
+                    "icon": "M",
+                },
+                {
+                    "id": "codestral-latest",
+                    "name": "Codestral",
+                    "description": "Code generation",
+                    "icon": "M",
+                },
             ]
 
         elif provider_key == "deepseek":
             return [
-                {"id": "deepseek-chat", "name": "DeepSeek Chat", "description": "General conversation", "icon": "D"},
-                {"id": "deepseek-coder", "name": "DeepSeek Coder", "description": "Code specialist", "icon": "D"},
-                {"id": "deepseek-reasoner", "name": "DeepSeek R1", "description": "Advanced reasoning", "icon": "D"},
+                {
+                    "id": "deepseek-chat",
+                    "name": "DeepSeek Chat",
+                    "description": "General conversation",
+                    "icon": "D",
+                },
+                {
+                    "id": "deepseek-coder",
+                    "name": "DeepSeek Coder",
+                    "description": "Code specialist",
+                    "icon": "D",
+                },
+                {
+                    "id": "deepseek-reasoner",
+                    "name": "DeepSeek R1",
+                    "description": "Advanced reasoning",
+                    "icon": "D",
+                },
             ]
 
         elif provider_key == "xai":
             return [
-                {"id": "grok-4-0709", "name": "Grok 4", "description": "Latest, #1 on LMArena", "icon": "X"},
-                {"id": "grok-4-fast", "name": "Grok 4 Fast", "description": "Quick responses", "icon": "X"},
-                {"id": "grok-3", "name": "Grok 3", "description": "Previous generation", "icon": "X"},
-                {"id": "grok-3-mini", "name": "Grok 3 Mini", "description": "Lightweight", "icon": "X"},
+                {
+                    "id": "grok-4-0709",
+                    "name": "Grok 4",
+                    "description": "Latest, #1 on LMArena",
+                    "icon": "X",
+                },
+                {
+                    "id": "grok-4-fast",
+                    "name": "Grok 4 Fast",
+                    "description": "Quick responses",
+                    "icon": "X",
+                },
+                {
+                    "id": "grok-3",
+                    "name": "Grok 3",
+                    "description": "Previous generation",
+                    "icon": "X",
+                },
+                {
+                    "id": "grok-3-mini",
+                    "name": "Grok 3 Mini",
+                    "description": "Lightweight",
+                    "icon": "X",
+                },
             ]
 
         elif provider_key == "cohere":
             return [
-                {"id": "command-r-plus", "name": "Command R+", "description": "Best RAG model", "icon": "C"},
-                {"id": "command-r", "name": "Command R", "description": "Balanced", "icon": "C"},
-                {"id": "command", "name": "Command", "description": "Legacy model", "icon": "C"},
-                {"id": "command-r7b-12-2024", "name": "Command R7B", "description": "Compact 7B", "icon": "C"},
+                {
+                    "id": "command-r-plus",
+                    "name": "Command R+",
+                    "description": "Best RAG model",
+                    "icon": "C",
+                },
+                {
+                    "id": "command-r",
+                    "name": "Command R",
+                    "description": "Balanced",
+                    "icon": "C",
+                },
+                {
+                    "id": "command",
+                    "name": "Command",
+                    "description": "Legacy model",
+                    "icon": "C",
+                },
+                {
+                    "id": "command-r7b-12-2024",
+                    "name": "Command R7B",
+                    "description": "Compact 7B",
+                    "icon": "C",
+                },
             ]
 
         elif provider_key == "minimax":
             return [
-                {"id": "MiniMax-Text-01", "name": "MiniMax Text-01", "description": "Latest general model", "icon": "M"},
-                {"id": "MiniMax-M2.5", "name": "MiniMax M2.5", "description": "Coding & productivity", "icon": "M"},
-                {"id": "abab6.5s", "name": "ABAB 6.5S", "description": "Chat model", "icon": "M"},
+                {
+                    "id": "MiniMax-Text-01",
+                    "name": "MiniMax Text-01",
+                    "description": "Latest general model",
+                    "icon": "M",
+                },
+                {
+                    "id": "MiniMax-M2.5",
+                    "name": "MiniMax M2.5",
+                    "description": "Coding & productivity",
+                    "icon": "M",
+                },
+                {
+                    "id": "abab6.5s",
+                    "name": "ABAB 6.5S",
+                    "description": "Chat model",
+                    "icon": "M",
+                },
             ]
 
         elif provider_key == "zhipuai":
             return [
-                {"id": "glm-4-plus", "name": "GLM-4 Plus", "description": "Strong general performance", "icon": "Z"},
-                {"id": "glm-4", "name": "GLM-4", "description": "Base model", "icon": "Z"},
-                {"id": "glm-4-air", "name": "GLM-4 Air", "description": "Lightweight", "icon": "Z"},
-                {"id": "glm-4-flash", "name": "GLM-4 Flash", "description": "Free tier", "icon": "Z"},
+                {
+                    "id": "glm-4-plus",
+                    "name": "GLM-4 Plus",
+                    "description": "Strong general performance",
+                    "icon": "Z",
+                },
+                {
+                    "id": "glm-4",
+                    "name": "GLM-4",
+                    "description": "Base model",
+                    "icon": "Z",
+                },
+                {
+                    "id": "glm-4-air",
+                    "name": "GLM-4 Air",
+                    "description": "Lightweight",
+                    "icon": "Z",
+                },
+                {
+                    "id": "glm-4-flash",
+                    "name": "GLM-4 Flash",
+                    "description": "Free tier",
+                    "icon": "Z",
+                },
             ]
 
         elif provider_key == "microsoft":
             return [
-                {"id": "gpt-4o", "name": "GPT-4o (Azure)", "description": "Azure hosted GPT-4o", "icon": "M"},
-                {"id": "gpt-4o-mini", "name": "GPT-4o Mini (Azure)", "description": "Azure hosted", "icon": "M"},
-                {"id": "gpt-4", "name": "GPT-4 (Azure)", "description": "Azure hosted GPT-4", "icon": "M"},
-                {"id": "o3-mini", "name": "O3 Mini (Azure)", "description": "Reasoning model", "icon": "M"},
+                {
+                    "id": "gpt-4o",
+                    "name": "GPT-4o (Azure)",
+                    "description": "Azure hosted GPT-4o",
+                    "icon": "M",
+                },
+                {
+                    "id": "gpt-4o-mini",
+                    "name": "GPT-4o Mini (Azure)",
+                    "description": "Azure hosted",
+                    "icon": "M",
+                },
+                {
+                    "id": "gpt-4",
+                    "name": "GPT-4 (Azure)",
+                    "description": "Azure hosted GPT-4",
+                    "icon": "M",
+                },
+                {
+                    "id": "o3-mini",
+                    "name": "O3 Mini (Azure)",
+                    "description": "Reasoning model",
+                    "icon": "M",
+                },
             ]
 
         elif provider_key == "amazon":
             return [
-                {"id": "anthropic.claude-sonnet-4-20250514-v1:0", "name": "Claude Sonnet 4", "description": "AWS hosted", "icon": "A"},
-                {"id": "anthropic.claude-opus-4-20250514-v1:0", "name": "Claude Opus 4", "description": "AWS hosted", "icon": "A"},
-                {"id": "amazon.nova-pro-v1:0", "name": "Nova Pro", "description": "AWS native model", "icon": "A"},
-                {"id": "amazon.nova-lite-v1:0", "name": "Nova Lite", "description": "AWS native fast", "icon": "A"},
-                {"id": "meta.llama4-scout-17b-16e-instruct-v1:0", "name": "Llama 4 Scout", "description": "AWS hosted", "icon": "A"},
-                {"id": "meta.llama4-maverick-17b-128e-instruct-v1:0", "name": "Llama 4 Maverick", "description": "AWS hosted", "icon": "A"},
+                {
+                    "id": "anthropic.claude-sonnet-4-20250514-v1:0",
+                    "name": "Claude Sonnet 4",
+                    "description": "AWS hosted",
+                    "icon": "A",
+                },
+                {
+                    "id": "anthropic.claude-opus-4-20250514-v1:0",
+                    "name": "Claude Opus 4",
+                    "description": "AWS hosted",
+                    "icon": "A",
+                },
+                {
+                    "id": "amazon.nova-pro-v1:0",
+                    "name": "Nova Pro",
+                    "description": "AWS native model",
+                    "icon": "A",
+                },
+                {
+                    "id": "amazon.nova-lite-v1:0",
+                    "name": "Nova Lite",
+                    "description": "AWS native fast",
+                    "icon": "A",
+                },
+                {
+                    "id": "meta.llama4-scout-17b-16e-instruct-v1:0",
+                    "name": "Llama 4 Scout",
+                    "description": "AWS hosted",
+                    "icon": "A",
+                },
+                {
+                    "id": "meta.llama4-maverick-17b-128e-instruct-v1:0",
+                    "name": "Llama 4 Maverick",
+                    "description": "AWS hosted",
+                    "icon": "A",
+                },
             ]
 
         else:
@@ -758,17 +1086,20 @@ def select_model(stdscr, models: List[Dict], provider_name: str) -> Optional[str
     If user selects "Custom Model", prompts for a custom name.
     """
     # Append "Custom Model" option
-    display_models = list(models) + [{
-        "id": CUSTOM_MODEL_ID,
-        "name": "Custom Model",
-        "description": "Enter any model name manually",
-        "icon": "?",
-    }]
+    display_models = list(models) + [
+        {
+            "id": CUSTOM_MODEL_ID,
+            "name": "Custom Model",
+            "description": "Enter any model name manually",
+            "icon": "?",
+        }
+    ]
 
     idx = _scrolling_list(
-        stdscr, display_models,
+        stdscr,
+        display_models,
         "%s Models" % provider_name,
-        "Choose a model (%d available + custom):" % len(models)
+        "Choose a model (%d available + custom):" % len(models),
     )
 
     if idx is None:
@@ -787,7 +1118,9 @@ def select_model(stdscr, models: List[Dict], provider_name: str) -> Optional[str
 def check_ollama_status() -> Tuple[bool, str]:
     """Check if Ollama is installed and running. Returns (ok, message)."""
     try:
-        result = subprocess.run(["ollama", "--version"], capture_output=True, text=True, timeout=5)
+        result = subprocess.run(
+            ["ollama", "--version"], capture_output=True, text=True, timeout=5
+        )
         if result.returncode != 0:
             return False, "Ollama is installed but returned an error"
     except FileNotFoundError:
@@ -797,6 +1130,7 @@ def check_ollama_status() -> Tuple[bool, str]:
 
     try:
         import requests
+
         resp = requests.get("http://localhost:11434/api/tags", timeout=3)
         if resp.status_code == 200:
             data = resp.json()
@@ -838,10 +1172,22 @@ def select_messaging_app(stdscr=None) -> Optional[str]:
     items = []
     for key in ["telegram", "discord", "none"]:
         app = MESSAGING_APPS[key]
-        items.append({"id": key, "icon": app["icon"], "name": app["name"], "description": app["description"]})
+        items.append(
+            {
+                "id": key,
+                "icon": app["icon"],
+                "name": app["name"],
+                "description": app["description"],
+            }
+        )
 
     if stdscr:
-        idx = _scrolling_list(stdscr, items, "Select Messaging App", "Choose how you want to interact with the agent:")
+        idx = _scrolling_list(
+            stdscr,
+            items,
+            "Select Messaging App",
+            "Choose how you want to interact with the agent:",
+        )
         return items[idx]["id"] if idx is not None else None
     else:
         return curses.wrapper(lambda s: select_messaging_app(s))
@@ -893,11 +1239,27 @@ def _input_telegram_config(stdscr, existing=None):
     _setup_colors()
 
     fields = [
-        ("bot_username", "Bot Username", "Optional. Your bot username from @BotFather; @ is OK."),
+        (
+            "bot_username",
+            "Bot Username",
+            "Optional. Your bot username from @BotFather; @ is OK.",
+        ),
         ("bot_name", "Bot Name", "Optional display name for this config."),
-        ("bot_token", "Bot Token", "Required. Format: 123456789:AA... from @BotFather."),
-        ("telegram_user_id", "Your User ID", "Optional default reply target. Numeric Telegram user/chat ID."),
-        ("allowed_user_ids", "Allowed User IDs", "Optional access list. Comma-separated numeric IDs; empty allows anyone."),
+        (
+            "bot_token",
+            "Bot Token",
+            "Required. Format: 123456789:AA... from @BotFather.",
+        ),
+        (
+            "telegram_user_id",
+            "Your User ID",
+            "Optional default reply target. Numeric Telegram user/chat ID.",
+        ),
+        (
+            "allowed_user_ids",
+            "Allowed User IDs",
+            "Optional access list. Comma-separated numeric IDs; empty allows anyone.",
+        ),
     ]
     if existing:
         values = {
@@ -908,7 +1270,13 @@ def _input_telegram_config(stdscr, existing=None):
             "allowed_user_ids": existing.get("allowed_user_ids", ""),
         }
     else:
-        values = {"bot_username": "", "bot_name": "", "bot_token": "", "telegram_user_id": "", "allowed_user_ids": ""}
+        values = {
+            "bot_username": "",
+            "bot_name": "",
+            "bot_token": "",
+            "telegram_user_id": "",
+            "allowed_user_ids": "",
+        }
     current_field = 0
     error_msg = ""
     has_existing_token = bool(existing and existing.get("bot_token"))
@@ -922,32 +1290,53 @@ def _input_telegram_config(stdscr, existing=None):
 
         # Fix #1: Check terminal size
         if max_y < MIN_LINES or max_x < MIN_COLS:
-            stdscr.addstr(0, 0, "Terminal too small!"[:max_x - 1], _attr(COLOR_ERROR, True))
-            stdscr.addstr(1, 0, "Need at least %dx%d, have %dx%d" % (MIN_COLS, MIN_LINES, max_y, max_x), _attr(COLOR_NORMAL))
-            stdscr.addstr(2, 0, "Please resize your terminal."[:max_x - 1], _attr(COLOR_NORMAL))
-            stdscr.addstr(4, 0, "Press Q to quit, or resize and wait..."[:max_x - 1], _attr(COLOR_FOOTER))
+            stdscr.addstr(
+                0, 0, "Terminal too small!"[: max_x - 1], _attr(COLOR_ERROR, True)
+            )
+            stdscr.addstr(
+                1,
+                0,
+                "Need at least %dx%d, have %dx%d" % (MIN_COLS, MIN_LINES, max_y, max_x),
+                _attr(COLOR_NORMAL),
+            )
+            stdscr.addstr(
+                2, 0, "Please resize your terminal."[: max_x - 1], _attr(COLOR_NORMAL)
+            )
+            stdscr.addstr(
+                4,
+                0,
+                "Press Q to quit, or resize and wait..."[: max_x - 1],
+                _attr(COLOR_FOOTER),
+            )
             stdscr.refresh()
             ch = stdscr.getch()
-            if ch in (ord('q'), ord('Q')):
+            if ch in (ord("q"), ord("Q")):
                 return None
             continue
 
         stdscr.addstr(0, 0, "Telegram Bot Configuration", _attr(COLOR_TITLE, True))
         stdscr.addstr(1, 0, "=" * min(50, max_x - 1), _attr(COLOR_TITLE))
-        stdscr.addstr(2, 0, "Enter your Telegram bot details (from @BotFather):", _attr(COLOR_NORMAL))
+        stdscr.addstr(
+            2,
+            0,
+            "Enter your Telegram bot details (from @BotFather):",
+            _attr(COLOR_NORMAL),
+        )
 
         if error_msg:
-            stdscr.addstr(4, 0, error_msg[:max_x - 1], _attr(COLOR_ERROR))
+            stdscr.addstr(4, 0, error_msg[: max_x - 1], _attr(COLOR_ERROR))
 
         start_y = 6 if error_msg else 5
         for i, (key, label, hint) in enumerate(fields):
             y = start_y + i * 3
             if y >= max_y - 4:
                 break
-            sel = (i == current_field)
+            sel = i == current_field
             prefix = ">>> " if sel else "    "
             line = "%s%s:" % (prefix, label)
-            stdscr.addstr(y, 0, line, _attr(COLOR_HIGHLIGHT, True) if sel else _attr(COLOR_NORMAL))
+            stdscr.addstr(
+                y, 0, line, _attr(COLOR_HIGHLIGHT, True) if sel else _attr(COLOR_NORMAL)
+            )
             # Fix #3: Fixed-length mask for bot_token
             if key == "bot_token":
                 val_display = "********" if values[key] else ""
@@ -967,7 +1356,7 @@ def _input_telegram_config(stdscr, existing=None):
             footer = "Enter:Next  Up/Down:Nav  Home/End:Jump  Esc:Back  Ctrl+C:Quit"
         else:
             footer = "Enter:Confirm  Up/Down:Nav  Home/End:Jump  Esc:Back  Ctrl+C:Quit"
-        stdscr.addstr(max_y - 1, 0, footer[:max_x - 1], _attr(COLOR_FOOTER))
+        stdscr.addstr(max_y - 1, 0, footer[: max_x - 1], _attr(COLOR_FOOTER))
         stdscr.refresh()
 
         ch = stdscr.getch()
@@ -991,13 +1380,17 @@ def _input_telegram_config(stdscr, existing=None):
                     error_msg = "Bot token is required."
                     continue
                 if not _is_valid_telegram_bot_token(token):
-                    error_msg = "Bot token must look like 123456789:AA... from @BotFather."
+                    error_msg = (
+                        "Bot token must look like 123456789:AA... from @BotFather."
+                    )
                     continue
                 raw_uid = values.get("telegram_user_id", "").strip()
                 if raw_uid:
                     parsed_uid, uid_error = _parse_telegram_user_ids(raw_uid)
                     if uid_error or len(parsed_uid) != 1:
-                        error_msg = uid_error or "Enter exactly one numeric Telegram user ID."
+                        error_msg = (
+                            uid_error or "Enter exactly one numeric Telegram user ID."
+                        )
                         continue
                 raw_ids = values.get("allowed_user_ids", "").strip()
                 _, ids_error = _parse_telegram_user_ids(raw_ids)
@@ -1005,14 +1398,31 @@ def _input_telegram_config(stdscr, existing=None):
                     error_msg = ids_error
                     continue
                 # Fix #9: Confirm before overwriting existing token
-                if has_existing_token and values["bot_token"] != existing.get("bot_token", ""):
+                if has_existing_token and values["bot_token"] != existing.get(
+                    "bot_token", ""
+                ):
                     stdscr.clear()
-                    stdscr.addstr(0, 0, "Overwrite existing bot token?"[:max_x - 1], _attr(COLOR_TITLE, True))
-                    stdscr.addstr(2, 0, "You are replacing the previously saved token."[:max_x - 1], _attr(COLOR_NORMAL))
-                    stdscr.addstr(4, 0, "Press Y to confirm, any other key to go back."[:max_x - 1], _attr(COLOR_FOOTER))
+                    stdscr.addstr(
+                        0,
+                        0,
+                        "Overwrite existing bot token?"[: max_x - 1],
+                        _attr(COLOR_TITLE, True),
+                    )
+                    stdscr.addstr(
+                        2,
+                        0,
+                        "You are replacing the previously saved token."[: max_x - 1],
+                        _attr(COLOR_NORMAL),
+                    )
+                    stdscr.addstr(
+                        4,
+                        0,
+                        "Press Y to confirm, any other key to go back."[: max_x - 1],
+                        _attr(COLOR_FOOTER),
+                    )
                     stdscr.refresh()
                     confirm_ch = stdscr.getch()
-                    if confirm_ch not in (ord('y'), ord('Y')):
+                    if confirm_ch not in (ord("y"), ord("Y")):
                         continue
                 values["bot_token"] = token
                 return values
@@ -1038,7 +1448,7 @@ def _input_telegram_config(stdscr, existing=None):
             key = fields[current_field][0]
             values[key] += chr(ch)
             error_msg = ""
-        elif ch in (ord('q'), ord('Q')):
+        elif ch in (ord("q"), ord("Q")):
             return None
 
 
@@ -1067,21 +1477,32 @@ def _input_discord_config(stdscr, existing=None):
 
         stdscr.addstr(0, 0, "Discord Bot Configuration", _attr(COLOR_TITLE, True))
         stdscr.addstr(1, 0, "=" * min(50, max_x - 1), _attr(COLOR_TITLE))
-        stdscr.addstr(2, 0, "Enter your Discord bot details (from Developer Portal):", _attr(COLOR_NORMAL))
+        stdscr.addstr(
+            2,
+            0,
+            "Enter your Discord bot details (from Developer Portal):",
+            _attr(COLOR_NORMAL),
+        )
 
         if error_msg:
-            stdscr.addstr(4, 0, error_msg[:max_x - 1], _attr(COLOR_ERROR))
+            stdscr.addstr(4, 0, error_msg[: max_x - 1], _attr(COLOR_ERROR))
 
         start_y = 6 if error_msg else 5
         for i, (key, label, hint) in enumerate(fields):
             y = start_y + i * 3
             if y >= max_y - 4:
                 break
-            sel = (i == current_field)
+            sel = i == current_field
             prefix = ">>> " if sel else "    "
             line = "%s%s:" % (prefix, label)
-            stdscr.addstr(y, 0, line, _attr(COLOR_HIGHLIGHT, True) if sel else _attr(COLOR_NORMAL))
-            val_display = values[key] if key != "bot_token" else ("*" * len(values[key]) if values[key] else "")
+            stdscr.addstr(
+                y, 0, line, _attr(COLOR_HIGHLIGHT, True) if sel else _attr(COLOR_NORMAL)
+            )
+            val_display = (
+                values[key]
+                if key != "bot_token"
+                else ("*" * len(values[key]) if values[key] else "")
+            )
             stdscr.addstr(y, 20, val_display, _attr(COLOR_NORMAL))
             stdscr.addstr(y + 1, 4, hint, _attr(COLOR_FOOTER))
 
@@ -1092,7 +1513,7 @@ def _input_discord_config(stdscr, existing=None):
             footer = "Enter:Next field  Up/Down:Navigate  Esc:Cancel  Ctrl+C:Quit"
         else:
             footer = "Enter:Confirm  Up/Down:Navigate  Esc:Cancel  Ctrl+C:Quit"
-        stdscr.addstr(max_y - 1, 0, footer[:max_x - 1], _attr(COLOR_FOOTER))
+        stdscr.addstr(max_y - 1, 0, footer[: max_x - 1], _attr(COLOR_FOOTER))
         stdscr.refresh()
 
         ch = stdscr.getch()
@@ -1120,7 +1541,7 @@ def _input_discord_config(stdscr, existing=None):
             key = fields[current_field][0]
             values[key] += chr(ch)
             error_msg = ""
-        elif ch in (ord('q'), ord('Q')):
+        elif ch in (ord("q"), ord("Q")):
             return None
 
 
@@ -1131,10 +1552,11 @@ def get_discord_config(stdscr=None) -> Optional[Dict[str, str]]:
     try:
         if config_path.exists():
             import yaml as _yaml
-            with open(config_path, 'r') as f:
+
+            with open(config_path, "r") as f:
                 config = _yaml.safe_load(f) or {}
-            dc = config.get('discord', {})
-            if dc.get('bot_token'):
+            dc = config.get("discord", {})
+            if dc.get("bot_token"):
                 existing = {
                     "bot_name": dc.get("bot_name", ""),
                     "bot_token": dc.get("bot_token", ""),
@@ -1156,10 +1578,11 @@ def get_telegram_config(stdscr=None) -> Optional[Dict[str, str]]:
     try:
         if config_path.exists():
             import yaml as _yaml
-            with open(config_path, 'r') as f:
+
+            with open(config_path, "r") as f:
                 config = _yaml.safe_load(f) or {}
-            tg = config.get('telegram', {})
-            if tg.get('bot_token'):
+            tg = config.get("telegram", {})
+            if tg.get("bot_token"):
                 # Fix #5: Normalize allowed_user_ids to comma-separated string
                 # regardless of whether it was saved as list[str] or list[int]
                 saved_ids = tg.get("allowed_user_ids", [])
@@ -1187,7 +1610,9 @@ def get_telegram_config(stdscr=None) -> Optional[Dict[str, str]]:
         return curses.wrapper(lambda s: _input_telegram_config(s, existing=existing))
 
 
-def _save_messaging_config_to_yaml(app_key: str, app_config: Optional[Dict[str, str]] = None):
+def _save_messaging_config_to_yaml(
+    app_key: str, app_config: Optional[Dict[str, str]] = None
+):
     """Save messaging app configuration to config.yaml.
 
     Only the selected app is touched (enabled + populated).
@@ -1201,55 +1626,57 @@ def _save_messaging_config_to_yaml(app_key: str, app_config: Optional[Dict[str, 
     config = {}
     if config_path.exists():
         try:
-            with open(config_path, 'r') as f:
+            with open(config_path, "r") as f:
                 raw = _yaml.safe_load(f)
             if raw is not None and isinstance(raw, dict):
                 config = raw
         except Exception:
             config = {}
 
-    if not isinstance(config.get('telegram'), dict):
-        config['telegram'] = {}
-    if not isinstance(config.get('discord'), dict):
-        config['discord'] = {}
+    if not isinstance(config.get("telegram"), dict):
+        config["telegram"] = {}
+    if not isinstance(config.get("discord"), dict):
+        config["discord"] = {}
 
     if app_key == "telegram" and app_config:
-        config['telegram']['enabled'] = True
+        config["telegram"]["enabled"] = True
         # Fix #12: Normalize bot_username (strip @ prefix) before saving
         raw_username = app_config.get("bot_username", "").strip()
-        config['telegram']['bot_username'] = _normalize_telegram_username(raw_username)
-        config['telegram']['bot_name'] = app_config.get("bot_name", "").strip()
-        config['telegram']['bot_token'] = app_config.get("bot_token", "").strip()
+        config["telegram"]["bot_username"] = _normalize_telegram_username(raw_username)
+        config["telegram"]["bot_name"] = app_config.get("bot_name", "").strip()
+        config["telegram"]["bot_token"] = app_config.get("bot_token", "").strip()
 
         # Save telegram_user_id (used as the default reply target)
         raw_uid = app_config.get("telegram_user_id", "").strip()
         output_recipients, _ = _parse_telegram_user_ids(raw_uid)
-        config['telegram']['telegram_user_id'] = str(output_recipients[0]) if output_recipients else ""
-        config['telegram']['output_recipients'] = output_recipients
+        config["telegram"]["telegram_user_id"] = (
+            str(output_recipients[0]) if output_recipients else ""
+        )
+        config["telegram"]["output_recipients"] = output_recipients
 
         # Build the allow-list only from the explicit access-list field.
         # Leaving it empty means "accept the first real Telegram user message"
         # and prevents a mistyped owner ID from blocking inbound messages.
         raw_ids = app_config.get("allowed_user_ids", "").strip()
         allowed_ids, _ = _parse_telegram_user_ids(raw_ids)
-        config['telegram']['allowed_user_ids'] = allowed_ids
-        config['telegram']['authorized_users'] = allowed_ids
+        config["telegram"]["allowed_user_ids"] = allowed_ids
+        config["telegram"]["authorized_users"] = allowed_ids
 
         # When the user configures Telegram, disable Discord so only one
         # primary bot is active (avoids duplicate notifications).
-        config['discord']['enabled'] = False
+        config["discord"]["enabled"] = False
 
     elif app_key == "discord" and app_config:
-        config['discord']['enabled'] = True
-        config['discord']['bot_name'] = app_config.get("bot_name", "")
-        config['discord']['bot_token'] = app_config.get("bot_token", "")
+        config["discord"]["enabled"] = True
+        config["discord"]["bot_name"] = app_config.get("bot_name", "")
+        config["discord"]["bot_token"] = app_config.get("bot_token", "")
         # Disable Telegram when Discord is explicitly chosen
-        config['telegram']['enabled'] = False
+        config["telegram"]["enabled"] = False
 
     else:
         # User chose "none" — disable both bots
-        config['telegram']['enabled'] = False
-        config['discord']['enabled'] = False
+        config["telegram"]["enabled"] = False
+        config["discord"]["enabled"] = False
 
     _atomic_write_yaml(config_path, config)
 
@@ -1257,7 +1684,9 @@ def _save_messaging_config_to_yaml(app_key: str, app_config: Optional[Dict[str, 
 # ---------------------------------------------------------------------------
 # Main configuration flow
 # ---------------------------------------------------------------------------
-def configure_provider_and_model() -> Tuple[Optional[str], Optional[str], Optional[str]]:
+def configure_provider_and_model() -> (
+    Tuple[Optional[str], Optional[str], Optional[str]]
+):
     """
     Complete flow: select provider -> enter API key -> fetch models -> select model.
     Returns (provider_key, model_id, api_key) or (None, None, None) if cancelled.
@@ -1265,15 +1694,20 @@ def configure_provider_and_model() -> Tuple[Optional[str], Optional[str], Option
     """
     # Check if stdin is a TTY before attempting curses UI
     import sys as _sys
+
     if not _sys.stdin.isatty():
         print("\n⚠️  --setting requires an interactive terminal (TTY).")
-        print("   Please run directly from a terminal, not from a pipe or non-interactive shell.")
+        print(
+            "   Please run directly from a terminal, not from a pipe or non-interactive shell."
+        )
         print("   Example: python3 run.py --setting")
         return None, None, None
     return curses.wrapper(_configure_flow_curses)
 
 
-def _configure_flow_curses(stdscr) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+def _configure_flow_curses(
+    stdscr,
+) -> Tuple[Optional[str], Optional[str], Optional[str]]:
     _setup_colors()
 
     while True:
@@ -1289,41 +1723,54 @@ def _configure_flow_curses(stdscr) -> Tuple[Optional[str], Optional[str], Option
         if provider.get("needs_key"):
             api_key = get_api_key(provider_key, stdscr)
             if not api_key:
-                _show_message(stdscr,
-                              "No API key provided.\n"
-                              "Please enter an API key to fetch models.\n"
-                              "Press any key to try again...")
+                _show_message(
+                    stdscr,
+                    "No API key provided.\n"
+                    "Please enter an API key to fetch models.\n"
+                    "Press any key to try again...",
+                )
                 continue
 
         # Step 3: Fetch models
         if provider_key == "ollama":
             ok, msg = check_ollama_status()
             if not ok:
-                _show_message(stdscr, msg + "\n\nPress any key to return to provider selection...")
+                _show_message(
+                    stdscr, msg + "\n\nPress any key to return to provider selection..."
+                )
                 continue
             models = fetch_models_ollama()
             if not models:
-                _show_message(stdscr,
-                              "No Ollama models found.\n"
-                              "Install one with: ollama pull llama3\n"
-                              "Or choose 'Custom Model' to enter a name.\n\n"
-                              "Press any key to continue...")
+                _show_message(
+                    stdscr,
+                    "No Ollama models found.\n"
+                    "Install one with: ollama pull llama3\n"
+                    "Or choose 'Custom Model' to enter a name.\n\n"
+                    "Press any key to continue...",
+                )
                 # For Ollama, we still let them proceed with custom model
                 models = []
         else:
             stdscr.clear()
-            stdscr.addstr(0, 0, "Fetching models from %s..." % provider["name"], _attr(COLOR_TITLE, True))
+            stdscr.addstr(
+                0,
+                0,
+                "Fetching models from %s..." % provider["name"],
+                _attr(COLOR_TITLE, True),
+            )
             stdscr.refresh()
 
             models = fetch_models_from_api(provider_key, api_key)
             if not models:
-                _show_message(stdscr,
-                              "Could not fetch models from %s.\n"
-                              "Check your API key and internet connection.\n"
-                              "You can still choose 'Custom Model' to enter a name.\n\n"
-                              "Press any key to continue, or Q to go back..." % provider["name"])
+                _show_message(
+                    stdscr,
+                    "Could not fetch models from %s.\n"
+                    "Check your API key and internet connection.\n"
+                    "You can still choose 'Custom Model' to enter a name.\n\n"
+                    "Press any key to continue, or Q to go back..." % provider["name"],
+                )
                 ch = stdscr.getch()
-                if ch in (ord('q'), ord('Q')):
+                if ch in (ord("q"), ord("Q")):
                     continue
                 models = []
 
@@ -1369,25 +1816,42 @@ def _configure_flow_curses(stdscr) -> Tuple[Optional[str], Optional[str], Option
 def _install_sdk_package(stdscr, package, provider_name):
     """Check if an SDK is importable, install if not. Shows curses progress."""
     import importlib
+
     try:
-        importlib.import_module(package.replace('-', '_'))
+        importlib.import_module(package.replace("-", "_"))
         return True
     except ImportError:
         pass
-    _show_message(stdscr, "Installing %s SDK for %s...\n\nThis may take a moment..." % (package, provider_name))
+    _show_message(
+        stdscr,
+        "Installing %s SDK for %s...\n\nThis may take a moment..."
+        % (package, provider_name),
+    )
     try:
         result = subprocess.run(
             [sys.executable, "-m", "pip", "install", package],
-            capture_output=True, text=True, timeout=300
+            capture_output=True,
+            text=True,
+            timeout=300,
         )
         if result.returncode == 0:
-            _show_message(stdscr, "Successfully installed %s SDK!\n\nPress any key to continue..." % package)
+            _show_message(
+                stdscr,
+                "Successfully installed %s SDK!\n\nPress any key to continue..."
+                % package,
+            )
             return True
         else:
-            _show_message(stdscr, "Could not install %s SDK.\nYou may need to install it manually:\n  pip install %s\n\nPress any key..." % (package, package))
+            _show_message(
+                stdscr,
+                "Could not install %s SDK.\nYou may need to install it manually:\n  pip install %s\n\nPress any key..."
+                % (package, package),
+            )
             return False
     except Exception as e:
-        _show_message(stdscr, "Error installing %s: %s\n\nPress any key..." % (package, str(e)))
+        _show_message(
+            stdscr, "Error installing %s: %s\n\nPress any key..." % (package, str(e))
+        )
         return False
 
 
@@ -1419,7 +1883,7 @@ def _save_to_config_yaml(provider: str, model: str, api_key: Optional[str] = Non
     config = {}
     if config_path.exists():
         try:
-            with open(config_path, 'r') as f:
+            with open(config_path, "r") as f:
                 raw = _yaml.safe_load(f)
             if raw is not None and isinstance(raw, dict):
                 config = raw
@@ -1427,22 +1891,22 @@ def _save_to_config_yaml(provider: str, model: str, api_key: Optional[str] = Non
             config = {}
 
     # Ensure api section exists and is a dict
-    if not isinstance(config.get('api'), dict):
-        config['api'] = {}
+    if not isinstance(config.get("api"), dict):
+        config["api"] = {}
 
     # Set provider and model
-    config['api']['preferred_provider'] = provider
+    config["api"]["preferred_provider"] = provider
 
     # Set model in models dict
-    if not isinstance(config['api'].get('models'), dict):
-        config['api']['models'] = {}
-    config['api']['models'][provider] = model
+    if not isinstance(config["api"].get("models"), dict):
+        config["api"]["models"] = {}
+    config["api"]["models"][provider] = model
 
     # Set API key if provided
     if api_key and provider != "ollama":
-        if not isinstance(config['api'].get('api_keys'), dict):
-            config['api']['api_keys'] = {}
-        config['api']['api_keys'][provider] = api_key
+        if not isinstance(config["api"].get("api_keys"), dict):
+            config["api"]["api_keys"] = {}
+        config["api"]["api_keys"][provider] = api_key
 
         # Also set environment variable
         env_var = PROVIDER_API_KEY_ENV_VARS.get(provider)
@@ -1454,6 +1918,7 @@ def _save_to_config_yaml(provider: str, model: str, api_key: Optional[str] = Non
 
     if api_key and provider != "ollama":
         import sys as _sys
+
         _sys.stderr.write(
             "\n\u26a0\ufe0f  WARNING: API key saved in plaintext in config.yaml\n"
             "\U0001f4a1 Consider using environment variables instead for better security\n"

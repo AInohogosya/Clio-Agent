@@ -14,6 +14,7 @@ from ..utils.logger import get_logger
 @dataclass
 class OllamaResponse:
     """Simple Ollama response"""
+
     success: bool
     content: str
     model: str
@@ -27,7 +28,9 @@ def _model_has_size(model_str: str, size_str: str) -> bool:
       "7b"  should NOT match "70b" or "14b"
       "70b" should match "llama3.1:70b" but NOT "llama3.1:700b"
     """
-    return bool(re.search(r'(?<![0-9])' + re.escape(size_str) + r'(?![0-9])', model_str))
+    return bool(
+        re.search(r"(?<![0-9])" + re.escape(size_str) + r"(?![0-9])", model_str)
+    )
 
 
 class SimpleOllamaProvider:
@@ -44,7 +47,14 @@ class SimpleOllamaProvider:
         self.timeout = timeout
         self.logger = get_logger("ollama_provider")
 
-    def chat(self, prompt: str, model: Optional[str] = None, temperature: float = 1.0, max_tokens: int = 5000, system_instructions: Optional[str] = None) -> OllamaResponse:
+    def chat(
+        self,
+        prompt: str,
+        model: Optional[str] = None,
+        temperature: float = 1.0,
+        max_tokens: int = 5000,
+        system_instructions: Optional[str] = None,
+    ) -> OllamaResponse:
         """
         Send a chat request to Ollama.
 
@@ -65,12 +75,17 @@ class SimpleOllamaProvider:
             # Check if user is signed in before attempting cloud model
             try:
                 import subprocess
-                result = subprocess.run(["ollama", "whoami"], capture_output=True, text=True, timeout=5)
+
+                result = subprocess.run(
+                    ["ollama", "whoami"], capture_output=True, text=True, timeout=5
+                )
                 is_signed_in = result.returncode == 0 and result.stdout.strip()
             except (subprocess.SubprocessError, FileNotFoundError):
                 is_signed_in = False
             except Exception as _signin_exc:
-                self.logger.warning(f"Unexpected error checking Ollama sign-in status: {_signin_exc}")
+                self.logger.warning(
+                    f"Unexpected error checking Ollama sign-in status: {_signin_exc}"
+                )
                 is_signed_in = False
 
             if not is_signed_in:
@@ -80,7 +95,7 @@ class SimpleOllamaProvider:
                     success=False,
                     content="",
                     model=model,
-                    error=f"🔐 Cloud model '{model}' requires Ollama sign-in.\n\n{alternatives}\n\n📋 **To sign in**:\n1. Run: ollama signin\n2. Complete sign-in in browser\n3. Verify: ollama whoami\n4. Try again"
+                    error=f"🔐 Cloud model '{model}' requires Ollama sign-in.\n\n{alternatives}\n\n📋 **To sign in**:\n1. Run: ollama signin\n2. Complete sign-in in browser\n3. Verify: ollama whoami\n4. Try again",
                 )
 
         # Fix common model name errors
@@ -89,6 +104,7 @@ class SimpleOllamaProvider:
         elif model and ":cloud" in model:
             # Validate cloud models exist
             from ..utils.model_definitions import MODEL_FAMILIES
+
             model_exists = False
             for family_data in MODEL_FAMILIES.values():
                 for subfamily_data in family_data.get("subfamilies", {}).values():
@@ -123,45 +139,77 @@ class SimpleOllamaProvider:
             "options": {
                 "temperature": temperature,
                 "num_predict": max_tokens,
-            }
+            },
         }
 
         # Progressive timeout scaling based on model size and task type
         if model:
             # Check if this is task generation (longer prompt) vs command execution (shorter prompt)
-            is_task_generation = any(keyword in prompt.lower() for keyword in [
-                "convert this user instruction", "cli assistant", "generate numbered steps",
-                "task into specific command-line steps", "output format"
-            ])
+            is_task_generation = any(
+                keyword in prompt.lower()
+                for keyword in [
+                    "convert this user instruction",
+                    "cli assistant",
+                    "generate numbered steps",
+                    "task into specific command-line steps",
+                    "output format",
+                ]
+            )
 
             # Show loading indicator for large models
             # Use regex word-boundary matching to avoid false positives
             # (e.g. "7b" should NOT match "70b", "14b" should NOT match "114b")
             if any(_model_has_size(model, s) for s in ["671b", "397b", "235b"]):
                 if is_task_generation:
-                    print(f"🔄 Processing complex task with extra-large model '{model}'... This may take 8-12 minutes due to prompt complexity.")
-                    timeout = 720  # 12 minutes for task generation with extra-large models
+                    print(
+                        f"🔄 Processing complex task with extra-large model '{model}'... This may take 8-12 minutes due to prompt complexity."
+                    )
+                    timeout = (
+                        720  # 12 minutes for task generation with extra-large models
+                    )
                 else:
-                    print(f"🔄 Loading extra-large model '{model}'... This may take 5-10 minutes.")
+                    print(
+                        f"🔄 Loading extra-large model '{model}'... This may take 5-10 minutes."
+                    )
                     timeout = 600  # 10 minutes for extra-large models
-            elif any(_model_has_size(model, s) for s in ["122b", "70b", "35b"]) or ":cloud" in model:
+            elif (
+                any(_model_has_size(model, s) for s in ["122b", "70b", "35b"])
+                or ":cloud" in model
+            ):
                 if is_task_generation:
-                    print(f"🔄 Processing complex task with large model '{model}'... This may take 5-8 minutes due to prompt complexity.")
+                    print(
+                        f"🔄 Processing complex task with large model '{model}'... This may take 5-8 minutes due to prompt complexity."
+                    )
                     timeout = 480  # 8 minutes for task generation with large models
                 else:
-                    print(f"🔄 Loading large model '{model}'... This may take 3-7 minutes.")
+                    print(
+                        f"🔄 Loading large model '{model}'... This may take 3-7 minutes."
+                    )
                     timeout = 420  # 7 minutes for large/cloud models
             elif any(_model_has_size(model, s) for s in ["32b", "30b"]):
                 if is_task_generation:
-                    print(f"🔄 Processing complex task with medium-large model '{model}'... This may take 3-5 minutes due to prompt complexity.")
-                    timeout = 360  # 6 minutes for task generation with medium-large models
+                    print(
+                        f"🔄 Processing complex task with medium-large model '{model}'... This may take 3-5 minutes due to prompt complexity."
+                    )
+                    timeout = (
+                        360  # 6 minutes for task generation with medium-large models
+                    )
                 else:
-                    print(f"🔄 Loading medium-large model '{model}'... This may take 2-5 minutes.")
+                    print(
+                        f"🔄 Loading medium-large model '{model}'... This may take 2-5 minutes."
+                    )
                     timeout = 300  # 5 minutes for medium-large models
-            elif any(_model_has_size(model, s) for s in ["27b", "14b", "13b", "12b", "10b", "9b", "8b", "7b"]):
+            elif any(
+                _model_has_size(model, s)
+                for s in ["27b", "14b", "13b", "12b", "10b", "9b", "8b", "7b"]
+            ):
                 if is_task_generation:
-                    print(f"🔄 Processing complex task with model '{model}'... This may take 2-4 minutes due to prompt complexity.")
-                    timeout = 240  # 4 minutes for task generation with small-medium models
+                    print(
+                        f"🔄 Processing complex task with model '{model}'... This may take 2-4 minutes due to prompt complexity."
+                    )
+                    timeout = (
+                        240  # 4 minutes for task generation with small-medium models
+                    )
                 else:
                     print(f"🔄 Loading model '{model}'... This may take 1-3 minutes.")
                     timeout = 180  # 3 minutes for small-medium models
@@ -172,22 +220,24 @@ class SimpleOllamaProvider:
 
         try:
             # Log request details for debugging
-            self.logger.debug(f"Making request to {self.endpoint}/api/chat",
-                            model=model,
-                            timeout=timeout,
-                            payload_size=len(str(payload)))
+            self.logger.debug(
+                f"Making request to {self.endpoint}/api/chat",
+                model=model,
+                timeout=timeout,
+                payload_size=len(str(payload)),
+            )
 
             response = requests.post(
-                f"{self.endpoint}/api/chat",
-                json=payload,
-                timeout=timeout
+                f"{self.endpoint}/api/chat", json=payload, timeout=timeout
             )
 
             # Log response details for debugging
-            self.logger.debug(f"Response received",
-                            status_code=response.status_code,
-                            headers=dict(response.headers),
-                            content_length=len(response.text))
+            self.logger.debug(
+                f"Response received",
+                status_code=response.status_code,
+                headers=dict(response.headers),
+                content_length=len(response.text),
+            )
 
             if response.status_code == 200:
                 result = response.json()
@@ -196,17 +246,19 @@ class SimpleOllamaProvider:
 
             # Handle specific error cases
             error_text = response.text
-            self.logger.error(f"Ollama API error",
-                           status_code=response.status_code,
-                           error_text=error_text[:500] if error_text else "No error text",
-                           model=model)
+            self.logger.error(
+                f"Ollama API error",
+                status_code=response.status_code,
+                error_text=error_text[:500] if error_text else "No error text",
+                model=model,
+            )
 
             if response.status_code == 401:
                 return OllamaResponse(
                     success=False,
                     content="",
                     model=model,
-                    error=f"🔐 Authentication required. Run 'ollama signin' in your terminal, then try again."
+                    error=f"🔐 Authentication required. Run 'ollama signin' in your terminal, then try again.",
                 )
 
             if response.status_code == 404:
@@ -214,11 +266,13 @@ class SimpleOllamaProvider:
                     success=False,
                     content="",
                     model=model,
-                    error=f"Model '{model}' not found. Run 'ollama pull {model}' to download it."
+                    error=f"Model '{model}' not found. Run 'ollama pull {model}' to download it.",
                 )
 
             # Check for cloud model authentication issues
-            if ":cloud" in model and (response.status_code == 403 or response.status_code == 401):
+            if ":cloud" in model and (
+                response.status_code == 403 or response.status_code == 401
+            ):
                 # Enhanced cloud model error handling
                 error_msg = f"🔐 Cloud model '{model}' requires authentication. Please run 'ollama signin' and complete the sign-in process in your browser."
 
@@ -233,10 +287,7 @@ class SimpleOllamaProvider:
                 error_msg += f"\n\n📋 **Steps to fix**:\n1. Run: ollama signin\n2. Complete sign-in in browser\n3. Verify: ollama whoami\n4. Try again"
 
                 return OllamaResponse(
-                    success=False,
-                    content="",
-                    model=model,
-                    error=error_msg
+                    success=False, content="", model=model, error=error_msg
                 )
 
             # Check for rate limiting on cloud models
@@ -245,14 +296,14 @@ class SimpleOllamaProvider:
                     success=False,
                     content="",
                     model=model,
-                    error=f"⏱️ Cloud model '{model}' rate limited. Please wait a few minutes and try again."
+                    error=f"⏱️ Cloud model '{model}' rate limited. Please wait a few minutes and try again.",
                 )
 
             return OllamaResponse(
                 success=False,
                 content="",
                 model=model,
-                error=f"Ollama error (HTTP {response.status_code}): {error_text}"
+                error=f"Ollama error (HTTP {response.status_code}): {error_text}",
             )
 
         except requests.exceptions.Timeout:
@@ -262,7 +313,10 @@ class SimpleOllamaProvider:
                 if any(_model_has_size(model, s) for s in ["671b", "397b", "235b"]):
                     model_category = "extra-large"
                     suggestion = "Consider using a smaller model for faster responses (e.g., 9B-27B variants)."
-                elif any(_model_has_size(model, s) for s in ["122b", "70b", "35b"]) or ":cloud" in model:
+                elif (
+                    any(_model_has_size(model, s) for s in ["122b", "70b", "35b"])
+                    or ":cloud" in model
+                ):
                     model_category = "large"
                     suggestion = "Try again or use a medium model (e.g., 9B-27B variants) for quicker responses."
                 elif any(_model_has_size(model, s) for s in ["32b", "30b"]):
@@ -277,35 +331,35 @@ class SimpleOllamaProvider:
                         success=False,
                         content="",
                         model=model,
-                        error=f"🌩 Cloud {model_category} model '{model}' timed out after {timeout}s. Cloud models require stable internet. {suggestion}"
+                        error=f"🌩 Cloud {model_category} model '{model}' timed out after {timeout}s. Cloud models require stable internet. {suggestion}",
                     )
                 else:
                     return OllamaResponse(
                         success=False,
                         content="",
                         model=model,
-                        error=f"⏱️ {model_category} model '{model}' timed out after {timeout}s. Model may be loading. {suggestion}"
+                        error=f"⏱️ {model_category} model '{model}' timed out after {timeout}s. Model may be loading. {suggestion}",
                     )
             else:
                 return OllamaResponse(
                     success=False,
                     content="",
                     model="unknown",
-                    error=f"Request timed out after {timeout}s. Please try again."
+                    error=f"Request timed out after {timeout}s. Please try again.",
                 )
         except requests.exceptions.ConnectionError as e:
             return OllamaResponse(
                 success=False,
                 content="",
                 model=model,
-                error=f"Connection failed: {str(e)}. Check Ollama is running with 'ollama serve'."
+                error=f"Connection failed: {str(e)}. Check Ollama is running with 'ollama serve'.",
             )
         except Exception as e:
             return OllamaResponse(
                 success=False,
                 content="",
                 model=model,
-                error=f"Unexpected error: {str(e)}"
+                error=f"Unexpected error: {str(e)}",
             )
 
     def _get_cloud_alternatives(self, cloud_model: str) -> str:

@@ -25,6 +25,7 @@ from ..utils.exceptions import ExecutionError, PlatformError, ValidationError
 
 class TerminalEntryType(Enum):
     """Types of terminal entries"""
+
     COMMAND = "command"
     OUTPUT = "output"
     ERROR = "error"
@@ -33,6 +34,7 @@ class TerminalEntryType(Enum):
 @dataclass
 class TerminalEntry:
     """Individual terminal entry with command execution information"""
+
     timestamp: float
     entry_type: TerminalEntryType
     content: str
@@ -45,21 +47,22 @@ class TerminalEntry:
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary with proper serialization"""
         data = asdict(self)
-        data['entry_type'] = self.entry_type.value
-        data['timestamp'] = str(self.timestamp)
+        data["entry_type"] = self.entry_type.value
+        data["timestamp"] = str(self.timestamp)
         return data
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> 'TerminalEntry':
+    def from_dict(cls, data: Dict[str, Any]) -> "TerminalEntry":
         """Create from dictionary with proper deserialization"""
-        data['entry_type'] = TerminalEntryType(data['entry_type'])
-        data['timestamp'] = float(data['timestamp'])
+        data["entry_type"] = TerminalEntryType(data["entry_type"])
+        data["timestamp"] = float(data["timestamp"])
         return cls(**data)
 
 
 @dataclass
 class TerminalSession:
     """Complete terminal session for a work session"""
+
     session_id: str
     start_time: float
     entries: List[TerminalEntry] = field(default_factory=list)
@@ -70,19 +73,21 @@ class TerminalSession:
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary with proper serialization"""
         data = asdict(self)
-        data['start_time'] = str(self.start_time)
+        data["start_time"] = str(self.start_time)
         if self.end_time is not None:
-            data['end_time'] = str(self.end_time)
-        data['entries'] = [entry.to_dict() for entry in self.entries]
+            data["end_time"] = str(self.end_time)
+        data["entries"] = [entry.to_dict() for entry in self.entries]
         return data
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> 'TerminalSession':
+    def from_dict(cls, data: Dict[str, Any]) -> "TerminalSession":
         """Create from dictionary with proper deserialization"""
-        data['start_time'] = float(data['start_time'])
-        if data.get('end_time') is not None:
-            data['end_time'] = float(data['end_time'])
-        data['entries'] = [TerminalEntry.from_dict(entry) for entry in data.get('entries', [])]
+        data["start_time"] = float(data["start_time"])
+        if data.get("end_time") is not None:
+            data["end_time"] = float(data["end_time"])
+        data["entries"] = [
+            TerminalEntry.from_dict(entry) for entry in data.get("entries", [])
+        ]
         return cls(**data)
 
 
@@ -92,18 +97,22 @@ class TerminalHistory:
     Preserves terminal history and displays command outputs instead of Save content
     OS-independent implementation with comprehensive error handling
     """
-    
+
     DEFAULT_TIMEOUT = 30
     DEFAULT_HISTORY_DIR = "./peripherals/terminal_history"
-    
-    def __init__(self, session_id: Optional[str] = None, history_dir: Optional[Union[str, Path]] = None):
+
+    def __init__(
+        self,
+        session_id: Optional[str] = None,
+        history_dir: Optional[Union[str, Path]] = None,
+    ):
         """
         Initialize terminal history system
-        
+
         Args:
             session_id: Optional session identifier
             history_dir: Directory for history storage
-            
+
         Raises:
             PlatformError: If initialization fails due to platform-specific issues
             ValidationError: If parameters are invalid
@@ -113,17 +122,17 @@ class TerminalHistory:
             self.session_id = session_id or f"session_{int(time.time())}"
             if not self.session_id or not isinstance(self.session_id, str):
                 raise ValidationError("Session ID must be a non-empty string")
-            
+
             # Initialize history directory with OS-independent path handling
             self.history_dir = Path(history_dir or self.DEFAULT_HISTORY_DIR)
             self._ensure_history_directory()
-            
+
             # Initialize logger
             self.logger = get_logger("terminal_history")
             self._execution_lock = threading.Lock()
             self._current_process = None
             self._current_process_lock = threading.Lock()
-            
+
             # Initialize terminal session
             # SECURITY FIX: Start from user's home directory instead of root (/)
             # to prevent unrestricted filesystem access
@@ -132,27 +141,29 @@ class TerminalHistory:
             self.terminal_session = TerminalSession(
                 session_id=self.session_id,
                 start_time=time.time(),
-                current_working_directory=str(self._current_directory)
+                current_working_directory=str(self._current_directory),
             )
-            
+
             # Platform-specific settings
             self._platform = platform.system().lower()
             self._shell = self._detect_shell()
-            
+
             self.logger.info(
                 f"Terminal history system initialized",
                 session_id=self.session_id,
                 platform=self._platform,
                 shell=self._shell,
                 history_dir=str(self.history_dir),
-                working_directory=str(self._current_directory)
+                working_directory=str(self._current_directory),
             )
-            
+
         except Exception as e:
             if isinstance(e, (PlatformError, ValidationError)):
                 raise
-            raise PlatformError(f"Failed to initialize terminal history: {str(e)}") from e
-    
+            raise PlatformError(
+                f"Failed to initialize terminal history: {str(e)}"
+            ) from e
+
     def _detect_shell(self) -> str:
         """Detect the current shell for command execution"""
         try:
@@ -163,43 +174,49 @@ class TerminalHistory:
         except Exception as e:
             self.logger.warning(f"Failed to detect shell: {e}")
             return "bash" if self._platform != "windows" else "cmd.exe"
-    
+
     def _ensure_history_directory(self) -> None:
         """Ensure history directory exists with proper permissions"""
         try:
             # Create directory with parents if needed
             self.history_dir.mkdir(parents=True, exist_ok=True)
-            
+
             # Check directory is writable
             if not os.access(self.history_dir, os.W_OK):
-                raise PermissionError(f"History directory is not writable: {self.history_dir}")
-                
+                raise PermissionError(
+                    f"History directory is not writable: {self.history_dir}"
+                )
+
         except PermissionError as e:
-            raise PlatformError(f"Permission denied creating history directory: {e}") from e
+            raise PlatformError(
+                f"Permission denied creating history directory: {e}"
+            ) from e
         except OSError as e:
             raise PlatformError(f"Failed to create history directory: {e}") from e
-    
-    def execute_command(self, command: str, timeout: Optional[int] = None) -> Dict[str, Any]:
+
+    def execute_command(
+        self, command: str, timeout: Optional[int] = None
+    ) -> Dict[str, Any]:
         """
         Execute a CLI command and preserve its output in history
-        
+
         Args:
             command: The CLI command to execute
             timeout: Command timeout in seconds (overrides default)
-            
+
         Returns:
             Dict with execution results including output, error, return code
-            
+
         Raises:
             ValidationError: If command is invalid
             PlatformError: If command execution fails due to platform issues
         """
         if not command or not isinstance(command, str):
             raise ValidationError("Command must be a non-empty string")
-        
+
         if not command.strip():
             raise ValidationError("Command cannot be empty or whitespace only")
-        
+
         # Validate timeout
         if timeout is not None:
             if not isinstance(timeout, (int, float)):
@@ -209,7 +226,7 @@ class TerminalHistory:
         else:
             timeout = self.DEFAULT_TIMEOUT
         start_time = time.time()
-        
+
         try:
             # Log command entry
             command_entry = TerminalEntry(
@@ -217,36 +234,40 @@ class TerminalHistory:
                 entry_type=TerminalEntryType.COMMAND,
                 content=command,
                 command=command,
-                working_directory=str(self._current_directory)
+                working_directory=str(self._current_directory),
             )
             self.terminal_session.entries.append(command_entry)
-            
-            self.logger.info(f"Executing command", command=command, working_directory=str(self._current_directory))
-            
+
+            self.logger.info(
+                f"Executing command",
+                command=command,
+                working_directory=str(self._current_directory),
+            )
+
             # Handle special commands
-            if command.strip().startswith('cd '):
+            if command.strip().startswith("cd "):
                 result = self._handle_cd_command(command, start_time)
-            elif command.strip() == 'cd -':
+            elif command.strip() == "cd -":
                 result = self._handle_cd_dash_command(command, start_time)
-            elif command.strip() == 'cd':
+            elif command.strip() == "cd":
                 result = self._handle_cd_home_command(command, start_time)
             else:
                 result = self._execute_subprocess_command(command, timeout)
-            
+
             duration = time.time() - start_time
-            
+
             # Update command entry with execution results
             command_entry.return_code = result.returncode
             command_entry.duration = duration
-            
+
             self.logger.info(
                 f"Command completed",
                 command=command,
                 return_code=result.returncode,
                 duration=duration,
-                success=result.returncode == 0
+                success=result.returncode == 0,
             )
-            
+
             # Log output entry
             if result.stdout and result.stdout.strip():
                 output_entry = TerminalEntry(
@@ -256,10 +277,10 @@ class TerminalHistory:
                     command=command,
                     working_directory=str(self._current_directory),
                     return_code=result.returncode,
-                    duration=duration
+                    duration=duration,
                 )
                 self.terminal_session.entries.append(output_entry)
-            
+
             # Log error entry if there's stderr
             if result.stderr and result.stderr.strip():
                 error_entry = TerminalEntry(
@@ -269,26 +290,26 @@ class TerminalHistory:
                     command=command,
                     working_directory=str(self._current_directory),
                     return_code=result.returncode,
-                    duration=duration
+                    duration=duration,
                 )
                 self.terminal_session.entries.append(error_entry)
-            
+
             # Persist history
             self._persist_history()
-            
+
             return {
                 "success": result.returncode == 0,
                 "stdout": result.stdout,
                 "stderr": result.stderr,
                 "return_code": result.returncode,
                 "duration": duration,
-                "working_directory": str(self._current_directory)
+                "working_directory": str(self._current_directory),
             }
-            
+
         except subprocess.TimeoutExpired as e:
             error_msg = f"Command timed out after {timeout} seconds: {command}"
             self.logger.error(error_msg)
-            
+
             # Log timeout error
             error_entry = TerminalEntry(
                 timestamp=time.time(),
@@ -296,24 +317,24 @@ class TerminalHistory:
                 content=error_msg,
                 command=command,
                 working_directory=str(self._current_directory),
-                return_code=-1
+                return_code=-1,
             )
             self.terminal_session.entries.append(error_entry)
             self._persist_history()
-            
+
             return {
                 "success": False,
                 "stdout": "",
                 "stderr": error_msg,
                 "return_code": -1,
                 "duration": timeout,
-                "working_directory": str(self._current_directory)
+                "working_directory": str(self._current_directory),
             }
-            
+
         except Exception as e:
             error_msg = f"Command execution failed: {str(e)}"
             self.logger.error(error_msg, command=command, error_type=type(e).__name__)
-            
+
             # Log execution error
             error_entry = TerminalEntry(
                 timestamp=time.time(),
@@ -321,56 +342,63 @@ class TerminalHistory:
                 content=error_msg,
                 command=command,
                 working_directory=str(self._current_directory),
-                return_code=-1
+                return_code=-1,
             )
             self.terminal_session.entries.append(error_entry)
             self._persist_history()
-            
+
             return {
                 "success": False,
                 "stdout": "",
                 "stderr": error_msg,
                 "return_code": -1,
                 "duration": time.time() - start_time,
-                "working_directory": str(self._current_directory)
+                "working_directory": str(self._current_directory),
             }
-    
+
     def get_recent_output(self, count: int = 10) -> List[TerminalEntry]:
         """
         Get recent terminal entries (commands, outputs, and errors) for context
-        
+
         Args:
             count: Number of recent entries to retrieve
-            
+
         Returns:
             List of recent terminal entries
         """
         if count <= 0:
             return []
-        
-        return self.terminal_session.entries[-count:] if self.terminal_session.entries else []
-    
+
+        return (
+            self.terminal_session.entries[-count:]
+            if self.terminal_session.entries
+            else []
+        )
+
     def get_command_history(self, count: int = 10) -> List[TerminalEntry]:
         """
         Get recent command entries
-        
+
         Args:
             count: Number of recent commands to retrieve
-            
+
         Returns:
             List of recent command entries
         """
         if count <= 0:
             return []
-        
-        command_entries = [entry for entry in self.terminal_session.entries 
-                         if entry.entry_type == TerminalEntryType.COMMAND]
+
+        command_entries = [
+            entry
+            for entry in self.terminal_session.entries
+            if entry.entry_type == TerminalEntryType.COMMAND
+        ]
         return command_entries[-count:] if command_entries else []
-    
+
     def get_current_working_directory(self) -> Path:
         """Get current working directory as Path object"""
         return self._current_directory
-    
+
     def _needs_shell(self, command: str) -> bool:
         """Return True when a command requires a shell interpreter.
 
@@ -381,10 +409,9 @@ class TerminalHistory:
         command is perfectly valid but the argument is not a real executable.
         """
         import re
+
         # Characters / patterns that require a shell:
-        shell_metacharacters = re.compile(
-            r'[|&;<>$~*?{}()`\n]|&&|\|\||\$\('
-        )
+        shell_metacharacters = re.compile(r"[|&;<>$~*?{}()`\n]|&&|\|\||\$\(")
         return bool(shell_metacharacters.search(command))
 
     def _execute_subprocess_command(self, command: str, timeout: int):
@@ -403,27 +430,27 @@ class TerminalHistory:
             if self._platform == "windows":
                 # On Windows, always use cmd.exe /c to get full shell features
                 result = subprocess.run(
-                    ['cmd.exe', '/c', command],
+                    ["cmd.exe", "/c", command],
                     shell=False,
                     capture_output=True,
                     text=True,
                     timeout=timeout,
                     cwd=str(self._current_directory),
-                    encoding='utf-8',
-                    errors='replace'
+                    encoding="utf-8",
+                    errors="replace",
                 )
             else:
                 if self._needs_shell(command):
                     # Delegate to bash so that ~, $VAR, |, >, &&, || etc. work
                     result = subprocess.run(
-                        ['bash', '-c', command],
+                        ["bash", "-c", command],
                         shell=False,
                         capture_output=True,
                         text=True,
                         timeout=timeout,
                         cwd=str(self._current_directory),
-                        encoding='utf-8',
-                        errors='replace'
+                        encoding="utf-8",
+                        errors="replace",
                     )
                 else:
                     # Simple command — run without shell for efficiency
@@ -435,8 +462,8 @@ class TerminalHistory:
                         text=True,
                         timeout=timeout,
                         cwd=str(self._current_directory),
-                        encoding='utf-8',
-                        errors='replace'
+                        encoding="utf-8",
+                        errors="replace",
                     )
 
             return result
@@ -444,66 +471,68 @@ class TerminalHistory:
         except FileNotFoundError as e:
             # Command not found - return a mock result with error info
             from types import SimpleNamespace
+
             self.logger.warning(f"Command not found: {e}")
-            return SimpleNamespace(returncode=-1, stdout='', stderr=str(e))
+            return SimpleNamespace(returncode=-1, stdout="", stderr=str(e))
         except subprocess.CalledProcessError as e:
             # This shouldn't happen with capture_output=True, but just in case
             self.logger.warning(f"CalledProcessError in command execution: {e}")
             from types import SimpleNamespace
-            return SimpleNamespace(returncode=e.returncode, stdout=e.stdout or '', stderr=e.stderr or '')
+
+            return SimpleNamespace(
+                returncode=e.returncode, stdout=e.stdout or "", stderr=e.stderr or ""
+            )
         except UnicodeDecodeError as e:
             self.logger.error(f"Unicode decode error in command output: {e}")
             # Retry via shell with encoding fallback
             try:
                 if self._platform == "windows":
                     result = subprocess.run(
-                        ['cmd.exe', '/c', command],
+                        ["cmd.exe", "/c", command],
                         shell=False,
                         capture_output=True,
                         text=True,
                         timeout=timeout,
                         cwd=str(self._current_directory),
-                        encoding='utf-8',
-                        errors='replace'
+                        encoding="utf-8",
+                        errors="replace",
                     )
                 else:
                     result = subprocess.run(
-                        ['bash', '-c', command],
+                        ["bash", "-c", command],
                         shell=False,
                         capture_output=True,
                         text=True,
                         timeout=timeout,
                         cwd=str(self._current_directory),
-                        encoding='utf-8',
-                        errors='replace'
+                        encoding="utf-8",
+                        errors="replace",
                     )
                 return result
             except Exception as retry_e:
-                raise PlatformError(f"Failed to execute command with encoding fallback: {retry_e}") from retry_e
+                raise PlatformError(
+                    f"Failed to execute command with encoding fallback: {retry_e}"
+                ) from retry_e
 
     def _handle_cd_command(self, command: str, start_time: float):
         """Handle cd commands without using subprocess to maintain proper directory state"""
         from types import SimpleNamespace
-        
+
         # Parse the target directory
         command_parts = command.strip().split(None, 1)
         if len(command_parts) < 2:
             return self._handle_cd_home_command(command, start_time)
-        
+
         target_dir = command_parts[1].strip()
-        
+
         # Create a mock result object
-        result = SimpleNamespace(
-            returncode=0,
-            stdout="",
-            stderr=""
-        )
-        
+        result = SimpleNamespace(returncode=0, stdout="", stderr="")
+
         try:
             # Handle special cases and path expansion
-            if target_dir == '~' or target_dir == '$HOME':
+            if target_dir == "~" or target_dir == "$HOME":
                 target_path = Path.home()
-            elif target_dir.startswith('~'):
+            elif target_dir.startswith("~"):
                 # Handle ~user paths
                 try:
                     target_path = Path(target_dir).expanduser()
@@ -517,30 +546,34 @@ class TerminalHistory:
                 target_path = Path(target_dir)
                 if not target_path.is_absolute():
                     target_path = self._current_directory / target_path
-            
+
             # Resolve the path (handles .., ., etc.)
             target_path = target_path.resolve()
-            
+
             # SECURITY: Block cd into truly dangerous virtual/kernel filesystems
             # and root-owned sensitive config directories.  Normal directories
             # such as /usr, /opt, /home, /tmp, /root are allowed so the agent
             # can freely explore the filesystem.
             dangerous_paths = [
-                Path('/proc'),   # kernel/process pseudo-fs
-                Path('/sys'),    # kernel/driver pseudo-fs
-                Path('/dev'),    # raw device files
+                Path("/proc"),  # kernel/process pseudo-fs
+                Path("/sys"),  # kernel/driver pseudo-fs
+                Path("/dev"),  # raw device files
             ]
 
             for dangerous in dangerous_paths:
                 try:
                     target_path.relative_to(dangerous)
-                    result.stderr = f"cd: access denied: {target_dir} (restricted system directory)"
+                    result.stderr = (
+                        f"cd: access denied: {target_dir} (restricted system directory)"
+                    )
                     result.returncode = 1
-                    self.logger.warning(f"Blocked access to dangerous directory: {target_path}")
+                    self.logger.warning(
+                        f"Blocked access to dangerous directory: {target_path}"
+                    )
                     return result
                 except ValueError:
                     continue
-            
+
             # Validate and update directory
             if target_path.exists() and target_path.is_dir():
                 # Check if directory is accessible
@@ -556,12 +589,16 @@ class TerminalHistory:
                         # Generic format
                         result.stderr = f"cd: {target_dir}: Permission denied"
                     result.returncode = 1
-                    self.logger.warning(f"Permission denied for directory: {target_path}")
+                    self.logger.warning(
+                        f"Permission denied for directory: {target_path}"
+                    )
                 else:
                     # Store previous directory for cd -
                     self._previous_directory = self._current_directory
                     self._current_directory = target_path
-                    self.terminal_session.current_working_directory = str(self._current_directory)
+                    self.terminal_session.current_working_directory = str(
+                        self._current_directory
+                    )
                     self.logger.info(f"Changed directory to: {self._current_directory}")
             else:
                 # Format error message to match actual shell behavior
@@ -576,24 +613,20 @@ class TerminalHistory:
                     result.stderr = f"cd: {target_dir}: No such file or directory"
                 result.returncode = 1
                 self.logger.warning(f"Directory does not exist: {target_path}")
-                
+
         except Exception as e:
             result.stderr = f"cd: {str(e)}"
             result.returncode = 1
             self.logger.error(f"Failed to update working directory: {e}")
-        
+
         return result
-    
+
     def _handle_cd_dash_command(self, command: str, start_time: float):
         """Handle cd - command (go to previous directory)"""
         from types import SimpleNamespace
-        
-        result = SimpleNamespace(
-            returncode=0,
-            stdout="",
-            stderr=""
-        )
-        
+
+        result = SimpleNamespace(returncode=0, stdout="", stderr="")
+
         try:
             if self._previous_directory is None:
                 # Format error message to match actual shell behavior
@@ -607,32 +640,34 @@ class TerminalHistory:
                     # Generic format
                     result.stderr = "cd: -: OLDPWD not set"
                 result.returncode = 1
-                self.logger.info("cd - command detected, but no previous directory available")
+                self.logger.info(
+                    "cd - command detected, but no previous directory available"
+                )
             else:
                 # Swap current and previous directories
                 current_dir = self._current_directory
                 self._current_directory = self._previous_directory
                 self._previous_directory = current_dir
-                self.terminal_session.current_working_directory = str(self._current_directory)
-                self.logger.info(f"Changed to previous directory: {self._current_directory}")
-                
+                self.terminal_session.current_working_directory = str(
+                    self._current_directory
+                )
+                self.logger.info(
+                    f"Changed to previous directory: {self._current_directory}"
+                )
+
         except Exception as e:
             result.stderr = f"cd: {str(e)}"
             result.returncode = 1
             self.logger.error(f"Failed to change to previous directory: {e}")
-        
+
         return result
-    
+
     def _handle_cd_home_command(self, command: str, start_time: float):
         """Handle cd command with no arguments (go to home directory)"""
         from types import SimpleNamespace
-        
-        result = SimpleNamespace(
-            returncode=0,
-            stdout="",
-            stderr=""
-        )
-        
+
+        result = SimpleNamespace(returncode=0, stdout="", stderr="")
+
         try:
             home_dir = Path.home()
             if home_dir.exists() and home_dir.is_dir():
@@ -640,8 +675,12 @@ class TerminalHistory:
                     # Store previous directory
                     self._previous_directory = self._current_directory
                     self._current_directory = home_dir
-                    self.terminal_session.current_working_directory = str(self._current_directory)
-                    self.logger.info(f"Changed to home directory: {self._current_directory}")
+                    self.terminal_session.current_working_directory = str(
+                        self._current_directory
+                    )
+                    self.logger.info(
+                        f"Changed to home directory: {self._current_directory}"
+                    )
                 else:
                     # Format error message to match actual shell behavior
                     if self._platform == "darwin":
@@ -654,7 +693,9 @@ class TerminalHistory:
                         # Generic format
                         result.stderr = f"cd: {home_dir}: Permission denied"
                     result.returncode = 1
-                    self.logger.warning(f"Permission denied for home directory: {home_dir}")
+                    self.logger.warning(
+                        f"Permission denied for home directory: {home_dir}"
+                    )
             else:
                 # Format error message to match actual shell behavior
                 if self._platform == "darwin":
@@ -668,28 +709,28 @@ class TerminalHistory:
                     result.stderr = f"cd: {home_dir}: No such file or directory"
                 result.returncode = 1
                 self.logger.warning(f"Home directory does not exist: {home_dir}")
-                
+
         except Exception as e:
             result.stderr = f"cd: {str(e)}"
             result.returncode = 1
             self.logger.error(f"Failed to change to home directory: {e}")
-        
+
         return result
-    
+
     # ── ANSI colour palette (class-level, no external dependency) ──────────
-    _RESET  = "\033[0m"
-    _BOLD   = "\033[1m"
-    _DIM    = "\033[2m"
-    _CYAN   = "\033[36m"
-    _GREEN  = "\033[32m"
+    _RESET = "\033[0m"
+    _BOLD = "\033[1m"
+    _DIM = "\033[2m"
+    _CYAN = "\033[36m"
+    _GREEN = "\033[32m"
     _YELLOW = "\033[33m"
-    _RED    = "\033[31m"
+    _RED = "\033[31m"
     _PURPLE = "\033[35m"
-    _GRAY   = "\033[90m"
-    _WHITE  = "\033[97m"
-    _BG_GREEN  = "\033[42m"
-    _BG_RED    = "\033[41m"
-    _BG_GRAY   = "\033[100m"
+    _GRAY = "\033[90m"
+    _WHITE = "\033[97m"
+    _BG_GREEN = "\033[42m"
+    _BG_RED = "\033[41m"
+    _BG_GRAY = "\033[100m"
 
     def _color(self, text: str, *codes: str, use_color: bool = True) -> str:
         """Wrap text with ANSI codes when colour is enabled."""
@@ -700,9 +741,12 @@ class TerminalHistory:
     def _strip_ansi(self, text: str) -> str:
         """Remove ANSI escape sequences for plain-text output."""
         import re
-        return re.sub(r'\033\[[0-9;]*m', '', text)
 
-    def _format_duration(self, duration: Optional[float], use_color: bool = True) -> str:
+        return re.sub(r"\033\[[0-9;]*m", "", text)
+
+    def _format_duration(
+        self, duration: Optional[float], use_color: bool = True
+    ) -> str:
         """Format duration as a human-readable badge."""
         if duration is None:
             return ""
@@ -722,9 +766,13 @@ class TerminalHistory:
             return self._color(" \u22ef ", self._DIM, self._GRAY, use_color=use_color)
         if return_code == 0:
             return self._color(" \u2713 ", self._BOLD, self._GREEN, use_color=use_color)
-        return self._color(f" \u2717 {return_code} ", self._BOLD, self._RED, use_color=use_color)
+        return self._color(
+            f" \u2717 {return_code} ", self._BOLD, self._RED, use_color=use_color
+        )
 
-    def display_terminal_log(self, max_entries: int = 20, use_color: bool = True) -> str:
+    def display_terminal_log(
+        self, max_entries: int = 20, use_color: bool = True
+    ) -> str:
         """
         Generate a polished, product-quality terminal log display.
 
@@ -749,7 +797,12 @@ class TerminalHistory:
                 recent_entries = self.terminal_session.entries[-max_entries:]
 
             if not recent_entries:
-                return self._color("  No terminal history available.", self._DIM, self._GRAY, use_color=use_color)
+                return self._color(
+                    "  No terminal history available.",
+                    self._DIM,
+                    self._GRAY,
+                    use_color=use_color,
+                )
 
             W = 62  # content width for the header separator
 
@@ -766,15 +819,27 @@ class TerminalHistory:
 
             output_lines.append("")
             output_lines.append(
-                self._color(f"\u250c{'\u2500' * W}\u2510", self._DIM, self._GRAY, use_color=use_color)
+                self._color(
+                    f"\u250c{'\u2500' * W}\u2510",
+                    self._DIM,
+                    self._GRAY,
+                    use_color=use_color,
+                )
             )
             output_lines.append(
                 self._color("\u2502", self._DIM, self._GRAY, use_color=use_color)
-                + self._color(f"{header_title:^{W}}", self._BOLD, self._WHITE, use_color=use_color)
+                + self._color(
+                    f"{header_title:^{W}}", self._BOLD, self._WHITE, use_color=use_color
+                )
                 + self._color("\u2502", self._DIM, self._GRAY, use_color=use_color)
             )
             output_lines.append(
-                self._color(f"\u251c{'\u2500' * W}\u2524", self._DIM, self._GRAY, use_color=use_color)
+                self._color(
+                    f"\u251c{'\u2500' * W}\u2524",
+                    self._DIM,
+                    self._GRAY,
+                    use_color=use_color,
+                )
             )
             output_lines.append(
                 self._color("\u2502", self._DIM, self._GRAY, use_color=use_color)
@@ -787,13 +852,18 @@ class TerminalHistory:
                 + self._color("\u2502", self._DIM, self._GRAY, use_color=use_color)
             )
             output_lines.append(
-                self._color(f"\u2514{'\u2500' * W}\u2518", self._DIM, self._GRAY, use_color=use_color)
+                self._color(
+                    f"\u2514{'\u2500' * W}\u2518",
+                    self._DIM,
+                    self._GRAY,
+                    use_color=use_color,
+                )
             )
 
             # Working directory
             cwd = str(self._current_directory)
             if len(cwd) > W - 2:
-                cwd = "\u2026" + cwd[-(W - 3):]
+                cwd = "\u2026" + cwd[-(W - 3) :]
             output_lines.append(
                 self._color("  📁 ", self._YELLOW, use_color=use_color)
                 + self._color(cwd, self._DIM, self._GRAY, use_color=use_color)
@@ -808,56 +878,109 @@ class TerminalHistory:
 
                 if entry.entry_type == TerminalEntryType.COMMAND:
                     command_count += 1
-                    timestamp_str = time.strftime('%H:%M:%S', time.localtime(entry.timestamp))
+                    timestamp_str = time.strftime(
+                        "%H:%M:%S", time.localtime(entry.timestamp)
+                    )
 
-                    dur_badge = self._format_duration(entry.duration, use_color=use_color)
+                    dur_badge = self._format_duration(
+                        entry.duration, use_color=use_color
+                    )
                     status = self._status_badge(entry.return_code, use_color=use_color)
 
                     cmd_display = entry.content
-                    max_cmd = W - len(timestamp_str) - len(self._strip_ansi(dur_badge)) - len(self._strip_ansi(status)) - 6
+                    max_cmd = (
+                        W
+                        - len(timestamp_str)
+                        - len(self._strip_ansi(dur_badge))
+                        - len(self._strip_ansi(status))
+                        - 6
+                    )
                     if max_cmd < 20:
                         max_cmd = 20
                     if len(cmd_display) > max_cmd:
-                        cmd_display = cmd_display[:max_cmd - 1] + "\u2026"
+                        cmd_display = cmd_display[: max_cmd - 1] + "\u2026"
 
                     output_lines.append(
-                        self._color(f"  {timestamp_str} ", self._DIM, self._GRAY, use_color=use_color)
+                        self._color(
+                            f"  {timestamp_str} ",
+                            self._DIM,
+                            self._GRAY,
+                            use_color=use_color,
+                        )
                         + self._color("\u276f ", self._YELLOW, use_color=use_color)
-                        + self._color(cmd_display, self._BOLD, self._WHITE, use_color=use_color)
+                        + self._color(
+                            cmd_display, self._BOLD, self._WHITE, use_color=use_color
+                        )
                         + dur_badge
                         + status
                     )
 
                     j = i + 1
                     has_output = False
-                    while j < len(recent_entries) and recent_entries[j].entry_type != TerminalEntryType.COMMAND:
+                    while (
+                        j < len(recent_entries)
+                        and recent_entries[j].entry_type != TerminalEntryType.COMMAND
+                    ):
                         output_entry = recent_entries[j]
 
-                        if output_entry.entry_type == TerminalEntryType.OUTPUT and output_entry.content.strip():
+                        if (
+                            output_entry.entry_type == TerminalEntryType.OUTPUT
+                            and output_entry.content.strip()
+                        ):
                             has_output = True
-                            for line in output_entry.content.split('\n'):
+                            for line in output_entry.content.split("\n"):
                                 if line.strip():
-                                    truncated = line if len(line) <= W + 4 else line[:W] + "\u2026"
+                                    truncated = (
+                                        line
+                                        if len(line) <= W + 4
+                                        else line[:W] + "\u2026"
+                                    )
                                     output_lines.append(
-                                        self._color("    \u2502 ", self._DIM, self._GRAY, use_color=use_color)
-                                        + self._color(truncated, self._GRAY, use_color=use_color)
+                                        self._color(
+                                            "    \u2502 ",
+                                            self._DIM,
+                                            self._GRAY,
+                                            use_color=use_color,
+                                        )
+                                        + self._color(
+                                            truncated, self._GRAY, use_color=use_color
+                                        )
                                     )
 
-                        elif output_entry.entry_type == TerminalEntryType.ERROR and output_entry.content.strip():
+                        elif (
+                            output_entry.entry_type == TerminalEntryType.ERROR
+                            and output_entry.content.strip()
+                        ):
                             has_output = True
-                            for line in output_entry.content.split('\n'):
+                            for line in output_entry.content.split("\n"):
                                 if line.strip():
-                                    truncated = line if len(line) <= W + 4 else line[:W] + "\u2026"
+                                    truncated = (
+                                        line
+                                        if len(line) <= W + 4
+                                        else line[:W] + "\u2026"
+                                    )
                                     output_lines.append(
-                                        self._color("    \u2502 ", self._DIM, self._RED, use_color=use_color)
-                                        + self._color(truncated, self._RED, use_color=use_color)
+                                        self._color(
+                                            "    \u2502 ",
+                                            self._DIM,
+                                            self._RED,
+                                            use_color=use_color,
+                                        )
+                                        + self._color(
+                                            truncated, self._RED, use_color=use_color
+                                        )
                                     )
 
                         j += 1
 
                     if has_output:
                         output_lines.append(
-                            self._color("    \u2514" + "\u2500" * (W - 2), self._DIM, self._GRAY, use_color=use_color)
+                            self._color(
+                                "    \u2514" + "\u2500" * (W - 2),
+                                self._DIM,
+                                self._GRAY,
+                                use_color=use_color,
+                            )
                         )
 
                     output_lines.append("")
@@ -867,7 +990,9 @@ class TerminalHistory:
                     i += 1
 
             # Footer
-            total = len([e for e in recent_entries if e.entry_type == TerminalEntryType.COMMAND])
+            total = len(
+                [e for e in recent_entries if e.entry_type == TerminalEntryType.COMMAND]
+            )
             shown = command_count
             if shown != total:
                 footer_text = f" showing {shown} of {total} commands "
@@ -875,7 +1000,9 @@ class TerminalHistory:
                 footer_text = f" {shown} command{'s' if shown != 1 else ''} "
 
             output_lines.append(
-                self._color(f"  {footer_text}", self._DIM, self._GRAY, use_color=use_color)
+                self._color(
+                    f"  {footer_text}", self._DIM, self._GRAY, use_color=use_color
+                )
             )
             output_lines.append("")
 
@@ -894,17 +1021,20 @@ class TerminalHistory:
                 if entry.entry_type == TerminalEntryType.COMMAND:
                     last_command_entry = entry
                     break
-            
+
             if not last_command_entry:
                 return "No command history available."
-            
+
             # Get output/error entries that came after this command
             command_outputs = []
             for entry in self.terminal_session.entries:
-                if (entry.timestamp > last_command_entry.timestamp and 
-                    entry.entry_type in [TerminalEntryType.OUTPUT, TerminalEntryType.ERROR]):
+                if (
+                    entry.timestamp > last_command_entry.timestamp
+                    and entry.entry_type
+                    in [TerminalEntryType.OUTPUT, TerminalEntryType.ERROR]
+                ):
                     command_outputs.append(entry.content)
-            
+
             if command_outputs:
                 return "\n".join(command_outputs)
             else:
@@ -916,37 +1046,38 @@ class TerminalHistory:
                         return f"Command '{last_command_entry.content}' failed with return code {last_command_entry.return_code}."
                 else:
                     return f"Command '{last_command_entry.content}' was logged but execution status unknown."
-                
+
         except Exception as e:
             self.logger.error(f"Failed to get last command output: {e}")
             return f"Error retrieving command output: {str(e)}"
-    
+
     def _persist_history(self) -> None:
         """Persist terminal history to disk with comprehensive error handling"""
         try:
             history_file = self.history_dir / f"{self.session_id}.json"
-            
+
             # Create backup of existing file if it exists
             if history_file.exists():
-                backup_file = history_file.with_suffix('.json.bak')
+                backup_file = history_file.with_suffix(".json.bak")
                 try:
                     import shutil
+
                     shutil.copy2(history_file, backup_file)
                 except Exception as e:
                     self.logger.warning(f"Failed to create backup of history file: {e}")
-            
+
             # Convert to serializable format
             history_data = self.terminal_session.to_dict()
-            
+
             # Write to file with atomic operation
-            temp_file = history_file.with_suffix('.json.tmp')
+            temp_file = history_file.with_suffix(".json.tmp")
             try:
-                with open(temp_file, 'w', encoding='utf-8', newline='') as f:
+                with open(temp_file, "w", encoding="utf-8", newline="") as f:
                     json.dump(history_data, f, indent=2, ensure_ascii=False)
-                
+
                 # Atomic move
                 temp_file.replace(history_file)
-                
+
             except Exception as e:
                 # Clean up temp file if it exists
                 if temp_file.exists():
@@ -955,14 +1086,14 @@ class TerminalHistory:
                     except Exception:
                         pass
                 raise e
-                
+
         except PermissionError as e:
             self.logger.error(f"Permission denied persisting terminal history: {e}")
         except OSError as e:
             self.logger.error(f"OS error persisting terminal history: {e}")
         except Exception as e:
             self.logger.error(f"Failed to persist terminal history: {e}")
-    
+
     def end_session(self) -> None:
         """End the current session and finalize history"""
         try:
@@ -971,67 +1102,73 @@ class TerminalHistory:
             self.logger.info(f"Terminal session ended: {self.session_id}")
         except Exception as e:
             self.logger.error(f"Error ending session: {e}")
-    
+
     def clear_session(self) -> None:
         """Clear the current terminal session (reset terminal logs)"""
         try:
             # Clear all entries from the current session
             self.terminal_session.entries = []
-            
+
             # Reset session start time
             self.terminal_session.start_time = time.time()
-            
+
             # Reset working directory to home
             self._current_directory = Path.home()
-            self.terminal_session.current_working_directory = str(self._current_directory)
-            
+            self.terminal_session.current_working_directory = str(
+                self._current_directory
+            )
+
             # Persist the cleared session
             self._persist_history()
-            
+
             self.logger.info(f"Terminal session cleared: {self.session_id}")
         except Exception as e:
             self.logger.error(f"Error clearing terminal session: {e}")
-    
+
     def load_session(self, session_id: str) -> bool:
         """
         Load a previous session for context
-        
+
         Args:
             session_id: Session ID to load
-            
+
         Returns:
             True if session loaded successfully, False otherwise
         """
         try:
             if not session_id or not isinstance(session_id, str):
                 raise ValidationError("Session ID must be a non-empty string")
-            
+
             history_file = self.history_dir / f"{session_id}.json"
             if not history_file.exists():
                 self.logger.warning(f"Session file does not exist: {history_file}")
                 return False
-            
+
             if not os.access(history_file, os.R_OK):
-                self.logger.error(f"Permission denied reading session file: {history_file}")
+                self.logger.error(
+                    f"Permission denied reading session file: {history_file}"
+                )
                 return False
-            
-            with open(history_file, 'r', encoding='utf-8') as f:
+
+            with open(history_file, "r", encoding="utf-8") as f:
                 history_data = json.load(f)
-            
+
             # Validate loaded data
             if not isinstance(history_data, dict):
                 raise ValidationError("Invalid session data format")
-            
+
             # Reconstruct terminal session
             self.terminal_session = TerminalSession.from_dict(history_data)
-            
+
             # Update current directory
-            self._current_directory = Path(self.terminal_session.current_working_directory)
+            self._current_directory = Path(
+                self.terminal_session.current_working_directory
+            )
             self.session_id = session_id
-            
+
             self.logger.info(f"Terminal session loaded: {session_id}")
             return True
-            
+
         except json.JSONDecodeError as e:
             self.logger.error(f"Invalid JSON in session file {session_id}: {e}")
             return False
@@ -1041,47 +1178,49 @@ class TerminalHistory:
         except Exception as e:
             self.logger.error(f"Failed to load terminal session {session_id}: {e}")
             return False
-    
+
     def list_sessions(self) -> List[str]:
         """
         List all available session IDs
-        
+
         Returns:
             List of session IDs
         """
         try:
             sessions = []
             for file_path in self.history_dir.glob("*.json"):
-                if file_path.is_file() and not file_path.name.endswith('.bak'):
+                if file_path.is_file() and not file_path.name.endswith(".bak"):
                     session_id = file_path.stem
                     sessions.append(session_id)
-            
+
             return sorted(sessions)
-            
+
         except Exception as e:
             self.logger.error(f"Failed to list sessions: {e}")
             return []
-    
+
     def cleanup_old_sessions(self, max_sessions: int = 100) -> int:
         """
         Clean up old session files, keeping only the most recent ones
-        
+
         Args:
             max_sessions: Maximum number of sessions to keep
-            
+
         Returns:
             Number of sessions removed
         """
         try:
             # Validate max_sessions
             if not isinstance(max_sessions, int) or max_sessions <= 0:
-                self.logger.warning(f"Invalid max_sessions value: {max_sessions}. Must be positive integer.")
+                self.logger.warning(
+                    f"Invalid max_sessions value: {max_sessions}. Must be positive integer."
+                )
                 return 0
-            
+
             sessions = self.list_sessions()
             if len(sessions) <= max_sessions:
                 return 0
-            
+
             # Sort by modification time and remove oldest
             session_files = []
             for session_id in sessions:
@@ -1090,11 +1229,13 @@ class TerminalHistory:
                     mtime = file_path.stat().st_mtime
                     session_files.append((mtime, file_path))
                 except Exception as e:
-                    self.logger.warning(f"Failed to get modification time for {session_id}: {e}")
-            
+                    self.logger.warning(
+                        f"Failed to get modification time for {session_id}: {e}"
+                    )
+
             # Sort by modification time (oldest first)
             session_files.sort()
-            
+
             # Remove oldest sessions
             removed_count = 0
             for mtime, file_path in session_files[:-max_sessions]:
@@ -1103,19 +1244,21 @@ class TerminalHistory:
                     removed_count += 1
                     self.logger.info(f"Removed old session file: {file_path}")
                 except Exception as e:
-                    self.logger.warning(f"Failed to remove session file {file_path}: {e}")
-            
+                    self.logger.warning(
+                        f"Failed to remove session file {file_path}: {e}"
+                    )
+
             return removed_count
-            
+
         except Exception as e:
             self.logger.error(f"Failed to cleanup old sessions: {e}")
             return 0
-    
+
     @contextmanager
     def temporary_directory(self, target_dir: Optional[Union[str, Path]] = None):
         """
         Context manager for temporarily changing directory
-        
+
         Args:
             target_dir: Directory to change to (defaults to current directory)
         """
@@ -1125,14 +1268,18 @@ class TerminalHistory:
                 target_path = Path(target_dir).resolve()
                 if target_path.exists() and target_path.is_dir():
                     self._current_directory = target_path
-                    self.terminal_session.current_working_directory = str(self._current_directory)
+                    self.terminal_session.current_working_directory = str(
+                        self._current_directory
+                    )
                 else:
                     raise ValueError(f"Target directory does not exist: {target_path}")
             yield
         finally:
             # Always restore original directory
             self._current_directory = original_dir
-            self.terminal_session.current_working_directory = str(self._current_directory)
+            self.terminal_session.current_working_directory = str(
+                self._current_directory
+            )
 
     def cancel_current_command(self) -> None:
         """Terminate the currently running foreground command batch, if any."""
@@ -1142,21 +1289,23 @@ class TerminalHistory:
             self.logger.info("Cancelling active command batch")
             self._terminate_process_tree(process)
 
-    def execute_commands_batch(self, commands: List[str], timeout: Optional[int] = None, cancel_event=None) -> Dict[str, Any]:
+    def execute_commands_batch(
+        self, commands: List[str], timeout: Optional[int] = None, cancel_event=None
+    ) -> Dict[str, Any]:
         """
         Execute multiple commands in a single batch using the same terminal session.
         All commands are pasted and executed at once, maintaining the same session.
-        
+
         Args:
             commands: List of commands to execute
             timeout: Command timeout in seconds (overrides default)
-            
+
         Returns:
             Dict with execution results including output, error, return code
         """
         if not commands:
             raise ValidationError("Commands list cannot be empty")
-        
+
         # Validate timeout
         if timeout is not None:
             if not isinstance(timeout, (int, float)):
@@ -1165,12 +1314,12 @@ class TerminalHistory:
                 raise ValidationError("Timeout must be positive")
         else:
             timeout = self.DEFAULT_TIMEOUT
-        
+
         start_time = time.time()
-        
+
         # Combine all commands with newlines for batch execution
         batch_command = "\n".join(commands)
-        
+
         try:
             # Log the batch command entry
             command_entry = TerminalEntry(
@@ -1178,33 +1327,37 @@ class TerminalHistory:
                 entry_type=TerminalEntryType.COMMAND,
                 content=batch_command,
                 command=batch_command,
-                working_directory=str(self._current_directory)
+                working_directory=str(self._current_directory),
             )
             self.terminal_session.entries.append(command_entry)
-            
-            self.logger.info(f"Executing batch of {len(commands)} commands", 
-                           command_count=len(commands),
-                           working_directory=str(self._current_directory))
-            
+
+            self.logger.info(
+                f"Executing batch of {len(commands)} commands",
+                command_count=len(commands),
+                working_directory=str(self._current_directory),
+            )
+
             # Execute all commands in a single shell session. The lock keeps
             # overlapping user requests from running two foreground command
             # batches against the same terminal history at the same time.
             with self._execution_lock:
-                result = self._execute_batch_subprocess(commands, timeout, cancel_event=cancel_event)
-            
+                result = self._execute_batch_subprocess(
+                    commands, timeout, cancel_event=cancel_event
+                )
+
             duration = time.time() - start_time
-            
+
             # Update command entry with execution results
             command_entry.return_code = result.returncode
             command_entry.duration = duration
-            
+
             self.logger.info(
                 f"Batch command completed",
                 return_code=result.returncode,
                 duration=duration,
-                success=result.returncode == 0
+                success=result.returncode == 0,
             )
-            
+
             # Log output entry
             if result.stdout and result.stdout.strip():
                 output_entry = TerminalEntry(
@@ -1214,10 +1367,10 @@ class TerminalHistory:
                     command=batch_command,
                     working_directory=str(self._current_directory),
                     return_code=result.returncode,
-                    duration=duration
+                    duration=duration,
                 )
                 self.terminal_session.entries.append(output_entry)
-            
+
             # Log error entry if there's stderr
             if result.stderr and result.stderr.strip():
                 error_entry = TerminalEntry(
@@ -1227,26 +1380,26 @@ class TerminalHistory:
                     command=batch_command,
                     working_directory=str(self._current_directory),
                     return_code=result.returncode,
-                    duration=duration
+                    duration=duration,
                 )
                 self.terminal_session.entries.append(error_entry)
-            
+
             # Persist history
             self._persist_history()
-            
+
             return {
                 "success": result.returncode == 0,
                 "stdout": result.stdout,
                 "stderr": result.stderr,
                 "return_code": result.returncode,
                 "duration": duration,
-                "working_directory": str(self._current_directory)
+                "working_directory": str(self._current_directory),
             }
-            
+
         except subprocess.TimeoutExpired as e:
             error_msg = f"Batch command timed out after {timeout} seconds"
             self.logger.error(error_msg)
-            
+
             # Log timeout error
             error_entry = TerminalEntry(
                 timestamp=time.time(),
@@ -1254,24 +1407,24 @@ class TerminalHistory:
                 content=error_msg,
                 command=batch_command,
                 working_directory=str(self._current_directory),
-                return_code=-1
+                return_code=-1,
             )
             self.terminal_session.entries.append(error_entry)
             self._persist_history()
-            
+
             return {
                 "success": False,
                 "stdout": "",
                 "stderr": error_msg,
                 "return_code": -1,
                 "duration": timeout,
-                "working_directory": str(self._current_directory)
+                "working_directory": str(self._current_directory),
             }
-            
+
         except Exception as e:
             error_msg = f"Batch command execution failed: {str(e)}"
             self.logger.error(error_msg, error_type=type(e).__name__)
-            
+
             # Log execution error
             error_entry = TerminalEntry(
                 timestamp=time.time(),
@@ -1279,41 +1432,43 @@ class TerminalHistory:
                 content=error_msg,
                 command=batch_command,
                 working_directory=str(self._current_directory),
-                return_code=-1
+                return_code=-1,
             )
             self.terminal_session.entries.append(error_entry)
             self._persist_history()
-            
+
             return {
                 "success": False,
                 "stdout": "",
                 "stderr": error_msg,
                 "return_code": -1,
                 "duration": time.time() - start_time,
-                "working_directory": str(self._current_directory)
+                "working_directory": str(self._current_directory),
             }
 
-    def _execute_batch_subprocess(self, commands: List[str], timeout: int, cancel_event=None):
+    def _execute_batch_subprocess(
+        self, commands: List[str], timeout: int, cancel_event=None
+    ):
         """Execute multiple commands in a single subprocess batch with inactivity-based timeout.
-        
+
         Uses two timeout mechanisms:
         - Overall timeout: the configured command timeout.
         - Inactivity timeout: at least the default timeout, extended to match
           larger configured command timeouts.
-        
+
         Args:
             commands: List of commands to execute
             timeout: Maximum overall timeout in seconds
-            
+
         Returns:
             SimpleNamespace with returncode, stdout, stderr
         """
         import threading
         from types import SimpleNamespace
-        
+
         overall_timeout = timeout
         inactivity_timeout = max(self.DEFAULT_TIMEOUT, overall_timeout * 0.5)
-        
+
         # Join commands with newlines to execute sequentially in same shell.
         # Commands that explicitly end with "&" are treated as persistent
         # background tasks and detached from the temporary shell so they are not
@@ -1321,7 +1476,7 @@ class TerminalHistory:
         processed_commands = []
         for cmd in commands:
             cmd_stripped = cmd.strip()
-            if cmd_stripped.startswith('cd '):
+            if cmd_stripped.startswith("cd "):
                 parts = cmd_stripped.split(None, 1)
                 if len(parts) > 1:
                     target_dir = parts[1].strip()
@@ -1332,100 +1487,107 @@ class TerminalHistory:
                 processed_commands.append(self._detach_background_command(cmd_stripped))
             else:
                 processed_commands.append(cmd_stripped)
-        
+
         batch_script = "\n".join(processed_commands)
-        
+
         stdout_lines = []
         stderr_lines = []
         last_output_time = [time.time()]
         process_returncode = [None]
         is_timed_out = [False]
         timeout_reason = [""]
-        
+
         def read_output(pipe, lines_list, is_stderr=False):
             """Read output from pipe continuously"""
             try:
-                for line in iter(pipe.readline, b''):
+                for line in iter(pipe.readline, b""):
                     if is_timed_out[0]:
                         break
-                    decoded_line = line.decode('utf-8', errors='replace')
+                    decoded_line = line.decode("utf-8", errors="replace")
                     lines_list.append(decoded_line)
                     last_output_time[0] = time.time()
             except Exception:
                 pass
             finally:
                 pipe.close()
-        
+
         import tempfile
-        
+
         # Write batch script to temp file to avoid shell=True
-        script_suffix = '.bat' if self._platform == "windows" else '.sh'
+        script_suffix = ".bat" if self._platform == "windows" else ".sh"
         script_path = None
         try:
-            with tempfile.NamedTemporaryFile(mode='w', suffix=script_suffix, delete=False, 
-                                              dir=None) as tmp_script:
+            with tempfile.NamedTemporaryFile(
+                mode="w", suffix=script_suffix, delete=False, dir=None
+            ) as tmp_script:
                 if self._platform == "windows":
                     tmp_script.write(f"@echo off\n{batch_script}\n")
                 else:
                     tmp_script.write(f"#!/bin/bash\n{batch_script}\n")
                 script_path = tmp_script.name
-            
+
             # Make script executable on Unix
             if self._platform != "windows":
                 os.chmod(script_path, 0o755)
-            
+
             process = None
             # Start process with Popen for streaming output (shell=False for security)
             if self._platform == "windows":
                 process = subprocess.Popen(
-                    ['cmd.exe', '/c', script_path],
-                    shell=False,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    stdin=subprocess.DEVNULL,
-                    cwd=str(self._current_directory)
-                )
-            else:
-                process = subprocess.Popen(
-                    ['bash', script_path],
+                    ["cmd.exe", "/c", script_path],
                     shell=False,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     stdin=subprocess.DEVNULL,
                     cwd=str(self._current_directory),
-                    start_new_session=True
                 )
-            
+            else:
+                process = subprocess.Popen(
+                    ["bash", script_path],
+                    shell=False,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    stdin=subprocess.DEVNULL,
+                    cwd=str(self._current_directory),
+                    start_new_session=True,
+                )
+
             with self._current_process_lock:
                 self._current_process = process
             # Start threads to read output
-            stdout_thread = threading.Thread(target=read_output, args=(process.stdout, stdout_lines, False))
-            stderr_thread = threading.Thread(target=read_output, args=(process.stderr, stderr_lines, True))
+            stdout_thread = threading.Thread(
+                target=read_output, args=(process.stdout, stdout_lines, False)
+            )
+            stderr_thread = threading.Thread(
+                target=read_output, args=(process.stderr, stderr_lines, True)
+            )
             stdout_thread.daemon = True
             stderr_thread.daemon = True
             stdout_thread.start()
             stderr_thread.start()
-            
+
             start_time = time.time()
-            
+
             # Monitor process with dual timeout
             while process.poll() is None:
                 current_time = time.time()
                 elapsed = current_time - start_time
                 since_last_output = current_time - last_output_time[0]
-                
+
                 if elapsed > overall_timeout:
                     is_timed_out[0] = True
                     timeout_reason[0] = f"Overall timeout exceeded ({overall_timeout}s)"
                     self._terminate_process_tree(process)
                     break
-                
+
                 if since_last_output >= inactivity_timeout:
                     is_timed_out[0] = True
-                    timeout_reason[0] = f"No output for {inactivity_timeout:.0f}s - process appears stuck"
+                    timeout_reason[0] = (
+                        f"No output for {inactivity_timeout:.0f}s - process appears stuck"
+                    )
                     self._terminate_process_tree(process)
                     break
-                
+
                 if cancel_event and cancel_event.is_set():
                     is_timed_out[0] = True
                     timeout_reason[0] = "Cancelled by newer user request"
@@ -1433,38 +1595,34 @@ class TerminalHistory:
                     break
 
                 time.sleep(0.1)
-            
+
             # Wait for threads to finish
             stdout_thread.join(timeout=2)
             stderr_thread.join(timeout=2)
-            
+
             # Get final return code
             if is_timed_out[0]:
                 process_returncode[0] = -1
             else:
                 process_returncode[0] = process.poll() or 0
-            
+
             stdout = "".join(stdout_lines)
             stderr = "".join(stderr_lines)
-            
+
             if is_timed_out[0]:
                 stderr += f"\n[TIMEOUT: {timeout_reason[0]}]"
                 self.logger.warning(f"Batch command timed out: {timeout_reason[0]}")
-            
+
             result = SimpleNamespace(
-                returncode=process_returncode[0],
-                stdout=stdout,
-                stderr=stderr
+                returncode=process_returncode[0], stdout=stdout, stderr=stderr
             )
-            
+
             return result
-            
+
         except Exception as e:
             self.logger.error(f"Batch execution failed: {e}")
             return SimpleNamespace(
-                returncode=-1,
-                stdout="",
-                stderr=f"Execution failed: {str(e)}"
+                returncode=-1, stdout="", stderr=f"Execution failed: {str(e)}"
             )
         finally:
             with self._current_process_lock:
@@ -1479,7 +1637,7 @@ class TerminalHistory:
 
     def _is_background_command(self, command: str) -> bool:
         """Return True when a command explicitly requests background execution."""
-        return command.rstrip().endswith('&') and not command.rstrip().endswith('&&')
+        return command.rstrip().endswith("&") and not command.rstrip().endswith("&&")
 
     def _detach_background_command(self, command: str) -> str:
         """Detach an explicit background command so it survives batch shell exit.
@@ -1546,14 +1704,14 @@ def get_terminal_history() -> TerminalHistory:
 def execute_command(command: str, timeout: Optional[int] = None) -> Dict[str, Any]:
     """
     Global function to execute command and preserve history
-    
+
     Args:
         command: Command to execute
         timeout: Optional timeout in seconds
-        
+
     Returns:
         Dict with execution results
-        
+
     Example:
         result = execute_command("ls -la")
         if result["success"]:
@@ -1565,13 +1723,13 @@ def execute_command(command: str, timeout: Optional[int] = None) -> Dict[str, An
 def display_terminal_log(max_entries: int = 20) -> str:
     """
     Global function to display terminal log
-    
+
     Args:
         max_entries: Maximum number of entries to display
-        
+
     Returns:
         Formatted terminal log string
-        
+
     Example:
         print(display_terminal_log())
     """
@@ -1581,10 +1739,10 @@ def display_terminal_log(max_entries: int = 20) -> str:
 def get_last_command_output() -> str:
     """
     Global function to get last command output
-    
+
     Returns:
         Output of the most recent command
-        
+
     Example:
         print(get_last_command_output())
     """

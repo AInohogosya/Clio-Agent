@@ -26,7 +26,10 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .logger import get_logger
 from .platform_compat import (
-    is_process_alive, kill_process, spawn_detached, is_windows,
+    is_process_alive,
+    kill_process,
+    spawn_detached,
+    is_windows,
 )
 
 logger = get_logger("watchdog")
@@ -125,6 +128,7 @@ def _set_restart_count(count: int, window_start: float) -> None:
         except OSError:
             # Fallback: direct overwrite
             import shutil
+
             shutil.move(str(tmp), str(counter_file))
     except Exception:
         pass
@@ -293,7 +297,11 @@ class WatchdogSupervisor:
             if run_py.exists():
                 env = os.environ.copy()
                 env["CLIO_WATCHDOG_CHILD"] = "1"
-                cmd = [sys.executable, str(run_py), "--__watchdog_spawned__"] + sys.argv[1:]
+                cmd = [
+                    sys.executable,
+                    str(run_py),
+                    "--__watchdog_spawned__",
+                ] + sys.argv[1:]
                 return spawn_detached(cmd, cwd=str(script_dir), env=env)
             else:
                 logger.error(f"Watchdog: run.py not found at {run_py}")
@@ -340,6 +348,7 @@ def _default_target() -> None:
     """Default target: re-run main() from run.py."""
     try:
         from run import main
+
         main()
     except Exception:
         pass
@@ -353,6 +362,7 @@ def install_heartbeat_writer(iteration_getter: Callable[[], int]) -> None:
     Args:
         iteration_getter: callable that returns the current iteration count.
     """
+
     def _heartbeat_loop():
         while True:
             try:

@@ -94,8 +94,9 @@ from ..utils.resilience_engine import (
 )
 
 
-def retry_on_network_error(max_retries: int = 3, initial_delay: float = 1.0,
-                           backoff_factor: float = 2.0):
+def retry_on_network_error(
+    max_retries: int = 3, initial_delay: float = 1.0, backoff_factor: float = 2.0
+):
     """Decorator to retry coroutine functions on network-ish failures."""
 
     def decorator(func):
@@ -111,7 +112,7 @@ def retry_on_network_error(max_retries: int = 3, initial_delay: float = 1.0,
                         raise
                     if not _is_network_error(exc):
                         raise
-                    delay = initial_delay * (backoff_factor ** attempt)
+                    delay = initial_delay * (backoff_factor**attempt)
                     delay *= 0.75 + 0.5 * random.random()  # jitter
                     # MUST be async sleep: this wrapper only ever wraps
                     # coroutine functions (see iscoroutinefunction guard
@@ -131,16 +132,28 @@ def _is_network_error(exc: Exception) -> bool:
     msg = str(exc).lower()
     name = type(exc).__name__.lower()
     network_markers = (
-        "timeout", "timed out", "network", "connection", "unreachable",
-        "readerror", "read error", "sslerror", "proxyerror", "reset by peer",
-        "connection reset", "broken pipe", "temporary failure",
-        "name or service not known", "could not resolve host",
+        "timeout",
+        "timed out",
+        "network",
+        "connection",
+        "unreachable",
+        "readerror",
+        "read error",
+        "sslerror",
+        "proxyerror",
+        "reset by peer",
+        "connection reset",
+        "broken pipe",
+        "temporary failure",
+        "name or service not known",
+        "could not resolve host",
     )
     for marker in network_markers:
         if marker in msg or marker in name:
             return True
     try:
         from telegram.error import NetworkError, TimedOut
+
         return isinstance(exc, (NetworkError, TimedOut))
     except Exception:
         return False
@@ -208,7 +221,7 @@ class ConversationHistory:
             return
         self.messages.append({"role": role, "content": content})
         if len(self.messages) > self.max_length:
-            self.messages = self.messages[-self.max_length:]
+            self.messages = self.messages[-self.max_length :]
 
     def get_history(self) -> List[Dict[str, str]]:
         return list(self.messages)
@@ -373,8 +386,9 @@ class TelegramBotManager:
             return True
         if len(message) > 4000:
             message = self._truncate_message(message, max_length=4000)
-        await self.application.bot.send_message(chat_id=chat_id, text=message,
-                                                disable_web_page_preview=True)
+        await self.application.bot.send_message(
+            chat_id=chat_id, text=message, disable_web_page_preview=True
+        )
         return True
 
     def queue_message(self, chat_id: int, message: str):
@@ -620,9 +634,7 @@ class TelegramBotManager:
             try:
                 self.user_message_callback(user_message, user_id)
             except Exception as exc:
-                self.logger.warning(
-                    f"Failed to inject user message into engine: {exc}"
-                )
+                self.logger.warning(f"Failed to inject user message into engine: {exc}")
 
         await self._cancel_user_task(user_id)
 
@@ -747,7 +759,7 @@ class TelegramBotManager:
         available_space = max_length - tag_len
         half_space = available_space // 2
         beginning = message[:half_space]
-        end = message[-(available_space - half_space):]
+        end = message[-(available_space - half_space) :]
         return f"{beginning}{omitted_tag}{end}"
 
     # ------------------------------------------------------------------ #
@@ -756,9 +768,7 @@ class TelegramBotManager:
 
     def start_bot(self) -> bool:
         if not TELEGRAM_AVAILABLE:
-            self.logger.error(
-                "Cannot start bot: python-telegram-bot not installed"
-            )
+            self.logger.error("Cannot start bot: python-telegram-bot not installed")
             self.is_running = False
             return False
         if not self.bot_token:
@@ -800,9 +810,7 @@ class TelegramBotManager:
                 if self._should_restart:
                     wait = min(2 ** min(consecutive_errors, 6), 300.0)
                     wait = wait * (0.75 + 0.5 * random.random())
-                    self.logger.info(
-                        f"Telegram bot stopped; restarting in {wait:.1f}s"
-                    )
+                    self.logger.info(f"Telegram bot stopped; restarting in {wait:.1f}s")
                     time.sleep(wait)
 
             except KeyboardInterrupt:
@@ -812,10 +820,14 @@ class TelegramBotManager:
                 break
             except Exception as exc:
                 consecutive_errors += 1
-                self.logger.error(f"Error in Telegram bot: {exc}\n{traceback.format_exc()}")
+                self.logger.error(
+                    f"Error in Telegram bot: {exc}\n{traceback.format_exc()}"
+                )
                 self.is_running = False
                 self._loop_ready.clear()
-                severity, category, is_retryable, suggested_delay = classify_api_error(exc)
+                severity, category, is_retryable, suggested_delay = classify_api_error(
+                    exc
+                )
                 if not is_retryable or not self._should_restart:
                     self.logger.error(
                         f"Telegram bot encountered non-retryable error ({category}): {exc}"
@@ -883,6 +895,7 @@ class TelegramBotManager:
 #  Factory
 # ---------------------------------------------------------------------- #
 
+
 def create_telegram_bot(
     config_path: Optional[str] = None, terminal_history=None
 ) -> Optional[TelegramBotManager]:
@@ -907,12 +920,16 @@ def create_telegram_bot(
             with open(config_path, "r", encoding="utf-8") as f:
                 config_dict = yaml.safe_load(f) or {}
         else:
-            print(f"create_telegram_bot: config_path={config_path}, exists={config_path and Path(config_path).exists()}")
+            print(
+                f"create_telegram_bot: config_path={config_path}, exists={config_path and Path(config_path).exists()}"
+            )
 
         telegram_config = config_dict.get("telegram", {}) or {}
 
         if not telegram_config.get("enabled", False):
-            print(f"create_telegram_bot: telegram not enabled. config_dict keys={list(config_dict.keys())}")
+            print(
+                f"create_telegram_bot: telegram not enabled. config_dict keys={list(config_dict.keys())}"
+            )
             return None
 
         bot_token = (

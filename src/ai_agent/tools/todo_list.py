@@ -8,8 +8,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import List, Optional
 
-from .base import Permission, ToolExecutor, ToolInput, ToolResult, ToolError, ToolErrorCode
-
+from .base import (
+    Permission,
+    ToolExecutor,
+    ToolInput,
+    ToolResult,
+    ToolError,
+    ToolErrorCode,
+)
 
 # Module-level storage for the todo list (persists across tool invocations)
 _todo_items: List[str] = []
@@ -18,6 +24,7 @@ _todo_items: List[str] = []
 @dataclass
 class ToDoListInput(ToolInput):
     """Input for the ToDo list tool."""
+
     action: str = "list"  # "list", "add", "delete"
     item: Optional[str] = None  # The todo item text (for add)
     index: Optional[int] = None  # The 1-based index (for delete)
@@ -27,7 +34,9 @@ class ToDoListTool(ToolExecutor):
     """Tool for managing a simple todo list."""
 
     name = "todo_list"
-    description = "Manage a todo list: list all items, add new items, or delete items by index"
+    description = (
+        "Manage a todo list: list all items, add new items, or delete items by index"
+    )
     required_permission = Permission.WRITE
 
     def _execute(self, input: ToDoListInput) -> ToolResult:

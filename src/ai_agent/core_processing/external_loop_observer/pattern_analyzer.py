@@ -29,6 +29,7 @@ class PatternType(Enum):
 @dataclass
 class PatternMatch:
     """A detected loop pattern."""
+
     pattern_type: PatternType
     confidence: float
     cycle_length: int
@@ -57,14 +58,18 @@ class PatternAnalyzer:
         sig = iteration.signature()
         self._sig_counts[sig] = self._sig_counts.get(sig, 0) + 1
         if len(self._history) > self._history_window:
-            self._history = self._history[-self._history_window:]
+            self._history = self._history[-self._history_window :]
 
     def analyze(self) -> List[PatternMatch]:
         matches: List[PatternMatch] = []
         if len(self._history) < 2:
             return matches
-        for detector in (self._detect_exact, self._detect_cyclic,
-                         self._detect_drift, self._detect_output_stall):
+        for detector in (
+            self._detect_exact,
+            self._detect_cyclic,
+            self._detect_drift,
+            self._detect_output_stall,
+        ):
             result = detector()
             if result:
                 matches.append(result)
@@ -95,8 +100,12 @@ class PatternAnalyzer:
         first_iter = last_iter - count + 1
         confidence = min(1.0, count / 6.0)
         return PatternMatch(
-            PatternType.EXACT, confidence, 1, count,
-            first_iter, last_iter,
+            PatternType.EXACT,
+            confidence,
+            1,
+            count,
+            first_iter,
+            last_iter,
             f"EXACT loop: same signature repeated {count} times "
             f"(iterations {first_iter}-{last_iter})",
         )
@@ -115,8 +124,7 @@ class PatternAnalyzer:
             window = sigs[-window_size:]
             base = window[:cycle_len]
             is_cycle = all(
-                window[i * cycle_len:(i + 1) * cycle_len] == base
-                for i in range(1, 3)
+                window[i * cycle_len : (i + 1) * cycle_len] == base for i in range(1, 3)
             )
             if is_cycle:
                 # Count repeats by walking backward from the window start
@@ -127,7 +135,7 @@ class PatternAnalyzer:
                 # Check if the cycle extends before the window
                 check_idx = window_start - cycle_len
                 while check_idx >= 0:
-                    if sigs[check_idx:check_idx + cycle_len] == base:
+                    if sigs[check_idx : check_idx + cycle_len] == base:
                         total_repeats += 1
                         check_idx -= cycle_len
                     else:
@@ -137,8 +145,12 @@ class PatternAnalyzer:
                     last_iter = self._history[-1].iteration_number
                     first_iter = last_iter - (total_repeats * cycle_len) + 1
                     match = PatternMatch(
-                        PatternType.CYCLIC, confidence, cycle_len,
-                        total_repeats, first_iter, last_iter,
+                        PatternType.CYCLIC,
+                        confidence,
+                        cycle_len,
+                        total_repeats,
+                        first_iter,
+                        last_iter,
                         f"CYCLIC loop: {cycle_len}-step cycle repeated "
                         f"{total_repeats} times (iterations {first_iter}-{last_iter})",
                     )
@@ -156,8 +168,12 @@ class PatternAnalyzer:
         if not is_decreasing or counts[-1] > 2:
             return None
         return PatternMatch(
-            PatternType.DRIFT, 0.7, 0, 5,
-            recent[0].iteration_number, recent[-1].iteration_number,
+            PatternType.DRIFT,
+            0.7,
+            0,
+            5,
+            recent[0].iteration_number,
+            recent[-1].iteration_number,
             f"DRIFT: action count decreasing ({counts[0]} -> {counts[-1]})",
         )
 
@@ -170,7 +186,11 @@ class PatternAnalyzer:
         if len(digests) < 3 or len(set(digests)) != 1:
             return None
         return PatternMatch(
-            PatternType.OUTPUT_STALL, 0.9, 1, len(digests),
-            recent[0].iteration_number, recent[-1].iteration_number,
+            PatternType.OUTPUT_STALL,
+            0.9,
+            1,
+            len(digests),
+            recent[0].iteration_number,
+            recent[-1].iteration_number,
             f"OUTPUT STALL: identical LLM output for {len(digests)} iterations",
         )

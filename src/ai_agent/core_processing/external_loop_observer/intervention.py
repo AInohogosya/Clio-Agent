@@ -37,8 +37,9 @@ class InterventionLevel(IntEnum):
 @dataclass
 class Intervention:
     """An intervention decision."""
+
     level: InterventionLevel
-    message: str           # Human-readable message for logs
+    message: str  # Human-readable message for logs
     control_file_payload: Optional[dict] = None  # Written to control file
     force_sleep: bool = False
 
@@ -48,13 +49,13 @@ class Intervention:
 
 
 # Thresholds — when to escalate
-_NUDGE_THRESHOLD = 0.35       # severity ≥ this → NUDGE
-_ALERT_THRESHOLD = 0.80       # severity ≥ this → ALERT
-_INTERRUPT_THRESHOLD = 1.50   # severity ≥ this → INTERRUPT
+_NUDGE_THRESHOLD = 0.35  # severity ≥ this → NUDGE
+_ALERT_THRESHOLD = 0.80  # severity ≥ this → ALERT
+_INTERRUPT_THRESHOLD = 1.50  # severity ≥ this → INTERRUPT
 
 # Repeat counts that force escalation regardless of confidence
-_ALERT_REPEAT_MIN = 6         # 6+ repeats → at least ALERT
-_INTERRUPT_REPEAT_MIN = 10    # 10+ repeats → INTERRUPT
+_ALERT_REPEAT_MIN = 6  # 6+ repeats → at least ALERT
+_INTERRUPT_REPEAT_MIN = 10  # 10+ repeats → INTERRUPT
 
 
 def decide_intervention(patterns: List[PatternMatch]) -> Intervention:
@@ -78,7 +79,10 @@ def decide_intervention(patterns: List[PatternMatch]) -> Intervention:
         level = InterventionLevel.LOG
 
     # OUTPUT_STALL always gets at least NUDGE (LLM is frozen)
-    if worst.pattern_type == PatternType.OUTPUT_STALL and level < InterventionLevel.NUDGE:
+    if (
+        worst.pattern_type == PatternType.OUTPUT_STALL
+        and level < InterventionLevel.NUDGE
+    ):
         level = InterventionLevel.NUDGE
 
     # Build the intervention

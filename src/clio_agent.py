@@ -37,6 +37,7 @@ def main():
     if is_windows():
         # On Windows, spawn the child and exit the parent
         import subprocess
+
         proc = subprocess.Popen(args, cwd=str(project_root))
         # Exit immediately — the child runs independently
         sys.exit(proc.pid if proc.pid else 0)

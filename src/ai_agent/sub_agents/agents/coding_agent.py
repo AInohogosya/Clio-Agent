@@ -28,7 +28,11 @@ from ...utils.logger import get_logger
 
 logger = get_logger("sub_agent.coding")
 
-@sub_agent("coding", description="Writes, edits, debugs, and refactors code. Handles all software development tasks including new features, bug fixes, testing, and refactoring. Full read/write/edit access.")
+
+@sub_agent(
+    "coding",
+    description="Writes, edits, debugs, and refactors code. Handles all software development tasks including new features, bug fixes, testing, and refactoring. Full read/write/edit access.",
+)
 class CodingAgent(SubAgentBase):
     """
     Specialized sub-agent for all coding and software development tasks.
@@ -101,7 +105,11 @@ class CodingAgent(SubAgentBase):
 
             if self._model_runner is not None:
                 try:
-                    from ...external_integration.model_runner import ModelRequest, TaskType
+                    from ...external_integration.model_runner import (
+                        ModelRequest,
+                        TaskType,
+                    )
+
                     request = ModelRequest(
                         task_type=TaskType.AUTONOMOUS_LOOP,
                         prompt=prompt,
@@ -135,7 +143,9 @@ class CodingAgent(SubAgentBase):
         ctx = self.context.build_prompt_context()
         history = self._format_progress()
         files_changed_str = self._format_files_changed()
-        errors_str = "\n".join(f"- {e}" for e in self._errors_encountered[-5:]) or "(none)"
+        errors_str = (
+            "\n".join(f"- {e}" for e in self._errors_encountered[-5:]) or "(none)"
+        )
 
         return (
             f"{CODING_TASK_PROMPT.format(**ctx)}\n\n"
@@ -168,17 +178,21 @@ class CodingAgent(SubAgentBase):
         if not self._files_changed:
             return "(no files changed yet)"
         return "\n".join(
-            f"- `{f['path']}` - {f['action']}"
-            for f in self._files_changed
+            f"- `{f['path']}` - {f['action']}" for f in self._files_changed
         )
 
     def _execute_coding_output(self, output: str) -> None:
         """Parse and execute the LLM's coding output."""
         for m in re.finditer(r'read\(path="([^"]+)"\)', output):
             self._safe_read(m.group(1))
-        for m in re.finditer(r'write\(path="([^"]+)",\s*content="([\s\S]*?)"\)', output):
+        for m in re.finditer(
+            r'write\(path="([^"]+)",\s*content="([\s\S]*?)"\)', output
+        ):
             self._safe_write(m.group(1), m.group(2))
-        for m in re.finditer(r'edit\(path="([^"]+)",\s*old_string="([\s\S]*?)",\s*new_string="([\s\S]*?)"\)', output):
+        for m in re.finditer(
+            r'edit\(path="([^"]+)",\s*old_string="([\s\S]*?)",\s*new_string="([\s\S]*?)"\)',
+            output,
+        ):
             self._safe_edit(m.group(1), m.group(2), m.group(3))
         for m in re.finditer(r'bash\(command="([^"]+)"\)', output):
             self._safe_bash(m.group(1))
@@ -243,8 +257,12 @@ class CodingAgent(SubAgentBase):
         """Safely execute a bash command."""
         try:
             result = subprocess.run(
-                command, shell=True, cwd=self._cwd,
-                capture_output=True, text=True, timeout=120,
+                command,
+                shell=True,
+                cwd=self._cwd,
+                capture_output=True,
+                text=True,
+                timeout=120,
             )
             output = result.stdout + result.stderr
             if result.returncode != 0:
@@ -268,11 +286,13 @@ class CodingAgent(SubAgentBase):
             if output is not None:
                 has_failure = "failed" in output.lower() or "error" in output.lower()
                 passed = not has_failure
-                self._test_results.append({
-                    "command": cmd,
-                    "status": "passed" if passed else "failed",
-                    "output": output[:1000],
-                })
+                self._test_results.append(
+                    {
+                        "command": cmd,
+                        "status": "passed" if passed else "failed",
+                        "output": output[:1000],
+                    }
+                )
                 if not passed:
                     self._errors_encountered.append(
                         f"Verification failed: {cmd}\n{output[:500]}"
@@ -332,13 +352,15 @@ class CodingAgent(SubAgentBase):
         else:
             lines.append("- No errors encountered")
 
-        lines.extend([
-            "",
-            "### Summary",
-            f"Completed in {self._iteration} iteration(s). "
-            f"Changed {len(self._files_changed)} file(s). "
-            f"Encountered {len(self._errors_encountered)} error(s).",
-        ])
+        lines.extend(
+            [
+                "",
+                "### Summary",
+                f"Completed in {self._iteration} iteration(s). "
+                f"Changed {len(self._files_changed)} file(s). "
+                f"Encountered {len(self._errors_encountered)} error(s).",
+            ]
+        )
 
         return "\n".join(lines)
 

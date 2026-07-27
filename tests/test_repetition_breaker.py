@@ -24,8 +24,10 @@ import threading
 import unittest
 from unittest.mock import MagicMock, patch
 
-from src.ai_agent.core_processing.autonomous_loop_engine import (
-    AutonomousLoopEngine, AutonomousContext, LoopPhase,
+from ai_agent.core_processing.autonomous_loop_engine import (
+    AutonomousLoopEngine,
+    AutonomousContext,
+    LoopPhase,
 )
 
 
@@ -50,22 +52,32 @@ class TestNormalizeActionSignature(unittest.TestCase):
         self.assertEqual(sig, "__empty__")
 
     def test_single_read_command(self):
-        commands = [("tool_call", json.dumps({"__tool__": "read", "path": "/tmp/file.txt"}))]
+        commands = [
+            ("tool_call", json.dumps({"__tool__": "read", "path": "/tmp/file.txt"}))
+        ]
         sig = self.engine._normalize_action_signature(commands)
         # Should contain "tool:read:" + md5 hash of "/tmp/file.txt"
         expected_hash = hashlib.md5("/tmp/file.txt".encode()).hexdigest()[:8]
         self.assertIn(f"tool:read:{expected_hash}", sig)
 
     def test_same_file_read_produces_same_signature(self):
-        commands1 = [("tool_call", json.dumps({"__tool__": "read", "path": "/tmp/file.txt"}))]
-        commands2 = [("tool_call", json.dumps({"__tool__": "read", "path": "/tmp/file.txt"}))]
+        commands1 = [
+            ("tool_call", json.dumps({"__tool__": "read", "path": "/tmp/file.txt"}))
+        ]
+        commands2 = [
+            ("tool_call", json.dumps({"__tool__": "read", "path": "/tmp/file.txt"}))
+        ]
         sig1 = self.engine._normalize_action_signature(commands1)
         sig2 = self.engine._normalize_action_signature(commands2)
         self.assertEqual(sig1, sig2)
 
     def test_different_file_read_produces_different_signature(self):
-        commands1 = [("tool_call", json.dumps({"__tool__": "read", "path": "/tmp/file1.txt"}))]
-        commands2 = [("tool_call", json.dumps({"__tool__": "read", "path": "/tmp/file2.txt"}))]
+        commands1 = [
+            ("tool_call", json.dumps({"__tool__": "read", "path": "/tmp/file1.txt"}))
+        ]
+        commands2 = [
+            ("tool_call", json.dumps({"__tool__": "read", "path": "/tmp/file2.txt"}))
+        ]
         sig1 = self.engine._normalize_action_signature(commands1)
         sig2 = self.engine._normalize_action_signature(commands2)
         self.assertNotEqual(sig1, sig2)
@@ -105,7 +117,11 @@ class TestNormalizeActionSignature(unittest.TestCase):
         self.assertEqual(sig1, sig2)
 
     def test_sleep_and_exit_skipped(self):
-        commands = [("sleep", ""), ("exit", ""), ("tool_call", json.dumps({"__tool__": "read", "path": "/f.txt"}))]
+        commands = [
+            ("sleep", ""),
+            ("exit", ""),
+            ("tool_call", json.dumps({"__tool__": "read", "path": "/f.txt"})),
+        ]
         sig = self.engine._normalize_action_signature(commands)
         expected_hash = hashlib.md5("/f.txt".encode()).hexdigest()[:8]
         self.assertEqual(sig, f"tool:read:{expected_hash}")
@@ -169,7 +185,9 @@ class TestRecordIterationActions(unittest.TestCase):
     def test_action_history_trimmed(self):
         self.engine._max_action_history = 5
         for i in range(10):
-            commands = [("tool_call", json.dumps({"__tool__": "read", "path": f"/f{i}.txt"}))]
+            commands = [
+                ("tool_call", json.dumps({"__tool__": "read", "path": f"/f{i}.txt"}))
+            ]
             self.engine._record_iteration_actions(commands)
         self.assertEqual(len(self.engine._action_history), 5)
 
@@ -348,7 +366,9 @@ class TestResetDriftCounters(unittest.TestCase):
 
     def test_persistent_loop_patterns_NOT_cleared(self):
         self.engine._reset_drift_counters(self.ctx)
-        self.assertEqual(self.engine._persistent_loop_patterns, {"sig_a": 4, "sig_b": 2})
+        self.assertEqual(
+            self.engine._persistent_loop_patterns, {"sig_a": 4, "sig_b": 2}
+        )
 
     def test_consecutive_same_action_NOT_reset(self):
         self.engine._reset_drift_counters(self.ctx)
@@ -425,8 +445,10 @@ class TestCounterSemantics(unittest.TestCase):
     def test_threshold_3_fires_at_third(self):
         commands = [("tool_call", json.dumps({"__tool__": "read", "path": "/f.txt"}))]
         ctx = AutonomousContext(
-            user_prompt="test", current_goal="test",
-            execution_log=[], cancel_event=threading.Event(),
+            user_prompt="test",
+            current_goal="test",
+            execution_log=[],
+            cancel_event=threading.Event(),
         )
         self.engine._record_iteration_actions(commands)
         self.assertIsNone(self.engine._check_repetition_breaker(ctx))
@@ -460,8 +482,10 @@ class TestFairyGuard(unittest.TestCase):
         self.engine._term_log = MagicMock()
         self.engine._append_log = MagicMock()
         self.ctx = AutonomousContext(
-            user_prompt="test", current_goal="test",
-            execution_log=[], cancel_event=threading.Event(),
+            user_prompt="test",
+            current_goal="test",
+            execution_log=[],
+            cancel_event=threading.Event(),
         )
 
     def test_fairy_fires_once_then_guard_prevents_refire(self):

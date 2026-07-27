@@ -8,8 +8,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Optional
 
-from .base import Permission, ToolExecutor, ToolInput, ToolResult, ToolError, ToolErrorCode
-
+from .base import (
+    Permission,
+    ToolExecutor,
+    ToolInput,
+    ToolResult,
+    ToolError,
+    ToolErrorCode,
+)
 
 # Module-level storage for memos (persists across tool invocations)
 _memo_items: List[str] = []
@@ -18,6 +24,7 @@ _memo_items: List[str] = []
 @dataclass
 class MemoInput(ToolInput):
     """Input for the Memo tool."""
+
     action: str = "list"  # "list", "save", "delete"
     content: Optional[str] = None  # The memo content (for save)
     index: Optional[int] = None  # The 1-based index (for delete)
@@ -27,7 +34,9 @@ class MemoTool(ToolExecutor):
     """Tool for managing memos: list all, save new, or delete by index."""
 
     name = "memo"
-    description = "Manage memos: list all memos, save new memos, or delete memos by index"
+    description = (
+        "Manage memos: list all memos, save new memos, or delete memos by index"
+    )
     required_permission = Permission.WRITE
 
     def _execute(self, input: MemoInput) -> ToolResult:

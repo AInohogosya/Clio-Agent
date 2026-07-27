@@ -29,7 +29,6 @@ from .context_manager import (
 from ..utils.logger import get_logger
 from ..external_integration.telegram_bot import ConversationHistory
 
-
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -56,6 +55,7 @@ PERSISTENT_LOOP_THRESHOLD: int = 6
 # ---------------------------------------------------------------------------
 # LoopContext dataclass
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class LoopContext:
@@ -106,9 +106,11 @@ class LoopContext:
 # Internal log entry representation
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class _LogEntry:
     """A single execution-log record."""
+
     timestamp: str
     iteration: int
     content: str
@@ -119,6 +121,7 @@ class _LogEntry:
 # ---------------------------------------------------------------------------
 # LoopController
 # ---------------------------------------------------------------------------
+
 
 class LoopController:
     """Central controller for loop observability and anti-loop logic.
@@ -240,7 +243,10 @@ class LoopController:
             self.compress_log(context)
 
         # Periodic sleep notification
-        if context.iteration_count > 0 and context.iteration_count % NOTIFICATION_THRESHOLD == 0:
+        if (
+            context.iteration_count > 0
+            and context.iteration_count % NOTIFICATION_THRESHOLD == 0
+        ):
             self.logger.info(
                 f"Iteration {context.iteration_count} — "
                 f"consider sleep if no real work remains."
@@ -359,15 +365,19 @@ class LoopController:
         the task.
         """
         if not plan.actions:
-            self.logger.info(
-                f"Empty iteration #{context.iteration_count}: no actions."
-            )
+            self.logger.info(f"Empty iteration #{context.iteration_count}: no actions.")
             return True
 
         real_types = {
-            ActionType.READ, ActionType.WRITE, ActionType.EDIT,
-            ActionType.GLOB, ActionType.GREP, ActionType.BASH,
-            ActionType.COMMAND, ActionType.TELEGRAM, ActionType.DISCORD,
+            ActionType.READ,
+            ActionType.WRITE,
+            ActionType.EDIT,
+            ActionType.GLOB,
+            ActionType.GREP,
+            ActionType.BASH,
+            ActionType.COMMAND,
+            ActionType.TELEGRAM,
+            ActionType.DISCORD,
         }
         has_real = any(a.type in real_types for a in plan.actions)
         if not has_real:
@@ -447,9 +457,7 @@ class LoopController:
                 "new input arrives."
             )
 
-        self.logger.info(
-            f"Curiosity Fairy generated {len(suggestions)} suggestions."
-        )
+        self.logger.info(f"Curiosity Fairy generated {len(suggestions)} suggestions.")
         return suggestions
 
     # ------------------------------------------------------------------ #
@@ -489,8 +497,14 @@ class LoopController:
         """
         root = Path(self._project_root)
         skip_dirs = {
-            ".git", "__pycache__", ".context", "node_modules",
-            ".venv", "venv", ".mypy_cache", ".pytest_cache",
+            ".git",
+            "__pycache__",
+            ".context",
+            "node_modules",
+            ".venv",
+            "venv",
+            ".mypy_cache",
+            ".pytest_cache",
         }
 
         already_read: Set[str] = set()
@@ -499,9 +513,7 @@ class LoopController:
                 parts = line.split()
                 for part in parts:
                     cleaned = part.strip("'\"")
-                    if cleaned and (
-                        cleaned.startswith("/") or Path(cleaned).suffix
-                    ):
+                    if cleaned and (cleaned.startswith("/") or Path(cleaned).suffix):
                         already_read.add(cleaned)
 
         candidates: List[tuple[float, str]] = []
@@ -546,12 +558,8 @@ class LoopController:
                 return suggestions
 
             untracked = [l for l in lines if l.startswith("??")]
-            modified = [
-                l for l in lines if l.startswith(" M") or l.startswith("M ")
-            ]
-            staged = [
-                l for l in lines if l.startswith("A ") or l.startswith("M ")
-            ]
+            modified = [l for l in lines if l.startswith(" M") or l.startswith("M ")]
+            staged = [l for l in lines if l.startswith("A ") or l.startswith("M ")]
 
             if untracked:
                 suggestions.append(
@@ -578,8 +586,12 @@ class LoopController:
         try:
             result = subprocess.run(
                 [
-                    "grep", "-rn", "--include=*.py",
-                    "-E", r"TODO|FIXME", self._project_root,
+                    "grep",
+                    "-rn",
+                    "--include=*.py",
+                    "-E",
+                    r"TODO|FIXME",
+                    self._project_root,
                 ],
                 capture_output=True,
                 text=True,
@@ -600,6 +612,7 @@ class LoopController:
 # ---------------------------------------------------------------------------
 # Module-level helpers
 # ---------------------------------------------------------------------------
+
 
 def _parse_iteration(log_line: str) -> str:
     """Extract the iteration number from a log line like ``[#42 ...]``.

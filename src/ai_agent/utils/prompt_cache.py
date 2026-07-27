@@ -18,6 +18,7 @@ from .logger import get_logger
 @dataclass
 class CacheEntry:
     """Cache entry with metadata"""
+
     prompt_hash: str
     response: str
     model: str
@@ -27,11 +28,11 @@ class CacheEntry:
     ttl: int  # Time to live in seconds
     access_count: int = 0
     last_accessed: float = 0.0
-    
+
     def is_expired(self) -> bool:
         """Check if cache entry has expired"""
         return time.time() - self.timestamp > self.ttl
-    
+
     def touch(self):
         """Update access metadata"""
         self.access_count += 1
@@ -41,6 +42,7 @@ class CacheEntry:
 @dataclass
 class CacheStats:
     """Cache statistics"""
+
     hits: int = 0
     misses: int = 0
     evictions: int = 0
@@ -52,7 +54,7 @@ class CacheStats:
 class PromptCache:
     """
     LRU Cache for LLM prompt responses
-    
+
     Features:
     - In-memory caching with optional disk persistence
     - TTL-based expiration
@@ -60,36 +62,38 @@ class PromptCache:
     - Cache statistics tracking
     - Hash-based key generation
     """
-    
+
     def __init__(
         self,
         max_size: int = 1000,
         default_ttl: int = 3600,  # 1 hour
         persist_to_disk: bool = True,
-        cache_dir: Optional[str] = None
+        cache_dir: Optional[str] = None,
     ):
         self.max_size = max_size
         self.default_ttl = default_ttl
         self.persist_to_disk = persist_to_disk
-        self.cache_dir = Path(cache_dir) if cache_dir else Path.home() / ".clio_agent" / "cache"
-        
+        self.cache_dir = (
+            Path(cache_dir) if cache_dir else Path.home() / ".clio_agent" / "cache"
+        )
+
         self.logger = get_logger("prompt_cache")
         self.cache: Dict[str, CacheEntry] = {}
         self.lock = Lock()
         self.stats = CacheStats()
-        
+
         # Create cache directory if needed
         if self.persist_to_disk:
             self.cache_dir.mkdir(parents=True, exist_ok=True)
             self._load_from_disk()
-        
+
         self.logger.info(
             "Prompt cache initialized",
             max_size=max_size,
             default_ttl=default_ttl,
-            persist_to_disk=persist_to_disk
+            persist_to_disk=persist_to_disk,
         )
-    
+
     def _generate_key(
         self,
         prompt: str,
@@ -97,26 +101,29 @@ class PromptCache:
         provider: str,
         task_type: str,
         temperature: float = 1.0,
-        max_tokens: int = 5000
+        max_tokens: int = 5000,
     ) -> str:
         """
         Generate cache key from prompt parameters
-        
+
         Includes all parameters that would affect the response
         """
         # Create normalized content string
-        content = json.dumps({
-            "prompt": prompt,
-            "model": model,
-            "provider": provider,
-            "task_type": task_type,
-            "temperature": round(temperature, 2),  # Round to reduce noise
-            "max_tokens": max_tokens
-        }, sort_keys=True)
-        
+        content = json.dumps(
+            {
+                "prompt": prompt,
+                "model": model,
+                "provider": provider,
+                "task_type": task_type,
+                "temperature": round(temperature, 2),  # Round to reduce noise
+                "max_tokens": max_tokens,
+            },
+            sort_keys=True,
+        )
+
         # Generate SHA-256 hash
-        return hashlib.sha256(content.encode('utf-8')).hexdigest()
-    
+        return hashlib.sha256(content.encode("utf-8")).hexdigest()
+
     def get(
         self,
         prompt: str,
@@ -124,11 +131,11 @@ class PromptCache:
         provider: str,
         task_type: str,
         temperature: float = 1.0,
-        max_tokens: int = 5000
+        max_tokens: int = 5000,
     ) -> Optional[str]:
         """
         Get cached response if available and not expired
-        
+
         Returns:
             Cached response or None if not found/expired
         """
@@ -137,7 +144,7 @@ class PromptCache:
             self.stats.misses += 1
             self._update_hit_rate()
         return None
-    
+
     def put(
         self,
         prompt: str,
@@ -147,45 +154,42 @@ class PromptCache:
         task_type: str,
         temperature: float = 1.0,
         max_tokens: int = 5000,
-        ttl: Optional[int] = None
+        ttl: Optional[int] = None,
     ):
         """
         Store response in cache
         """
         # Feature permanently disabled — never store
         pass
-    
+
     def _evict_lru(self):
         """Evict least recently used entry"""
         if not self.cache:
             return
-        
+
         # Find LRU entry (least recently accessed)
-        lru_key = min(
-            self.cache.keys(),
-            key=lambda k: self.cache[k].last_accessed
-        )
-        
+        lru_key = min(self.cache.keys(), key=lambda k: self.cache[k].last_accessed)
+
         del self.cache[lru_key]
         self.stats.evictions += 1
-        
+
         self.logger.debug(f"Evicted LRU entry {lru_key[:16]}...")
-    
+
     def _update_hit_rate(self):
         """Update cache hit rate statistic"""
         total = self.stats.hits + self.stats.misses
         if total > 0:
             self.stats.hit_rate = self.stats.hits / total
-    
+
     def invalidate(
         self,
         model: Optional[str] = None,
         provider: Optional[str] = None,
-        older_than: Optional[float] = None
+        older_than: Optional[float] = None,
     ):
         """
         Invalidate cache entries matching criteria
-        
+
         Args:
             model: Only invalidate entries for this model
             provider: Only invalidate entries for this provider
@@ -193,57 +197,56 @@ class PromptCache:
         """
         with self.lock:
             to_remove = []
-            
+
             for key, entry in self.cache.items():
                 match = True
-                
+
                 if model and entry.model != model:
                     match = False
-                
+
                 if provider and entry.provider != provider:
                     match = False
-                
+
                 if older_than and entry.timestamp > older_than:
                     match = False
-                
+
                 if match:
                     to_remove.append(key)
-            
+
             for key in to_remove:
                 del self.cache[key]
                 self.stats.evictions += 1
-            
+
             self.stats.total_entries = len(self.cache)
-            
+
             self.logger.info(
                 f"Invalidated {len(to_remove)} cache entries",
                 model=model,
-                provider=provider
+                provider=provider,
             )
-            
+
             if self.persist_to_disk:
                 self._save_to_disk()
-    
+
     def clear(self):
         """Clear all cache entries"""
         with self.lock:
             count = len(self.cache)
             self.cache.clear()
             self.stats.total_entries = 0
-            
+
             self.logger.info(f"Cleared {count} cache entries")
-            
+
             if self.persist_to_disk:
                 self._save_to_disk()
-    
+
     def get_stats(self) -> Dict[str, Any]:
         """Get cache statistics"""
         with self.lock:
             total_size = sum(
-                len(entry.response.encode('utf-8'))
-                for entry in self.cache.values()
+                len(entry.response.encode("utf-8")) for entry in self.cache.values()
             )
-            
+
             return {
                 "hits": self.stats.hits,
                 "misses": self.stats.misses,
@@ -251,14 +254,14 @@ class PromptCache:
                 "total_entries": self.stats.total_entries,
                 "evictions": self.stats.evictions,
                 "total_size_bytes": total_size,
-                "max_size": self.max_size
+                "max_size": self.max_size,
             }
-    
+
     def _save_to_disk(self):
         """Save cache to disk"""
         try:
             cache_file = self.cache_dir / "prompt_cache.json"
-            
+
             # Convert cache to serializable format
             data = {
                 key: {
@@ -270,33 +273,33 @@ class PromptCache:
                     "timestamp": entry.timestamp,
                     "ttl": entry.ttl,
                     "access_count": entry.access_count,
-                    "last_accessed": entry.last_accessed
+                    "last_accessed": entry.last_accessed,
                 }
                 for key, entry in self.cache.items()
             }
-            
-            with open(cache_file, 'w', encoding='utf-8') as f:
+
+            with open(cache_file, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
-            
+
             self.logger.debug(f"Saved {len(data)} entries to disk")
-            
+
         except Exception as e:
             self.logger.error(f"Failed to save cache to disk: {e}")
-    
+
     def _load_from_disk(self):
         """Load cache from disk"""
         try:
             cache_file = self.cache_dir / "prompt_cache.json"
-            
+
             if not cache_file.exists():
                 return
-            
-            with open(cache_file, 'r', encoding='utf-8') as f:
+
+            with open(cache_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            
+
             loaded = 0
             expired = 0
-            
+
             for key, entry_data in data.items():
                 entry = CacheEntry(
                     prompt_hash=entry_data["prompt_hash"],
@@ -307,25 +310,23 @@ class PromptCache:
                     timestamp=entry_data["timestamp"],
                     ttl=entry_data["ttl"],
                     access_count=entry_data.get("access_count", 0),
-                    last_accessed=entry_data.get("last_accessed", 0.0)
+                    last_accessed=entry_data.get("last_accessed", 0.0),
                 )
-                
+
                 # Skip expired entries
                 if entry.is_expired():
                     expired += 1
                     continue
-                
+
                 self.cache[key] = entry
                 loaded += 1
-            
+
             self.stats.total_entries = len(self.cache)
-            
+
             self.logger.info(
-                f"Loaded cache from disk",
-                loaded=loaded,
-                expired_skipped=expired
+                f"Loaded cache from disk", loaded=loaded, expired_skipped=expired
             )
-            
+
         except Exception as e:
             self.logger.error(f"Failed to load cache from disk: {e}")
 
@@ -335,13 +336,11 @@ _global_cache: Optional[PromptCache] = None
 
 
 def get_prompt_cache(
-    max_size: int = 1000,
-    default_ttl: int = 3600,
-    persist_to_disk: bool = True
+    max_size: int = 1000, default_ttl: int = 3600, persist_to_disk: bool = True
 ) -> PromptCache:
     """Get global prompt cache instance (feature permanently disabled)"""
     global _global_cache
-    
+
     if _global_cache is None:
         _global_cache = PromptCache.__new__(PromptCache)
         _global_cache.cache = {}
@@ -351,7 +350,7 @@ def get_prompt_cache(
         _global_cache.default_ttl = 0
         _global_cache.persist_to_disk = False
         _global_cache.cache_dir = Path.home() / ".clio_agent" / "cache"
-    
+
     return _global_cache
 
 

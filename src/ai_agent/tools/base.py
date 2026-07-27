@@ -24,7 +24,6 @@ from .exceptions import (
     ToolSystemException,
 )
 
-
 # ── Permission model ──
 
 
@@ -37,9 +36,14 @@ class Permission(str, Enum):
 @dataclass
 class PermissionSet:
     """Set of permissions granted to the agent runtime."""
-    allowed: set = field(default_factory=lambda: {
-        Permission.READ, Permission.WRITE, Permission.EXECUTE,
-    })
+
+    allowed: set = field(
+        default_factory=lambda: {
+            Permission.READ,
+            Permission.WRITE,
+            Permission.EXECUTE,
+        }
+    )
 
     def has(self, permission: Permission) -> bool:
         return permission in self.allowed
@@ -51,12 +55,14 @@ class PermissionSet:
 @dataclass
 class ToolInput:
     """Base class for all tool inputs. Subclass per tool."""
+
     pass
 
 
 @dataclass
 class ToolResult:
     """Unified result returned by every tool."""
+
     success: bool
     output: str
     tool_name: str = ""
@@ -85,14 +91,16 @@ class ToolResult:
 @dataclass
 class ParallelTask:
     """A single tool invocation inside a parallel batch."""
+
     tool_name: str
     input: ToolInput
-    label: str = ""          # optional human-readable label for log output
+    label: str = ""  # optional human-readable label for log output
 
 
 @dataclass
 class ParallelResult:
     """Aggregated result of a parallel batch execution."""
+
     results: List[Tuple[ParallelTask, ToolResult]]
     total_duration_ms: float
     success_count: int
@@ -104,7 +112,9 @@ class ParallelResult:
         return self.fail_count == 0
 
     def formatted_output(self) -> str:
-        lines = [f"[parallel batch] {self.success_count} ok, {self.fail_count} failed, {self.total_duration_ms:.0f}ms"]
+        lines = [
+            f"[parallel batch] {self.success_count} ok, {self.fail_count} failed, {self.total_duration_ms:.0f}ms"
+        ]
         for task, result in self.results:
             tag = task.label or task.tool_name
             status = "ok" if result.success else "FAIL"
@@ -118,6 +128,7 @@ class ParallelResult:
 @dataclass
 class ToolExecutionLog:
     """Record of a single tool invocation."""
+
     execution_id: str
     tool_name: str
     input_summary: Dict[str, Any]
@@ -168,7 +179,9 @@ class ToolExecutor(ABC):
     name: str = ""
     description: str = ""
     required_permission: Permission = Permission.READ
-    guideline: str = "Understand the essence of the task before acting. Avoid unnecessary actions. Prefer direct, minimal steps over exploratory or redundant operations."
+    guideline: str = (
+        "Understand the essence of the task before acting. Avoid unnecessary actions. Prefer direct, minimal steps over exploratory or redundant operations."
+    )
 
     def __init__(self, permissions: Optional[PermissionSet] = None) -> None:
         self.permissions = permissions or PermissionSet()
@@ -219,8 +232,7 @@ class ToolExecutor(ABC):
         return result
 
     @abstractmethod
-    def _execute(self, input: ToolInput) -> ToolResult:
-        ...
+    def _execute(self, input: ToolInput) -> ToolResult: ...
 
     # ── helpers ──
 

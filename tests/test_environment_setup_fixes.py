@@ -30,7 +30,10 @@ class TestPromptForApiKeyEOF:
     def test_exception_caught_in_getpass(self):
         """prompt_for_api_key uses getpass which catches Exception (Bug #3 fix: EOF via Exception)."""
         source = _get_func("prompt_for_api_key")
-        assert "except Exception as e:" in source or "except (KeyboardInterrupt, EOFError):" in source
+        assert (
+            "except Exception as e:" in source
+            or "except (KeyboardInterrupt, EOFError):" in source
+        )
 
     def test_keyboard_interrupt_caught(self):
         source = _get_func("prompt_for_api_key")
@@ -54,16 +57,19 @@ class TestGetValidApiKeyEOF:
 class TestConfigPathResolution:
     def test_explicit_path_priority(self):
         from ai_agent.utils.config import _resolve_config_path
+
         explicit = Path("/tmp/explicit.yaml")
         assert _resolve_config_path(explicit) == explicit.resolve()
 
     def test_directory_appends_yaml(self):
         from ai_agent.utils.config import _resolve_config_path
+
         with tempfile.TemporaryDirectory() as d:
             assert _resolve_config_path(d) == Path(d).resolve() / "config.yaml"
 
     def test_env_var_used(self):
         from ai_agent.utils.config import _resolve_config_path
+
         with tempfile.NamedTemporaryFile(suffix=".yaml", delete=False) as f:
             env_path = f.name
         try:
@@ -76,6 +82,7 @@ class TestConfigPathResolution:
 class TestAtomicWriteYaml:
     def test_successful_write(self):
         from ai_agent.utils.config import _atomic_write_yaml
+
         with tempfile.TemporaryDirectory() as d:
             path = Path(d) / "test.yaml"
             _atomic_write_yaml(path, {"key": "value"})
@@ -84,6 +91,7 @@ class TestAtomicWriteYaml:
 
     def test_exception_cleans_up(self):
         from ai_agent.utils.config import _atomic_write_yaml
+
         with tempfile.TemporaryDirectory() as d:
             path = Path(d) / "test.yaml"
             try:
@@ -95,14 +103,17 @@ class TestAtomicWriteYaml:
 
     def test_concurrent_writes(self):
         from ai_agent.utils.config import _atomic_write_yaml
+
         with tempfile.TemporaryDirectory() as d:
             path = Path(d) / "test.yaml"
             errors = []
+
             def write(tid):
                 try:
                     _atomic_write_yaml(path, {"t": tid})
                 except Exception as e:
                     errors.append(e)
+
             threads = [threading.Thread(target=write, args=(i,)) for i in range(10)]
             for t in threads:
                 t.start()
@@ -110,6 +121,7 @@ class TestAtomicWriteYaml:
                 t.join()
             if path.exists():
                 import yaml
+
                 data = yaml.safe_load(path.read_text())
                 assert isinstance(data, dict)
 
@@ -117,20 +129,31 @@ class TestAtomicWriteYaml:
 class TestSettingsManagerThreadSafety:
     def test_lock_exists(self):
         import ai_agent.utils.settings_manager as mod
+
         source = open(mod.__file__).read()
-        assert "_singleton_lock" in source or "threading.Lock" in source or "_get_lock" in source
+        assert (
+            "_singleton_lock" in source
+            or "threading.Lock" in source
+            or "_get_lock" in source
+        )
 
 
 class TestFallbackSelectionEOF:
     def test_eof_handled(self):
-        source = open(_PROJECT_ROOT / "external_integration/yellow_selection/fallback_interactive_menu.py").read()
+        source = open(
+            _PROJECT_ROOT
+            / "external_integration/yellow_selection/fallback_interactive_menu.py"
+        ).read()
         assert "EOFError" in source
 
 
 class TestEncodingNotForced:
     def test_guard_exists(self):
         source = (_PROJECT_ROOT / "run.py").read_text()
-        assert 'if not os.environ.get("PYTHONIOENCODING")' in source or "setdefault" in source
+        assert (
+            'if not os.environ.get("PYTHONIOENCODING")' in source
+            or "setdefault" in source
+        )
 
 
 class TestNormalOperation:
@@ -152,6 +175,7 @@ class TestEdgeCases:
         p = tmp_path / "config.yaml"
         p.write_text("")
         import yaml
+
         assert yaml.safe_load(p.read_text()) is None
 
     def test_long_key_accepted(self):
@@ -171,6 +195,7 @@ class TestFailureScenarios:
 
     def test_restart_process_exits(self):
         import ai_agent.core_processing.autonomous_loop_engine as mod
+
         source = open(mod.__file__).read()
         assert "sys.exit(127)" in source
 

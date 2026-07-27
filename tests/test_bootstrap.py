@@ -32,13 +32,24 @@ if _SRC_PATH not in sys.path:
 # These mirror the functions in run.py so we can unit-test them in isolation.
 # ---------------------------------------------------------------------------
 
+
 def _version_tuple(value):
     """Parse a dotted version string into a comparable tuple of ints.
     Mirror of run.py's _version_tuple() with pre-release handling.
     """
     raw = str(value).split("+")[0]
-    _PRERELEASE_RANK = {"dev": 0, "a": 1, "alpha": 1, "b": 2, "beta": 2,
-                        "rc": 3, "c": 3, "post": 5, "r": 5, "rev": 5}
+    _PRERELEASE_RANK = {
+        "dev": 0,
+        "a": 1,
+        "alpha": 1,
+        "b": 2,
+        "beta": 2,
+        "rc": 3,
+        "c": 3,
+        "post": 5,
+        "r": 5,
+        "rev": 5,
+    }
     _FINAL_RANK = 4
     _rank = None
     parts = []
@@ -76,12 +87,12 @@ def _version_tuple(value):
 def _is_in_venv():
     """Mirror of run.py's _is_in_venv()."""
     return (
-        hasattr(sys, 'real_prefix')
-        or (hasattr(sys, 'base_prefix') and sys.base_prefix != sys.prefix)
-        or os.getenv('VIRTUAL_ENV') is not None
-        or os.getenv('PIPENV_ACTIVE') is not None
-        or os.getenv('POETRY_ACTIVE') is not None
-        or os.getenv('PYENV_VIRTUAL_ENV') is not None
+        hasattr(sys, "real_prefix")
+        or (hasattr(sys, "base_prefix") and sys.base_prefix != sys.prefix)
+        or os.getenv("VIRTUAL_ENV") is not None
+        or os.getenv("PIPENV_ACTIVE") is not None
+        or os.getenv("POETRY_ACTIVE") is not None
+        or os.getenv("PYENV_VIRTUAL_ENV") is not None
     )
 
 
@@ -163,8 +174,12 @@ def _inspect_venv_deps(venv_python):
         "print(json.dumps({'missing': missing, 'outdated': outdated}))\n"
     )
     try:
-        r = subprocess.run([venv_python, "-c", check_script],
-                           capture_output=True, text=True, timeout=30)
+        r = subprocess.run(
+            [venv_python, "-c", check_script],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
         if r.returncode != 0:
             return False, list({p for p, _ in CORE_DEPENDENCIES.values()}), []
         data = json.loads(r.stdout.strip().splitlines()[-1])
@@ -189,9 +204,12 @@ def _venv_python_is_healthy(venv_python):
     except OSError:
         return False
     try:
-        ver = subprocess.run([venv_python, "-c",
-                              "import sys; print('%d.%d' % sys.version_info[:2])"],
-                             capture_output=True, text=True, timeout=15)
+        ver = subprocess.run(
+            [venv_python, "-c", "import sys; print('%d.%d' % sys.version_info[:2])"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
         if ver.returncode != 0:
             return False
         ver_str = ver.stdout.strip()
@@ -203,8 +221,12 @@ def _venv_python_is_healthy(venv_python):
                 return False
         except Exception:
             pass
-        pip = subprocess.run([venv_python, "-m", "pip", "--version"],
-                             capture_output=True, text=True, timeout=15)
+        pip = subprocess.run(
+            [venv_python, "-m", "pip", "--version"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
         return pip.returncode == 0
     except Exception:
         return False
@@ -215,7 +237,10 @@ def _resolve_venv_python():
     project_root = _PROJECT_ROOT
     venv_path = project_root / "venv"
     if platform.system() == "Windows":
-        candidates = [venv_path / "Scripts" / "python.exe", venv_path / "Scripts" / "pythonw.exe"]
+        candidates = [
+            venv_path / "Scripts" / "python.exe",
+            venv_path / "Scripts" / "pythonw.exe",
+        ]
     else:
         candidates = [venv_path / "bin" / "python", venv_path / "bin" / "python3"]
     for p in candidates:
@@ -228,8 +253,12 @@ def _resolve_venv_python():
         # The venv's bin/python knows it's in a venv and will use the venv's
         # site-packages. Resolving to the system python breaks this mechanism.
         try:
-            r = subprocess.run([str(p), "-m", "pip", "--version"],
-                               capture_output=True, text=True, timeout=10)
+            r = subprocess.run(
+                [str(p), "-m", "pip", "--version"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
             if r.returncode == 0:
                 deps_ok = _check_venv_deps(str(p))
                 return str(p), False, deps_ok
@@ -242,6 +271,7 @@ def _resolve_venv_python():
 # ===========================================================================
 # 1. Version parsing tests
 # ===========================================================================
+
 
 class TestVersionTuple:
     """Test _version_tuple handles edge cases."""
@@ -303,6 +333,7 @@ class TestVersionTuple:
 # 2. Venv detection tests
 # ===========================================================================
 
+
 class TestVenvDetection:
     """Test venv detection functions."""
 
@@ -339,6 +370,7 @@ class TestVenvDetection:
 # ===========================================================================
 # 3. Dependency inspection tests
 # ===========================================================================
+
 
 class TestDependencyInspection:
     """Test _inspect_venv_deps against the current environment."""
@@ -384,6 +416,7 @@ class TestDependencyInspection:
 # 4. Full import chain tests
 # ===========================================================================
 
+
 class TestImportChain:
     """Verify all core modules can be imported."""
 
@@ -420,6 +453,7 @@ class TestImportChain:
 
     def test_ai_agent_version(self):
         import ai_agent
+
         assert hasattr(ai_agent, "__version__")
         assert ai_agent.__version__
 
@@ -427,6 +461,7 @@ class TestImportChain:
 # ===========================================================================
 # 5. Config loading tests
 # ===========================================================================
+
 
 class TestConfigLoading:
     """Verify config.yaml can be loaded and has required fields."""
@@ -437,6 +472,7 @@ class TestConfigLoading:
 
     def test_config_loads_with_yaml(self):
         import yaml
+
         config_path = _PROJECT_ROOT / "config.yaml"
         with open(config_path, "r", encoding="utf-8") as f:
             raw = yaml.safe_load(f)
@@ -444,6 +480,7 @@ class TestConfigLoading:
 
     def test_config_has_api_section(self):
         import yaml
+
         config_path = _PROJECT_ROOT / "config.yaml"
         with open(config_path, "r", encoding="utf-8") as f:
             raw = yaml.safe_load(f)
@@ -452,6 +489,7 @@ class TestConfigLoading:
 
     def test_config_api_has_required_fields(self):
         import yaml
+
         config_path = _PROJECT_ROOT / "config.yaml"
         with open(config_path, "r", encoding="utf-8") as f:
             raw = yaml.safe_load(f)
@@ -462,6 +500,7 @@ class TestConfigLoading:
 
     def test_config_has_security_section(self):
         import yaml
+
         config_path = _PROJECT_ROOT / "config.yaml"
         with open(config_path, "r", encoding="utf-8") as f:
             raw = yaml.safe_load(f)
@@ -469,6 +508,7 @@ class TestConfigLoading:
 
     def test_config_has_execution_section(self):
         import yaml
+
         config_path = _PROJECT_ROOT / "config.yaml"
         with open(config_path, "r", encoding="utf-8") as f:
             raw = yaml.safe_load(f)
@@ -476,6 +516,7 @@ class TestConfigLoading:
 
     def test_config_manager_loads(self):
         from ai_agent.utils.config import ConfigManager
+
         config_path = _PROJECT_ROOT / "config.yaml"
         mgr = ConfigManager(str(config_path))
         config = mgr.load_config()
@@ -486,6 +527,7 @@ class TestConfigLoading:
 
     def test_config_manager_get(self):
         from ai_agent.utils.config import ConfigManager
+
         config_path = _PROJECT_ROOT / "config.yaml"
         mgr = ConfigManager(str(config_path))
         mgr.load_config()
@@ -497,16 +539,19 @@ class TestConfigLoading:
 # 6. Platform detection tests
 # ===========================================================================
 
+
 class TestPlatformDetection:
     """Verify the platform detector works."""
 
     def test_platform_detector_import(self):
         from ai_agent.platform_abstraction.platform_detector import PlatformDetector
+
         detector = PlatformDetector()
         assert detector is not None
 
     def test_detect_system(self):
         from ai_agent.platform_abstraction.platform_detector import PlatformDetector
+
         detector = PlatformDetector()
         info = detector.detect_system()
         assert info is not None
@@ -517,6 +562,7 @@ class TestPlatformDetection:
 
     def test_detect_os_returns_tuple(self):
         from ai_agent.platform_abstraction.platform_detector import PlatformDetector
+
         detector = PlatformDetector()
         os_name, os_version = detector._detect_os()
         assert isinstance(os_name, str)
@@ -525,6 +571,7 @@ class TestPlatformDetection:
 
     def test_detect_architecture(self):
         from ai_agent.platform_abstraction.platform_detector import PlatformDetector
+
         detector = PlatformDetector()
         arch = detector._detect_architecture()
         assert isinstance(arch, str)
@@ -532,6 +579,7 @@ class TestPlatformDetection:
 
     def test_detect_platform(self):
         from ai_agent.platform_abstraction.platform_detector import PlatformDetector
+
         detector = PlatformDetector()
         plat = detector._detect_platform()
         assert isinstance(plat, str)
@@ -539,6 +587,7 @@ class TestPlatformDetection:
 
     def test_detect_python_version(self):
         from ai_agent.platform_abstraction.platform_detector import PlatformDetector
+
         detector = PlatformDetector()
         ver = detector._detect_python_version()
         assert isinstance(ver, str)
@@ -547,18 +596,21 @@ class TestPlatformDetection:
 
     def test_detect_container(self):
         from ai_agent.platform_abstraction.platform_detector import PlatformDetector
+
         detector = PlatformDetector()
         is_container = detector._detect_container()
         assert isinstance(is_container, bool)
 
     def test_detect_headless(self):
         from ai_agent.platform_abstraction.platform_detector import PlatformDetector
+
         detector = PlatformDetector()
         is_headless = detector._detect_headless()
         assert isinstance(is_headless, bool)
 
     def test_get_platform_specific_config(self):
         from ai_agent.platform_abstraction.platform_detector import PlatformDetector
+
         detector = PlatformDetector()
         config = detector.get_platform_specific_config()
         assert isinstance(config, dict)
@@ -568,6 +620,7 @@ class TestPlatformDetection:
 
     def test_system_info_dataclass(self):
         from ai_agent.platform_abstraction.platform_detector import SystemInfo
+
         info = SystemInfo(
             os_name="test",
             os_version="1.0",

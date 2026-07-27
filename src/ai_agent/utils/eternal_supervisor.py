@@ -40,8 +40,14 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .platform_compat import (
-    is_process_alive, kill_process, spawn_detached, is_windows,
-    is_macos, is_linux, is_unix, get_platform,
+    is_process_alive,
+    kill_process,
+    spawn_detached,
+    is_windows,
+    is_macos,
+    is_linux,
+    is_unix,
+    get_platform,
 )
 
 logger = logging.getLogger("eternal_supervisor")
@@ -51,31 +57,32 @@ logger = logging.getLogger("eternal_supervisor")
 #  Configuration
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 @dataclass
 class EternalSupervisorConfig:
     """Configuration for the eternal supervisor."""
 
     # Heartbeat
-    heartbeat_interval: float = 30.0      # Seconds between heartbeats
-    heartbeat_timeout: float = 600.0      # Seconds before declaring hang
+    heartbeat_interval: float = 30.0  # Seconds between heartbeats
+    heartbeat_timeout: float = 600.0  # Seconds before declaring hang
 
     # Watchdog
-    watchdog_check_interval: float = 15.0 # Seconds between watchdog checks
+    watchdog_check_interval: float = 15.0  # Seconds between watchdog checks
 
     # Restart limits
-    max_restarts_per_hour: int = 10       # Max restarts before extended cooldown
-    max_restarts_per_day: int = 50        # Max restarts before daily cooldown
-    initial_restart_delay: float = 2.0    # Initial delay before restart
-    max_restart_delay: float = 300.0      # Max delay (5 minutes)
-    restart_backoff_factor: float = 2.0   # Exponential backoff multiplier
-    jitter_range: float = 0.3             # Jitter range (0.0-1.0)
+    max_restarts_per_hour: int = 10  # Max restarts before extended cooldown
+    max_restarts_per_day: int = 50  # Max restarts before daily cooldown
+    initial_restart_delay: float = 2.0  # Initial delay before restart
+    max_restart_delay: float = 300.0  # Max delay (5 minutes)
+    restart_backoff_factor: float = 2.0  # Exponential backoff multiplier
+    jitter_range: float = 0.3  # Jitter range (0.0-1.0)
 
     # Health check
     health_check_interval: float = 300.0  # Self-diagnostic every 5 minutes
 
     # Circuit breaker
-    circuit_breaker_threshold: int = 5    # Failures before opening circuit
-    circuit_breaker_timeout: float = 60.0 # Seconds before half-open
+    circuit_breaker_threshold: int = 5  # Failures before opening circuit
+    circuit_breaker_timeout: float = 60.0  # Seconds before half-open
 
     # Graceful degradation
     enable_graceful_degradation: bool = True
@@ -91,8 +98,10 @@ class EternalSupervisorConfig:
 #  State Management
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 class SupervisorState(Enum):
     """Current state of the supervisor."""
+
     INITIALIZING = auto()
     RUNNING = auto()
     RESTARTING = auto()
@@ -105,6 +114,7 @@ class SupervisorState(Enum):
 @dataclass
 class RestartRecord:
     """Record of a restart attempt."""
+
     timestamp: float
     reason: str
     success: bool
@@ -113,6 +123,7 @@ class RestartRecord:
 @dataclass
 class SupervisorHealth:
     """Health status of the supervisor."""
+
     state: SupervisorState = SupervisorState.INITIALIZING
     last_heartbeat: float = 0.0
     restart_count_hour: int = 0
@@ -130,6 +141,7 @@ class SupervisorHealth:
 # ══════════════════════════════════════════════════════════════════════════════
 #  Eternal Supervisor - Main Class
 # ══════════════════════════════════════════════════════════════════════════════
+
 
 class EternalSupervisor:
     """
@@ -181,9 +193,9 @@ class EternalSupervisor:
         log_dir.mkdir(parents=True, exist_ok=True)
 
         handler = logging.FileHandler("logs/supervisor.log")
-        handler.setFormatter(logging.Formatter(
-            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-        ))
+        handler.setFormatter(
+            logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+        )
         logger.addHandler(handler)
         logger.setLevel(logging.INFO)
 
@@ -253,7 +265,11 @@ class EternalSupervisor:
             self._stop_agent()
 
             # Join daemon threads cleanly
-            for thread_attr in ("_watchdog_thread", "_heartbeat_thread", "_health_thread"):
+            for thread_attr in (
+                "_watchdog_thread",
+                "_heartbeat_thread",
+                "_health_thread",
+            ):
                 t = getattr(self, thread_attr, None)
                 if t is not None:
                     try:
@@ -435,7 +451,9 @@ class EternalSupervisor:
         while self._running and not self._shutdown_event.is_set():
             try:
                 # Wait between checks (interruptible)
-                if self._shutdown_event.wait(timeout=self.config.watchdog_check_interval):
+                if self._shutdown_event.wait(
+                    timeout=self.config.watchdog_check_interval
+                ):
                     break
 
                 if not self._running:
@@ -507,6 +525,7 @@ class EternalSupervisor:
                 tmp.replace(hb_file)
             except OSError:
                 import shutil
+
                 shutil.move(str(tmp), str(hb_file))
 
             self.health.last_heartbeat = time.time()
@@ -549,7 +568,7 @@ class EternalSupervisor:
         # Disk check
         try:
             disk = shutil.disk_usage(str(self._project_root))
-            free_gb = disk.free / (1024 ** 3)
+            free_gb = disk.free / (1024**3)
             if free_gb < 1.0:
                 issues.append(f"CRITICAL: Disk almost full ({free_gb:.1f}GB free)")
                 self._attempt_disk_cleanup()
@@ -561,6 +580,7 @@ class EternalSupervisor:
         # Memory check
         try:
             import psutil
+
             mem = psutil.virtual_memory()
             if mem.percent > 95:
                 issues.append(f"CRITICAL: Memory almost full ({mem.percent:.0f}% used)")
@@ -645,7 +665,9 @@ class EternalSupervisor:
     def _open_circuit(self) -> None:
         """Open the circuit breaker (stop restarts temporarily)."""
         self.health.circuit_open = True
-        self.health.circuit_open_until = time.time() + self.config.circuit_breaker_timeout
+        self.health.circuit_open_until = (
+            time.time() + self.config.circuit_breaker_timeout
+        )
         logger.warning(
             f"Circuit breaker OPEN - cooldown for {self.config.circuit_breaker_timeout}s"
         )
@@ -750,7 +772,7 @@ class EternalSupervisor:
         signal.signal(signal.SIGTERM, self._signal_handler)
 
         # Ignore SIGHUP (terminal hangup) - we're a daemon
-        if hasattr(signal, 'SIGHUP'):
+        if hasattr(signal, "SIGHUP"):
             signal.signal(signal.SIGHUP, signal.SIG_IGN)
 
     def _signal_handler(self, signum: int, frame: Any) -> None:
@@ -763,6 +785,7 @@ class EternalSupervisor:
 # ══════════════════════════════════════════════════════════════════════════════
 #  Agent-Side Heartbeat Integration
 # ══════════════════════════════════════════════════════════════════════════════
+
 
 class AgentHeartbeat:
     """
@@ -876,6 +899,7 @@ def stop_eternal_agent() -> None:
 # ══════════════════════════════════════════════════════════════════════════════
 #  CLI Entry Point
 # ══════════════════════════════════════════════════════════════════════════════
+
 
 def main():
     """CLI entry point for the eternal supervisor."""

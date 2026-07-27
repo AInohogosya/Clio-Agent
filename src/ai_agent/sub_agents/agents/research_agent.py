@@ -20,7 +20,10 @@ from ...utils.logger import get_logger
 logger = get_logger("sub_agent.research")
 
 
-@sub_agent("research", description="Investigates codebase, analyzes architecture, traces dependencies")
+@sub_agent(
+    "research",
+    description="Investigates codebase, analyzes architecture, traces dependencies",
+)
 class ResearchAgent(SubAgentBase):
     """
     Specialized sub-agent for research and investigation tasks.
@@ -62,7 +65,11 @@ class ResearchAgent(SubAgentBase):
 
             if self._model_runner is not None:
                 try:
-                    from ...external_integration.model_runner import ModelRequest, TaskType
+                    from ...external_integration.model_runner import (
+                        ModelRequest,
+                        TaskType,
+                    )
+
                     request = ModelRequest(
                         task_type=TaskType.AUTONOMOUS_LOOP,
                         prompt=prompt,
@@ -171,11 +178,13 @@ class ResearchAgent(SubAgentBase):
         artifact_key = f"grep_{pattern}_{path}"
         self.context.artifacts[artifact_key] = matches[:50]
         if matches:
-            self._findings.append({
-                "title": f"Grep: {pattern}",
-                "detail": f"Found {len(matches)} matches in {path}",
-                "evidence": matches[:5],
-            })
+            self._findings.append(
+                {
+                    "title": f"Grep: {pattern}",
+                    "detail": f"Found {len(matches)} matches in {path}",
+                    "evidence": matches[:5],
+                }
+            )
 
     def _do_glob(self, command_line: str) -> None:
         """Execute a glob command."""
@@ -183,14 +192,17 @@ class ResearchAgent(SubAgentBase):
         if not pattern:
             return
         import glob as glob_mod
+
         files = glob_mod.glob(pattern, root_dir=self._cwd, recursive=True)
         self.context.artifacts[f"glob_{pattern}"] = files
         if files:
-            self._findings.append({
-                "title": f"Glob: {pattern}",
-                "detail": f"Found {len(files)} files matching {pattern}",
-                "evidence": files[:10],
-            })
+            self._findings.append(
+                {
+                    "title": f"Glob: {pattern}",
+                    "detail": f"Found {len(files)} files matching {pattern}",
+                    "evidence": files[:10],
+                }
+            )
 
     def _do_bash(self, command_line: str) -> None:
         """Execute a bash command for analysis."""
@@ -198,18 +210,25 @@ class ResearchAgent(SubAgentBase):
         if not cmd:
             return
         import subprocess
+
         try:
             result = subprocess.run(
-                cmd, shell=True, capture_output=True, text=True,
-                timeout=30, cwd=self._cwd,
+                cmd,
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                cwd=self._cwd,
             )
             artifact_key = f"bash_{cmd[:30]}"
             self.context.artifacts[artifact_key] = result.stdout[:1000]
             if result.stdout.strip():
-                self._findings.append({
-                    "title": f"Command: {cmd}",
-                    "detail": result.stdout[:500],
-                })
+                self._findings.append(
+                    {
+                        "title": f"Command: {cmd}",
+                        "detail": result.stdout[:500],
+                    }
+                )
         except subprocess.TimeoutExpired:
             logger.warning(f"Bash command timed out: {cmd}")
         except Exception as e:
@@ -218,26 +237,34 @@ class ResearchAgent(SubAgentBase):
     def _auto_extract_findings(self, path: str, content: str) -> None:
         """Auto-extract key findings from file content."""
         # Detect class definitions
-        for m in re.finditer(r'^class\s+(\w+)', content, re.MULTILINE):
-            self._findings.append({
-                "title": f"Class: {m.group(1)}",
-                "detail": f"Found in {path}:{content[:m.start()].count(chr(10)) + 1}",
-            })
+        for m in re.finditer(r"^class\s+(\w+)", content, re.MULTILINE):
+            self._findings.append(
+                {
+                    "title": f"Class: {m.group(1)}",
+                    "detail": f"Found in {path}:{content[:m.start()].count(chr(10)) + 1}",
+                }
+            )
 
         # Detect function definitions
-        for m in re.finditer(r'^(?:    )?def\s+(\w+)', content, re.MULTILINE):
+        for m in re.finditer(r"^(?:    )?def\s+(\w+)", content, re.MULTILINE):
             if len(self._findings) < 20:  # Cap auto-extracted findings
-                self._findings.append({
-                    "title": f"Function: {m.group(1)}",
-                    "detail": f"Found in {path}:{content[:m.start()].count(chr(10)) + 1}",
-                })
+                self._findings.append(
+                    {
+                        "title": f"Function: {m.group(1)}",
+                        "detail": f"Found in {path}:{content[:m.start()].count(chr(10)) + 1}",
+                    }
+                )
 
         # Detect TODO/FIXME markers
-        for m in re.finditer(r'(?:TODO|FIXME|HACK|XXX)[:\s]*(.+?)$', content, re.MULTILINE):
-            self._findings.append({
-                "title": "TODO/FIXME found",
-                "detail": f"{path}: {m.group(1).strip()}",
-            })
+        for m in re.finditer(
+            r"(?:TODO|FIXME|HACK|XXX)[:\s]*(.+?)$", content, re.MULTILINE
+        ):
+            self._findings.append(
+                {
+                    "title": "TODO/FIXME found",
+                    "detail": f"{path}: {m.group(1).strip()}",
+                }
+            )
 
     def _fallback_research(self) -> str:
         """Fallback research when no model runner is available."""
@@ -245,18 +272,22 @@ class ResearchAgent(SubAgentBase):
         for root, dirs, files in os.walk(self._cwd):
             # Skip common non-relevant directories
             dirs[:] = [
-                d for d in dirs
-                if d not in {'.git', 'node_modules', '__pycache__', '.venv', 'venv', 'dist'}
+                d
+                for d in dirs
+                if d
+                not in {".git", "node_modules", "__pycache__", ".venv", "venv", "dist"}
             ]
             for fname in files:
                 rel_path = os.path.relpath(os.path.join(root, fname), self._cwd)
                 self._files_examined.append(rel_path)
 
-        self._findings.append({
-            "title": "Directory Structure",
-            "detail": f"Found {len(self._files_examined)} files in project",
-            "evidence": self._files_examined[:20],
-        })
+        self._findings.append(
+            {
+                "title": "Directory Structure",
+                "detail": f"Found {len(self._files_examined)} files in project",
+                "evidence": self._files_examined[:20],
+            }
+        )
 
         return self._build_report()
 
@@ -278,16 +309,22 @@ class ResearchAgent(SubAgentBase):
                 for ev in finding["evidence"][:3]:
                     lines.append(f"   - `{ev}`")
 
-        lines.extend([
-            "",
-            "### Summary",
-            f"Examined {len(self._files_examined)} files in "
-            f"{self._iteration} iteration(s). "
-            f"Found {len(self._findings)} relevant finding(s).",
-            "",
-            "### Open Questions",
-            "None" if len(self._findings) >= 3 else "Investigation may need more iterations.",
-        ])
+        lines.extend(
+            [
+                "",
+                "### Summary",
+                f"Examined {len(self._files_examined)} files in "
+                f"{self._iteration} iteration(s). "
+                f"Found {len(self._findings)} relevant finding(s).",
+                "",
+                "### Open Questions",
+                (
+                    "None"
+                    if len(self._findings) >= 3
+                    else "Investigation may need more iterations."
+                ),
+            ]
+        )
 
         return "\n".join(lines)
 

@@ -1,0 +1,30 @@
+---
+name: Feature Request
+description: Suggest an idea for this project
+title: "[Feature]: "
+labels: ["enhancement"]
+assignees: []
+---
+## Feature Description
+A clear and concise description of the feature you'd like to see.
+
+## Problem Statement
+What problem does this feature solve? What use case does it address?
+
+## Proposed Solution
+Describe how you envision this feature working.
+
+## Alternatives Considered
+Describe any alternative solutions or features you've considered.
+
+## Additional Context
+- Related issues/PRs
+- Links to documentation or examples
+- Mockups or diagrams (if applicable)
+
+## Implementation Notes (Optional)
+If you have ideas on implementation:
+- Affected components/modules
+- Dependencies needed
+- Breaking changes?
+- Migration path?

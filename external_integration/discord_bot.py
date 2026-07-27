@@ -27,14 +27,19 @@ from functools import wraps
 try:
     import discord
     from discord.ext import commands
+
     DISCORD_AVAILABLE = True
 except ImportError:
     DISCORD_AVAILABLE = False
 
 from ..utils.logger import get_logger
 from ..utils.config import load_config
-from ..utils.resilience_engine import get_resilience_engine, classify_api_error, ErrorSeverity, ResilienceConfig
-
+from ..utils.resilience_engine import (
+    get_resilience_engine,
+    classify_api_error,
+    ErrorSeverity,
+    ResilienceConfig,
+)
 
 # Constants for rate limiting and retry logic
 MAX_QUEUE_SIZE = 1000
@@ -44,10 +49,13 @@ MAX_RATE_LIMIT_RETRIES = 3
 MAX_RESTART_ATTEMPTS = 5  # Bug #26 fix: circuit breaker for restart loop
 
 
-def retry_on_network_error(max_retries: int = 3, initial_delay: float = 1.0, backoff_factor: float = 2.0):
+def retry_on_network_error(
+    max_retries: int = 3, initial_delay: float = 1.0, backoff_factor: float = 2.0
+):
     """
     Decorator to retry network operations with exponential backoff.
     """
+
     def decorator(func):
         @wraps(func)
         async def async_wrapper(*args, **kwargs):
@@ -63,17 +71,30 @@ def retry_on_network_error(max_retries: int = 3, initial_delay: float = 1.0, bac
                     error_type_name = type(e).__name__.lower()
                     is_network_error = any(
                         keyword in error_msg
-                        for keyword in ['timeout', 'network', 'connection', 'timed out', 'unreachable', 'readerror', 'read error']
+                        for keyword in [
+                            "timeout",
+                            "network",
+                            "connection",
+                            "timed out",
+                            "unreachable",
+                            "readerror",
+                            "read error",
+                        ]
                     ) or any(
                         keyword in error_type_name
-                        for keyword in ['readerror', 'read_error', 'connectionerror', 'timeouterror']
+                        for keyword in [
+                            "readerror",
+                            "read_error",
+                            "connectionerror",
+                            "timeouterror",
+                        ]
                     )
 
                     if not is_network_error or attempt == max_retries:
                         logger.error(f"Error in {func.__name__}: {e}")
                         raise
 
-                    delay = initial_delay * (backoff_factor ** attempt)
+                    delay = initial_delay * (backoff_factor**attempt)
                     logger.warning(
                         f"Network error in {func.__name__} (attempt {attempt + 1}/{max_retries}): {e}. "
                         f"Retrying in {delay:.1f} seconds..."
@@ -96,17 +117,30 @@ def retry_on_network_error(max_retries: int = 3, initial_delay: float = 1.0, bac
                     error_type_name = type(e).__name__.lower()
                     is_network_error = any(
                         keyword in error_msg
-                        for keyword in ['timeout', 'network', 'connection', 'timed out', 'unreachable', 'readerror', 'read error']
+                        for keyword in [
+                            "timeout",
+                            "network",
+                            "connection",
+                            "timed out",
+                            "unreachable",
+                            "readerror",
+                            "read error",
+                        ]
                     ) or any(
                         keyword in error_type_name
-                        for keyword in ['readerror', 'read_error', 'connectionerror', 'timeouterror']
+                        for keyword in [
+                            "readerror",
+                            "read_error",
+                            "connectionerror",
+                            "timeouterror",
+                        ]
                     )
 
                     if not is_network_error or attempt == max_retries:
                         logger.error(f"Error in {func.__name__}: {e}")
                         raise
 
-                    delay = initial_delay * (backoff_factor ** attempt)
+                    delay = initial_delay * (backoff_factor**attempt)
                     logger.warning(
                         f"Network error in {func.__name__} (attempt {attempt + 1}/{max_retries}): {e}. "
                         f"Retrying in {delay:.1f} seconds..."
@@ -125,6 +159,7 @@ def retry_on_network_error(max_retries: int = 3, initial_delay: float = 1.0, bac
 
 class DiscordMode(Enum):
     """Discord bot mode"""
+
     NORMAL = "normal"
     DISCORD = "discord"
 
@@ -132,7 +167,7 @@ class DiscordMode(Enum):
 @dataclass
 class ConversationHistory:
     """Conversation history for Discord mode
-    
+
     Thread-safe implementation with proper size limits.
     """
 
@@ -141,7 +176,7 @@ class ConversationHistory:
             raise ValueError(f"user_id must be a non-negative integer, got {user_id}")
         if not isinstance(max_length, int) or max_length <= 0:
             raise ValueError(f"max_length must be a positive integer, got {max_length}")
-        
+
         self.user_id = user_id
         self.max_length = max_length
         self._messages: List[Dict[str, str]] = []
@@ -149,11 +184,11 @@ class ConversationHistory:
 
     def add_message(self, role: str, content: str) -> None:
         """Add a message to conversation history in a thread-safe manner.
-        
+
         Args:
             role: Message role ('user' or 'assistant')
             content: Message content
-            
+
         Raises:
             ValueError: If role is invalid or content is None
         """
@@ -161,14 +196,16 @@ class ConversationHistory:
             raise ValueError("content cannot be None")
         if not isinstance(content, str):
             content = str(content)
-        if role not in ('user', 'assistant', 'system'):
-            raise ValueError(f"Invalid role: {role}. Must be 'user', 'assistant', or 'system'")
-        
+        if role not in ("user", "assistant", "system"):
+            raise ValueError(
+                f"Invalid role: {role}. Must be 'user', 'assistant', or 'system'"
+            )
+
         with self._lock:
             self._messages.append({"role": role, "content": content})
             # Efficient trimming - only trim when over limit
             if len(self._messages) > self.max_length:
-                self._messages = self._messages[-self.max_length:]
+                self._messages = self._messages[-self.max_length :]
 
     def get_history(self) -> List[Dict[str, str]]:
         """Return a copy of the conversation history."""
@@ -199,6 +236,7 @@ class ConversationHistory:
 @dataclass
 class QueuedDiscordMessage:
     """Discord message waiting to be sent from the queue processor."""
+
     channel_id: int
     message: str
     attempts: int = 0
@@ -208,6 +246,7 @@ class QueuedDiscordMessage:
 @dataclass
 class RunningDiscordTask:
     """A Discord pipeline task plus the cancellation event passed to it."""
+
     task: asyncio.Task
     cancel_event: threading.Event
 
@@ -223,8 +262,13 @@ class DiscordBotManager:
     - Compatible interface with TelegramBotManager for engine integration
     """
 
-    def __init__(self, bot_token: str, allowed_user_ids: Optional[List[int]] = None,
-                 max_history_length: int = 50, terminal_history=None):
+    def __init__(
+        self,
+        bot_token: str,
+        allowed_user_ids: Optional[List[int]] = None,
+        max_history_length: int = 50,
+        terminal_history=None,
+    ):
         self.bot_token = bot_token
         self.allowed_user_ids = allowed_user_ids or []
         self.max_history_length = max_history_length
@@ -267,7 +311,9 @@ class DiscordBotManager:
         self._resilience = get_resilience_engine()
 
         if not DISCORD_AVAILABLE:
-            self.logger.error("discord.py not installed. Install with: pip install discord.py>=2.3.0")
+            self.logger.error(
+                "discord.py not installed. Install with: pip install discord.py>=2.3.0"
+            )
 
     def set_message_callback(self, callback: Callable[[str, int], str]):
         self.message_callback = callback
@@ -289,8 +335,7 @@ class DiscordBotManager:
     def get_conversation_history(self, user_id: int) -> ConversationHistory:
         if user_id not in self.conversation_histories:
             self.conversation_histories[user_id] = ConversationHistory(
-                user_id=user_id,
-                max_length=self.max_history_length
+                user_id=user_id, max_length=self.max_history_length
             )
         return self.conversation_histories[user_id]
 
@@ -332,7 +377,9 @@ class DiscordBotManager:
             return
 
         await self._cancel_user_task(user_id)
-        await ctx.send("Restarting Clio-Agent-1 with the same provider, model, and API settings...")
+        await ctx.send(
+            "Restarting Clio-Agent-1 with the same provider, model, and API settings..."
+        )
 
         if self.restart_callback:
             self.restart_callback(user_id)
@@ -370,13 +417,23 @@ class DiscordBotManager:
             running.cancel_event.set()
             running.task.cancel()
 
-    async def _process_message_async(self, user_message: str, user_id: int,
-                                      processing_msg, history, cancel_event: threading.Event) -> str:
+    async def _process_message_async(
+        self,
+        user_message: str,
+        user_id: int,
+        processing_msg,
+        history,
+        cancel_event: threading.Event,
+    ) -> str:
         if self.message_callback:
             loop = asyncio.get_running_loop()
             if len(inspect.signature(self.message_callback).parameters) >= 3:
-                return await loop.run_in_executor(None, self.message_callback, user_message, user_id, cancel_event)
-            return await loop.run_in_executor(None, self.message_callback, user_message, user_id)
+                return await loop.run_in_executor(
+                    None, self.message_callback, user_message, user_id, cancel_event
+                )
+            return await loop.run_in_executor(
+                None, self.message_callback, user_message, user_id
+            )
         return "Message callback not set. Bot not properly configured."
 
     async def _handle_message(self, message):
@@ -398,7 +455,11 @@ class DiscordBotManager:
         # Check for slash commands that may arrive as regular messages
         if user_message.strip() == "/restart":
             # Create a minimal context-like object for the restart handler
-            ctx = await self.client.get_context(message) if hasattr(self.client, 'get_context') else None
+            ctx = (
+                await self.client.get_context(message)
+                if hasattr(self.client, "get_context")
+                else None
+            )
             if ctx:
                 await self._handle_restart_command(ctx)
             return
@@ -450,20 +511,34 @@ class DiscordBotManager:
 
         cancel_event = threading.Event()
         task = asyncio.create_task(
-            self._handle_message_task(user_id, user_message, processing_msg, history, cancel_event)
+            self._handle_message_task(
+                user_id, user_message, processing_msg, history, cancel_event
+            )
         )
         async with await self._get_task_lock():
-            self._current_tasks[user_id] = RunningDiscordTask(task=task, cancel_event=cancel_event)
+            self._current_tasks[user_id] = RunningDiscordTask(
+                task=task, cancel_event=cancel_event
+            )
 
-    async def _handle_message_task(self, user_id: int, user_message: str,
-                                    processing_msg, history, cancel_event: threading.Event):
+    async def _handle_message_task(
+        self,
+        user_id: int,
+        user_message: str,
+        processing_msg,
+        history,
+        cancel_event: threading.Event,
+    ):
         try:
             response = None
             if self.message_callback:
-                response = await self._process_message_async(user_message, user_id, processing_msg, history, cancel_event)
+                response = await self._process_message_async(
+                    user_message, user_id, processing_msg, history, cancel_event
+                )
 
                 if cancel_event.is_set():
-                    self.logger.info(f"Task for user {user_id} was cancelled, skipping response")
+                    self.logger.info(
+                        f"Task for user {user_id} was cancelled, skipping response"
+                    )
                     return
 
                 if response is not None:
@@ -471,7 +546,9 @@ class DiscordBotManager:
 
                 # Truncate long messages if exceeds Discord limit (2000 chars)
                 if response and len(response) > 1950:
-                    self.logger.info(f"Response is {len(response)} chars, truncating with [omitted]")
+                    self.logger.info(
+                        f"Response is {len(response)} chars, truncating with [omitted]"
+                    )
                     response = self._truncate_message(response, max_length=1950)
 
                 # Send response: try to edit processing message, send new one if that fails
@@ -482,15 +559,21 @@ class DiscordBotManager:
                         try:
                             await processing_msg.channel.send(response)
                         except Exception as send_err:
-                            self.logger.error(f"Failed to send response as new message: {send_err}")
+                            self.logger.error(
+                                f"Failed to send response as new message: {send_err}"
+                            )
                 elif response is not None:
                     try:
-                        resolved_channel_id = self._user_channel_map.get(user_id, user_id)
+                        resolved_channel_id = self._user_channel_map.get(
+                            user_id, user_id
+                        )
                         channel = self.client.get_channel(resolved_channel_id)
                         if channel:
                             await channel.send(response)
                     except Exception as send_err:
-                        self.logger.error(f"Failed to send response as new message: {send_err}")
+                        self.logger.error(
+                            f"Failed to send response as new message: {send_err}"
+                        )
             else:
                 self.logger.info(
                     f"No message_callback set; autonomous loop will handle "
@@ -500,16 +583,20 @@ class DiscordBotManager:
                     try:
                         await processing_msg.edit(
                             content="The AI agent is processing your message.\n"
-                                    "Reply will be sent via the agent's autonomous loop."
+                            "Reply will be sent via the agent's autonomous loop."
                         )
                     except Exception:
                         pass
 
         except asyncio.CancelledError:
-            self.logger.info(f"Task for user {user_id} cancelled - switching to new task")
+            self.logger.info(
+                f"Task for user {user_id} cancelled - switching to new task"
+            )
             try:
                 if processing_msg:
-                    await processing_msg.edit(content="Task cancelled - processing new request...")
+                    await processing_msg.edit(
+                        content="Task cancelled - processing new request..."
+                    )
             except Exception as e:
                 self.logger.error(f"Error editing message: {e}")
             raise
@@ -517,7 +604,9 @@ class DiscordBotManager:
             self.logger.error(f"Error processing message: {e}")
             try:
                 if processing_msg:
-                    await processing_msg.edit(content=f"Error processing your request: {str(e)}")
+                    await processing_msg.edit(
+                        content=f"Error processing your request: {str(e)}"
+                    )
             except Exception:
                 try:
                     if processing_msg:
@@ -551,21 +640,21 @@ class DiscordBotManager:
         half_space = available_space // 2
 
         beginning = message[:half_space]
-        end = message[-(available_space - half_space):]
+        end = message[-(available_space - half_space) :]
 
         return f"{beginning}{omitted_tag}{end}"
 
     @retry_on_network_error(max_retries=3, initial_delay=1.0, backoff_factor=2.0)
     async def send_message(self, channel_id: int, message: str) -> bool:
         """Send a message to a specific Discord channel.
-        
+
         Args:
             channel_id: The Discord channel ID to send to
             message: The message content to send
-            
+
         Returns:
             True if message was sent successfully, False otherwise
-            
+
         Note:
             This method handles rate limiting (429) and server errors (5xx)
             via the retry_on_network_error decorator.
@@ -574,18 +663,20 @@ class DiscordBotManager:
         if not isinstance(channel_id, int) or channel_id <= 0:
             self.logger.error(f"Invalid channel_id: {channel_id}")
             return False
-        
+
         if not message or not isinstance(message, str):
             self.logger.error(f"Invalid message: {message}")
             return False
-        
+
         if not self.client:
             self.logger.error("Discord client not initialized")
             return False
 
         # Truncate long messages to Discord's limit (2000 chars, we use 1950 for safety)
         if len(message) > 1950:
-            self.logger.warning(f"Message too long ({len(message)} chars), truncating with [omitted]")
+            self.logger.warning(
+                f"Message too long ({len(message)} chars), truncating with [omitted]"
+            )
             message = self._truncate_message(message, max_length=1950)
 
         # Get channel from cache - may return None if bot doesn't have access
@@ -593,7 +684,7 @@ class DiscordBotManager:
         if channel is None:
             self.logger.error(f"Channel {channel_id} not found or bot lacks access")
             return False
-        
+
         try:
             await channel.send(message)
             return True
@@ -620,7 +711,7 @@ class DiscordBotManager:
 
         Returns:
             True if message was queued successfully, False otherwise.
-            
+
         Note:
             If user_id is not found in _user_channel_map, the message will be
             queued with user_id as channel_id. The send will fail at delivery
@@ -630,21 +721,21 @@ class DiscordBotManager:
         if not isinstance(user_id, int) or user_id < 0:
             self.logger.error(f"Invalid user_id: {user_id}")
             return False
-        
+
         if not message or not isinstance(message, str):
             self.logger.error(f"Invalid message: {message}")
             return False
-        
+
         # Look up actual channel from user-channel mapping
         # If not found, fall back to using user_id (will likely fail at send time)
         actual_channel = self._user_channel_map.get(user_id, user_id)
-        
+
         if user_id not in self._user_channel_map:
             self.logger.warning(
                 f"User {user_id} not in channel map. "
                 f"Message will be queued for channel {actual_channel} but may fail."
             )
-        
+
         with self._queue_lock:
             # Prevent unbounded queue growth
             if len(self.message_queue) >= MAX_QUEUE_SIZE:
@@ -653,10 +744,14 @@ class DiscordBotManager:
                     f"Dropping message for user {user_id}."
                 )
                 return False
-            
-            self.message_queue.append(QueuedDiscordMessage(channel_id=actual_channel, message=message))
-        
-        self.logger.info(f"Message queued for channel {actual_channel} (user {user_id})")
+
+            self.message_queue.append(
+                QueuedDiscordMessage(channel_id=actual_channel, message=message)
+            )
+
+        self.logger.info(
+            f"Message queued for channel {actual_channel} (user {user_id})"
+        )
         return True
 
     async def process_message_queue(self):
@@ -682,7 +777,9 @@ class DiscordBotManager:
     async def _send_queued_message(self, queued_message: QueuedDiscordMessage):
         try:
             await self.send_message(queued_message.channel_id, queued_message.message)
-            self.logger.info(f"Sent queued message to channel {queued_message.channel_id}")
+            self.logger.info(
+                f"Sent queued message to channel {queued_message.channel_id}"
+            )
         except Exception as e:
             queued_message.attempts += 1
             if queued_message.attempts >= self._max_queue_send_attempts:
@@ -692,7 +789,9 @@ class DiscordBotManager:
                 )
                 return
 
-            queued_message.next_attempt_at = time.time() + (self._queue_retry_delay * queued_message.attempts)
+            queued_message.next_attempt_at = time.time() + (
+                self._queue_retry_delay * queued_message.attempts
+            )
             self.logger.warning(
                 f"Failed to send queued message to channel {queued_message.channel_id}: {e}. "
                 f"Retry {queued_message.attempts}/{self._max_queue_send_attempts} scheduled."
@@ -709,6 +808,7 @@ class DiscordBotManager:
         this thread raises "attached to a different loop" errors and the
         message is never delivered.
         """
+
         def queue_processor():
             self.queue_processor_running = True
             while self.queue_processor_running:
@@ -734,7 +834,9 @@ class DiscordBotManager:
                 time.sleep(0.1)
             self.logger.info("Queue processor stopped")
 
-        self.queue_processor_thread = threading.Thread(target=queue_processor, daemon=True)
+        self.queue_processor_thread = threading.Thread(
+            target=queue_processor, daemon=True
+        )
         self.queue_processor_thread.start()
         self.logger.info("Queue processor thread started")
 
@@ -761,7 +863,7 @@ class DiscordBotManager:
 
     def start_bot(self):
         """Start the Discord bot (blocking)
-        
+
         Implements circuit breaker pattern to prevent infinite restart loops.
         After MAX_RESTART_ATTEMPTS consecutive failures, the bot will stop.
         """
@@ -798,7 +900,11 @@ class DiscordBotManager:
                     # Process slash commands first
                     await self.client.process_commands(message)
                     # Also handle regular text messages
-                    if not message.author.bot and message.content and not message.content.startswith("!"):
+                    if (
+                        not message.author.bot
+                        and message.content
+                        and not message.content.startswith("!")
+                    ):
                         await self._handle_message(message)
 
                 # Start queue processor
@@ -813,7 +919,9 @@ class DiscordBotManager:
 
                 if self._should_restart and restart_count < MAX_RESTART_ATTEMPTS - 1:
                     restart_count += 1
-                    self.logger.info(f"Restarting Discord bot... (attempt {restart_count}/{MAX_RESTART_ATTEMPTS})")
+                    self.logger.info(
+                        f"Restarting Discord bot... (attempt {restart_count}/{MAX_RESTART_ATTEMPTS})"
+                    )
                     # Clear state before restart
                     self._current_tasks.clear()
                     self.client = None
@@ -852,19 +960,27 @@ class DiscordBotManager:
                 self.is_running = False
                 self._stop_queue_processor()
 
-                severity, category, is_retryable, suggested_delay = classify_api_error(e)
+                severity, category, is_retryable, suggested_delay = classify_api_error(
+                    e
+                )
 
                 if not is_retryable or not self._should_restart:
-                    self.logger.error(f"Discord bot encountered non-retryable error ({category.value}): {e}")
+                    self.logger.error(
+                        f"Discord bot encountered non-retryable error ({category.value}): {e}"
+                    )
                     break
 
                 base_wait = max(suggested_delay, 5.0)
                 self._resilience.record_failure("discord:polling")
                 cb = self._resilience._circuit_breakers.get("discord:polling", {})
-                consecutive_failures = cb.get("failures", 1) if isinstance(cb, dict) else 1
+                consecutive_failures = (
+                    cb.get("failures", 1) if isinstance(cb, dict) else 1
+                )
                 wait = min(base_wait * (2 ** min(consecutive_failures, 6)), 300.0)
 
-                self.logger.info(f"Waiting {wait:.0f}s before restarting Discord (consecutive failures: {consecutive_failures})")
+                self.logger.info(
+                    f"Waiting {wait:.0f}s before restarting Discord (consecutive failures: {consecutive_failures})"
+                )
                 time.sleep(wait)
 
         return True
@@ -894,7 +1010,9 @@ class DiscordBotManager:
                 self.logger.error(f"Error stopping client: {e}")
 
 
-def create_discord_bot(config_path: Optional[str] = None, terminal_history=None) -> Optional[DiscordBotManager]:
+def create_discord_bot(
+    config_path: Optional[str] = None, terminal_history=None
+) -> Optional[DiscordBotManager]:
     """
     Create a Discord bot manager from configuration
 
@@ -921,47 +1039,48 @@ def create_discord_bot(config_path: Optional[str] = None, terminal_history=None)
 
         config_dict = {}
         if config_path and Path(config_path).exists():
-            with open(config_path, 'r') as f:
+            with open(config_path, "r") as f:
                 config_dict = yaml.safe_load(f) or {}
 
         discord_config = None
-        if config_dict.get('discord'):
-            discord_config = config_dict['discord']
+        if config_dict.get("discord"):
+            discord_config = config_dict["discord"]
         else:
             config_obj = load_config()
-            if hasattr(config_obj, 'discord'):
+            if hasattr(config_obj, "discord"):
                 discord_config = config_obj.discord
-                if hasattr(discord_config, '__dataclass_fields__'):
+                if hasattr(discord_config, "__dataclass_fields__"):
                     from dataclasses import asdict
+
                     discord_config = asdict(discord_config)
-                elif hasattr(discord_config, '__dict__'):
+                elif hasattr(discord_config, "__dict__"):
                     discord_config = discord_config.__dict__
 
         if not discord_config:
             discord_config = {}
 
-        if not discord_config.get('enabled', False):
+        if not discord_config.get("enabled", False):
             return None
 
-        bot_token = discord_config.get('bot_token') or ''
+        bot_token = discord_config.get("bot_token") or ""
         if not bot_token:
             print("Discord bot token not configured")
             print("Please set bot_token in config.yaml under discord section")
             return None
 
         raw_allowed = (
-            discord_config.get('authorized_users')
-            or discord_config.get('allowed_user_ids')
+            discord_config.get("authorized_users")
+            or discord_config.get("allowed_user_ids")
             or []
         )
         allowed_user_ids = [int(uid) for uid in raw_allowed if uid is not None]
-        max_history_length = discord_config.get('max_history_length', 50)
+        max_history_length = discord_config.get("max_history_length", 50)
 
         return DiscordBotManager(
             bot_token=bot_token,
             allowed_user_ids=allowed_user_ids,
             max_history_length=max_history_length,
-            terminal_history=terminal_history
+            terminal_history=terminal_history,
         )
     except Exception as e:
         print(f"Error loading Discord configuration: {e}")

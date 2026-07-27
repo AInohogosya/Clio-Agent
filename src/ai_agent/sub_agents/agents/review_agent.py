@@ -20,7 +20,9 @@ from ...utils.logger import get_logger
 logger = get_logger("sub_agent.review")
 
 
-@sub_agent("review", description="Performs code review, quality analysis, security audit")
+@sub_agent(
+    "review", description="Performs code review, quality analysis, security audit"
+)
 class ReviewAgent(SubAgentBase):
     """
     Specialized sub-agent for code review tasks.
@@ -67,7 +69,11 @@ class ReviewAgent(SubAgentBase):
 
             if self._model_runner is not None:
                 try:
-                    from ...external_integration.model_runner import ModelRequest, TaskType
+                    from ...external_integration.model_runner import (
+                        ModelRequest,
+                        TaskType,
+                    )
+
                     request = ModelRequest(
                         task_type=TaskType.AUTONOMOUS_LOOP,
                         prompt=prompt,
@@ -115,10 +121,12 @@ class ReviewAgent(SubAgentBase):
             for f in self._files_reviewed[-5:]:
                 lines.append(f"  - {f}")
         if self._findings:
-            lines.append(f"Total findings: {len(self._findings)} "
-                         f"(Critical: {self._critical_count}, "
-                         f"Warning: {self._warning_count}, "
-                         f"Info: {self._info_count})")
+            lines.append(
+                f"Total findings: {len(self._findings)} "
+                f"(Critical: {self._critical_count}, "
+                f"Warning: {self._warning_count}, "
+                f"Info: {self._info_count})"
+            )
         return "\n".join(lines) if lines else "(starting review)"
 
     def _execute_review_output(self, output: str) -> None:
@@ -193,6 +201,7 @@ class ReviewAgent(SubAgentBase):
         if not pattern:
             return
         import glob as glob_mod
+
         files = glob_mod.glob(pattern, root_dir=self._cwd, recursive=True)
         self.context.artifacts[f"glob_{pattern}"] = files
         # Auto-review found files
@@ -213,10 +222,15 @@ class ReviewAgent(SubAgentBase):
         if not cmd:
             return
         import subprocess
+
         try:
             result = subprocess.run(
-                cmd, shell=True, capture_output=True, text=True,
-                timeout=30, cwd=self._cwd,
+                cmd,
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                cwd=self._cwd,
             )
             self.context.artifacts[f"bash_{cmd[:30]}"] = result.stdout[:500]
             if result.stdout.strip():
@@ -236,13 +250,17 @@ class ReviewAgent(SubAgentBase):
 
         # Check for security issues
         dangerous_patterns = [
-            (r'eval\s*\(', "Use of eval() — security risk", "critical"),
-            (r'exec\s*\(', "Use of exec() — security risk", "critical"),
-            (r'subprocess\..*shell\s*=\s*True', "subprocess with shell=True — injection risk", "warning"),
-            (r'os\.system\s*\(', "Use of os.system() — prefer subprocess", "warning"),
-            (r'input\s*\(', "Use of input() — not recommended in production", "info"),
-            (r'password\s*=', "Hardcoded password detected", "critical"),
-            (r'secret\s*=', "Possible hardcoded secret", "warning"),
+            (r"eval\s*\(", "Use of eval() — security risk", "critical"),
+            (r"exec\s*\(", "Use of exec() — security risk", "critical"),
+            (
+                r"subprocess\..*shell\s*=\s*True",
+                "subprocess with shell=True — injection risk",
+                "warning",
+            ),
+            (r"os\.system\s*\(", "Use of os.system() — prefer subprocess", "warning"),
+            (r"input\s*\(", "Use of input() — not recommended in production", "info"),
+            (r"password\s*=", "Hardcoded password detected", "critical"),
+            (r"secret\s*=", "Possible hardcoded secret", "warning"),
         ]
 
         for pattern, desc, severity in dangerous_patterns:
@@ -257,10 +275,10 @@ class ReviewAgent(SubAgentBase):
 
         # Check for code quality issues
         quality_patterns = [
-            (r'except\s*:', "Bare except clause — catches all exceptions", "warning"),
-            (r'TODO|FIXME|HACK', "TODO/FIXME comment found", "info"),
-            (r'print\s*\(', "Debug print statement", "info"),
-            (r'import\s+\*', "Wildcard import — avoid", "warning"),
+            (r"except\s*:", "Bare except clause — catches all exceptions", "warning"),
+            (r"TODO|FIXME|HACK", "TODO/FIXME comment found", "info"),
+            (r"print\s*\(", "Debug print statement", "info"),
+            (r"import\s+\*", "Wildcard import — avoid", "warning"),
         ]
 
         for pattern, desc, severity in quality_patterns:
@@ -280,7 +298,7 @@ class ReviewAgent(SubAgentBase):
         func_start = None
         func_name = None
         for i, line in enumerate(lines, 1):
-            m = re.match(r'^(    )?def\s+(\w+)', line)
+            m = re.match(r"^(    )?def\s+(\w+)", line)
             if m:
                 if func_start is not None and (i - func_start) > 50:
                     self._add_finding(
@@ -320,11 +338,13 @@ class ReviewAgent(SubAgentBase):
         review_targets = []
         for root, _dirs, files in os.walk(self._cwd):
             _dirs[:] = [
-                d for d in _dirs
-                if d not in {'.git', 'node_modules', '__pycache__', '.venv', 'venv', 'dist'}
+                d
+                for d in _dirs
+                if d
+                not in {".git", "node_modules", "__pycache__", ".venv", "venv", "dist"}
             ]
             for fname in files:
-                if fname.endswith(('.py', '.js', '.ts')):
+                if fname.endswith((".py", ".js", ".ts")):
                     review_targets.append(os.path.join(root, fname))
 
         for filepath in review_targets[:20]:
@@ -352,16 +372,18 @@ class ReviewAgent(SubAgentBase):
         else:
             lines.append("- No files reviewed")
 
-        lines.extend([
-            "",
-            "### Summary",
-            f"Reviewed {len(self._files_reviewed)} file(s) in "
-            f"{self._iteration} iteration(s). "
-            f"Found {len(self._findings)} finding(s): "
-            f"{self._critical_count} critical, "
-            f"{self._warning_count} warning, "
-            f"{self._info_count} info.",
-        ])
+        lines.extend(
+            [
+                "",
+                "### Summary",
+                f"Reviewed {len(self._files_reviewed)} file(s) in "
+                f"{self._iteration} iteration(s). "
+                f"Found {len(self._findings)} finding(s): "
+                f"{self._critical_count} critical, "
+                f"{self._warning_count} warning, "
+                f"{self._info_count} info.",
+            ]
+        )
 
         if self._findings:
             # Group by severity
@@ -372,7 +394,9 @@ class ReviewAgent(SubAgentBase):
             ]:
                 group = [f for f in self._findings if f["severity"] == severity_key]
                 if group:
-                    icon = {"critical": "🔴", "warning": "🟡", "info": "🔵"}.get(severity_key, "⚪")
+                    icon = {"critical": "🔴", "warning": "🟡", "info": "🔵"}.get(
+                        severity_key, "⚪"
+                    )
                     lines.extend(["", f"### {icon} {severity_label}"])
                     for i, finding in enumerate(group, 1):
                         lines.append(f"\n{i}. **{finding['title']}**")

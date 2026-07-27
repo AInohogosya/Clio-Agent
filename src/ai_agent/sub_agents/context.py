@@ -103,6 +103,7 @@ class SubAgentContext:
         Useful for spawning child sub-agents with modified instructions.
         """
         import copy
+
         data = {
             "task": new_task,
             "agent_id": overrides.get("agent_id", uuid.uuid4().hex[:12]),

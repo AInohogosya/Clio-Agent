@@ -1,5 +1,86 @@
-(src/ai_agent/core_processing/autonomous_loop_engine.py is a source code file, and there are no build artifacts, dependencies, or temporary files in the provided changes. Therefore, no .gitignore rules need to be added or modified.)
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
 
-```python
-# No changes needed to .gitignore
-```
+# Virtual environments
+venv/
+env/
+ENV/
+.venv
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+pytestdebug.log
+
+# Type checker
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Project specific
+.config/
+.config/*
+!.config/config.yaml.example
+
+# Local configuration (contains secrets)
+config.yaml
+
+# Agent context (runtime state)
+.context/
+*.log
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Docker
+.docker/
+
+# Temporary files
+*.tmp
+*.temp
+tmp/
+temp/
+
+# OS specific
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Profiling
+*.prof
+*.pstats

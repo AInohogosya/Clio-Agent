@@ -1,22 +1,32 @@
 """
 Comprehensive tests for the automatic recovery system in Clio-Agent.
 """
+
 import json, time, threading, unittest
 from unittest.mock import MagicMock, patch
 from pathlib import Path
 import sys
+
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from ai_agent.core_processing.autonomous_loop_engine import (
-    AutonomousLoopEngine, AutonomousContext, LoopPhase,
+    AutonomousLoopEngine,
+    AutonomousContext,
+    LoopPhase,
 )
 from ai_agent.utils.resilience_engine import (
-    classify_api_error, ResilienceEngine, ResilienceConfig,
-    ErrorSeverity, ErrorCategory, get_resilience_engine,
+    classify_api_error,
+    ResilienceEngine,
+    ResilienceConfig,
+    ErrorSeverity,
+    ErrorCategory,
+    get_resilience_engine,
     reset_resilience_engine,
 )
 from ai_agent.utils.provider_fallback import (
-    ProviderFallbackManager, FallbackConfig, ProviderStatus,
+    ProviderFallbackManager,
+    FallbackConfig,
+    ProviderStatus,
 )
 
 
@@ -27,6 +37,7 @@ class MaxRetryError(Exception):
 
 
 # ── 1. Error Classification ────────────────────────────────────────
+
 
 class TestClassifyApiError(unittest.TestCase):
     def test_rate_limit(self):
@@ -150,6 +161,7 @@ class TestClassifyApiError(unittest.TestCase):
 
 # ── 2. Recovery Strategy ───────────────────────────────────────────
 
+
 class TestClassifyAndRecover(unittest.TestCase):
     def _make_engine(self):
         e = AutonomousLoopEngine.__new__(AutonomousLoopEngine)
@@ -177,8 +189,10 @@ class TestClassifyAndRecover(unittest.TestCase):
 
     def _make_ctx(self):
         return AutonomousContext(
-            user_prompt="test", current_goal="test",
-            execution_log=[], cancel_event=threading.Event(),
+            user_prompt="test",
+            current_goal="test",
+            execution_log=[],
+            cancel_event=threading.Event(),
         )
 
     def test_non_retryable_propagates(self):
@@ -193,12 +207,16 @@ class TestClassifyAndRecover(unittest.TestCase):
 
     def test_retryable_returns_strategy(self):
         e = self._make_engine()
-        self.assertTrue(e._classify_and_recover(Exception("Connection refused"), self._make_ctx()))
+        self.assertTrue(
+            e._classify_and_recover(Exception("Connection refused"), self._make_ctx())
+        )
 
     def test_max_errors_stops(self):
         e = self._make_engine()
         e._consecutive_errors = 20
-        self.assertFalse(e._classify_and_recover(Exception("Connection refused"), self._make_ctx()))
+        self.assertFalse(
+            e._classify_and_recover(Exception("Connection refused"), self._make_ctx())
+        )
         e._enter_degraded_mode.assert_called_once()
 
 
@@ -214,8 +232,10 @@ class TestNetworkErrorRecovery(unittest.TestCase):
 
     def _make_ctx(self):
         return AutonomousContext(
-            user_prompt="test", current_goal="test",
-            execution_log=[], cancel_event=threading.Event(),
+            user_prompt="test",
+            current_goal="test",
+            execution_log=[],
+            cancel_event=threading.Event(),
         )
 
     def test_retries_initially(self):
@@ -223,12 +243,16 @@ class TestNetworkErrorRecovery(unittest.TestCase):
         e._consecutive_errors = 1
         with patch("time.sleep"):
             # Signature: (self, error, ctx, delay) but error is unused
-            self.assertTrue(e._recover_network_error(Exception("net"), self._make_ctx(), 2.0))
+            self.assertTrue(
+                e._recover_network_error(Exception("net"), self._make_ctx(), 2.0)
+            )
 
     def test_gives_up_after_10(self):
         e = self._make_engine()
         e._consecutive_errors = 11
-        self.assertFalse(e._recover_network_error(Exception("net"), self._make_ctx(), 2.0))
+        self.assertFalse(
+            e._recover_network_error(Exception("net"), self._make_ctx(), 2.0)
+        )
 
 
 class TestDegradedMode(unittest.TestCase):
@@ -301,11 +325,13 @@ class TestProviderFallback(unittest.TestCase):
         cfg = FallbackConfig(max_retries_per_provider=1, fallback_order=["o", "g"])
         m = ProviderFallbackManager(cfg)
         c = []
+
         def fn(provider, model, **kw):
             c.append(provider)
             if provider == "o":
                 raise Exception("500")
             return "ok"
+
         r, u = m.execute_with_fallback("o", "gpt", fn)
         self.assertEqual(r, "ok")
         self.assertEqual(u, "g")
@@ -313,8 +339,10 @@ class TestProviderFallback(unittest.TestCase):
     def test_exhausted(self):
         cfg = FallbackConfig(max_retries_per_provider=1, fallback_order=["o"])
         m = ProviderFallbackManager(cfg)
+
         def fail(provider, model, **kw):
             raise Exception("500")
+
         with self.assertRaises(Exception):
             m.execute_with_fallback("o", "gpt", fail)
 
@@ -323,9 +351,11 @@ class TestProviderFallback(unittest.TestCase):
         cfg = FallbackConfig(max_retries_per_provider=1, fallback_order=["a", "b"])
         m = ProviderFallbackManager(cfg)
         calls = []
+
         def fail(provider, model, **kw):
             calls.append(provider)
             raise Exception("err")
+
         with self.assertRaises(Exception):
             m.execute_with_fallback("a", "m", fail)
         # With max_retries=1, no same-provider retry: a fails → b fails → exhausted
@@ -337,12 +367,15 @@ class TestSleepWorkflow(unittest.TestCase):
         e = AutonomousLoopEngine.__new__(AutonomousLoopEngine)
         e._last_sleep_reminder = "[SYSTEM] 🛏 SLEEP"
         ctx = AutonomousContext(
-            user_prompt="t", current_goal="t",
+            user_prompt="t",
+            current_goal="t",
             execution_log=["a", "[SYSTEM] 🛏 SLEEP", "b"],
             cancel_event=threading.Event(),
         )
         if e._last_sleep_reminder is not None:
-            ctx.execution_log = [x for x in ctx.execution_log if x != e._last_sleep_reminder]
+            ctx.execution_log = [
+                x for x in ctx.execution_log if x != e._last_sleep_reminder
+            ]
             e._last_sleep_reminder = None
         self.assertEqual(len(ctx.execution_log), 2)
         self.assertIsNone(e._last_sleep_reminder)
@@ -375,26 +408,46 @@ class TestExitWorkflow(unittest.TestCase):
 
     def test_saves(self):
         e = self._mk()
-        ctx = AutonomousContext(user_prompt="t", current_goal="t", execution_log=[], cancel_event=threading.Event())
+        ctx = AutonomousContext(
+            user_prompt="t",
+            current_goal="t",
+            execution_log=[],
+            cancel_event=threading.Event(),
+        )
         e._handle_exit(ctx)
         e._save_exit_state.assert_called_once()
 
     def test_stops(self):
         e = self._mk()
-        ctx = AutonomousContext(user_prompt="t", current_goal="t", execution_log=[], cancel_event=threading.Event())
+        ctx = AutonomousContext(
+            user_prompt="t",
+            current_goal="t",
+            execution_log=[],
+            cancel_event=threading.Event(),
+        )
         e._handle_exit(ctx)
         e._stop_auto_save.assert_called_once()
 
     def test_err(self):
         e = self._mk()
         e._collect_auxiliary_context.side_effect = Exception("disk full")
-        ctx = AutonomousContext(user_prompt="t", current_goal="t", execution_log=[], cancel_event=threading.Event())
+        ctx = AutonomousContext(
+            user_prompt="t",
+            current_goal="t",
+            execution_log=[],
+            cancel_event=threading.Event(),
+        )
         e._handle_exit(ctx)
         e._stop_auto_save.assert_called_once()
 
     def test_fast(self):
         e = self._mk()
-        ctx = AutonomousContext(user_prompt="t", current_goal="t", execution_log=[], cancel_event=threading.Event())
+        ctx = AutonomousContext(
+            user_prompt="t",
+            current_goal="t",
+            execution_log=[],
+            cancel_event=threading.Event(),
+        )
         e._handle_exit(ctx, fast=True)
         e._heuristic_compress.assert_called_once()
         e._compress_context.assert_not_called()
@@ -410,6 +463,7 @@ class TestGlobalHook(unittest.TestCase):
     def test_hook_installed(self):
         """Global exception hook should be installed on engine creation."""
         import sys
+
         old_hook = sys.excepthook
         cfg = ResilienceConfig(install_global_hook=True)
         eng = ResilienceEngine(cfg)
@@ -439,7 +493,12 @@ class TestEdgeCases(unittest.TestCase):
         e = AutonomousLoopEngine.__new__(AutonomousLoopEngine)
         e._is_resuming = True
         e._resuming_from_sleep = True
-        ctx = AutonomousContext(user_prompt="t", current_goal="t", execution_log=[], cancel_event=threading.Event())
+        ctx = AutonomousContext(
+            user_prompt="t",
+            current_goal="t",
+            execution_log=[],
+            cancel_event=threading.Event(),
+        )
         ctx.iteration_count = 1
         if ctx.iteration_count == 1 and e._resuming_from_sleep:
             e._is_resuming = False
@@ -457,7 +516,12 @@ class TestEdgeCases(unittest.TestCase):
         bot._resolve_chat_id = MagicMock(side_effect=Exception("fail"))
         bot._boot_user_id = 12345
         e.telegram_bot = bot
-        ctx = AutonomousContext(user_prompt="t", current_goal="t", execution_log=[], cancel_event=threading.Event())
+        ctx = AutonomousContext(
+            user_prompt="t",
+            current_goal="t",
+            execution_log=[],
+            cancel_event=threading.Event(),
+        )
         ctx.discord_mode = False
         ctx.telegram_user_id = 99999
         e._notify_telegram_error(ctx, "err")

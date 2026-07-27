@@ -1,11 +1,26 @@
-# Clio Agent
+# Clio Agent 1
 
-<img width="1280" height="720" alt="Clio Agent 1" src="https://github.com/user-attachments/assets/eae19b90-fe77-4d9c-9ebb-5a3f79566fd1" />
+[![PyPI version](https://img.shields.io/pypi/v/clio_agent-cli.svg)](https://pypi.org/project/clio_agent-cli/)
+[![Python versions](https://img.shields.io/pypi/pyversions/clio_agent-cli.svg)](https://pypi.org/project/clio_agent-cli/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![CI](https://github.com/clio-project/Clio-Agent-1/workflows/CI/badge.svg)](https://github.com/clio-project/Clio-Agent-1/actions/workflows/ci.yml)
+[![Coverage](https://codecov.io/gh/clio-project/Clio-Agent-1/branch/main/graph/badge.svg)](https://codecov.io/gh/clio-project/Clio-Agent-1)
+[![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
+[![Imports: isort](https://img.shields.io/badge/%20imports-isort-%231674b1?style=flat&labelColor=ef8336)](https://pycqa.github.io/isort/)
+[![Types: mypy](https://img.shields.io/badge/types-mypy-blue.svg)](https://github.com/mypy/mypy)
+[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+[![Docker](https://img.shields.io/badge/docker-ghcr.io%2Fclio--project%2Fclio--agent-blue)](https://github.com/clio-project/Clio-Agent-1/pkgs/container/clio-agent)
+[![Discord](https://img.shields.io/discord/123456789?label=Discord&logo=discord&logoColor=white)](https://discord.gg/clio-agent)
 
+---
+
+<p align="center">
+  <img width="1280" height="720" alt="Clio Agent 1" src="https://github.com/user-attachments/assets/eae19b90-fe77-4d9c-9ebb-5a3f79566fd1" />
+</p>
 
 **An autonomous AI agent that thinks and acts continuously in your terminal — and lives on through crashes.**
 
-Clio Agent 1 (codename Clio-Agent-1) runs a perpetual think-execute loop: it decides what to do, runs shell commands on your machine, evaluates the results, and then does it again. And again. It never "completes" — it works until you stop it, and even then it saves enough context to pick up exactly where it left off.
+Clio Agent 1 runs a perpetual think-execute loop: it decides what to do, runs shell commands on your machine, evaluates the results, and then does it again. And again. It never "completes" — it works until you stop it, and even then it saves enough context to pick up exactly where it left off.
 
 Two ways to talk to it: directly in the terminal, or remotely via **Telegram bot** (send instructions from your phone).
 
@@ -26,6 +41,8 @@ Two ways to talk to it: directly in the terminal, or remotely via **Telegram bot
 11. [Telegram Mode](#telegram-mode)
 12. [Docker Deployments](#docker-deployments)
 13. [Troubleshooting](#troubleshooting)
+14. [Contributing](#contributing)
+15. [License](#license)
 
 ---
 
@@ -51,21 +68,16 @@ Two ways to talk to it: directly in the terminal, or remotely via **Telegram bot
 ## Quick Start
 
 ```bash
-git clone https://github.com/AInohogosya/Clio-Agent-1.git
+# 1. Clone and install
+git clone https://github.com/clio-project/Clio-Agent-1.git
 cd Clio-Agent-1
 pip install -e .
-```
 
-After installation, invoke the agent from **any directory**:
-
-```bash
+# 2. Run (interactive setup on first run)
 Clio-Agent "list all files in the current directory"
-```
 
-Or use the lowercase alias:
-
-```bash
-clio-agent "list all files in the current directory"
+# Or use the lowercase alias
+clio-agent "set up a Python project with tests"
 ```
 
 On first run, `Clio-Agent` will:
@@ -96,7 +108,7 @@ On first run, `Clio-Agent` will:
 ## Installation
 
 ```bash
-git clone https://github.com/AInohogosya/Clio-Agent-1.git
+git clone https://github.com/clio-project/Clio-Agent-1.git
 cd Clio-Agent-1
 pip install -e .
 ```
@@ -106,6 +118,12 @@ pip install -e .
 The `pip install -e .` step installs the `Clio-Agent` and `clio-agent` commands globally, so you can run the agent from **any directory**.
 
 All agent dependencies (venv, packages) are handled automatically on first launch.
+
+### Alternative: One-command installer
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/clio-project/Clio-Agent-1/main/install.sh | bash
+```
 
 ---
 
@@ -425,6 +443,17 @@ docker/
 └── README.md
 ```
 
+### Quick Start with Docker
+
+```bash
+# Build and run (Ubuntu)
+docker build -t clio-agent -f docker/ubuntu/Dockerfile .
+docker run -it --rm -v $(pwd):/workspace clio-agent
+
+# Or use docker-compose
+docker-compose up -d
+```
+
 ---
 
 ## Troubleshooting
@@ -458,6 +487,75 @@ Clio-Agent --health-check
 
 ---
 
+## Contributing
+
+We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) for details.
+
+### Quick Contribution Steps
+
+1. **Fork** the repository
+2. **Create a branch**: `git checkout -b feature/my-feature`
+3. **Make changes** with tests
+4. **Run checks**: `make check` (format, lint, typecheck, test)
+5. **Submit a PR** with a clear description
+
+### Development Setup
+
+```bash
+git clone https://github.com/your-username/Clio-Agent-1.git
+cd Clio-Agent-1
+python -m venv venv
+source venv/bin/activate
+pip install -e ".[dev,all]"
+pre-commit install
+```
+
+### Running Tests
+
+```bash
+# All tests
+pytest tests/ -v
+
+# With coverage
+pytest tests/ --cov=src/ai_agent --cov-report=html
+
+# Specific test file
+pytest tests/test_autonomous_loop_engine.py -v
+```
+
+### Code Style
+
+```bash
+# Format
+black src tests
+isort src tests
+
+# Lint
+flake8 src tests
+ruff check src tests
+
+# Type check
+mypy src
+```
+
+---
+
 ## License
 
-MIT — see [peripherals/LICENSE](peripherals/LICENSE) for details.
+MIT — see [LICENSE](LICENSE) for details.
+
+---
+
+## Support & Community
+
+- 📖 [Documentation](https://github.com/clio-project/Clio-Agent-1/tree/main/docs)
+- 🐛 [Report a Bug](https://github.com/clio-project/Clio-Agent-1/issues/new/choose)
+- 💡 [Request a Feature](https://github.com/clio-project/Clio-Agent-1/issues/new/choose)
+- ❓ [Ask a Question](https://github.com/clio-project/Clio-Agent-1/discussions)
+- 💬 [Discord Community](https://discord.gg/clio-agent)
+
+---
+
+<p align="center">
+  Made with ❤️ by the Clio Project contributors
+</p>

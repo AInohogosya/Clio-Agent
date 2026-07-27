@@ -1803,6 +1803,189 @@ if "--help" in sys.argv or "-h" in sys.argv:
     print()
     sys.exit(0)
 
+
+def _run_health_check():
+    """Beautiful health check using Rich panels (with fallback)."""
+    import platform as _plat
+    import shutil as _shutil
+    import sys as _sys
+    
+    # Try to import rich components, fallback to simple print
+    try:
+        from rich.panel import Panel
+        from rich.align import Align
+        from rich.table import Table
+        from ai_agent.utils.rich_console import get_console, Theme, status_panel
+        _HAS_RICH = True
+    except ImportError:
+        _HAS_RICH = False
+        class _FakeConsole:
+            def print(self, *args, **kwargs): print(*args)
+        def get_console(): return _FakeConsole()
+        class Theme:
+            ACCENT = TEXT_PRIMARY = TEXT_SECONDARY = TEXT_TERTIARY = INFO = SUCCESS = WARNING = ERROR = BORDER = BORDER_SUBTLE = ""
+        def status_panel(*a, **kw): return str(a)
+    
+    console = get_console()
+
+    if _HAS_RICH:
+        console.print()
+        console.print(
+            Panel(
+                Align.center("[bold]🩺 Clio Agent Self-Diagnostic[/]"),
+                border_style=Theme.ACCENT,
+                padding=(1, 4),
+            )
+        )
+    else:
+        console.print("\n=== Clio Agent Self-Diagnostic ===")
+
+    rows = [
+        ("Python", _sys.version.split()[0]),
+        ("Platform", f"{_plat.system()} {_plat.release()} ({_plat.machine()})"),
+        ("PID", str(os.getpid())),
+    ]
+    
+    if _HAS_RICH:
+        console.print(status_panel("System", rows, border_color=Theme.ACCENT))
+    else:
+        console.print("System:")
+        for k, v in rows:
+            console.print(f"  {k}: {v}")
+
+    # Disk
+    try:
+        _usage = _shutil.disk_usage(str(Path(__file__).parent))
+        _free = _usage.free / (1024 ** 3)
+        _total = _usage.total / (1024 ** 3)
+        _pct = (_usage.used / _usage.total) * 100
+        if _free > 5:
+            dcolor = Theme.SUCCESS
+            dicon = "✅"
+        elif _free > 1:
+            dcolor = Theme.WARNING
+            dicon = "⚠️ "
+        else:
+            dcolor = Theme.ERROR
+            dicon = "❌"
+        if _HAS_RICH:
+            console.print(status_panel(
+                f"Disk {dicon}  {_free:.1f} GB free / {_total:.1f} GB total ({_pct:.1f}% used)",
+                [("", "")],
+                border_color=dcolor
+            ))
+        else:
+            console.print(f"Disk: {_free:.1f} GB free / {_total:.1f} GB total ({_pct:.1f}% used)")
+    except Exception as e:
+        console.print(f"Disk check failed: {e}")
+
+    # Venv
+    _venv = Path(__file__).parent / "venv"
+    if _venv.exists():
+        if _HAS_RICH:
+            console.print(status_panel(
+                "Virtual Env",
+                [("Status", "[green]Found[/]"), ("Path", str(_venv))],
+                border_color=Theme.SUCCESS
+            ))
+        else:
+            console.print(f"Virtual Env: Found at {_venv}")
+    else:
+        if _HAS_RICH:
+            console.print(status_panel(
+                "Virtual Env",
+                [("Status", "[yellow]Not found[/]"), ("Note", "Will be created on first run")],
+                border_color=Theme.WARNING
+            ))
+        else:
+            console.print("Virtual Env: Not found (will be created on first run)")
+
+    # Config
+    _config = Path(__file__).parent / "config.yaml"
+    if _config.exists():
+        if _HAS_RICH:
+            console.print(status_panel(
+                "Config",
+                [("Status", "[green]Found[/]"), ("Path", str(_config))],
+                border_color=Theme.SUCCESS
+            ))
+        else:
+            console.print(f"Config: Found at {_config}")
+    else:
+        if _HAS_RICH:
+            console.print(status_panel(
+                "Config",
+                [("Status", "[yellow]Not found[/]"), ("Note", "Run with --quick-setup or --auto-config")],
+                border_color=Theme.WARNING
+            ))
+        else:
+            console.print("Config: Not found (run with --quick-setup or --auto-config)")
+
+    # Network
+    try:
+        import urllib.request as _ur
+        _ur.urlopen("https://www.google.com", timeout=3)
+        net_status = "[green]Online[/]"
+        net_color = Theme.SUCCESS
+    except Exception:
+        net_status = "[red]Offline[/]"
+        net_color = Theme.ERROR
+    if _HAS_RICH:
+        console.print(status_panel("Network", [("Status", net_status)], border_color=net_color))
+    else:
+        console.print(f"Network: {'Online' if 'Online' in net_status else 'Offline'}")
+
+    # Dependencies
+    _deps = [
+        ("requests", "requests"),
+        ("psutil", "psutil"),
+        ("PyYAML", "yaml"),
+        ("rich", "rich"),
+        ("structlog", "structlog"),
+        ("numpy", "numpy"),
+        ("Pillow", "PIL"),
+    ]
+    _dep_rows = []
+    for name, mod in _deps:
+        try:
+            __import__(mod)
+            _dep_rows.append((name, "[green]OK[/]" if _HAS_RICH else "OK"))
+        except ImportError:
+            _dep_rows.append((name, "[red]Missing[/]" if _HAS_RICH else "Missing"))
+    if _HAS_RICH:
+        console.print(status_panel("Dependencies", _dep_rows, border_color=Theme.INFO))
+    else:
+        console.print("Dependencies:")
+        for name, status in _dep_rows:
+            console.print(f"  {name}: {status}")
+
+    # Provider SDKs
+    _sdks = [
+        ("openai", "openai"),
+        ("anthropic", "anthropic"),
+        ("google-genai", "google.genai"),
+        ("mistralai", "mistralai"),
+        ("groq", "groq"),
+        ("cohere", "cohere"),
+        ("boto3", "boto3"),
+    ]
+    _sdk_rows = []
+    for name, mod in _sdks:
+        try:
+            __import__(mod)
+            _sdk_rows.append((name, "[green]Installed[/]" if _HAS_RICH else "Installed"))
+        except ImportError:
+            _sdk_rows.append((name, "[dim]Not installed[/]" if _HAS_RICH else "Not installed"))
+    if _HAS_RICH:
+        console.print(status_panel("Provider SDKs", _sdk_rows, border_color=Theme.TERTIARY))
+    else:
+        console.print("Provider SDKs:")
+        for name, status in _sdk_rows:
+            console.print(f"  {name}: {status}")
+
+    console.print()
+
+
 # Handle diagnostic/fix commands before venv bootstrap so they work
 # even when the venv is broken or missing.
 if "--health-check" in sys.argv:

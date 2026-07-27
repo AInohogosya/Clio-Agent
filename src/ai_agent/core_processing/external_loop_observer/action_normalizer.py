@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional, Tuple
 @dataclass(frozen=True)
 class NormalizedAction:
     """A single normalized action that can be compared for equality."""
+
     tool: str
     target_hash: str
     operation: str
@@ -35,6 +36,7 @@ class NormalizedAction:
 @dataclass
 class NormalizedIteration:
     """All normalized actions from a single agent iteration."""
+
     iteration_number: int
     actions: Tuple[NormalizedAction, ...] = ()
     timestamp: float = 0.0
@@ -51,10 +53,10 @@ class ActionNormalizer:
 
     _INTERNAL_TOOLS = {"thinking"}
     _PATH_IN_COMMAND = re.compile(
-        r'(?:^|\s)(?:cd|ls|cat|grep|find|rm|cp|mv|touch|mkdir|chmod|chown|'
-        r'vim|nano|code|open)\s+([^\s;|&]+)'
+        r"(?:^|\s)(?:cd|ls|cat|grep|find|rm|cp|mv|touch|mkdir|chmod|chown|"
+        r"vim|nano|code|open)\s+([^\s;|&]+)"
     )
-    _FILE_IN_REDIRECT = re.compile(r'[>]\s*([^\s;|&]+)')
+    _FILE_IN_REDIRECT = re.compile(r"[>]\s*([^\s;|&]+)")
 
     def normalize_iteration(
         self,
@@ -113,8 +115,11 @@ class ActionNormalizer:
         param_fp = self._fingerprint_params(params)
 
         return NormalizedAction(
-            tool=tool, target_hash=target_hash, operation=operation,
-            parameter_fingerprint=param_fp, raw_summary=f"{tool}({target})",
+            tool=tool,
+            target_hash=target_hash,
+            operation=operation,
+            parameter_fingerprint=param_fp,
+            raw_summary=f"{tool}({target})",
         )
 
     def _extract_tool_info(self, tool, data):
@@ -153,13 +158,21 @@ class ActionNormalizer:
         target_hash = hashlib.md5(target.encode()).hexdigest()[:8]
         param_fp = hashlib.md5(arg.encode()).hexdigest()[:8]
         return NormalizedAction(
-            "shell", target_hash, "exec", param_fp, f"shell({arg[:60]})",
+            "shell",
+            target_hash,
+            "exec",
+            param_fp,
+            f"shell({arg[:60]})",
         )
 
     def _normalize_messaging(self, cmd_type: str, arg: str) -> NormalizedAction:
         content_hash = hashlib.md5(arg.encode()).hexdigest()[:8]
         return NormalizedAction(
-            cmd_type, content_hash, "message", "0", f"{cmd_type}(len={len(arg)})",
+            cmd_type,
+            content_hash,
+            "message",
+            "0",
+            f"{cmd_type}(len={len(arg)})",
         )
 
     @staticmethod

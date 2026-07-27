@@ -37,8 +37,9 @@ class Planner:
         self.model_runner = model_runner
         self.logger = get_logger("planner")
 
-    def build_system_prompt(self, telegram_mode: bool = False,
-                            discord_mode: bool = False) -> str:
+    def build_system_prompt(
+        self, telegram_mode: bool = False, discord_mode: bool = False
+    ) -> str:
         """Build the system prompt — all behavioral rules go here.
 
         This is sent once per API call as the system message.
@@ -49,13 +50,13 @@ class Planner:
             "## OUTPUT FORMAT (CRITICAL)\n"
             "You MUST respond with valid JSON matching this schema:\n"
             "```json\n"
-            '{\n'
+            "{\n"
             '  "thinking": "(optional) brief 1-2 sentence reasoning",\n'
             '  "actions": [\n'
             '    {"type": "read", "args": {"path": "/file/path"}},\n'
             '    {"type": "bash", "args": {"command": "ls -la"}}\n'
-            '  ]\n'
-            '}\n'
+            "  ]\n"
+            "}\n"
             "```\n\n"
             "## ⚡ SUB-AGENT DELEGATION (HIGHEST PRIORITY)\n"
             "You have specialized sub-agents. DELEGATE tasks to them — do NOT do the work yourself.\n\n"
@@ -66,17 +67,17 @@ class Planner:
             "The Coding Agent is FAR more capable than you at all software development.\n"
             "NEVER write code yourself. ALWAYS delegate to the Coding Agent.\n\n"
             "### OTHER SUB-AGENTS:\n"
-            "- Research (codebase exploration, analysis): sub_agent(action=\"spawn\", agent_type=\"research\", task=\"...\")\n"
-            "- Code Review (quality, security audit): sub_agent(action=\"spawn\", agent_type=\"review\", task=\"...\")\n"
-            "- Architecture (system design, ADRs):   sub_agent(action=\"spawn\", agent_type=\"architect\", task=\"...\")\n"
-            "- Coding (ALL code write/edit/debug):   sub_agent(action=\"spawn\", agent_type=\"coding\", task=\"...\") ← ALWAYS\n\n"
+            '- Research (codebase exploration, analysis): sub_agent(action="spawn", agent_type="research", task="...")\n'
+            '- Code Review (quality, security audit): sub_agent(action="spawn", agent_type="review", task="...")\n'
+            '- Architecture (system design, ADRs):   sub_agent(action="spawn", agent_type="architect", task="...")\n'
+            '- Coding (ALL code write/edit/debug):   sub_agent(action="spawn", agent_type="coding", task="...") ← ALWAYS\n\n'
             "RULES:\n"
             "1. Output ONLY the JSON object. No explanations outside JSON.\n"
             "2. `actions` must have at least 1 item. Never empty.\n"
             "3. DELEGATE coding tasks to the Coding Agent — never write code yourself.\n"
             "4. Prefer direct tool calls (read/write/edit/glob/grep/bash) over command() for non-coding tasks.\n"
             "5. Batch independent reads/searches into one response.\n"
-            "6. VARY your actions — don\'t repeat the same command.\n"
+            "6. VARY your actions — don't repeat the same command.\n"
             "7. If stuck, try a completely different approach.\n"
             "8. Execute `sleep` when the log grows past 100 lines.\n"
             "9. thinking() is invisible to the user.\n"
@@ -149,7 +150,9 @@ class Planner:
             parts.append("🖥 LOCAL MODE")
 
         # Task
-        parts.append(f"\n## TASK\n{goal or '(self-directed — explore and do useful work)'}")
+        parts.append(
+            f"\n## TASK\n{goal or '(self-directed — explore and do useful work)'}"
+        )
 
         # Resume context
         if saved_context:
@@ -175,7 +178,9 @@ class Planner:
             parts.append(f"\n{loop_warning}")
 
         # Execution log
-        parts.append(f"\n## EXECUTION LOG (last {self.MAX_LOG_LINES} lines)\n{execution_log}")
+        parts.append(
+            f"\n## EXECUTION LOG (last {self.MAX_LOG_LINES} lines)\n{execution_log}"
+        )
 
         return "\n".join(parts)
 
@@ -233,7 +238,9 @@ class Planner:
         response = self.model_runner.run_model(request)
 
         if not response.success or not response.content.strip():
-            self.logger.warning("Planner: empty or failed response", iteration=iteration)
+            self.logger.warning(
+                "Planner: empty or failed response", iteration=iteration
+            )
             return None
 
         try:

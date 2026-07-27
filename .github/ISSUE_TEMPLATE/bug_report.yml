@@ -1,0 +1,148 @@
+name: Bug Report
+description: Report a bug to help us improve Clio Agent
+title: "[BUG] "
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug! Please fill out the sections below.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Bug Description
+      description: A clear and concise description of what the bug is.
+      placeholder: What happened?
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to Reproduce
+      description: Steps to reproduce the behavior
+      placeholder: |
+        1. Go to '...'
+        2. Run command '...'
+        3. See error '...'
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+      description: What you expected to happen
+      placeholder: What should have happened?
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual Behavior
+      description: What actually happened
+      placeholder: What happened instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Error Messages / Logs
+      description: Paste any error messages, stack traces, or relevant log output
+      render: shell
+      placeholder: |
+        $ Clio-Agent "some command"
+        Error: ...
+    validations:
+      required: false
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating System
+      options:
+        - macOS
+        - Linux (Ubuntu/Debian)
+        - Linux (Arch/Manjaro)
+        - Linux (Fedora/RHEL)
+        - Windows
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: python_version
+    attributes:
+      label: Python Version
+      placeholder: "3.11.5"
+    validations:
+      required: true
+
+  - type: input
+    id: clio_version
+    attributes:
+      label: Clio Agent Version
+      placeholder: "3.0.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: ai_provider
+    attributes:
+      label: AI Provider
+      options:
+        - Ollama (local)
+        - OpenRouter
+        - OpenAI
+        - Anthropic
+        - Google (Gemini)
+        - Groq
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: model
+    attributes:
+      label: Model Name
+      placeholder: "gpt-4o, llama3.2:3b, claude-3.5-sonnet"
+    validations:
+      required: false
+
+  - type: textarea
+    id: config
+    attributes:
+      label: Relevant Configuration (redact secrets!)
+      description: Paste relevant parts of config.yaml (remove API keys!)
+      render: yaml
+      placeholder: |
+        api:
+          preferred_provider: openrouter
+          models:
+            openrouter: "openai/gpt-4o"
+    validations:
+      required: false
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional Context
+      description: Any other context, screenshots, or workarounds
+      placeholder: Add any other context about the problem here.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: I have reproduced this on the latest version
+          required: true
+        - label: I have checked existing issues for duplicates
+          required: true
+        - label: I have provided all relevant information above
+          required: true

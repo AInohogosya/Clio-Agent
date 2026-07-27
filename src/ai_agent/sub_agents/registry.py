@@ -50,6 +50,7 @@ class SubAgentRegistry:
                 agent_type = "research"
                 ...
         """
+
         def decorator(cls: Type[SubAgentBase]) -> Type[SubAgentBase]:
             if agent_type in self._agents:
                 logger.warning(
@@ -63,6 +64,7 @@ class SubAgentRegistry:
             }
             logger.info(f"Registered sub-agent: {agent_type} -> {cls.__name__}")
             return cls
+
         return decorator
 
     def create(self, agent_type: str, context: "SubAgentContext") -> SubAgentBase:

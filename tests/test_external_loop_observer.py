@@ -6,22 +6,29 @@ import unittest
 from pathlib import Path
 
 import sys
+
 _PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 _SRC_PATH = str(_PROJECT_ROOT / "src")
 if _SRC_PATH not in sys.path:
     sys.path.insert(0, _SRC_PATH)
 
 from ai_agent.core_processing.external_loop_observer.action_normalizer import (
-    ActionNormalizer, NormalizedAction,
+    ActionNormalizer,
+    NormalizedAction,
 )
 from ai_agent.core_processing.external_loop_observer.pattern_analyzer import (
-    PatternAnalyzer, PatternMatch, PatternType,
+    PatternAnalyzer,
+    PatternMatch,
+    PatternType,
 )
 from ai_agent.core_processing.external_loop_observer.intervention import (
-    Intervention, InterventionLevel, decide_intervention,
+    Intervention,
+    InterventionLevel,
+    decide_intervention,
 )
 from ai_agent.core_processing.external_loop_observer.observer import (
-    ExternalObserver, ObserverConfig,
+    ExternalObserver,
+    ObserverConfig,
 )
 
 
@@ -30,7 +37,10 @@ def _read_cmd(path):
 
 
 def _grep_cmd(pattern, path="."):
-    return ("tool_call", json.dumps({"__tool__": "grep", "pattern": pattern, "path": path}))
+    return (
+        "tool_call",
+        json.dumps({"__tool__": "grep", "pattern": pattern, "path": path}),
+    )
 
 
 def _make_iteration(iter_num, commands, output=""):
@@ -39,6 +49,7 @@ def _make_iteration(iter_num, commands, output=""):
 
 
 # === 1. ActionNormalizer tests ===
+
 
 class TestNormalizedAction(unittest.TestCase):
     def test_equality(self):
@@ -140,7 +151,10 @@ class TestNormalizeIteration(unittest.TestCase):
     def test_multiple_commands(self):
         cmds = [
             ("tool_call", json.dumps({"__tool__": "read", "path": "/tmp/a.py"})),
-            ("tool_call", json.dumps({"__tool__": "grep", "pattern": "TODO", "path": "."})),
+            (
+                "tool_call",
+                json.dumps({"__tool__": "grep", "pattern": "TODO", "path": "."}),
+            ),
         ]
         r = self.norm.normalize_iteration(1, cmds)
         self.assertEqual(len(r.actions), 2)
@@ -174,18 +188,23 @@ class TestNormalizeIteration(unittest.TestCase):
 
 # === 2. PatternAnalyzer tests ===
 
+
 class TestPatternAnalyzerExact(unittest.TestCase):
     def setUp(self):
         self.analyzer = PatternAnalyzer()
 
     def test_no_pattern_with_few(self):
         for i in range(3):
-            self.analyzer.add_iteration(_make_iteration(i + 1, [_read_cmd(f"/tmp/f{i}.py")]))
+            self.analyzer.add_iteration(
+                _make_iteration(i + 1, [_read_cmd(f"/tmp/f{i}.py")])
+            )
         self.assertEqual(len(self.analyzer.analyze()), 0)
 
     def test_exact_loop_detected(self):
         for i in range(5):
-            self.analyzer.add_iteration(_make_iteration(i + 1, [_read_cmd("/tmp/same.py")]))
+            self.analyzer.add_iteration(
+                _make_iteration(i + 1, [_read_cmd("/tmp/same.py")])
+            )
         matches = self.analyzer.analyze()
         exact = [m for m in matches if m.pattern_type == PatternType.EXACT]
         self.assertTrue(len(exact) >= 1)
@@ -193,14 +212,18 @@ class TestPatternAnalyzerExact(unittest.TestCase):
 
     def test_exact_confidence_increases(self):
         for i in range(8):
-            self.analyzer.add_iteration(_make_iteration(i + 1, [_read_cmd("/tmp/same.py")]))
+            self.analyzer.add_iteration(
+                _make_iteration(i + 1, [_read_cmd("/tmp/same.py")])
+            )
         matches = self.analyzer.analyze()
         exact = [m for m in matches if m.pattern_type == PatternType.EXACT][0]
         self.assertGreater(exact.confidence, 0.8)
 
     def test_two_repeats_detected(self):
         for i in range(2):
-            self.analyzer.add_iteration(_make_iteration(i + 1, [_read_cmd("/tmp/same.py")]))
+            self.analyzer.add_iteration(
+                _make_iteration(i + 1, [_read_cmd("/tmp/same.py")])
+            )
         matches = self.analyzer.analyze()
         exact = [m for m in matches if m.pattern_type == PatternType.EXACT]
         self.assertTrue(len(exact) >= 1)
@@ -222,7 +245,9 @@ class TestPatternAnalyzerCyclic(unittest.TestCase):
     def test_three_step_cycle(self):
         files = ["/tmp/a.py", "/tmp/b.py", "/tmp/c.py"]
         for i in range(12):
-            self.analyzer.add_iteration(_make_iteration(i + 1, [_read_cmd(files[i % 3])]))
+            self.analyzer.add_iteration(
+                _make_iteration(i + 1, [_read_cmd(files[i % 3])])
+            )
         matches = self.analyzer.analyze()
         cyclic = [m for m in matches if m.pattern_type == PatternType.CYCLIC]
         self.assertTrue(len(cyclic) >= 1)
@@ -230,7 +255,9 @@ class TestPatternAnalyzerCyclic(unittest.TestCase):
 
     def test_no_cycle_with_unique(self):
         for i in range(10):
-            self.analyzer.add_iteration(_make_iteration(i + 1, [_read_cmd(f"/tmp/u{i}.py")]))
+            self.analyzer.add_iteration(
+                _make_iteration(i + 1, [_read_cmd(f"/tmp/u{i}.py")])
+            )
         matches = self.analyzer.analyze()
         cyclic = [m for m in matches if m.pattern_type == PatternType.CYCLIC]
         self.assertEqual(len(cyclic), 0)
@@ -265,7 +292,8 @@ class TestPatternAnalyzerOutputStall(unittest.TestCase):
     def test_stall_detected(self):
         for i in range(5):
             self.analyzer.add_iteration(
-                _make_iteration(i + 1, [_read_cmd("/tmp/a.py")], output="same"))
+                _make_iteration(i + 1, [_read_cmd("/tmp/a.py")], output="same")
+            )
         matches = self.analyzer.analyze()
         stalls = [m for m in matches if m.pattern_type == PatternType.OUTPUT_STALL]
         self.assertTrue(len(stalls) >= 1)
@@ -274,13 +302,15 @@ class TestPatternAnalyzerOutputStall(unittest.TestCase):
     def test_no_stall_varying(self):
         for i in range(5):
             self.analyzer.add_iteration(
-                _make_iteration(i + 1, [_read_cmd("/tmp/a.py")], output=f"out {i}"))
+                _make_iteration(i + 1, [_read_cmd("/tmp/a.py")], output=f"out {i}")
+            )
         matches = self.analyzer.analyze()
         stalls = [m for m in matches if m.pattern_type == PatternType.OUTPUT_STALL]
         self.assertEqual(len(stalls), 0)
 
 
 # === 3. Intervention tests ===
+
 
 class TestDecideIntervention(unittest.TestCase):
     def test_no_patterns(self):
@@ -331,6 +361,7 @@ class TestDecideIntervention(unittest.TestCase):
 
 # === 4. ExternalObserver integration tests ===
 
+
 class TestExternalObserverBasic(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
@@ -341,7 +372,8 @@ class TestExternalObserverBasic(unittest.TestCase):
             enable_persistence=True,
         )
         self.observer = ExternalObserver(
-            project_root=Path(self.tmpdir), config=self.config)
+            project_root=Path(self.tmpdir), config=self.config
+        )
 
     def test_init(self):
         self.assertEqual(self.observer.get_status()["total_iterations_observed"], 0)
@@ -353,27 +385,29 @@ class TestExternalObserverBasic(unittest.TestCase):
     def test_different_no_loop(self):
         for i in range(5):
             v = self.observer.on_iteration(
-                [_read_cmd(f"/tmp/f{i}.py")], f"out {i}", i + 1)
+                [_read_cmd(f"/tmp/f{i}.py")], f"out {i}", i + 1
+            )
         self.assertFalse(v.has_loop)
 
     def test_repeated_triggers_nudge(self):
         v = None
         for i in range(5):
             v = self.observer.on_iteration(
-                [_read_cmd("/tmp/same.py")], f"out {i}", i + 1)
+                [_read_cmd("/tmp/same.py")], f"out {i}", i + 1
+            )
         self.assertTrue(v.has_loop)
 
     def test_force_sleep(self):
         v = None
         for i in range(15):
             v = self.observer.on_iteration(
-                [_read_cmd("/tmp/same.py")], f"out {i}", i + 1)
+                [_read_cmd("/tmp/same.py")], f"out {i}", i + 1
+            )
         self.assertTrue(v.force_sleep)
 
     def test_reset(self):
         for i in range(5):
-            self.observer.on_iteration(
-                [_read_cmd("/tmp/same.py")], f"out {i}", i + 1)
+            self.observer.on_iteration([_read_cmd("/tmp/same.py")], f"out {i}", i + 1)
         self.observer.reset()
         self.assertEqual(self.observer.get_status()["history_length"], 0)
 
@@ -414,15 +448,27 @@ class TestExternalObserverMixedCommands(unittest.TestCase):
             state_file=".context/obs_state.json",
         )
         self.observer = ExternalObserver(
-            project_root=Path(self.tmpdir), config=self.config)
+            project_root=Path(self.tmpdir), config=self.config
+        )
 
     def test_varied_no_false_positive(self):
         workflow = [
             [_read_cmd("/tmp/config.py")],
             [_grep_cmd("TODO", "/tmp")],
             [_read_cmd("/tmp/utils.py")],
-            [("tool_call", json.dumps({"__tool__": "edit", "path": "/tmp/out.py",
-                                        "old_string": "x", "new_string": "y"}))],
+            [
+                (
+                    "tool_call",
+                    json.dumps(
+                        {
+                            "__tool__": "edit",
+                            "path": "/tmp/out.py",
+                            "old_string": "x",
+                            "new_string": "y",
+                        }
+                    ),
+                )
+            ],
             [_grep_cmd("import", "/tmp")],
             [("telegram", "Progress update")],
             [_read_cmd("/tmp/main.py")],
@@ -436,8 +482,7 @@ class TestExternalObserverMixedCommands(unittest.TestCase):
     def test_realistic_loop(self):
         v = None
         for i in range(8):
-            cmds = [_read_cmd("/tmp/config.py"),
-                    ("thinking", f"re-examining iter {i}")]
+            cmds = [_read_cmd("/tmp/config.py"), ("thinking", f"re-examining iter {i}")]
             v = self.observer.on_iteration(cmds, f"reading again {i}", i + 1)
         self.assertTrue(v.has_loop)
 
@@ -450,13 +495,15 @@ class TestExternalObserverCooldown(unittest.TestCase):
             state_file=".context/obs_state.json",
         )
         self.observer = ExternalObserver(
-            project_root=Path(self.tmpdir), config=self.config)
+            project_root=Path(self.tmpdir), config=self.config
+        )
 
     def test_not_every_iteration(self):
         msgs = []
         for i in range(10):
             v = self.observer.on_iteration(
-                [_read_cmd("/tmp/same.py")], f"out {i}", i + 1)
+                [_read_cmd("/tmp/same.py")], f"out {i}", i + 1
+            )
             if v.intervention_message:
                 msgs.append(v.intervention_message)
         self.assertLess(len(msgs), 10)
@@ -470,15 +517,15 @@ class TestEdgeCases(unittest.TestCase):
             state_file=".context/obs_state.json",
         )
         self.observer = ExternalObserver(
-            project_root=Path(self.tmpdir), config=self.config)
+            project_root=Path(self.tmpdir), config=self.config
+        )
 
     def test_empty_commands(self):
         v = self.observer.on_iteration([], "no cmds", 1)
         self.assertFalse(v.has_loop)
 
     def test_observer_never_crashes(self):
-        bad = [None, [("unknown_type", "garbage")],
-               [("tool_call", "not json")]]
+        bad = [None, [("unknown_type", "garbage")], [("tool_call", "not json")]]
         for i, cmds in enumerate(bad):
             try:
                 self.observer.on_iteration(cmds if cmds else [], f"bad {i}", i + 1)
@@ -489,7 +536,8 @@ class TestEdgeCases(unittest.TestCase):
         v = None
         for i in range(50):
             v = self.observer.on_iteration(
-                [_read_cmd(f"/tmp/f{i % 3}.py")], f"rapid {i}", i + 1)
+                [_read_cmd(f"/tmp/f{i % 3}.py")], f"rapid {i}", i + 1
+            )
         self.assertIsNotNone(v)
 
 
