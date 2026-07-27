@@ -35,6 +35,7 @@ from PyQt6.QtGui import (
 
 from gui.theme import Theme
 from gui.resources import IconProvider
+from gui.voice_page import VoiceChatPage
 
 
 # ── Signal Bridge for Thread-Safe UI Updates ─────────────────────
@@ -1028,11 +1029,13 @@ class MainWindow(QMainWindow):
         self.stack.setStyleSheet(f"QStackedWidget {{ background-color: {Theme.BG_PRIMARY}; }}")
 
         self.chat_page = ChatPage(self.signal_bridge)
+        self.voice_page = VoiceChatPage(self.signal_bridge)
         self.terminal_page = TerminalPage(self.signal_bridge)
         self.settings_page = SettingsPage()
         self.history_page = HistoryPage()
 
         self.stack.addWidget(self.chat_page)
+        self.stack.addWidget(self.voice_page)
         self.stack.addWidget(self.terminal_page)
         self.stack.addWidget(self.settings_page)
         self.stack.addWidget(self.history_page)
@@ -1117,9 +1120,10 @@ class MainWindow(QMainWindow):
         self.nav_buttons = []
         nav_items = [
             ("chat", "Chat", 0),
-            ("terminal", "Terminal", 1),
-            ("history", "History", 2),
-            ("settings", "Settings", 3),
+            ("mic", "Voice", 1),
+            ("terminal", "Terminal", 2),
+            ("history", "History", 3),
+            ("settings", "Settings", 4),
         ]
 
         for icon_name, text, index in nav_items:

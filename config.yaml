@@ -100,3 +100,43 @@ discord:
   max_history_length: 50
   bot_name: Clio Agent
 custom_system_prompt: ''
+
+voice:
+  enabled: true
+  vad:
+    sample_rate: 16000
+    frame_duration_ms: 30
+    padding_duration_ms: 300
+    energy_threshold: 0.01
+    silence_threshold: 0.005
+    min_speech_duration_ms: 300
+    max_silence_duration_ms: 1000
+  stt:
+    provider: local
+    model: base
+    language: en
+    device: auto
+    compute_type: auto
+  tts:
+    provider: piper
+    model: en_US-lessac-medium
+    voice: default
+    speed: 1.0
+    language: en
+  camera:
+    device_id: 0
+    width: 1280
+    height: 720
+    fps: 30
+    auto_exposure: true
+  llm:
+    provider: ollama
+    model: llama3.2:3b
+    temperature: 0.7
+    max_tokens: 500
+  conversation:
+    max_history: 20
+    auto_capture_camera: true
+    capture_on_speech_end: true
+  system_prompt: "You are a helpful AI assistant in a voice conversation. Keep your responses concise and natural - speak as you would in a real conversation. Limit responses to 2-3 sentences unless the user asks for more detail. Be friendly, conversational, and engaging."
+  voice_system_prompt: "You are a helpful AI assistant in a voice conversation with camera input. Keep your responses BRIEF and CONVERSATIONAL - 1-2 sentences max. You can see what the user is showing via camera. Comment naturally on what you see. Speak as you would in a real voice chat - casual, friendly, concise."
