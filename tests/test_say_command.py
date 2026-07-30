@@ -14,7 +14,7 @@ import asyncio
 from unittest import mock
 
 from clio_agent_2.core.agent import ClioAgent
-from clio_agent_2.tools.tool_registry import ToolResult, ToolRegistry, SayTool
+from clio_agent_2.tools.tool_registry import SayTool, ToolRegistry, ToolResult
 
 
 def _run(coro):

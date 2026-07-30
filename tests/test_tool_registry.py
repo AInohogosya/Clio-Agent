@@ -13,7 +13,6 @@ Run with:
 """
 
 import asyncio
-import os
 import tempfile
 from pathlib import Path
 from unittest import mock

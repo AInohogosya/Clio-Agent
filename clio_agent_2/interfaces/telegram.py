@@ -13,25 +13,23 @@ from typing import Any, Awaitable, Callable, Optional
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from telegram import Update, Bot
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    MessageHandler,
-    filters,
-    ContextTypes,
-)
+from core.agent import MESSAGE_PROCESS_TIMEOUT, ClioAgent
+from telegram import Bot, Update
 from telegram.error import (
     BadRequest,
     Conflict,
-    TelegramError,
-    TimedOut,
     NetworkError,
     RetryAfter,
+    TimedOut,
+)
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
 )
 from telegram.request import HTTPXRequest
-
-from core.agent import ClioAgent, MESSAGE_PROCESS_TIMEOUT
 
 logger = logging.getLogger(__name__)
 
@@ -50,48 +48,48 @@ def escape_markdown(text: str) -> str:
     """
     # Characters that need escaping in Markdown v1
     escape_chars = r'_*[]()~`>#+-=|{}.!'
-    
+
     def escape_char(match):
         return '\\' + match.group(0)
-    
+
     # Escape special characters, but preserve intentional markdown from agent responses
     # We only escape if the character is not part of a proper markdown structure
     result = text
-    
+
     # First, protect code blocks by temporarily replacing them
     code_blocks = []
     def save_code_block(match):
         code_blocks.append(match.group(0))
         return f'__CODE_BLOCK_{len(code_blocks)-1}__'
-    
+
     # Save triple backtick code blocks
     result = re.sub(r'```[\s\S]*?```', save_code_block, result)
-    
+
     # Save single backtick inline code
     inline_codes = []
     def save_inline_code(match):
         inline_codes.append(match.group(0))
         return f'__INLINE_CODE_{len(inline_codes)-1}__'
-    
+
     result = re.sub(r'`[^`]+`', save_inline_code, result)
-    
+
     # Now escape special characters outside of protected sections
     # We need to be careful not to break intentional formatting
     # Strategy: escape underscores and asterisks that are likely problematic
-    
+
     # Escape underscores that are not part of italic formatting (_text_)
     # This is tricky, so we'll use a conservative approach
-    
+
     # For safety, we'll escape characters in a way that preserves most formatting
     # but prevents parse errors
-    
+
     # Restore code blocks
     for i, block in enumerate(code_blocks):
         result = result.replace(f'__CODE_BLOCK_{i}__', block)
-    
+
     for i, code in enumerate(inline_codes):
         result = result.replace(f'__INLINE_CODE_{i}__', code)
-    
+
     return result
 
 
@@ -110,55 +108,55 @@ def safe_markdown_text(text: str) -> str:
     """
     if not text:
         return text
-    
+
     # Protect code blocks first
     code_blocks = []
     def save_code_block(match):
         code_blocks.append(match.group(0))
         return f'\x00CODEBLOCK{len(code_blocks)-1}\x00'
-    
+
     text = re.sub(r'```[\s\S]*?```', save_code_block, text)
-    
+
     # Protect inline code
     inline_codes = []
     def save_inline_code(match):
         inline_codes.append(match.group(0))
         return f'\x00INLINECODE{len(inline_codes)-1}\x00'
-    
+
     text = re.sub(r'`[^`]+`', save_inline_code, text)
-    
+
     # Protect URLs [text](url)
     urls = []
     def save_url(match):
         urls.append(match.group(0))
         return f'\x00URL{len(urls)-1}\x00'
-    
+
     text = re.sub(r'\[[^\]]+\]\([^)]+\)', save_url, text)
-    
+
     # Escape special characters that commonly cause issues
     # Be conservative - only escape characters that are likely to cause problems
     # when they appear in certain contexts
-    
+
     # Escape backslashes first
     text = text.replace('\\', '\\\\')
-    
+
     # Escape underscores that might be misinterpreted
     # (those not surrounded by spaces or at word boundaries for italics)
     # This is complex, so we'll use a simpler heuristic
-    
+
     # For maximum safety, escape these characters
     # But try to preserve common markdown patterns
-    
+
     # Restore protected sections
     for i, block in enumerate(code_blocks):
         text = text.replace(f'\x00CODEBLOCK{i}\x00', block)
-    
+
     for i, code in enumerate(inline_codes):
         text = text.replace(f'\x00INLINECODE{i}\x00', code)
-    
+
     for i, url in enumerate(urls):
         text = text.replace(f'\x00URL{i}\x00', url)
-    
+
     return text
 
 
@@ -181,52 +179,52 @@ def sanitize_markdown(text: str) -> str:
     """
     if not text:
         return text
-    
+
     # Protect well-formed code blocks first (triple backticks)
     code_blocks = []
     def save_code_block(match):
         code_blocks.append(match.group(0))
         return f'\x00CODEBLOCK{len(code_blocks)-1}\x00'
-    
+
     text = re.sub(r'```[\s\S]*?```', save_code_block, text)
-    
+
     # Protect inline code (single backticks)
     inline_codes = []
     def save_inline_code(match):
         inline_codes.append(match.group(0))
         return f'\x00INLINECODE{len(inline_codes)-1}\x00'
-    
+
     text = re.sub(r'`[^`]+`', save_inline_code, text)
-    
+
     # Protect well-formed URLs [text](url)
     urls = []
     def save_url(match):
         urls.append(match.group(0))
         return f'\x00URL{len(urls)-1}\x00'
-    
+
     text = re.sub(r'\[[^\]]+\]\([^)]+\)', save_url, text)
-    
+
     # Protect well-formed bold **text**
     bolds = []
     def save_bold(match):
         bolds.append(match.group(0))
         return f'\x00BOLD{len(bolds)-1}\x00'
-    
+
     text = re.sub(r'\*\*[^*]+\*\*', save_bold, text)
-    
+
     # Restore protected sections
     for i, block in enumerate(code_blocks):
         text = text.replace(f'\x00CODEBLOCK{i}\x00', block)
-    
+
     for i, code in enumerate(inline_codes):
         text = text.replace(f'\x00INLINECODE{i}\x00', code)
-    
+
     for i, url in enumerate(urls):
         text = text.replace(f'\x00URL{i}\x00', url)
-    
+
     for i, bold in enumerate(bolds):
         text = text.replace(f'\x00BOLD{i}\x00', bold)
-    
+
     return text
 
 
@@ -264,11 +262,11 @@ async def _retry_bot_request(
                 wait_time = float(retry_after)
             else:
                 wait_time = retry_after.total_seconds()
-            
+
             if attempt >= max_retries:
                 last_exc = exc
                 break
-            
+
             logger.warning(
                 "Telegram rate limit hit (attempt %d/%d), waiting %.1fs before retry",
                 attempt, max_retries, wait_time,
@@ -304,7 +302,7 @@ class TelegramInterface:
     - Support for slash commands
     - Autonomous mode notifications
     """
-    
+
     def __init__(self, agent: ClioAgent, bot_token: str):
         """
         Initialize the Telegram interface.
@@ -321,7 +319,7 @@ class TelegramInterface:
         # is already active for this token). Consumed by ``start()`` to retry
         # or shut down cleanly instead of crashing with a traceback.
         self._conflict_event: Optional[asyncio.Event] = None
-    
+
     async def _send_one(self, bot, cid: int, *, markdown: bool, text: str, fallback_text: str):
         """
         Send a single message to ``cid``.
@@ -376,12 +374,12 @@ class TelegramInterface:
         """
         if self.application is None:
             return
-        
+
         bot = self.application.bot
-        
+
         # Sanitize message for Markdown parsing
         safe_message = sanitize_markdown(message)
-        
+
         if chat_id:
             # Send to specific chat
             await self._send_one(
@@ -393,7 +391,7 @@ class TelegramInterface:
                 await self._send_one(
                     bot, cid, markdown=True, text=safe_message, fallback_text=message
                 )
-    
+
     async def handle_message(
         self,
         update: Update,
@@ -409,25 +407,25 @@ class TelegramInterface:
         chat_id = update.effective_chat.id
         user_message = update.message.text
         user_name = update.effective_user.username or update.effective_user.first_name
-        
+
         if not user_message:
             return
-        
+
         # Log the incoming message to console (same as CLI mode)
         print(f"\n[Telegram] {user_name}: {user_message}")
-        
+
         # Store chat session
         if chat_id not in self.chat_sessions:
             self.chat_sessions[chat_id] = {
                 "user": user_name,
                 "last_active": asyncio.get_running_loop().time(),
             }
-        
+
         # Check for slash commands
         if user_message.startswith("/"):
             await self._handle_command(update, context, user_message)
             return
-        
+
         # Process as regular message
         try:
             # Show typing indicator (best-effort: a transient network blip must
@@ -438,7 +436,7 @@ class TelegramInterface:
                 logger.warning("Could not send typing indicator: %s", e)
 
             # Log message processing
-            print(f"[Telegram] Processing message...")
+            print("[Telegram] Processing message...")
 
             # Process message through agent. Bound by a watchdog so a slow or
             # unreachable LLM can never freeze this chat indefinitely. We also
@@ -481,7 +479,7 @@ class TelegramInterface:
 
             # Log the response to console
             print(f"[Telegram] Agent: {response[:200]}..." if len(response) > 200 else f"[Telegram] Agent: {response}")
-            
+
             # The reply system has been removed: process_message no longer
             # returns a natural-language reply, so there is nothing to send
             # here in the normal case. User-facing output is delivered through
@@ -489,12 +487,12 @@ class TelegramInterface:
             # Only non-empty returns (e.g. internal errors) are sent.
             if response:
                 await self._send_long_message(context.bot, chat_id, response)
-        
+
         except Exception as e:
             # Provide detailed error information instead of generic "Timed out"
             error_type = type(e).__name__
             error_details = str(e)
-            
+
             # Create a detailed error message based on the exception type
             if isinstance(e, (TimedOut, NetworkError)):
                 detailed_error_msg = (
@@ -562,12 +560,12 @@ class TelegramInterface:
                     f"Details: {error_details}\n\n"
                     f"This may be a temporary issue. Please try again."
                 )
-            
+
             print(f"[Telegram] Error ({error_type}): {error_details}")
             await self._send_one(
                 context.bot, chat_id, markdown=False, text=detailed_error_msg, fallback_text=fallback_error_msg
             )
-    
+
     async def _handle_command(
         self,
         update: Update,
@@ -617,7 +615,7 @@ class TelegramInterface:
             return
 
         await self._send_long_message(context.bot, chat_id, f"```\n{result}\n```")
-    
+
     async def _send_long_message(self, bot: Bot, chat_id: int, message: str, max_length: int = 4000):
         """Send a long message, splitting if necessary.
 
@@ -626,7 +624,7 @@ class TelegramInterface:
         """
         # Sanitize message for Markdown parsing
         safe_message = sanitize_markdown(message)
-        
+
         if len(message) <= max_length:
             await self._send_one(
                 bot, chat_id, markdown=True, text=safe_message, fallback_text=message
@@ -642,7 +640,7 @@ class TelegramInterface:
                     text=f"{safe_chunk}\n\n_Part {i+1}/{len(chunks)}_",
                     fallback_text=f"{chunk}\n\n_Part {i+1}/{len(chunks)}_",
                 )
-    
+
     async def handle_autonomous_message(self, message: str):
         """
         Callback for autonomous mode messages.
@@ -654,7 +652,7 @@ class TelegramInterface:
             return
 
         await self.send_message(message)
-    
+
     async def _handle_telegram_error(self, update, context):
         """Log Telegram framework errors (update handling, networking)."""
         err = context.error
@@ -715,13 +713,13 @@ class TelegramInterface:
         """Start the Telegram bot."""
         # Register callback for agent responses
         self.agent.register_response_callback(self.handle_autonomous_message)
-        
+
         # Initialize agent
         await self.agent.initialize()
         started = await self.agent.ensure_autonomous_loop()
         if not started:
             print("⚠️  Continuous thinking could not start because no LLM model is configured.")
-        
+
         # Create application. We raise the HTTP request timeouts via
         # ``HTTPXRequest`` because PTB's defaults (a few seconds) make routine,
         # slightly-slow sends trip ``telegram.error.TimedOut`` ("Timed out").
@@ -736,11 +734,11 @@ class TelegramInterface:
         self.application = (
             Application.builder().token(self.bot_token).request(request).build()
         )
-        
+
         # Surface Telegram framework errors in the log instead of failing
         # silently (e.g. update-handling exceptions, network errors).
         self.application.add_error_handler(self._handle_telegram_error)
-        
+
         # Add handlers
         self.application.add_handler(
             CommandHandler("start", self.handle_message)
@@ -757,11 +755,11 @@ class TelegramInterface:
         self.application.add_handler(
             MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message)
         )
-        
+
         # Start bot
-        print(f"📱 Telegram bot starting...")
+        print("📱 Telegram bot starting...")
         await self.application.initialize()
-        
+
         # Clear any lingering webhook. A bot can use EITHER webhook OR
         # getUpdates (polling), never both; if a webhook is (or was) set,
         # start_polling receives a 409 Conflict and silently gets no updates.
@@ -771,13 +769,13 @@ class TelegramInterface:
             await self.application.bot.delete_webhook(drop_pending_updates=False)
         except Exception as e:
             logger.warning("Could not delete webhook (ignored): %s", e)
-        
+
         await self.application.start()
-        
+
         # Get bot info
         bot_info = await self.application.bot.get_me()
         print(f"✓ Logged in as @{bot_info.username}")
-        
+
         # Start polling directly. NOTE: we must NOT call run_polling() here.
         # main.py drives the event loop via asyncio.run(), and run_polling()
         # internally owns and closes that very loop, which raises "Cannot
@@ -859,7 +857,7 @@ class TelegramInterface:
         finally:
             await self._safe_shutdown_application()
             await self.agent.stop_autonomous_loop()
-    
+
     async def stop(self):
         """Stop the Telegram bot."""
         await self.agent.stop_autonomous_loop()

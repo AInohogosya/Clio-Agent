@@ -9,7 +9,6 @@ safe character-based fallback when tiktoken is unavailable or the model name is
 unknown.
 """
 
-from typing import Optional
 
 # Rough but safe fallback: ~1 token per 4 characters for English-ish text.
 _FALLBACK_CHARS_PER_TOKEN = 4

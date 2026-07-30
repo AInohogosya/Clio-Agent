@@ -9,10 +9,12 @@ import sys
 from datetime import datetime
 from io import StringIO
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from core.agent import MESSAGE_PROCESS_TIMEOUT, ClioAgent
+from core.llm_router import BUILTIN_PROVIDER_INFO, LLMSettingsLockedError
 from prompt_toolkit.application import Application
 from prompt_toolkit.application.current import get_app
 from prompt_toolkit.buffer import Buffer
@@ -32,9 +34,6 @@ from prompt_toolkit.styles import Style
 from prompt_toolkit.widgets import Button, Dialog, Label, RadioList, TextArea
 from rich.console import Console as RichConsole
 from rich.markdown import Markdown as RichMarkdown
-
-from core.agent import ClioAgent, MESSAGE_PROCESS_TIMEOUT
-from core.llm_router import LLMSettingsLockedError, BUILTIN_PROVIDER_INFO
 
 logger = logging.getLogger(__name__)
 

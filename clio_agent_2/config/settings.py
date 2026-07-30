@@ -6,7 +6,8 @@ Handles loading environment variables and application settings.
 import os
 import re
 from pathlib import Path
-from typing import Optional, List, Dict, Any
+from typing import Any, Dict, List, Optional
+
 try:
     from dotenv import load_dotenv
 except ImportError:
@@ -19,7 +20,7 @@ except ImportError:
             if not _path or not _os.path.isfile(_path):
                 continue
             try:
-                with open(_path, "r", encoding="utf-8") as _f:
+                with open(_path, encoding="utf-8") as _f:
                     for _line in _f:
                         _line = _line.strip()
                         if not _line or _line.startswith("#") or "=" not in _line:
@@ -92,7 +93,7 @@ def _dump_yaml_scalar(value) -> str:
 
 class Config:
     """Centralized configuration management for Clio-Agent-2."""
-    
+
     def __init__(self, env_path: Optional[str] = None):
         """
         Initialize configuration by loading environment variables.
@@ -103,7 +104,7 @@ class Config:
         if env_path is None:
             project_root = Path(__file__).parent.parent
             env_path = project_root / "config" / ".env"
-        
+
         # Always store a Path so file operations (.exists(), .parent) work
         # regardless of whether the caller passed a string or a Path.
         self._env_path = Path(env_path)
@@ -112,11 +113,11 @@ class Config:
         # settings are saved via save_to_env()/save_settings().
         self._yaml_path = self._env_path.parent / "config.yaml"
         self._load_config()
-    
+
     def _load_config(self):
         """Load configuration from .env file."""
         load_dotenv(self._env_path)
-        
+
         # LLM API Keys
         self.openai_api_key: Optional[str] = os.getenv("OPENAI_API_KEY")
         self.google_api_key: Optional[str] = os.getenv("GOOGLE_API_KEY")
@@ -139,14 +140,14 @@ class Config:
         self.ollama_base_url: Optional[str] = os.getenv("OLLAMA_BASE_URL")
         # User-supplied "Other" providers (loaded from CUSTOM_PROVIDERS + friends)
         self.custom_providers: List[Dict[str, Any]] = self.load_custom_providers()
-        
+
         # OpenRouter Settings
         self.openrouter_http_referer: Optional[str] = os.getenv("OPENROUTER_HTTP_REFERER")
         self.openrouter_app_name: Optional[str] = os.getenv("OPENROUTER_APP_NAME")
-        
+
         # Search API Key
         self.search_api_key: Optional[str] = os.getenv("SEARCH_API_KEY")
-        
+
         # Bot Tokens
         self.telegram_bot_token: Optional[str] = os.getenv("TELEGRAM_BOT_TOKEN", "").strip() or None
         self.discord_bot_token: Optional[str] = os.getenv("DISCORD_BOT_TOKEN", "").strip() or None
@@ -171,12 +172,12 @@ class Config:
         # so the safe (locked) posture is the default.
         self.llm_settings_locked: bool = os.getenv("LLM_SETTINGS_LOCKED", "true").lower() == "true"
         self.context_log_max_lines: int = int(os.getenv("CONTEXT_LOG_MAX_LINES", "1000"))
-        
+
         # Agent Settings
         self.agent_name: str = os.getenv("AGENT_NAME", "Clio-Agent-2")
         self.autonomous_mode: bool = os.getenv("AUTONOMOUS_MODE", "true").lower() == "true"
         self.thinking_interval: float = float(os.getenv("THINKING_INTERVAL", "5.0"))
-    
+
     def save_to_env(self, key: str, value: str) -> bool:
         """
         Save a configuration value to the .env file.
@@ -195,9 +196,9 @@ class Config:
                 self._env_path.parent.mkdir(parents=True, exist_ok=True)
                 content = ""
             else:
-                with open(self._env_path, 'r', encoding='utf-8') as f:
+                with open(self._env_path, encoding='utf-8') as f:
                     content = f.read()
-            
+
             # Check if key exists in file
             pattern = rf'^{re.escape(key)}=.*$'
             if re.search(pattern, content, re.MULTILINE):
@@ -208,17 +209,17 @@ class Config:
                 if content and not content.endswith('\n'):
                     content += '\n'
                 content += f'{key}={value}\n'
-            
+
             # Write back
             with open(self._env_path, 'w', encoding='utf-8') as f:
                 f.write(content)
-            
+
             # Update the process environment as well. load_dotenv() does NOT
             # override variables that already exist in os.environ, so without
             # this the subsequent reload would keep reading the stale value and
             # the persisted change would be lost on the next restart.
             os.environ[key] = value
-            
+
             # Reload environment variables
             self._load_config()
 
@@ -247,7 +248,7 @@ class Config:
                 self._env_path.parent.mkdir(parents=True, exist_ok=True)
                 content = ""
             else:
-                with open(self._env_path, 'r', encoding='utf-8') as f:
+                with open(self._env_path, encoding='utf-8') as f:
                     content = f.read()
 
             for key, value in settings.items():
@@ -360,7 +361,7 @@ class Config:
         try:
             if not self._env_path.exists():
                 return
-            with open(self._env_path, "r", encoding="utf-8") as f:
+            with open(self._env_path, encoding="utf-8") as f:
                 content = f.read()
             content = re.sub(
                 rf"^{re.escape(key)}=.*$(\n?)", "", content, flags=re.MULTILINE

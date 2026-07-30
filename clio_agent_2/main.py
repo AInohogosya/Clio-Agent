@@ -16,16 +16,15 @@ through setup interactively so the whole experience is just one command.
 Use --no-setup to skip the first-run prompt and launch immediately.
 """
 
-import os
-import sys
-import atexit
-import subprocess
 import asyncio
+import atexit
+import logging
+import os
 import platform
 import signal
-import logging
+import subprocess
+import sys
 from pathlib import Path
-
 
 # ============================================================================
 # SYSTEM DETECTION AND COMPATIBILITY
@@ -40,7 +39,7 @@ def detect_system_info():
         "python_version": platform.python_version(),
         "python_executable": sys.executable,
         "is_venv": (
-            hasattr(sys, "real_prefix") or 
+            hasattr(sys, "real_prefix") or
             (hasattr(sys, "base_prefix") and sys.base_prefix != sys.prefix) or
             os.environ.get("VIRTUAL_ENV") is not None
         ),
@@ -52,30 +51,30 @@ def check_system_requirements():
     print("=" * 60)
     print("🔍 System Compatibility Check")
     print("=" * 60)
-    
+
     system_info = detect_system_info()
-    
+
     # Check Python version (minimum 3.8)
     python_version = tuple(map(int, platform.python_version_tuple()[:2]))
     if python_version < (3, 8):
         print(f"❌ Python version too old: {platform.python_version()}")
         print("   Minimum required: Python 3.8+")
         return False
-    
+
     print(f"✅ Python Version: {platform.python_version()}")
     print(f"✅ Operating System: {system_info['os']} {system_info['os_version']}")
     print(f"✅ Architecture: {system_info['machine']}")
-    
+
     # Check write permissions
     project_root = Path(__file__).parent
     try:
         test_file = project_root / ".write_test"
         test_file.touch()
         test_file.unlink()
-        print(f"✅ Write permissions: OK")
+        print("✅ Write permissions: OK")
     except Exception as e:
         print(f"⚠️  Write permissions issue: {e}")
-    
+
     print("=" * 60)
     return True
 
@@ -91,25 +90,25 @@ def ensure_virtual_environment():
     """
     # Check if already running in a virtual environment
     in_venv = (
-        hasattr(sys, "real_prefix") or 
+        hasattr(sys, "real_prefix") or
         (hasattr(sys, "base_prefix") and sys.base_prefix != sys.prefix) or
         os.environ.get("VIRTUAL_ENV") is not None
     )
-    
+
     if in_venv:
         print(f"✅ Running in virtual environment: {sys.prefix}")
         return True
-    
+
     # Not in a virtual environment - create/use one
     project_root = Path(__file__).parent
     venv_path = project_root / ".venv"
-    
+
     print("=" * 60)
     print("🐍 Virtual Environment Setup")
     print("=" * 60)
-    
+
     venv_needs_recreation = False
-    
+
     if not venv_path.exists():
         print(f"📦 Creating virtual environment at: {venv_path}")
         try:
@@ -121,13 +120,13 @@ def ensure_virtual_environment():
             sys.exit(1)
     else:
         print(f"✅ Virtual environment already exists at: {venv_path}")
-        
+
         # Verify the venv has a valid Python executable
         venv_python = _get_venv_python(venv_path)
         if not venv_python or not venv_python.exists():
             print("⚠️  Existing venv is missing Python executable - recreating...")
             venv_needs_recreation = True
-    
+
     # Recreate venv if needed
     if venv_needs_recreation:
         print("📦 Removing broken virtual environment...")
@@ -137,7 +136,7 @@ def ensure_virtual_environment():
         except Exception as e:
             print(f"❌ Failed to remove broken venv: {e}")
             sys.exit(1)
-        
+
         print(f"📦 Creating new virtual environment at: {venv_path}")
         try:
             subprocess.check_call([sys.executable, "-m", "venv", str(venv_path)])
@@ -146,15 +145,15 @@ def ensure_virtual_environment():
             print(f"❌ Failed to create virtual environment: {e}")
             _handle_venv_creation_failure(project_root)
             sys.exit(1)
-    
+
     # Determine the Python executable in the virtual environment
     venv_python = _get_venv_python(venv_path)
-    
+
     if not venv_python or not venv_python.exists():
-        print(f"❌ Python executable not found in venv!")
+        print("❌ Python executable not found in venv!")
         _diagnose_venv_issue(venv_path)
         sys.exit(1)
-    
+
     # Install dependencies in the virtual environment
     print("📦 Installing dependencies in virtual environment...")
     requirements_path = project_root / "requirements.txt"
@@ -166,7 +165,7 @@ def ensure_virtual_environment():
             ])
             # Install requirements
             subprocess.check_call([
-                str(venv_python), "-m", "pip", "install", 
+                str(venv_python), "-m", "pip", "install",
                 "-r", str(requirements_path), "--quiet"
             ])
             print("✅ Dependencies installed successfully!")
@@ -177,26 +176,26 @@ def ensure_virtual_environment():
     else:
         print(f"❌ requirements.txt not found at {requirements_path}")
         sys.exit(1)
-    
+
     # Re-run this script in the virtual environment
     print("🔄 Restarting in virtual environment...")
     print("=" * 60)
-    
+
     # Set the VIRTUAL_ENV environment variable
     env = os.environ.copy()
     env["VIRTUAL_ENV"] = str(venv_path)
-    
+
     # Get the path separator
     path_sep = ";" if os.name == "nt" else ":"
-    
+
     # Update PATH to include venv binaries
     venv_scripts = venv_path / ("Scripts" if os.name == "nt" else "bin")
     current_path = env.get("PATH", "")
     env["PATH"] = f"{venv_scripts}{path_sep}{current_path}"
-    
+
     # Execute the script in the virtual environment
     os.execve(str(venv_python), [str(venv_python), __file__] + sys.argv[1:], env)
-    
+
     # This line should never be reached due to execve
     return False
 
@@ -207,23 +206,23 @@ def _get_venv_python(venv_path):
         return venv_path / "Scripts" / "python.exe"
     else:  # Unix/Linux/macOS
         bin_dir = venv_path / "bin"
-        
+
         # Try multiple possible Python executable names in order of preference
         python_names = [
             "python3",
             "python",
         ]
-        
+
         # Add version-specific names (e.g., python3.12, python3.11)
         py_version = platform.python_version_tuple()
         python_names.append(f"python{py_version[0]}.{py_version[1]}")
         python_names.append(f"python{py_version[0]}")
-        
+
         for name in python_names:
             venv_python = bin_dir / name
             if venv_python.exists():
                 return venv_python
-        
+
         # If none found, return the default python3 path
         return bin_dir / "python3"
 
@@ -232,7 +231,7 @@ def _handle_venv_creation_failure(project_root):
     """Handle virtual environment creation failure with helpful suggestions."""
     print("\n💡 Troubleshooting Suggestions:")
     system = platform.system()
-    
+
     if system == "Linux":
         print("  Ubuntu/Debian: sudo apt-get install python3-venv python3-pip")
         print("  Fedora/RHEL: sudo dnf install python3-venv python3-pip")
@@ -243,7 +242,7 @@ def _handle_venv_creation_failure(project_root):
     elif system == "Windows":
         print("  Windows: Ensure Python is installed with 'Add to PATH' option")
         print("  Reinstall Python from https://python.org if needed")
-    
+
     print("\n  Alternative: Manual setup")
     print(f"  cd {project_root}")
     print("  python3 -m venv .venv")
@@ -254,7 +253,7 @@ def _handle_venv_creation_failure(project_root):
 def _diagnose_venv_issue(venv_path):
     """Diagnose virtual environment issues."""
     print(f"\n🔍 Diagnosing venv at: {venv_path}")
-    
+
     bin_dir = venv_path / ("bin" if os.name != "nt" else "Scripts")
     if bin_dir.exists():
         print(f"\nAvailable files in {bin_dir.name}/:")
@@ -263,32 +262,32 @@ def _diagnose_venv_issue(venv_path):
                 print(f"   - {f.name}")
     else:
         print(f"  ⚠️  {bin_dir} directory does not exist!")
-    
+
     # Check if venv was properly created
     pyvenv_cfg = venv_path / "pyvenv.cfg"
     if pyvenv_cfg.exists():
-        print(f"\n✅ pyvenv.cfg exists")
+        print("\n✅ pyvenv.cfg exists")
     else:
-        print(f"  ⚠️  pyvenv.cfg missing - venv may be corrupted")
+        print("  ⚠️  pyvenv.cfg missing - venv may be corrupted")
         print("  Try removing .venv and running again")
 
 
 def _handle_dependency_installation_failure(venv_python, requirements_path):
     """Handle dependency installation failure with fallback options."""
     print("\n💡 Trying alternative installation methods...")
-    
+
     # Try installing without cache
     try:
         print("  Attempting installation with --no-cache-dir...")
         subprocess.check_call([
-            str(venv_python), "-m", "pip", "install", 
+            str(venv_python), "-m", "pip", "install",
             "-r", str(requirements_path), "--no-cache-dir", "--quiet"
         ])
         print("✅ Installation succeeded with --no-cache-dir!")
         return
     except subprocess.CalledProcessError:
         pass
-    
+
     # Try upgrading pip first
     try:
         print("  Attempting to upgrade pip first...")
@@ -296,17 +295,17 @@ def _handle_dependency_installation_failure(venv_python, requirements_path):
             str(venv_python), "-m", "pip", "install", "--upgrade", "pip", "--quiet"
         ])
         subprocess.check_call([
-            str(venv_python), "-m", "pip", "install", 
+            str(venv_python), "-m", "pip", "install",
             "-r", str(requirements_path), "--quiet"
         ])
         print("✅ Installation succeeded after pip upgrade!")
         return
     except subprocess.CalledProcessError:
         pass
-    
+
     print("\n❌ All installation methods failed.")
     print("\n💡 Manual resolution steps:")
-    print(f"  1. Activate venv: source .venv/bin/activate")
+    print("  1. Activate venv: source .venv/bin/activate")
     print("  2. Update pip: pip install --upgrade pip")
     print("  3. Install packages individually to identify the problematic one")
     print("  4. Check network connectivity and firewall settings")
@@ -315,7 +314,7 @@ def _handle_dependency_installation_failure(venv_python, requirements_path):
 def ensure_dependencies():
     """Ensure all required dependencies are installed (called within venv)."""
     print("🔧 Verifying dependencies...")
-    
+
     # Only check for packages that are actually in requirements.txt (not commented)
     required_packages = [
         "python-dotenv",
@@ -327,7 +326,7 @@ def ensure_dependencies():
         "requests",
         "tiktoken"
     ]
-    
+
     missing_packages = []
     for package in required_packages:
         try:
@@ -344,14 +343,14 @@ def ensure_dependencies():
                 __import__(package.replace("-", "_"))
         except ImportError:
             missing_packages.append(package)
-    
+
     if missing_packages:
         print(f"📦 Installing missing packages: {', '.join(missing_packages)}")
         requirements_path = Path(__file__).parent / "requirements.txt"
         if requirements_path.exists():
             try:
                 subprocess.check_call([
-                    sys.executable, "-m", "pip", "install", 
+                    sys.executable, "-m", "pip", "install",
                     "-r", str(requirements_path), "--quiet"
                 ])
                 print("✅ Dependencies installed successfully!")
@@ -377,11 +376,11 @@ def ensure_env_file(config_dir):
     """Ensure .env file exists with template values."""
     env_file = config_dir / ".env"
     env_example = config_dir / ".env.example"
-    
+
     if not env_file.exists():
         if env_example.exists():
             # Copy from example
-            with open(env_example, 'r') as f:
+            with open(env_example) as f:
                 content = f.read()
             with open(env_file, 'w') as f:
                 f.write(content)
@@ -437,7 +436,7 @@ LLM_SETTINGS_LOCKED=true
             print("⚠️  Please edit config/.env with your API keys before using LLM features!")
     else:
         print("✅ .env file already exists!")
-    
+
     return env_file
 
 
@@ -446,22 +445,22 @@ def setup_environment():
     print("=" * 60)
     print("🚀 Clio-Agent-2: Automatic Environment Setup")
     print("=" * 60)
-    
+
     # Step 1: Ensure dependencies
     ensure_dependencies()
-    
+
     # Step 2: Ensure config directory
     config_dir = ensure_config_directory()
     print(f"✅ Config directory ready at: {config_dir}")
-    
+
     # Step 3: Ensure .env file
     env_file = ensure_env_file(config_dir)
-    
+
     # Step 4: Load environment variables
     from dotenv import load_dotenv
     load_dotenv(env_file)
     print("✅ Environment variables loaded!")
-    
+
     print("=" * 60)
     print("🎉 Environment setup complete!")
     print("=" * 60)
@@ -535,7 +534,7 @@ except Exception as e:
     Config = MinimalConfig
 
 try:
-    from core.llm_router import LLMRouter, SUPPORTED_PROVIDERS
+    from core.llm_router import SUPPORTED_PROVIDERS, LLMRouter
 except Exception as e:
     print(f"⚠️  Failed to import LLMRouter: {e}")
     # Create a minimal fallback LLMRouter class
@@ -566,10 +565,10 @@ def create_agent():
     if ClioAgent is None:
         print("⚠️  Cannot create agent: ClioAgent module failed to load")
         return None
-    
+
     # Initialize LLM router
     llm_router = LLMRouter(config)
-    
+
     # Check if any providers are configured
     available_providers = llm_router.get_available_providers()
     if not available_providers:
@@ -580,7 +579,7 @@ def create_agent():
         except Exception:
             supported = "OpenAI, Google, Anthropic, OpenRouter, Grok, DeepSeek"
         print(f"Supported providers: {supported} (plus any custom 'Other' provider)")
-    
+
     try:
         # Create agent instance
         agent = ClioAgent(config, llm_router)
@@ -651,14 +650,14 @@ async def run_cli():
                 break
             print("Agent: CLI interface not available. Please install required dependencies.")
         return
-    
+
     agent = create_agent()
     if agent is None:
         print("⚠️  Cannot start CLI: Agent creation failed")
         return
-    
+
     interface = CLIInterface(agent)
-    
+
     try:
         await interface.start()
     except Exception as e:
@@ -677,7 +676,7 @@ async def run_telegram(replace: bool = False):
         print(f"⚠️  Telegram interface unavailable: {e}")
         print("Install with: pip install python-telegram-bot")
         return
-    
+
     if not _is_token_configured(config.telegram_bot_token):
         print("❌ Telegram bot token not configured!")
         print("Set TELEGRAM_BOT_TOKEN in config/.env")
@@ -694,15 +693,15 @@ async def run_telegram(replace: bool = False):
     if not lock.acquire(blocking=False, force=replace):
         print(format_lock_hint("telegram"))
         return
-    
+
     agent = create_agent()
     if agent is None:
         print("⚠️  Cannot start Telegram: Agent creation failed")
         lock.release()
         return
-    
+
     interface = TelegramInterface(agent, config.telegram_bot_token)
-    
+
     try:
         await interface.start()
     except Exception as e:
@@ -720,19 +719,19 @@ async def run_discord():
         print(f"⚠️  Discord interface unavailable: {e}")
         print("Install with: pip install discord.py")
         return
-    
+
     if not _is_token_configured(config.discord_bot_token):
         print("❌ Discord bot token not configured!")
         print("Set DISCORD_BOT_TOKEN in config/.env")
         return
-    
+
     agent = create_agent()
     if agent is None:
         print("⚠️  Cannot start Discord: Agent creation failed")
         return
-    
+
     interface = DiscordInterface(agent, config.discord_bot_token)
-    
+
     try:
         await interface.start()
     except Exception as e:
@@ -763,7 +762,7 @@ async def run_whatsapp():
         print(f"⚠️  WhatsApp interface unavailable: {e}")
         print("Install with: pip install pywa")
         return
-    
+
     # Check required configuration
     required = [
         ("WHATSAPP_PHONE_NUMBER_ID", config.whatsapp_phone_number_id),
@@ -772,7 +771,7 @@ async def run_whatsapp():
         ("WHATSAPP_WEBHOOK_VERIFY_TOKEN", config.whatsapp_webhook_verify_token),
         ("WHATSAPP_WEBHOOK_URL", config.whatsapp_webhook_url),
     ]
-    
+
     missing = [name for name, value in required if not value]
     if missing:
         print("❌ WhatsApp configuration incomplete!")
@@ -784,12 +783,12 @@ async def run_whatsapp():
         for name in missing:
             print(f"   export {name}=your_value")
         return
-    
+
     agent = create_agent()
     if agent is None:
         print("⚠️  Cannot start WhatsApp: Agent creation failed")
         return
-    
+
     try:
         await whatsapp_run()
     except Exception as e:
@@ -799,24 +798,24 @@ async def run_whatsapp():
 async def run_all(replace: bool = False):
     """Run all configured interfaces concurrently."""
     tasks = []
-    
+
     # Always run CLI
     tasks.append(run_cli())
-    
+
     # Run Telegram if configured (check for non-empty token)
     if _is_token_configured(config.telegram_bot_token):
         tasks.append(run_telegram(replace=replace))
-    
+
     # Run Discord if configured (check for non-empty token)
     if _is_token_configured(config.discord_bot_token):
         tasks.append(run_discord())
-    
+
     # Run WhatsApp if configured (check for required settings)
     if (config.whatsapp_phone_number_id and config.whatsapp_access_token and
         config.whatsapp_app_secret and config.whatsapp_webhook_verify_token and
         config.whatsapp_webhook_url):
         tasks.append(run_whatsapp())
-    
+
     try:
         await asyncio.gather(*tasks)
     except Exception as e:
@@ -1023,24 +1022,24 @@ def auto_configure_if_needed():
 def main():
     """Main entry point for Clio-Agent-2."""
     import argparse
-    
+
     # Configure logging first so every subsequent message is captured.
     setup_logging()
-    
+
     # Register an atexit flush (covers normal exits, including __EXIT__ and
     # any exception path) so the context log is always persisted. Per-signal
     # handlers are installed by ``_run_interface`` once the asyncio loop exists,
     # so SIGINT/SIGTERM cancel the running task (a graceful shutdown) instead of
     # stopping the loop out from under ``asyncio.run``.
     atexit.register(_flush_contexts)
-    
+
     # Ignore SIGHUP so the bot keeps running when its SSH/login shell is closed
     # (otherwise an overnight session drop would terminate the process).
     try:
         signal.signal(signal.SIGHUP, signal.SIG_IGN)
     except (ValueError, AttributeError, OSError):
         pass  # Not available on every platform (e.g. Windows).
-    
+
     parser = argparse.ArgumentParser(
         description="Clio-Agent-2 - Autonomous AI Agent",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -1116,7 +1115,7 @@ Single-command usage:
         default=None,
         help="Path to custom .env configuration file"
     )
-    
+
     args, extras = parser.parse_known_args()
 
     # Single-command helpers take priority over launching an interface.
@@ -1147,7 +1146,7 @@ Single-command usage:
             config = Config(args.config)
         except Exception as e:
             print(f"⚠️  Failed to load custom config: {e}")
-    
+
     # First-run auto-configuration (interactive). Skipped with --no-setup.
     if not getattr(args, "no_setup", False):
         auto_configure_if_needed()
@@ -1158,7 +1157,7 @@ Single-command usage:
 ║       🤖 Clio-Agent-2 Starting         ║
 ╚════════════════════════════════════════╝
     """)
-    
+
     # Show configuration status
     try:
         api_status = config.validate_api_keys()
@@ -1170,7 +1169,7 @@ Single-command usage:
     except Exception as e:
         print(f"⚠️  Could not validate API keys: {e}")
         print()
-    
+
     # Determine which interface(s) to run
     try:
         if args.all:

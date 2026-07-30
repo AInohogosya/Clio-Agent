@@ -1,13 +1,11 @@
 import asyncio
 import json
 import shutil
+from collections import deque
 from datetime import datetime
 from pathlib import Path
-from typing import List, Dict, Any, Optional
-from collections import deque
 
 from .token_budget import estimate_tokens
-
 
 _EMPTY = {}
 
@@ -226,7 +224,7 @@ class ContextLog:
             if not path.exists():
                 continue
             try:
-                with open(path, 'r', encoding='utf-8') as f:
+                with open(path, encoding='utf-8') as f:
                     data = json.load(f)
             except Exception:
                 continue
@@ -275,7 +273,7 @@ class ContextLog:
         if not trash.exists():
             return False
         try:
-            with open(trash, 'r', encoding='utf-8') as f:
+            with open(trash, encoding='utf-8') as f:
                 data = json.load(f)
         except Exception:
             return False

@@ -14,10 +14,7 @@ These guard the guarantee that the agent's context survives a program restart:
 
 import asyncio
 import json
-import tempfile
 from pathlib import Path
-
-import pytest
 
 from clio_agent_2.core.context_manager import ContextLog
 

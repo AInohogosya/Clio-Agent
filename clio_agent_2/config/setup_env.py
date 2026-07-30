@@ -33,9 +33,8 @@ Usage (non-interactive, single command to configure everything):
 Run `python3 run.py setup --help` for the full list of flags.
 """
 
-import sys
-import os
 import argparse
+import sys
 from pathlib import Path
 
 # Add parent directory to path so `config.settings` is importable whether this
@@ -43,7 +42,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config.settings import Config
-
 
 # ---------------------------------------------------------------------------
 # Paths / mapping helpers
@@ -340,35 +338,35 @@ def configure_whatsapp(config) -> None:
     print("This requires a Meta Developer App with WhatsApp Business API access.")
     print("Create an app at: https://developers.facebook.com/")
     print()
-    
+
     # Phone Number ID
     phone_id = input("Enter WhatsApp Phone Number ID (Enter to skip): ").strip()
     if phone_id:
         set_env_value("WHATSAPP_PHONE_NUMBER_ID", phone_id)
         config.reload()
         print("✅ Phone Number ID saved!")
-    
+
     # Access Token
     access_token = input("Enter WhatsApp Access Token (Enter to skip): ").strip()
     if access_token:
         set_env_value("WHATSAPP_ACCESS_TOKEN", access_token)
         config.reload()
         print("✅ Access Token saved!")
-    
+
     # App Secret
     app_secret = input("Enter Meta App Secret (Enter to skip): ").strip()
     if app_secret:
         set_env_value("WHATSAPP_APP_SECRET", app_secret)
         config.reload()
         print("✅ App Secret saved!")
-    
+
     # Webhook Verify Token
     verify_token = input("Enter Webhook Verify Token (Enter to skip): ").strip()
     if verify_token:
         set_env_value("WHATSAPP_WEBHOOK_VERIFY_TOKEN", verify_token)
         config.reload()
         print("✅ Webhook Verify Token saved!")
-    
+
     # Webhook URL
     webhook_url = input("Enter Webhook URL (e.g., https://your-domain.com) (Enter to skip): ").strip()
     if webhook_url:
@@ -377,7 +375,7 @@ def configure_whatsapp(config) -> None:
         print("✅ Webhook URL saved!")
         print("   Note: The webhook endpoint will be at: {webhook_url}/webhook")
         print("   For local testing, use ngrok: ngrok http 8080")
-    
+
     # Webhook Port (optional)
     webhook_port = input("Enter Webhook Port [8080]: ").strip()
     if webhook_port:
@@ -668,15 +666,15 @@ def main():
         print("Creating from template...")
         example_path = env_path.parent / ".env.example"
         if example_path.exists():
-            with open(example_path, 'r') as f:
+            with open(example_path) as f:
                 content = f.read()
             with open(env_path, 'w') as f:
                 f.write(content)
-            print(f"✅ Created .env file from template")
+            print("✅ Created .env file from template")
         else:
             with open(env_path, 'w') as f:
                 f.write("# Clio-Agent-2 Configuration\n")
-            print(f"✅ Created empty .env file")
+            print("✅ Created empty .env file")
         print()
 
     # Non-interactive mode: any recognised flag => apply and exit.

@@ -17,11 +17,10 @@ import asyncio
 import time
 
 import pytest
+from telegram.error import NetworkError, TimedOut
 
-from telegram.error import TimedOut, NetworkError
-
-from clio_agent_2.interfaces.telegram import _retry_bot_request
 from clio_agent_2.core.retry import retry_async
+from clio_agent_2.interfaces.telegram import _retry_bot_request
 
 
 def _run(coro):

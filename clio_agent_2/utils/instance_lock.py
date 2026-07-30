@@ -239,7 +239,7 @@ class SingleInstanceLock:
             pass
         self._acquired = False
 
-    def __enter__(self) -> "SingleInstanceLock":
+    def __enter__(self) -> SingleInstanceLock:
         if not self.acquire(blocking=False):
             raise AlreadyRunningError(
                 f"Another Clio-Agent-2 instance ({self.name}) is already "

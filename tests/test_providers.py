@@ -9,13 +9,13 @@ from unittest.mock import AsyncMock, MagicMock
 
 import aiohttp
 
+from clio_agent_2.config.settings import Config
 from clio_agent_2.core.llm_router import (
     BUILTIN_PROVIDER_INFO,
+    SUPPORTED_PROVIDERS,
     LLMRouter,
     OpenAICompatibleProvider,
-    SUPPORTED_PROVIDERS,
 )
-from clio_agent_2.config.settings import Config
 
 
 class _Ctx:
@@ -219,7 +219,6 @@ def test_unknown_provider_still_rejected():
 
 
 def test_config_custom_provider_roundtrip(tmp_path):
-    import pytest
     env = tmp_path / ".env"
     cfg = Config(env_path=str(env))
 

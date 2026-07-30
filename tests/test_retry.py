@@ -7,8 +7,8 @@ Covers the generic ``retry_async`` helper and its two production users:
 """
 import asyncio
 
-from clio_agent_2.core.retry import retry_async
 from clio_agent_2.core.llm_router import LLMRouter
+from clio_agent_2.core.retry import retry_async
 from clio_agent_2.tools.tool_registry import ShellCommandTool
 
 

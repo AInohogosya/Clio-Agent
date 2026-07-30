@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 
-import os
-import sys
 import json
+import os
 import signal
+import sys
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
-from urllib.error import URLError, HTTPError
 
 
 class Config:

@@ -14,9 +14,8 @@ import asyncio
 from unittest import mock
 
 from clio_agent_2.core.agent import (
-    ClioAgent,
     MAX_TOOL_ITERATIONS,
-    CIRCUIT_BREAKER_THRESHOLD,
+    ClioAgent,
 )
 from clio_agent_2.tools.tool_registry import ToolResult
 

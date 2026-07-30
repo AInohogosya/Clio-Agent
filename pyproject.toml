@@ -22,23 +22,6 @@ dependencies = [
     "discord.py>=2.0.0",
     "pywa>=1.0.0",
 ]
-
-[project.optional-dependencies]
-dev = [
-    "pytest>=7.4.0",
-    "pytest-asyncio>=0.21.0",
-    "pytest-cov>=4.1.0",
-    "ruff>=0.1.0",
-    "mypy>=1.0.0",
-    "bandit>=1.7.0",
-    "pip-audit>=2.6.0",
-]
-google = ["google-generativeai>=0.3.0"]
-anthropic = ["anthropic>=0.18.0"]
-all = [
-    "google-generativeai>=0.3.0",
-    "anthropic>=0.18.0",
-]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
@@ -55,6 +38,23 @@ classifiers = [
     "Programming Language :: Python :: 3.14",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: Software Development :: Libraries :: Application Frameworks",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-cov>=4.1.0",
+    "ruff>=0.1.0",
+    "mypy>=1.0.0",
+    "bandit>=1.7.0",
+    "pip-audit>=2.6.0",
+]
+google = ["google-generativeai>=0.3.0"]
+anthropic = ["anthropic>=0.18.0"]
+all = [
+    "google-generativeai>=0.3.0",
+    "anthropic>=0.18.0",
 ]
 
 [project.urls]
@@ -91,6 +91,10 @@ ignore = [
     "E501",  # line too long (handled by formatter)
     "B008",  # do not perform function calls in argument defaults
     "SIM103", # avoid `return` in `else` branch
+    "T201",  # print() is used in CLI-facing scripts and utilities
+    "W293",  # blank line whitespace is acceptable in this project
+    "UP045", # Optional[...] annotations are still used in this project
+    "SIM105", # suppress() patterns are not required here
 ]
 exclude = [
     ".venv",
@@ -112,7 +116,7 @@ skip-magic-trailing-comma = false
 line-ending = "lf"
 
 [tool.mypy]
-python_version = "3.8"
+python_version = "3.10"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = false
@@ -124,15 +128,15 @@ warn_unused_ignores = true
 warn_no_return = true
 ignore_missing_imports = true
 exclude = [
-    ".venv",
-    "venv",
-    "env",
-    "__pycache__",
-    ".mypy_cache",
-    "dist",
-    "build",
-    "*.egg-info",
-    "node_modules",
+    "^\\.venv/",
+    "^venv/",
+    "^env/",
+    "^__pycache__/",
+    "^\\.mypy_cache/",
+    "^dist/",
+    "^build/",
+    "^.*\\.egg-info/",
+    "^node_modules/",
 ]
 
 [tool.pytest.ini_options]

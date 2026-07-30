@@ -1,9 +1,9 @@
 import asyncio
 import json
 import logging
-from pathlib import Path
-from typing import Dict, Any, List, Optional
 from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 from .context_manager import ContextLog
 from .llm_router import LLMRouter, LLMSettingsLockedError
@@ -110,10 +110,10 @@ class ClioAgent:
         self.config = config
         self.llm_router = llm_router
         self.name = config.agent_name
-        
+
         # Import ToolRegistry here to avoid circular imports
         from tools.tool_registry import ToolRegistry
-        
+
         # Determine the context persist path
         project_root = Path(__file__).parent.parent
         context_persist_path = project_root / "data" / "context.json"
@@ -153,12 +153,12 @@ class ClioAgent:
         self.autonomous_mode = config.autonomous_mode
         self.thinking_interval = config.thinking_interval
         self._autonomous_task: Optional[asyncio.Task] = None
-        
+
         self.response_callbacks = []
         self.current_task = None
         self._cached_prompt = ""
         self._cached_tools = ""
-    
+
     def register_response_callback(self, callback: Callable):
         """
         Register a callback for sending responses to platforms.
@@ -167,7 +167,7 @@ class ClioAgent:
             callback: Async function that takes (message: str) as argument
         """
         self.response_callbacks.append(callback)
-    
+
     async def _compress_context(self, entries_to_compress: List) -> str:
         """
         Compress old context entries using LLM.
@@ -181,22 +181,22 @@ class ClioAgent:
         try:
             # Create summary request
             entries_text = "\n".join([str(e) for e in entries_to_compress[-50:]])  # Last 50 entries
-            
+
             messages = [
                 {"role": "system", "content": "Summarize the following agent activity log concisely, preserving key information:"},
                 {"role": "user", "content": entries_text}
             ]
-            
+
             summary = await self.llm_router.chat(
                 messages,
                 max_tokens=500
             )
-            
+
             return summary[:2000]  # Limit summary length
-        
+
         except Exception as e:
             return f"Compression failed: {str(e)}"
-    
+
     async def initialize(self):
         """Initialize the agent and add startup message to context."""
         # Load persisted context from file if available
@@ -205,7 +205,7 @@ class ClioAgent:
             await self.context_log.add_system_message(
                 f"Context restored from previous session ({self.context_log.get_line_count()} entries)"
             )
-        
+
         await self.context_log.add_system_message(
             f"{self.name} initialized at {datetime.now().isoformat()}"
         )
@@ -277,7 +277,7 @@ class ClioAgent:
             except asyncio.CancelledError:
                 pass
         self._autonomous_task = None
-    
+
     def _parse_tool_calls(self, response: str) -> List[Dict[str, Any]]:
         """
         Parse tool call(s) from an LLM response.
@@ -668,15 +668,15 @@ class ClioAgent:
 
         self.is_running = False
         await self.context_log.add_system_message("Autonomous loop stopped")
-    
+
     async def send_response(self, message: str):
         """Send a response through all registered callbacks."""
         for callback in self.response_callbacks:
             try:
                 await callback(message)
-            except Exception as e:
+            except Exception:
                 pass  # Ignore individual callback failures
-    
+
     def stop(self):
         """Stop the autonomous loop."""
         self.is_running = False
@@ -688,7 +688,7 @@ class ClioAgent:
     def save_context_sync(self):
         """Synchronous context flush for signal handlers / atexit (no event loop)."""
         self.context_log.save()
-    
+
     def persist_settings(self) -> None:
         """
         Persist the agent's current in-memory settings to the .env file so that
@@ -717,7 +717,7 @@ class ClioAgent:
             "CONTEXT_LOG_MAX_LINES": str(self.context_log.max_lines),
             "AGENT_NAME": self.name or "Clio-Agent-2",
         })
-    
+
     async def get_status(self) -> Dict[str, Any]:
         """Get current agent status."""
         return {
@@ -728,7 +728,7 @@ class ClioAgent:
             "available_tools": self.tool_registry.list_tools(),
             "available_providers": self.llm_router.get_available_providers(),
         }
-    
+
     async def execute_command(self, command: str, args: List[str]) -> str:
         """
         Execute a slash command.
@@ -797,7 +797,7 @@ class ClioAgent:
 /help - Show this help message
 /help all - Show only user commands
 /exit or /quit - Exit the CLI"""
-        
+
         elif command == "llm_providers":
             providers = self.llm_router.get_available_providers()
             default = getattr(self.llm_router, "default_provider", "openai")
@@ -808,13 +808,13 @@ class ClioAgent:
                 marker = " (default)" if p == default else ""
                 output += f"  - {p}{marker}\n"
             return output
-        
+
         elif command == "llm_models":
             # Check if any providers are configured before making API calls
             available_providers = self.llm_router.get_available_providers()
             if not available_providers:
                 return "No LLM providers configured. Please set up your API keys first using /reconfigure or by editing config/.env"
-            
+
             provider = args[0].lower() if args else None
             if provider:
                 models = await self.llm_router.list_all_models()
@@ -842,13 +842,13 @@ class ClioAgent:
                     if len(model_list) > 5:
                         output += f"  ... and {len(model_list) - 5} more\n"
                 return output
-        
+
         elif command == "llm_search":
             # Check if any providers are configured before making API calls
             available_providers = self.llm_router.get_available_providers()
             if not available_providers:
                 return "No LLM providers configured. Please set up your API keys first using /reconfigure or by editing config/.env"
-            
+
             if not args:
                 return "Usage: /llm_search <query>\nExample: /llm_search gpt-4"
             query = " ".join(args)
@@ -861,7 +861,7 @@ class ClioAgent:
             if len(results) > 20:
                 output += f"  ... and {len(results) - 20} more\n"
             return output
-        
+
         elif command == "llm_default":
             if not args:
                 current_provider = getattr(self.llm_router, "default_provider", "openai")
@@ -876,7 +876,7 @@ class ClioAgent:
                     f"Use /llm_unlock to allow changes, then retry.\n\n"
                     f"Usage: /llm_default <provider> [model]"
                 )
-            
+
             new_provider = args[0].lower()
             available = self.llm_router.get_available_providers()
 
@@ -889,7 +889,7 @@ class ClioAgent:
                     f"Add a custom 'Other' provider (any OpenAI-compatible "
                     f"endpoint) via /configure or /reconfigure."
                 )
-            
+
             # All LLM-setting writes go through the guardrail setter, which
             # refuses the change while the settings are locked.
             try:
@@ -906,7 +906,7 @@ class ClioAgent:
                 result = f"LLM updated:\n  Provider: {new_provider}\n  Model: {new_model}"
             else:
                 result = f"Provider set to: {new_provider}\nCurrent model: {getattr(self.llm_router, 'current_model', '') or '(not set)'}"
-            
+
             # Persist so the change survives a restart
             self.persist_settings()
             return result
@@ -937,29 +937,29 @@ class ClioAgent:
             for key, configured in api_status.items():
                 status = "✅ Configured" if configured else "❌ Not configured"
                 output += f"  {key}: {status}\n"
-            
+
             # Count configured keys
             configured_count = sum(1 for v in api_status.values() if v)
             output += f"\nTotal: {configured_count}/{len(api_status)} keys configured"
             return output
-        
+
         # Reconfigure command - on bot interfaces this is a non-interactive
         # reconfiguration that persists the changes; the CLI has its own
         # interactive wizard (cli.py::_handle_reconfigure).
         elif command == "reconfigure":
             return await self._handle_reconfigure(args)
-        
+
         # Settings command - user-facing
         elif command == "settings":
             config_dict = self.config.to_dict()
             settings_text = "Current Settings:\n\n"
             for key, value in config_dict.items():
                 settings_text += f"  {key}: {value}\n"
-            
+
             settings_text += "\n💡 Tip: Use /config <setting> <value> to change settings"
             settings_text += "\n     Use /llm_default <provider> [model] to change LLM settings"
             return settings_text
-        
+
         # Config command - user-facing
         elif command == "config":
             if not args:
@@ -979,13 +979,13 @@ Examples:
 
 💡 For LLM settings, consider using:
   /llm_default <provider> [model] - More convenient for LLM configuration"""
-            
+
             if len(args) < 2:
                 return "Please provide both setting name and value. Use /config without arguments to see usage."
-            
+
             setting = args[0].lower()
             value = " ".join(args[1:])
-            
+
             if setting == "provider":
                 available = self.llm_router.get_available_providers()
                 # Compare case-insensitively: set_llm_provider normalises the
@@ -1006,21 +1006,21 @@ Examples:
                 except LLMSettingsLockedError as e:
                     return f"🔒 {e}"
                 result = f"✅ Model set to: {value}"
-            
+
             elif setting == "autonomous_mode":
                 self.autonomous_mode = value.lower() in ("true", "1", "yes", "on")
                 result = f"✅ Autonomous mode: {'enabled' if self.autonomous_mode else 'disabled'}"
-            
+
             elif setting == "thinking_interval":
                 try:
                     self.thinking_interval = float(value)
                     result = f"✅ Thinking interval set to: {value}s"
                 except ValueError:
                     result = "❌ Invalid value. Please provide a number."
-            
+
             else:
                 result = f"❌ Unknown setting: {setting}\nUse /config without arguments to see available settings."
-            
+
             # Persist valid setting changes so they survive a restart
             if not result.startswith("❌"):
                 self.persist_settings()
@@ -1035,23 +1035,23 @@ Examples:
                     else:
                         await self.stop_autonomous_loop()
             return result
-        
+
         # Agent-internal commands (still available but marked as internal)
         elif command == "status":
             status = await self.get_status()
-            return f"Agent Status:\n" + "\n".join(f"  {k}: {v}" for k, v in status.items())
-        
+            return "Agent Status:\n" + "\n".join(f"  {k}: {v}" for k, v in status.items())
+
         elif command == "models":
             # Legacy command - redirect to llm_models
             return "💡 This command is deprecated. Use /llm_models instead for better formatting."
-        
+
         elif command == "search_models":
             # Legacy command - redirect to llm_search
             # Check if any providers are configured before making API calls
             available_providers = self.llm_router.get_available_providers()
             if not available_providers:
                 return "No LLM providers configured. Please set up your API keys first using /reconfigure or by editing config/.env"
-            
+
             if not args:
                 return "💡 This command is deprecated. Use /llm_search <query> instead."
             query = " ".join(args)
@@ -1059,7 +1059,7 @@ Examples:
             if not results:
                 return f"No models found matching '{query}'"
             return "\n".join(f"{r['provider']}/{r['model']}" for r in results)
-        
+
         elif command == "context":
             try:
                 count = int(args[0]) if args else 20
@@ -1067,7 +1067,7 @@ Examples:
                 return "❌ Invalid count. Please provide a number, e.g. /context 20"
             entries = self.context_log.get_recent_entries(count)
             return "Recent Context:\n" + "\n".join(str(e) for e in entries)
-        
+
         elif command == "clear_context":
             self.context_log.clear()
             return (
@@ -1080,18 +1080,18 @@ Examples:
             if restored:
                 return "✅ Context restored from the last backup."
             return "⚠️ No backup found — nothing to restore."
-        
+
         elif command == "think":
             thought = " ".join(args)
             if thought:
                 await self.context_log.add_thinking(thought)
                 return f"✅ Thought recorded: {thought}"
             return "⚠️ No thought provided"
-        
+
         elif command == "stop":
             self.stop()
             return "🛑 Stopping autonomous mode..."
-        
+
         elif command == "start":
             started = await self.start_autonomous_loop()
             if started:
@@ -1116,13 +1116,13 @@ Examples:
                 "⚠️ Could not resume: no LLM model is configured. Set one with "
                 "/llm_default <provider> <model>."
             )
-        
+
         elif command == "exit" or command == "quit":
             return "__EXIT__"
-        
+
         else:
             return f"❌ Unknown command: /{command}\nUse /help for available commands."
-    
+
     async def _handle_reconfigure(self, args: List[str]) -> str:
         """
         Non-interactive reconfiguration used by bot interfaces (Telegram,
@@ -1147,9 +1147,9 @@ Examples:
             lines.append("")
             lines.append("💡 Changes are saved to config/.env and config/config.yaml and persist after restart.")
             return "\n".join(lines)
-        
+
         setting = args[0].lower()
-        
+
         if setting in ("provider", "model"):
             if len(args) < 2:
                 return f"❌ Please provide a value: /reconfigure {setting} <value>"
@@ -1161,7 +1161,7 @@ Examples:
                 )
         else:
             result = await self.execute_command("config", args)
-        
+
         # execute_command already persists valid changes; persist again to be safe
         self.persist_settings()
         return f"{result}\n\n💡 Saved. Changes persist after restart."

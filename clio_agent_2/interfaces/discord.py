@@ -14,9 +14,8 @@ from typing import Optional
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import discord
-from discord.ext import commands, tasks
-
-from core.agent import ClioAgent, MESSAGE_PROCESS_TIMEOUT
+from core.agent import MESSAGE_PROCESS_TIMEOUT, ClioAgent
+from discord.ext import commands
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +31,7 @@ class DiscordInterface:
     - Autonomous mode notifications
     - Rich embed formatting
     """
-    
+
     def __init__(self, agent: ClioAgent, bot_token: str):
         """
         Initialize the Discord interface.
@@ -50,7 +49,7 @@ class DiscordInterface:
         # ``on_ready`` event can fire multiple times (every reconnect/resume),
         # so we guard registration to avoid ``CommandAlreadyRegistered`` errors.
         self._commands_registered = False
-    
+
     async def send_message(self, message: str, channel: discord.TextChannel = None):
         """
         Send a message through the Discord bot.
@@ -61,18 +60,18 @@ class DiscordInterface:
         """
         if self.bot is None:
             return
-        
+
         # Split long messages
         max_length = 2000
         chunks = [message[i:i+max_length] for i in range(0, len(message), max_length)]
-        
+
         for chunk in chunks:
             try:
                 if channel:
                     await channel.send(chunk)
             except Exception as e:
                 print(f"Error sending Discord message: {e}")
-    
+
     async def handle_message(self, message: discord.Message):
         """
         Handle incoming messages.
@@ -83,13 +82,13 @@ class DiscordInterface:
         # Ignore bot's own messages
         if message.author == self.bot.user:
             return
-        
+
         # Ignore messages without content
         if not message.content:
             return
-        
+
         user_message = message.content
-        
+
         # Check if bot is mentioned (for server messages)
         if isinstance(message.channel, discord.TextChannel):
             if not self.bot.user.mentioned_in(message):
@@ -99,7 +98,7 @@ class DiscordInterface:
             user_message = re.sub(
                 rf"<@!?{self.bot.user.id}>", "", user_message
             ).strip()
-        
+
         # Store guild session
         guild_id = message.guild.id if message.guild else "dm"
         if guild_id not in self.guild_sessions:
@@ -107,7 +106,7 @@ class DiscordInterface:
                 "channel": message.channel,
                 "last_active": asyncio.get_running_loop().time(),
             }
-        
+
         # Show typing indicator
         async with message.channel.typing():
             try:
@@ -143,11 +142,11 @@ class DiscordInterface:
                 # internal errors) are sent.
                 if response:
                     await self.send_message(response, message.channel)
-            
+
             except Exception as e:
                 error_msg = f"⚠️ Error: {str(e)}"
                 await message.channel.send(error_msg)
-    
+
     async def setup_slash_commands(self):
         """
         Register slash commands on the command tree.
@@ -171,26 +170,26 @@ class DiscordInterface:
                 if isinstance(value, list):
                     value = ", ".join(str(v) for v in value[:5])
                 status_text += f"• **{key}**: `{value}`\n"
-            
+
             embed = discord.Embed(
                 title=self.agent.name,
                 description=status_text,
                 color=discord.Color.green()
             )
             await interaction.followup.send(embed=embed)
-        
+
         @self.tree.command(name="help", description="Show available commands")
         async def help_command(interaction: discord.Interaction):
             await interaction.response.defer()
             help_text = await self.agent.execute_command("help", [])
-            
+
             embed = discord.Embed(
                 title="Help - Available Commands",
                 description=f"```\n{help_text}\n```",
                 color=discord.Color.blue()
             )
             await interaction.followup.send(embed=embed)
-        
+
         @self.tree.command(name="settings", description="Show current settings")
         async def settings_command(interaction: discord.Interaction):
             await interaction.response.defer()
@@ -198,14 +197,14 @@ class DiscordInterface:
             settings_text = "⚙️ **Settings:**\n\n"
             for key, value in config_dict.items():
                 settings_text += f"• **{key}**: `{value}`\n"
-            
+
             embed = discord.Embed(
                 title="Agent Settings",
                 description=settings_text,
                 color=discord.Color.gold()
             )
             await interaction.followup.send(embed=embed)
-        
+
         @self.tree.command(name="models", description="List available models")
         async def models_command(interaction: discord.Interaction):
             await interaction.response.defer()
@@ -219,37 +218,37 @@ class DiscordInterface:
                 )
                 await interaction.followup.send(embed=embed)
                 return
-            
+
             models = await self.agent.llm_router.list_all_models()
             models_text = "📚 **Available Models:**\n\n"
             for provider, model_list in models.items():
                 models_text += f"\n**{provider.upper()}:**\n"
                 for model in model_list[:10]:
                     models_text += f"• `{model}`\n"
-            
+
             embed = discord.Embed(
                 title="Available LLM Models",
                 description=models_text,
                 color=discord.Color.purple()
             )
             await interaction.followup.send(embed=embed)
-        
+
         @self.tree.command(name="think", description="Record a thought")
         @discord.app_commands.describe(thought="The thought to record")
         async def think_command(interaction: discord.Interaction, thought: str):
             await interaction.response.defer()
             result = await self.agent.execute_command("think", [thought])
             await interaction.followup.send(result)
-        
+
         @self.tree.command(name="context", description="Show recent context entries")
         @discord.app_commands.describe(count="Number of entries to show (default: 20)")
         async def context_command(interaction: discord.Interaction, count: int = 20):
             await interaction.response.defer()
             result = await self.agent.execute_command("context", [str(count)])
-            
+
             if len(result) > 2000:
                 result = result[:1997] + "..."
-            
+
             embed = discord.Embed(
                 title="Recent Context",
                 description=f"```\n{result}\n```",
@@ -273,7 +272,7 @@ class DiscordInterface:
             color=discord.Color.purple()
         )
         embed.set_footer(text=self.agent.name)
-        
+
         # Send to all active guild channels. Iterate over a snapshot: the
         # ``await channel.send(...)`` below yields control back to the event
         # loop, which can let ``handle_message`` register a new guild session
@@ -290,7 +289,7 @@ class DiscordInterface:
                         guild_id,
                         e,
                     )
-    
+
     async def on_ready(self):
         """
         Handle the bot ready event.
@@ -310,23 +309,23 @@ class DiscordInterface:
             await self.tree.sync()
         except Exception as e:
             logger.error("Failed to sync Discord slash commands: %s", e)
-    
+
     async def start(self):
         """Start the Discord bot."""
         # Register callback for agent responses
         self.agent.register_response_callback(self.handle_autonomous_message)
-        
+
         # Initialize agent
         await self.agent.initialize()
         started = await self.agent.ensure_autonomous_loop()
         if not started:
             print("⚠️  Continuous thinking could not start because no LLM model is configured.")
-        
+
         # Create bot with intents
         intents = discord.Intents.default()
         intents.message_content = True
         intents.messages = True
-        
+
         self.bot = commands.Bot(command_prefix="!", intents=intents)
         self.tree = self.bot.tree
 
@@ -340,16 +339,16 @@ class DiscordInterface:
         @self.bot.event
         async def on_ready():
             await self.on_ready()
-        
+
         @self.bot.event
         async def on_message(message):
             await self.handle_message(message)
             await self.bot.process_commands(message)
-        
+
         # Start bot
-        print(f"🎮 Discord bot (Beta) starting...")
+        print("🎮 Discord bot (Beta) starting...")
         await self.bot.start(self.bot_token)
-    
+
     async def stop(self):
         """Stop the Discord bot."""
         await self.agent.stop_autonomous_loop()

@@ -3,25 +3,25 @@ Tools module for Clio-Agent-2.
 Provides file editing, web search, and file search capabilities.
 """
 
-import os
 import asyncio
 import logging
+import os
 from pathlib import Path
-from typing import Dict, Any, List, Optional
-import aiohttp
+from typing import Any, Dict, List, Optional
 
+import aiohttp
 
 logger = logging.getLogger(__name__)
 
 
 class ToolResult:
     """Represents the result of a tool execution."""
-    
+
     def __init__(self, success: bool, output: str, error: Optional[str] = None):
         self.success = success
         self.output = output
         self.error = error
-    
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "success": self.success,
@@ -32,7 +32,7 @@ class ToolResult:
 
 class FileEditTool:
     """Tool for reading, writing, and modifying local files."""
-    
+
     @staticmethod
     async def read_file(
         filepath: Optional[str] = None,
@@ -68,20 +68,20 @@ class FileEditTool:
             if not resolved.is_file():
                 return ToolResult(False, "", f"Not a file: {target}")
 
-            with open(resolved, 'r', encoding='utf-8') as f:
+            with open(resolved, encoding='utf-8') as f:
                 lines = []
                 for i, line in enumerate(f):
                     if i >= max_lines:
                         lines.append(f"... ({max_lines} lines shown, file continues)")
                         break
                     lines.append(line.rstrip('\n'))
-                
+
                 content = '\n'.join(lines)
                 return ToolResult(True, content)
-        
+
         except Exception as e:
             return ToolResult(False, "", f"Error reading file: {str(e)}")
-    
+
     @staticmethod
     async def write_file(
         filepath: Optional[str] = None,
@@ -118,10 +118,10 @@ class FileEditTool:
                 f.write(content)
 
             return ToolResult(True, f"Successfully wrote {len(content)} characters to {target}")
-        
+
         except Exception as e:
             return ToolResult(False, "", f"Error writing file: {str(e)}")
-    
+
     @staticmethod
     async def append_file(
         filepath: Optional[str] = None,
@@ -155,10 +155,10 @@ class FileEditTool:
                 f.write(content)
 
             return ToolResult(True, f"Successfully appended content to {target}")
-        
+
         except Exception as e:
             return ToolResult(False, "", f"Error appending to file: {str(e)}")
-    
+
     @staticmethod
     async def edit_file(
         filepath: Optional[str] = None,
@@ -193,7 +193,7 @@ class FileEditTool:
             if not resolved.exists():
                 return ToolResult(False, "", f"File not found: {target}")
 
-            with open(resolved, 'r', encoding='utf-8') as f:
+            with open(resolved, encoding='utf-8') as f:
                 content = f.read()
 
             # Require EXACTLY ONE match. Replacing only the first occurrence
@@ -202,7 +202,7 @@ class FileEditTool:
             # tool must refuse, so verify uniqueness up front.
             occurrences = content.count(old_str)
             if occurrences == 0:
-                return ToolResult(False, "", f"String to replace not found in file")
+                return ToolResult(False, "", "String to replace not found in file")
             if occurrences > 1:
                 return ToolResult(
                     False,
@@ -217,14 +217,14 @@ class FileEditTool:
                 f.write(new_content)
 
             return ToolResult(True, f"Successfully replaced text in {target}")
-        
+
         except Exception as e:
             return ToolResult(False, "", f"Error editing file: {str(e)}")
 
 
 class WebSearchTool:
     """Tool for performing internet searches."""
-    
+
     def __init__(self, search_api_key: Optional[str] = None):
         """
         Initialize the web search tool.
@@ -233,7 +233,7 @@ class WebSearchTool:
             search_api_key: API key for search service (optional, uses basic scraping if not provided)
         """
         self.search_api_key = search_api_key
-    
+
     async def search(self, query: str, num_results: int = 5) -> ToolResult:
         """
         Perform a web search.
@@ -252,10 +252,10 @@ class WebSearchTool:
             else:
                 # Basic search without API (limited functionality)
                 return await self._basic_search(query, num_results)
-        
+
         except Exception as e:
             return ToolResult(False, "", f"Search error: {str(e)}")
-    
+
     async def _api_search(self, query: str, num_results: int) -> ToolResult:
         """Perform search using an API."""
         # Example using Serper API (you can configure your preferred search API)
@@ -263,32 +263,31 @@ class WebSearchTool:
             "X-API-KEY": self.search_api_key,
             "Content-Type": "application/json",
         }
-        
+
         payload = {
             "q": query,
             "num": num_results,
         }
-        
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                "https://google.serper.dev/search",
-                headers=headers,
-                json=payload
-            ) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    results = []
-                    
-                    for organic in data.get("organic", [])[:num_results]:
-                        results.append(f"Title: {organic.get('title', 'N/A')}")
-                        results.append(f"URL: {organic.get('link', 'N/A')}")
-                        results.append(f"Snippet: {organic.get('snippet', 'N/A')}")
-                        results.append("")
-                    
-                    return ToolResult(True, "\n".join(results))
-                else:
-                    return ToolResult(False, "", f"Search API returned status {response.status}")
-    
+
+        async with aiohttp.ClientSession() as session, session.post(
+            "https://google.serper.dev/search",
+            headers=headers,
+            json=payload
+        ) as response:
+            if response.status == 200:
+                data = await response.json()
+                results = []
+
+                for organic in data.get("organic", [])[:num_results]:
+                    results.append(f"Title: {organic.get('title', 'N/A')}")
+                    results.append(f"URL: {organic.get('link', 'N/A')}")
+                    results.append(f"Snippet: {organic.get('snippet', 'N/A')}")
+                    results.append("")
+
+                return ToolResult(True, "\n".join(results))
+            else:
+                return ToolResult(False, "", f"Search API returned status {response.status}")
+
     async def _basic_search(self, query: str, num_results: int) -> ToolResult:
         """Basic search without API - returns a message about configuration."""
         return ToolResult(
@@ -298,7 +297,7 @@ class WebSearchTool:
             f"Query received: {query}\n"
             f"Supported APIs: Serper, Bing, etc."
         )
-    
+
     async def fetch_url(self, url: str) -> ToolResult:
         """
         Fetch content from a URL.
@@ -313,7 +312,7 @@ class WebSearchTool:
             headers = {
                 "User-Agent": "Mozilla/5.0 (compatible; Clio-Agent-2/1.0)"
             }
-            
+
             # FIX: use an explicit ClientTimeout (an int only works by accident),
             # and cap the download with ``read()`` so a huge page can never OOM
             # the process. We truncate *before* the full body is in memory.
@@ -331,14 +330,14 @@ class WebSearchTool:
                         )
 
                     return ToolResult(True, f"Content from {url}:\n\n{text_content}")
-        
+
         except Exception as e:
             return ToolResult(False, "", f"Error fetching URL: {str(e)}")
 
 
 class FileSearchTool:
     """Tool for searching through local directories and files."""
-    
+
     @staticmethod
     async def search_files(
         directory: str,
@@ -360,36 +359,36 @@ class FileSearchTool:
         """
         try:
             path = Path(directory).expanduser().resolve()
-            
+
             if not path.exists():
                 return ToolResult(False, "", f"Directory not found: {directory}")
-            
+
             if not path.is_dir():
                 return ToolResult(False, "", f"Not a directory: {directory}")
-            
+
             results = []
-            
+
             if recursive:
                 files = path.rglob(pattern)
             else:
                 files = path.glob(pattern)
-            
+
             for i, file_path in enumerate(files):
                 if i >= max_results:
                     results.append(f"... ({max_results} results shown)")
                     break
-                
+
                 rel_path = file_path.relative_to(path)
                 results.append(str(rel_path))
-            
+
             if not results:
                 return ToolResult(True, f"No files matching '{pattern}' found in {directory}")
-            
+
             return ToolResult(True, f"Found {len(results)} files:\n" + "\n".join(results))
-        
+
         except Exception as e:
             return ToolResult(False, "", f"Error searching files: {str(e)}")
-    
+
     @staticmethod
     async def search_content(
         directory: str,
@@ -413,49 +412,49 @@ class FileSearchTool:
         """
         try:
             path = Path(directory).expanduser().resolve()
-            
+
             if not path.exists():
                 return ToolResult(False, "", f"Directory not found: {directory}")
-            
+
             results = []
             files_searched = 0
-            
+
             for file_path in path.rglob(file_pattern):
                 if file_path.is_file() and len(results) < max_results:
                     files_searched += 1
-                    
+
                     try:
-                        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                        with open(file_path, encoding='utf-8', errors='ignore') as f:
                             for line_num, line in enumerate(f, 1):
                                 search_line = line if case_sensitive else line.lower()
                                 search_query = search_term if case_sensitive else search_term.lower()
-                                
+
                                 if search_query in search_line:
                                     rel_path = file_path.relative_to(path)
                                     results.append(
                                         f"{rel_path}:{line_num}: {line.strip()[:100]}"
                                     )
-                                    
+
                                     if len(results) >= max_results:
                                         break
                     except (PermissionError, UnicodeDecodeError):
                         continue
-            
+
             if not results:
                 return ToolResult(
                     True,
                     f"No content matching '{search_term}' found in {files_searched} files"
                 )
-            
+
             return ToolResult(
                 True,
                 f"Found {len(results)} matches for '{search_term}' in {files_searched} files:\n"
                 + "\n".join(results)
             )
-        
+
         except Exception as e:
             return ToolResult(False, "", f"Error searching content: {str(e)}")
-    
+
     @staticmethod
     async def list_directory(
         directory: Optional[str] = None,
@@ -671,7 +670,7 @@ class ShellCommandTool:
 
 class ThinkingTool:
     """Tool for internal monologue and reasoning."""
-    
+
     def __init__(self, context_log):
         """
         Initialize the thinking tool.
@@ -680,7 +679,7 @@ class ThinkingTool:
             context_log: ContextLog instance to record thoughts
         """
         self.context_log = context_log
-    
+
     async def think(
         self,
         thought: Optional[str] = None,
@@ -805,7 +804,7 @@ class SayTool:
 
 class ToolRegistry:
     """Registry for managing available tools."""
-    
+
     def __init__(self, context_log=None, search_api_key=None, response_sink=None):
         """
         Initialize the tool registry.
@@ -843,7 +842,7 @@ class ToolRegistry:
         search_tool = WebSearchTool(self.search_api_key)
         self.register_tool("web_search", search_tool.search)
         self.register_tool("fetch_url", search_tool.fetch_url)
-        
+
         # File search tools
         self.register_tool("search_files", FileSearchTool.search_files)
         self.register_tool("search_content", FileSearchTool.search_content)
@@ -853,7 +852,7 @@ class ToolRegistry:
         self.register_tool("shell_command", ShellCommandTool.run_command)
         self.register_tool("run_shell_command", ShellCommandTool.run_command)
         self.register_tool("execute_shell_command", ShellCommandTool.run_command)
-        
+
         # Thinking tool
         if self.context_log:
             thinking_tool = ThinkingTool(self.context_log)
@@ -865,7 +864,7 @@ class ToolRegistry:
         # sink. This makes it behave exactly like the other tools.
         say_tool = SayTool(self.context_log, self.response_sink)
         self.register_tool("say", say_tool.say)
-    
+
     def register_tool(self, name: str, func: callable):
         """
         Register a new tool.
@@ -875,15 +874,15 @@ class ToolRegistry:
             func: Tool function (async)
         """
         self.tools[name] = func
-    
+
     def get_tool(self, name: str) -> Optional[callable]:
         """Get a tool by name."""
         return self.tools.get(name)
-    
+
     def list_tools(self) -> List[str]:
         """List all registered tool names."""
         return list(self.tools.keys())
-    
+
     async def execute_tool(
         self,
         tool_name: str,
@@ -900,14 +899,14 @@ class ToolRegistry:
             ToolResult from the tool execution
         """
         tool = self.get_tool(tool_name)
-        
+
         if not tool:
             return ToolResult(False, "", f"Unknown tool: {tool_name}")
-        
+
         try:
             # Execute the tool
             result = await tool(**arguments)
-            
+
             # Log the execution if context_log is available
             if self.context_log:
                 await self.context_log.add_tool_execution(
@@ -915,9 +914,9 @@ class ToolRegistry:
                     arguments,
                     result.output if result.success else result.error
                 )
-            
+
             return result
-        
+
         except Exception as e:
             error_msg = f"Tool execution error: {str(e)}"
             if self.context_log:
