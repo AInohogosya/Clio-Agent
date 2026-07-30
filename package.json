@@ -1,0 +1,22 @@
+{
+  "name": "clio-agent-2-whatsapp",
+  "version": "1.0.0",
+  "description": "WhatsApp Business API service for Clio-Agent-2",
+  "main": "whatsapp_service.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "whatsapp": "node whatsapp_service.js"
+  },
+  "keywords": [
+    "whatsapp",
+    "bot",
+    "clio-agent",
+    "ai-agent"
+  ],
+  "author": "Clio-Agent-2 Contributors",
+  "license": "MIT",
+  "dependencies": {
+    "@whiskeysockets/baileys": "^7.0.0-rc13",
+    "qrcode-terminal": "^0.12.0"
+  }
+}

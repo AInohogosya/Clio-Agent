@@ -1,0 +1,33 @@
+# Clio-Agent-2 Dependencies - Complete Set
+# This file contains all required dependencies for the AI agent
+
+# Core LLM APIs
+openai>=1.0.0
+
+# HTTP and Async Support
+requests>=2.31.0
+aiohttp>=3.9.0
+httpx>=0.25.0
+
+# Environment Configuration
+python-dotenv>=1.0.0
+
+# Tokenization (for OpenAI models)
+tiktoken>=0.5.0
+
+# CLI Interface - Rich Terminal Output
+rich>=13.0.0
+prompt-toolkit>=3.0.0
+
+# Bot Integrations
+python-telegram-bot>=20.0
+discord.py>=2.0.0
+pywa>=1.0.0
+
+# Optional LLM Providers (uncomment if needed)
+# google-generativeai>=0.3.0
+# anthropic>=0.18.0
+
+# Testing (optional - for development)
+# pytest>=7.4.0
+# pytest-asyncio>=0.21.0

@@ -2,88 +2,103 @@
 
 ## Supported Versions
 
-We actively maintain and provide security updates for the following versions:
+We release security patches for the following versions:
 
 | Version | Supported          |
 | ------- | ------------------ |
-| 3.x     | ✅ Yes             |
-| 2.x     | ❌ No              |
-| 1.x     | ❌ No              |
+| 1.x.x   | :white_check_mark: |
+| < 1.0   | :x:                |
 
 ## Reporting a Vulnerability
 
-We take security seriously. If you discover a security vulnerability, please report it **privately** to:
+**Please do not report security vulnerabilities through public GitHub issues.**
 
-**Email**: security@clio-project.org
+Instead, please report them via email to **security@clio-agent-2.example.com** (replace with actual contact).
 
-Please include:
-- Description of the vulnerability
-- Steps to reproduce
-- Potential impact
-- Any suggested fixes
+You should receive a response within 48 hours. If for some reason you do not, please follow up via email to ensure we received your original message.
 
-We will:
-1. Acknowledge receipt within 48 hours
-2. Provide a timeline for fix within 7 days
-3. Keep you informed of progress
-4. Credit you in the security advisory (if desired)
+Please include the following information in your report:
 
-## Security Considerations
+- Type of issue (e.g., buffer overflow, SQL injection, cross-site scripting, etc.)
+- Full paths of source file(s) related to the manifestation of the issue
+- The location of the affected source code (tag/branch/commit or direct URL)
+- Any special configuration required to reproduce the issue
+- Step-by-step instructions to reproduce the issue
+- Proof-of-concept or exploit code (if possible)
+- Impact of the issue, including how an attacker might exploit it
 
-### Command Execution
-Clio Agent executes arbitrary shell commands on your machine. This is by design — it's an automation agent. **Only run it in environments you trust and control.**
+## Security Considerations for Users
 
-### API Keys
-- API keys are stored in `config.yaml` (git-ignored by default)
-- Never commit `config.yaml` to version control
-- Use environment variables for CI/CD and production deployments
-- Rotate keys regularly
+Clio-Agent-2 is a powerful autonomous agent. Please understand these security implications before running it:
 
-### Network Access
-- The agent makes outbound HTTPS requests to AI provider APIs
-- No inbound network listeners by default
-- Telegram/Discord bots use long-polling/webhooks (outbound only)
+### 1. Shell Command Execution
 
-### Sandbox Mode
-Enable sandbox mode in `config.yaml`:
-```yaml
-security:
-  enable_sandbox: true
-```
+The agent has a `shell_command` tool that can execute **arbitrary shell commands** with the privileges of the user running the agent.
 
-### Code Execution
-The agent can write and execute code. Treat it like you would any developer with shell access.
+- **No sandbox**, **no allow-list**, **no confirmation prompt**
+- Combined with web access and autonomous mode, a poorly-worded task or malicious web content could cause destructive actions
+- **Mitigation**: Run in a dedicated/least-privilege account, container, or VM you don't mind wiping
 
-## Security Best Practices
+### 2. Autonomous Mode
 
-1. **Run in a container** for isolation
-2. **Use dedicated API keys** with minimal permissions
-3. **Monitor agent activity** via the real-time terminal log
-4. **Restrict filesystem access** using OS permissions
-5. **Enable command confirmation** for sensitive operations:
-   ```yaml
-   security:
-     enable_confirmation_prompts: true
-   ```
+Autonomous mode is **enabled by default**. The agent runs a background loop that:
 
-## Vulnerability Disclosure Timeline
+- Calls the LLM every few seconds (configurable via `THINKING_INTERVAL`)
+- Can take actions and message you **without any prompt**
+- **Costs money and API quota** on every cycle
 
-| Phase | Timeline |
-|-------|----------|
-| Acknowledgment | 48 hours |
-| Initial assessment | 7 days |
-| Fix development | 30 days (critical), 90 days (non-critical) |
-| Public disclosure | After fix released + 14 days |
+Disable with `AUTONOMOUS_MODE=false` in `.env` or `/stop` in the CLI.
 
-## Security Updates
+### 3. API Keys and Secrets
 
-Security updates are released as patch versions (e.g., 3.0.1). Subscribe to:
-- [GitHub Security Advisories](https://github.com/clio-project/Clio-Agent-1/security/advisories)
-- [Release notifications](https://github.com/clio-project/Clio-Agent-1/releases)
+- All API keys and tokens are stored in plaintext in `clio_agent_2/config/.env`
+- The `.env` file is **gitignored** by default
+- Never commit your `.env` file
+- Rotate keys if you suspect they were exposed
 
-## Scope
+### 4. Prompt Injection
 
-This policy covers the Clio Agent 1 codebase and official Docker images. It does not cover:
-- Third-party AI provider APIs
-- User-written code executed by the agent
-- Operating system vulnerabilities
+Because the agent can:
+
+- Fetch web pages (`fetch_url`, `web_search`)
+- Execute shell commands (`shell_command`)
+- Run autonomously
+
+...malicious content it encounters could attempt to steer its behavior. The **LLM Settings Lock** (`LLM_SETTINGS_LOCKED=true`) prevents unauthorized model/provider changes, but does not restrict tool use.
+
+### 5. Data Handling
+
+- Conversation context is persisted to disk (`context_log.json`)
+- Context is compressed via LLM summarization when it grows large
+- No data is sent to third parties except your configured LLM provider and search API
+
+## Disclosure Policy
+
+When we receive a security report:
+
+1. We acknowledge receipt within 48 hours
+2. We investigate and validate the issue
+3. We develop a fix and prepare a release
+4. We coordinate disclosure timing with the reporter
+5. We publish a security advisory and release the fix
+
+## Security Best Practices for Contributors
+
+- Never commit secrets (API keys, tokens) to the repository
+- Use `bandit` for static security analysis: `bandit -r clio_agent_2/`
+- Keep dependencies updated: `pip-audit` or `pip list --outdated`
+- Follow the principle of least privilege in code changes
+- Sanitize all user inputs, especially for shell command execution
+
+## Responsible Use
+
+This software is provided for educational and research purposes. Users are responsible for:
+
+- Complying with all applicable laws and regulations
+- Respecting the terms of service of LLM providers and APIs
+- Running the agent in a secure, isolated environment
+- Monitoring autonomous behavior and costs
+
+---
+
+*This policy is adapted from GitHub's [SECURITY.md template](https://docs.github.com/en/code-security/getting-started/adding-a-security-policy-to-your-repository).*

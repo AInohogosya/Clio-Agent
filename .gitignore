@@ -1,86 +1,92 @@
-# Byte-compiled / optimized / DLL files
+# Python
 __pycache__/
-*.py[cod]
-*$py.class
+*.pyc
+*.pyo
+*.pyd
+*.pyc
 
-# Virtual environments
+# Dependencies
+.venv/
 venv/
 env/
-ENV/
-.venv
+.env
+.env.local
+*.env.*
+.env.*.local
 
-# Distribution / packaging
-build/
-dist/
-*.egg-info/
-*.egg
+# Logs and temp files
+*.log
+*.tmp
+*.swp
+*.bak
+*.backup
 
-# Installer logs
-pip-log.txt
-pip-delete-this-directory.txt
-
-# Unit test / coverage reports
-htmlcov/
-.tox/
-.nox/
-.coverage
-.coverage.*
-.cache
-nosetests.xml
-coverage.xml
-*.cover
-*.py,cover
-.hypothesis/
-.pytest_cache/
-pytestdebug.log
-
-# Type checker
-.mypy_cache/
-.dmypy.json
-dmypy.json
-
-# Jupyter Notebook
-.ipynb_checkpoints
-
-# IDE / Editor
+# Editors
 .vscode/
 .idea/
 *.swp
 *.swo
-*~
+
+# Build artifacts
+dist/
+build/
+target/
+*.o
+*.obj
+*.out
+*.egg-info/
+*.egg/
+*.whl
+
+# OS
 .DS_Store
-
-# Project specific
-.config/
-.config/*
-!.config/config.yaml.example
-
-# Local configuration (contains secrets)
-config.yaml
-
-# Agent context (runtime state)
-.context/
-*.log
-
-# Environment files
-.env
-.env.local
-.env.*.local
-
-# Docker
-.docker/
-
-# Temporary files
-*.tmp
-*.temp
-tmp/
-temp/
-
-# OS specific
 Thumbs.db
-ehthumbs.db
-Desktop.ini
 
-# Profiling
-*.prof
-*.pstats
+# Runtime data
+data/
+context_log.json
+context_log.json.bak
+clio_agent.log
+
+# Test cache
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.mypy_cache/
+.ruff_cache/
+
+# IDE / CI
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Config files (secrets)
+clio_agent_2/config/.env
+clio_agent_2/config/config.yaml
+config/.env
+config/config.yaml
+
+# Node.js (for WhatsApp service)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# TypeScript cache
+*.tsbuildinfo
+
+# Coverage
+coverage/
+.nyc_output/
+
+# Package
+*.tgz

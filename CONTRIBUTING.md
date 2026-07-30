@@ -1,195 +1,175 @@
-# Contributing to Clio Agent 1
+# Contributing to Clio-Agent-2
 
-Thank you for your interest in contributing! This document provides guidelines for contributing to the project.
-
-## Table of Contents
-- [Code of Conduct](#code-of-conduct)
-- [Getting Started](#getting-started)
-- [Development Setup](#development-setup)
-- [Making Changes](#making-changes)
-- [Testing](#testing)
-- [Code Style](#code-style)
-- [Pull Request Process](#pull-request-process)
-- [Release Process](#release-process)
+Thank you for your interest in contributing! This document outlines the process for contributing to this project.
 
 ## Code of Conduct
-This project adheres to the [Contributor Covenant Code of Conduct](CODE_OF_CONDUCT.md). By participating, you are expected to uphold this code.
 
-## Getting Started
+By participating, you agree to abide by our [Code of Conduct](CODE_OF_CONDUCT.md).
 
-### Prerequisites
-- Python 3.8+
-- Git
-- (Optional) Docker for container testing
+## How to Contribute
 
-### Fork & Clone
-```bash
-git clone https://github.com/your-username/Clio-Agent-1.git
-cd Clio-Agent-1
-git remote add upstream https://github.com/clio-project/Clio-Agent-1.git
-```
+### Reporting Bugs
+
+1. Check [existing issues](https://github.com/yourusername/Clio-Agent-2/issues) first
+2. Create a new issue using the **Bug Report** template
+3. Include:
+   - Clear, descriptive title
+   - Steps to reproduce
+   - Expected vs actual behavior
+   - Environment (OS, Python version, provider)
+   - Logs/error messages (sanitize API keys!)
+
+### Suggesting Features
+
+1. Check existing issues and discussions
+2. Create a new issue using the **Feature Request** template
+3. Explain the use case and proposed solution
+
+### Pull Requests
+
+1. Fork the repository
+2. Create a feature branch: `git checkout -b feature/your-feature-name`
+3. Make your changes
+4. Run tests and linting (see below)
+5. Commit with clear messages
+6. Push to your fork
+7. Open a PR against `main`
 
 ## Development Setup
 
-### Quick Setup
 ```bash
+# Clone your fork
+git clone https://github.com/yourusername/Clio-Agent-2.git
+cd Clio-Agent-2
+
 # Create virtual environment
-python -m venv venv
-source venv/bin/activate  # Windows: venv\Scripts\activate
+python3 -m venv .venv
+source .venv/bin/activate  # Windows: .venv\Scripts\activate
 
-# Install in development mode with all extras
-pip install -e ".[dev,all]"
+# Install dependencies
+pip install -r clio_agent_2/requirements.txt
+pip install pytest pytest-asyncio pytest-cov ruff mypy bandit
 
-# Verify installation
-Clio-Agent --health-check
+# Run tests
 pytest tests/ -v
+
+# Run linting
+ruff check clio_agent_2/ tests/
+ruff format --check clio_agent_2/ tests/
+
+# Run type checking
+mypy clio_agent_2/
 ```
 
-### Using the Install Script
-```bash
-bash install.sh
-```
+## Coding Standards
 
-## Making Changes
-
-### Branch Naming
-| Type | Prefix | Example |
-|------|--------|---------|
-| Feature | `feature/` | `feature/add-groq-support` |
-| Bug Fix | `fix/` | `fix/permission-denied-handling` |
-| Documentation | `docs/` | `docs/update-readme` |
-| Refactor | `refactor/` | `refactor/executor-error-handling` |
-| Test | `test/` | `test/add-loop-controller-tests` |
+- **Python 3.8+** compatible
+- **Type hints** for new functions (mypy strict mode for `clio_agent_2.*`)
+- **Ruff** for linting and formatting (line length: 100)
+- **Docstrings** for public APIs (Google style)
+- **Tests** for new features and bug fixes
 
 ### Commit Messages
+
 Follow [Conventional Commits](https://www.conventionalcommits.org/):
+
 ```
-<type>(<scope>): <description>
-
-[optional body]
-
-[optional footer]
-```
-
-Types: `feat`, `fix`, `docs`, `style`, `refactor`, `test`, `chore`
-
-Examples:
-```
-feat(provider): add support for Groq API
-fix(executor): handle sudo prompt in non-interactive mode
-docs(readme): update installation instructions
-test(core): add tests for context compression
+feat: add new web search provider
+fix: handle timeout in shell_command retry
+docs: update configuration reference
+refactor: extract context compression logic
+test: add test for autonomous mode backoff
+chore: update dependencies
 ```
 
-## Code Style
+## Project Structure
 
-### Formatting & Linting
-```bash
-# Format code
-black src tests
-
-# Check formatting
-black --check src tests
-
-# Lint
-flake8 src tests
-
-# Type check
-mypy src
+```
+Clio-Agent-2/
+├── run.py                      # Root launcher (single command)
+├── pyproject.toml              # Modern Python packaging
+├── clio_agent_2/
+│   ├── main.py                 # Real entry point with auto-setup
+│   ├── requirements.txt        # Dependencies
+│   ├── config/                 # Configuration management
+│   ├── core/                   # Core agent logic
+│   │   ├── agent.py           # Main agent + autonomous loop
+│   │   ├── context_manager.py # Context log + compression
+│   │   ├── llm_router.py      # Multi-provider routing
+│   │   └── retry.py           # Retry with backoff
+│   ├── interfaces/            # CLI, Telegram, Discord, WhatsApp
+│   ├── tools/                 # Tool implementations
+│   ├── meta_controller.py     # Stuck detection watchdog
+│   └── utils/                 # Utilities
+├── tests/                     # Test suite
+└── docs/                      # Documentation
 ```
 
-### Configuration
-- **Black**: Line length 88, target Python 3.8+
-- **flake8**: Max line length 88, ignore E203, W503
-- **mypy**: Strict mode enabled
+## Adding Features
 
-### Python Guidelines
-- Type hints for all public functions
-- Docstrings for modules, classes, and public methods (Google style)
-- Max line length: 88 characters
-- Use `pathlib` over `os.path`
-- Prefer `async`/`await` for I/O operations
+### Adding a New Tool
+
+1. Add the tool function in `clio_agent_2/tools/tool_registry.py`
+2. Register it in `TOOL_REGISTRY`
+3. Add tests in `tests/`
+4. Document in `docs/tools/`
+
+### Adding a New LLM Provider
+
+1. Add provider config in `clio_agent_2/core/llm_router.py`
+2. Implement the provider class
+3. Add to `SUPPORTED_PROVIDERS`
+4. Update documentation in `docs/configuration/providers.md`
+5. Add tests
+
+### Adding a New Interface
+
+1. Create `clio_agent_2/interfaces/your_interface.py`
+2. Implement the interface protocol
+3. Register in `clio_agent_2/main.py`
+4. Add tests and documentation
 
 ## Testing
 
-### Running Tests
 ```bash
-# All tests
+# Run all tests
 pytest tests/ -v
 
-# With coverage
-pytest tests/ --cov=src/ai_agent --cov-report=html
+# Run with coverage
+pytest tests/ --cov=clio_agent_2 --cov-report=html
 
-# Specific test file
-pytest tests/test_autonomous_loop_engine.py -v
+# Run specific test file
+pytest tests/test_agent_robustness.py -v
 
-# By marker
-pytest tests/ -m "unit" -v
-pytest tests/ -m "integration" -v
+# Run tests matching pattern
+pytest tests/ -k "telegram" -v
 ```
 
-### Test Markers
-| Marker | Description |
-|--------|-------------|
-| `unit` | Fast unit tests |
-| `integration` | Integration tests |
-| `e2e` | End-to-end tests |
-| `slow` | Slow-running tests |
+## Documentation
 
-### Writing Tests
-- Place tests in `tests/` mirroring `src/` structure
-- Name test files: `test_<module>.py` or `<module>_test.py`
-- Use `pytest` fixtures for common setup
-- Mock external dependencies (APIs, filesystem, network)
+Documentation lives in `docs/`. Update relevant files when changing features:
 
-## Pull Request Process
-
-### Before Submitting
-1. Run all tests: `pytest tests/ -v`
-2. Run linting: `black --check src tests && flake8 src tests && mypy src`
-3. Update documentation if needed
-4. Add tests for new functionality
-5. Ensure no new warnings
-
-### PR Requirements
-- [ ] Descriptive title following conventional commits
-- [ ] Clear description of changes
-- [ ] Links to related issues
-- [ ] Tests added/updated
-- [ ] Documentation updated
-- [ ] No merge conflicts with `main`
-
-### Review Process
-1. Automated checks must pass (CI)
-2. At least one maintainer approval
-3. All conversations resolved
-4. Branch up to date with `main`
+- Architecture: `docs/architecture/`
+- Configuration: `docs/configuration/`
+- Usage: `docs/usage/`
+- Development: `docs/development/`
 
 ## Release Process
 
-### Versioning
-Follows [Semantic Versioning](https://semver.org/):
-- `MAJOR` - Breaking changes
-- `MINOR` - New features (backward compatible)
-- `PATCH` - Bug fixes (backward compatible)
+Maintainers only:
 
-### Release Steps (Maintainers)
-1. Update version in `pyproject.toml`
-2. Update `CHANGELOG.md`
+1. Update `CHANGELOG.md`
+2. Bump version in `pyproject.toml`
 3. Create release tag: `git tag vX.Y.Z`
 4. Push tag: `git push origin vX.Y.Z`
-5. GitHub Actions builds and publishes to PyPI
-6. Docker images pushed to GHCR
+5. GitHub Actions builds and publishes
 
 ## Getting Help
-- Open a [Question](https://github.com/clio-project/Clio-Agent-1/issues/new?template=question.md) issue
-- Join [Discussions](https://github.com/clio-project/Clio-Agent-1/discussions)
-- Check [Documentation](docs/)
 
-## Recognition
-Contributors are recognized in:
-- `CONTRIBUTORS.md` (auto-generated)
-- Release notes
-- GitHub contributor graph
+- Open a **Discussion** for questions
+- Check [Troubleshooting](docs/usage/troubleshooting.md)
+- Join our community (links in README)
 
-Thank you for contributing! 🎉
+## License
+
+By contributing, you agree that your contributions will be licensed under the [MIT License](LICENSE).
