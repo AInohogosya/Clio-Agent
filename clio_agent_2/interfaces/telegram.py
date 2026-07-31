@@ -8,7 +8,8 @@ import logging
 import re
 import sys
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Optional
+from collections.abc import Callable
+from typing import Any, Awaitable, Optional
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))

@@ -3,6 +3,7 @@ import json
 import logging
 from datetime import datetime
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any, Dict, List, Optional
 
 from .context_manager import ContextLog
