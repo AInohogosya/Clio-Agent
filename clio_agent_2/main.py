@@ -54,11 +54,11 @@ def check_system_requirements():
 
     system_info = detect_system_info()
 
-    # Check Python version (minimum 3.8)
+    # Check Python version (minimum 3.10)
     python_version = tuple(map(int, platform.python_version_tuple()[:2]))
-    if python_version < (3, 8):
+    if python_version < (3, 10):
         print(f"❌ Python version too old: {platform.python_version()}")
-        print("   Minimum required: Python 3.8+")
+        print("   Minimum required: Python 3.10+")
         return False
 
     print(f"✅ Python Version: {platform.python_version()}")

@@ -1,6 +1,6 @@
 # Clio-Agent-2 Dependencies - Complete Set
 # This file contains all required dependencies for the AI agent
-# Python 3.10 - 3.13+ compatible
+# Python 3.10 - 3.14+ compatible
 
 # Core LLM APIs
 openai>=1.50.0
@@ -20,7 +20,7 @@ tiktoken>=0.7.0
 rich>=13.7.0
 prompt-toolkit>=3.0.40
 
-# Bot Integrations (Python 3.13+ compatible versions)
+# Bot Integrations (Python 3.13+/3.14+ compatible versions)
 python-telegram-bot>=21.0
 discord.py>=2.5.0
 pywa>=2.0.0
