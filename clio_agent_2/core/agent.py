@@ -400,13 +400,10 @@ class ClioAgent:
     def _build_context_messages(self, user_turn: str) -> List[Dict[str, str]]:
         """Assemble the full message list for one agent turn.
 
-        Returns the single system block followed by the hot working window
-        (token-trimmed) and the caller-supplied user turn.
+        Returns the single system block (with rolling summary) and the user turn.
+        The hot working window is NOT sent - only the compressed summary is used.
         """
         messages = [self._system_block()]
-        messages.extend(
-            self.context_log.get_entries_as_messages(max_tokens=MAX_CONTEXT_TOKENS)
-        )
         messages.append({"role": "user", "content": user_turn})
         return messages
 

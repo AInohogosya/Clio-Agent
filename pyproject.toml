@@ -71,6 +71,9 @@ clio-agent = "run:main"
 where = ["."]
 include = ["clio_agent_2*"]
 
+[tool.setuptools.package-dir]
+"" = "."
+
 [tool.ruff]
 target-version = "py38"
 line-length = 100
