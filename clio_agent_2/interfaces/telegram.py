@@ -716,7 +716,13 @@ class TelegramInterface:
         self.agent.register_response_callback(self.handle_autonomous_message)
 
         # Initialize agent
-        await self.agent.initialize()
+        restored_msg = await self.agent.initialize()
+        if restored_msg:
+            # Send the restored context message to the user
+            try:
+                await self.send_message(restored_msg)
+            except Exception:
+                pass
         started = await self.agent.ensure_autonomous_loop()
         if not started:
             print("⚠️  Continuous thinking could not start because no LLM model is configured.")

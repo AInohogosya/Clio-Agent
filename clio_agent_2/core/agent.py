@@ -201,14 +201,21 @@ class ClioAgent:
         except Exception as e:
             return f"Compression failed: {str(e)}"
 
-    async def initialize(self):
-        """Initialize the agent and add startup message to context."""
+    async def initialize(self) -> Optional[str]:
+        """Initialize the agent and add startup message to context.
+
+        Returns:
+            A message indicating context was restored, or None if no prior context.
+        """
         # Load persisted context from file if available
         loaded = self.context_log.load_from_file()
+        restored_msg = None
         if loaded:
-            await self.context_log.add_system_message(
-                f"Context restored from previous session ({self.context_log.get_line_count()} entries)"
+            restored_msg = (
+                f"🔄 Context restored from previous session "
+                f"({self.context_log.get_line_count()} entries)"
             )
+            await self.context_log.add_system_message(restored_msg)
 
         await self.context_log.add_system_message(
             f"{self.name} initialized at {datetime.now().isoformat()}"
@@ -217,6 +224,8 @@ class ClioAgent:
         # injected as the single canonical system block on every LLM call (see
         # ``_system_block``); logging it as a ``system`` entry would bloat the
         # rolling summary with duplicate prompt text.
+
+        return restored_msg
 
     def _can_start_autonomous_loop(self) -> bool:
         """Return True when autonomous thinking has the minimum LLM config."""

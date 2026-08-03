@@ -310,13 +310,30 @@ class DiscordInterface:
         except Exception as e:
             logger.error("Failed to sync Discord slash commands: %s", e)
 
+        # Send restored context message if available
+        if getattr(self, '_restored_msg', None):
+            for guild_id, session in list(self.guild_sessions.items()):
+                channel = session.get("channel")
+                if channel:
+                    try:
+                        embed = discord.Embed(
+                            title=self.agent.name,
+                            description=self._restored_msg,
+                            color=discord.Color.blue()
+                        )
+                        embed.set_footer(text="Session restored")
+                        await channel.send(embed=embed)
+                    except Exception:
+                        pass
+            self._restored_msg = None  # Only send once
+
     async def start(self):
         """Start the Discord bot."""
         # Register callback for agent responses
         self.agent.register_response_callback(self.handle_autonomous_message)
 
-        # Initialize agent
-        await self.agent.initialize()
+        # Initialize agent and capture restored message
+        self._restored_msg = await self.agent.initialize()
         started = await self.agent.ensure_autonomous_loop()
         if not started:
             print("⚠️  Continuous thinking could not start because no LLM model is configured.")
