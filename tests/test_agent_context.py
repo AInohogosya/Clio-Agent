@@ -103,31 +103,48 @@ class TestBuildContextMessages:
         agent = mock.MagicMock(spec=ClioAgent)
         agent.context_log = mock.MagicMock()
         agent.context_log.working_summary = ""
+        agent.context_log.get_entries_as_messages = mock.MagicMock(return_value=[])
         agent.tool_registry = mock.MagicMock()
         agent.tool_registry.list_tools = mock.MagicMock(return_value=["read_file", "say"])
         agent._cached_prompt = ""
         agent._cached_tools = ""
         agent._available_tools_text = ClioAgent._available_tools_text.__get__(agent, ClioAgent)
+        agent._system_block = ClioAgent._system_block.__get__(agent, ClioAgent)
+        # Fix: BASE_SYSTEM_PROMPT is a property, so we mock it as a real string
+        type(agent).BASE_SYSTEM_PROMPT = mock.PropertyMock(return_value="Clio-Agent-2 system prompt")
         return agent
 
-    def test_two_messages_only(self):
+    def test_minimal_messages_includes_system_and_user(self):
         agent = self._make_agent()
         messages = ClioAgent._build_context_messages(agent, "User message")
-        assert len(messages) == 2
+        assert len(messages) >= 2
         assert messages[0]["role"] == "system"
-        assert messages[1]["role"] == "user"
+        assert messages[-1]["role"] == "user"
 
     def test_user_message_preserved(self):
         agent = self._make_agent()
         user_text = "Please read the file at /tmp/test.txt"
         messages = ClioAgent._build_context_messages(agent, user_text)
-        assert messages[1]["content"] == user_text
+        assert messages[-1]["content"] == user_text
 
     def test_system_block_included(self):
         agent = self._make_agent()
         messages = ClioAgent._build_context_messages(agent, "test")
         assert messages[0]["role"] == "system"
         assert "Clio-Agent-2" in messages[0]["content"]
+
+    def test_hot_entries_included(self):
+        agent = self._make_agent()
+        agent.context_log.get_entries_as_messages = mock.MagicMock(
+            return_value=[
+                {"role": "user", "content": "Hot entry 1"},
+                {"role": "assistant", "content": "Hot entry 2"},
+            ]
+        )
+        messages = ClioAgent._build_context_messages(agent, "new turn")
+        assert len(messages) == 4
+        assert messages[1]["content"] == "Hot entry 1"
+        assert messages[2]["content"] == "Hot entry 2"
 
 
 class TestExecuteToolRound:

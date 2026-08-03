@@ -410,12 +410,20 @@ class ClioAgent:
         return {"role": "system", "content": content}
 
     def _build_context_messages(self, user_turn: str) -> List[Dict[str, str]]:
-        """Assemble the full message list for one agent turn.
+        """Assemble the full message list for one LLM turn.
 
-        Returns the single system block (with rolling summary) and the user turn.
-        The hot working window is NOT sent - only the compressed summary is used.
+        Returns the system pragma (with rolling summary), then the most recent
+        hot working-window entries (as user/assistant messages), capped at a
+        token budget so the prompt never overflows, and finally the new user
+        turn. The hot entries carry recent activity that has not yet been
+        compressed — without them, the LLM sees only the (potentially stale)
+        sum and forgets what just happened.
         """
         messages = [self._system_block()]
+        hot = self.context_log.get_entries_as_messages(
+            max_tokens=MAX_CONTEXT_TOKENS // 2,
+        )
+        messages.extend(hot)
         messages.append({"role": "user", "content": user_turn})
         return messages
 

@@ -482,6 +482,7 @@ class TestClioAgentSystemBlock:
         agent.llm_router = llm_router
         agent.context_log = mock.MagicMock()
         agent.context_log.working_summary = ""
+        agent.context_log.get_entries_as_messages = mock.MagicMock(return_value=[])
         agent.tool_registry = mock.MagicMock()
         agent.tool_registry.list_tools = mock.MagicMock(return_value=["read_file"])
         agent._cached_prompt = ""
@@ -490,7 +491,7 @@ class TestClioAgentSystemBlock:
 
         messages = agent._build_context_messages("User message here")
 
-        assert len(messages) == 2
         assert messages[0]["role"] == "system"
-        assert messages[1]["role"] == "user"
-        assert messages[1]["content"] == "User message here"
+        assert messages[-1]["role"] == "user"
+        assert messages[-1]["content"] == "User message here"
+        assert len(messages) >= 2
