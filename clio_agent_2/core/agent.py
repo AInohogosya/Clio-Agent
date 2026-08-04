@@ -86,6 +86,7 @@ class ClioAgent:
         'is_running', '_consecutive_failures', '_circuit_open',
         'autonomous_mode', 'thinking_interval', '_autonomous_task',
         'response_callbacks', 'current_task', '_cached_prompt', '_cached_tools',
+        '_current_response_target',
     )
 
     def _available_tools_text(self):
@@ -170,6 +171,9 @@ class ClioAgent:
         self.current_task = None
         self._cached_prompt = ""
         self._cached_tools = ""
+        # Track the current response target (chat_id, channel, etc.) for routing
+        # responses back to the correct conversation.
+        self._current_response_target: Any = None
 
     def register_response_callback(self, callback: Callable):
         """
@@ -557,7 +561,7 @@ class ClioAgent:
             continue
 
     async def process_message(
-        self, message: str, deadline: Optional[float] = None, *, sender_id: Optional[str] = None
+        self, message: str, deadline: Optional[float] = None, *, sender_id: Optional[str] = None, response_target: Any = None
     ) -> str:
         """
         Process a user message.
@@ -584,11 +588,14 @@ class ClioAgent:
             sender_id: Optional opaque platform-specific sender identifier
                 (e.g. WhatsApp phone number). Stored in the context log
                 alongside the message for multi-tenant bot platforms.
+            response_target: Optional target for routing responses back to the
+                originating conversation (e.g., Telegram chat_id, Discord channel).
 
         Returns:
             Always an empty string. Failures are persisted to the context
             log, not returned.
         """
+        self._current_response_target = response_target
         try:
             prefix = ""
             if sender_id:
@@ -769,9 +776,14 @@ class ClioAgent:
 
     async def send_response(self, message: str):
         """Send a response through all registered callbacks."""
+        target = self._current_response_target
         for callback in self.response_callbacks:
             try:
-                await callback(message)
+                # Pass target as keyword argument for backward compatibility
+                if target is not None:
+                    await callback(message, response_target=target)
+                else:
+                    await callback(message)
             except Exception:
                 pass  # Ignore individual callback failures
 

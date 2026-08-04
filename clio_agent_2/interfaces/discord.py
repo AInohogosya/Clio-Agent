@@ -156,7 +156,7 @@ class DiscordInterface:
                 deadline = loop.time() + MESSAGE_PROCESS_TIMEOUT
                 try:
                     response = await asyncio.wait_for(
-                        self.agent.process_message(user_message, deadline=deadline),
+                        self.agent.process_message(user_message, deadline=deadline, response_target=message.channel),
                         timeout=MESSAGE_PROCESS_TIMEOUT,
                     )
                 except asyncio.TimeoutError:
@@ -289,12 +289,13 @@ class DiscordInterface:
             )
             await interaction.followup.send(embed=embed)
 
-    async def handle_autonomous_message(self, message: str):
+    async def handle_autonomous_message(self, message: str, response_target: Any = None):
         """
         Callback for autonomous mode messages.
         
         Args:
             message: Message from autonomous loop
+            response_target: Optional target channel for routing responses to specific channel
         """
         if message.startswith("[Autonomous Thought]"):
             return
@@ -306,22 +307,25 @@ class DiscordInterface:
         )
         embed.set_footer(text=self.agent.name)
 
-        # Send to all active guild channels. Iterate over a snapshot: the
-        # ``await channel.send(...)`` below yields control back to the event
-        # loop, which can let ``handle_message`` register a new guild session
-        # and mutate ``guild_sessions`` mid-iteration (``RuntimeError:
-        # dictionary changed size during iteration``).
-        for guild_id, session in list(self.guild_sessions.items()):
-            channel = session.get("channel")
-            if channel:
-                try:
-                    await channel.send(embed=embed)
-                except Exception as e:
-                    logger.warning(
-                        "Failed to deliver autonomous message to guild %s: %s",
-                        guild_id,
-                        e,
-                    )
+        if response_target is not None:
+            # Send to specific channel (e.g., in response to a user message)
+            try:
+                await response_target.send(embed=embed)
+            except Exception as e:
+                logger.warning("Failed to deliver message to channel: %s", e)
+        else:
+            # Broadcast to all active guild channels (autonomous/proactive messages)
+            for guild_id, session in list(self.guild_sessions.items()):
+                channel = session.get("channel")
+                if channel:
+                    try:
+                        await channel.send(embed=embed)
+                    except Exception as e:
+                        logger.warning(
+                            "Failed to deliver autonomous message to guild %s: %s",
+                            guild_id,
+                            e,
+                        )
 
     async def on_ready(self):
         """

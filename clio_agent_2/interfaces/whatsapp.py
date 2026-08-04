@@ -203,7 +203,7 @@ class WhatsAppInterface:
             # Process through agent with timeout
             try:
                 response = await asyncio.wait_for(
-                    self.agent.process_message(text, sender_id=sender_id),
+                    self.agent.process_message(text, sender_id=sender_id, response_target=sender_id),
                     timeout=MESSAGE_PROCESS_TIMEOUT
                 )
             except asyncio.TimeoutError:
@@ -242,14 +242,25 @@ class WhatsAppInterface:
                     await msg.reply(f"(cont.) {chunk}")
                 await asyncio.sleep(0.5)  # Small delay between chunks
 
-    async def handle_autonomous_message(self, message: str):
+    async def handle_autonomous_message(self, message: str, response_target: Any = None):
         """
         Callback for autonomous mode messages — mirrors the Telegram/Discord
         pattern so the agent's ``say`` tool can reach WhatsApp users.
         """
         if message.startswith("[Autonomous Thought]"):
             return
-        await self.send_message(message)
+
+        if response_target is not None:
+            # Send to specific user (e.g., in response to a user message)
+            if not PYWA_AVAILABLE or self._wa is None:
+                return
+            try:
+                await self._wa.send_message(to=response_target, text=message)
+            except Exception as e:
+                logger.warning("Could not send WhatsApp message to %s: %s", response_target, e)
+        else:
+            # Broadcast to last known user (autonomous/proactive messages)
+            await self.send_message(message)
 
     def _set_last_user(self, wa_id: str) -> None:
         """Track the last user who sent a message for proactive delivery."""

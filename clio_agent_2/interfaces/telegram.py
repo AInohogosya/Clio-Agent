@@ -371,7 +371,7 @@ class TelegramInterface:
                 # so it doesn't cut off the agent's internal retries which stop
                 # at the deadline. Add 5 seconds buffer.
                 response = await asyncio.wait_for(
-                    self.agent.process_message(user_message, deadline=deadline),
+                    self.agent.process_message(user_message, deadline=deadline, response_target=chat_id),
                     timeout=MESSAGE_PROCESS_TIMEOUT + 5.0,
                 )
             except asyncio.TimeoutError:
@@ -563,17 +563,23 @@ class TelegramInterface:
                     fallback_text=f"{chunk}\n\n_Part {i+1}/{len(chunks)}_",
                 )
 
-    async def handle_autonomous_message(self, message: str):
+    async def handle_autonomous_message(self, message: str, response_target: Any = None):
         """
         Callback for autonomous mode messages.
         
         Args:
             message: Message from autonomous loop
+            response_target: Optional target chat_id for routing responses to specific chat
         """
         if message.startswith("[Autonomous Thought]"):
             return
 
-        await self.send_message(message)
+        if response_target is not None:
+            # Send to specific chat (e.g., in response to a user message)
+            await self.send_message(message, chat_id=response_target)
+        else:
+            # Broadcast to all known chats (autonomous/proactive messages)
+            await self.send_message(message)
 
     async def _handle_telegram_error(self, update, context):
         """Log Telegram framework errors (update handling, networking)."""
