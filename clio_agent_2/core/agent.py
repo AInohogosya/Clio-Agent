@@ -15,6 +15,9 @@ MESSAGE_PROCESS_TIMEOUT = 3600.0
 MAX_CONTEXT_TOKENS = 8000
 MAX_TOOL_ITERATIONS = 5
 CIRCUIT_BREAKER_THRESHOLD = 5
+# FUNC-05: Auto-recovery for circuit breaker (seconds to wait before attempting recovery)
+# Set to 0 or negative to disable auto-recovery
+CIRCUIT_BREAKER_AUTO_RECOVERY_SECONDS = 300.0  # 5 minutes
 DEFAULT_CONTEXT_WINDOW_SIZE = 50
 COLD_ARCHIVE_BATCH = 25
 
@@ -127,6 +130,8 @@ class ClioAgent:
         # persistence. The hot window + rolling summary keep the prompt small;
         # raw cold entries are archived to disk (off the event loop) so nothing
         # is lost without replaying it on every call.
+        # FUNC-03: Pass the current model for accurate token estimation
+        initial_model = getattr(llm_router, "current_model", "gpt-4") or "gpt-4"
         self.context_log = ContextLog(
             max_lines=config.context_log_max_lines,
             window_size=DEFAULT_CONTEXT_WINDOW_SIZE,
@@ -134,6 +139,7 @@ class ClioAgent:
             compression_callback=self._compress_context,
             persist_path=str(context_persist_path),
             archive_path=str(context_archive_path),
+            encoding_model=initial_model,
         )
 
         # Initialize tool registry. Dependency injection: the registry receives
@@ -369,16 +375,26 @@ class ClioAgent:
         depth = 0
         start = -1
         in_string = False
-        escape = False
 
-        for i, ch in enumerate(text):
+        i = 0
+        while i < len(text):
+            ch = text[i]
+
             if in_string:
-                if escape:
-                    escape = False
-                elif ch == "\\":
-                    escape = True
+                # Count consecutive backslashes to determine if quote is escaped
+                # In JSON, an odd number of backslashes before a quote escapes it
+                if ch == "\\":
+                    backslash_count = 1
+                    i += 1
+                    while i < len(text) and text[i] == "\\":
+                        backslash_count += 1
+                        i += 1
+                    # If odd number of backslashes, the next char (if quote) is escaped
+                    # We just continue - the loop will process the next char
+                    continue
                 elif ch == '"':
                     in_string = False
+                i += 1
                 continue
 
             if ch == '"':
@@ -393,6 +409,7 @@ class ClioAgent:
                     if depth == 0 and start != -1:
                         objects.append(text[start:i + 1])
                         start = -1
+            i += 1
 
         return objects
 
@@ -451,9 +468,13 @@ class ClioAgent:
             try:
                 result = await self.tool_registry.execute_tool(tool_name, arguments)
                 if result.success:
+                    # Include output even if empty, so model can distinguish
+                    # "tool succeeded with no output" from "tool failed"
                     feedback_parts.append(f"[TOOL OK] {tool_name}\n{result.output}")
                 else:
-                    error_detail = result.error or "Unknown error (no details provided)"
+                    # FUNC-02: Distinguish between None (no error details) and empty string
+                    # Empty string is a valid "no error details provided" state
+                    error_detail = result.error if result.error is not None else "Unknown error (no details provided)"
                     feedback_parts.append(
                         f"[TOOL FAILED] {tool_name}\nError: {error_detail}"
                     )
@@ -582,17 +603,23 @@ class ClioAgent:
             # keeps this consistent with a normal turn where the model simply
             # chose not to ``say`` anything.
             return ""
+        except (asyncio.TimeoutError, aiohttp.ClientError, ConnectionError, OSError, RuntimeError) as e:
+            # Expected runtime failures (network, LLM, etc.) - log and continue silently.
+            # The failure is already recorded in the context log by _run_agent_turn.
+            logger.warning("Process message runtime error (handled): %s", e)
+            return ""
         except Exception as e:
-            # A failure outside the LLM loop (e.g. context construction).
-            # Persist it to the context log and stay silent: the same
-            # reasoning as above applies -- no misleading user-facing error is
-            # needed once the failure is in the log.
-            error_msg = f"Error processing message: {str(e)}"
+            # Programming errors (AttributeError, TypeError, etc.) - log with full
+            # traceback at ERROR level and re-raise so they're not silently swallowed.
+            logger.exception("Process message programming error (not handled): %s", e)
+            # Still persist to context log for visibility
+            error_msg = f"Error processing message: {type(e).__name__}: {str(e)}"
             try:
                 await self.context_log.add_system_message(error_msg)
             except Exception:
                 pass
-            return ""
+            # Re-raise so the caller sees the real error
+            raise
 
     async def autonomous_think(self) -> Optional[str]:
         """
@@ -632,14 +659,17 @@ class ClioAgent:
 
         while self.is_running:
             cycle_failed = False
+            failure_reason = ""
             try:
                 # Thoughts are internal context and must not be broadcast to
                 # chat platform callbacks. ``autonomous_think`` swallows its own
                 # exceptions and returns ``None`` on an internal error, so a
                 # ``None`` result is our reliable "failure" signal for the
                 # circuit breaker.
-                if await self.autonomous_think() is None:
+                result = await self.autonomous_think()
+                if result is None:
                     cycle_failed = True
+                    failure_reason = "autonomous_think returned None"
 
                 # A successful cycle keeps the circuit closed and runs at the
                 # normal cadence.
@@ -651,14 +681,14 @@ class ClioAgent:
             except asyncio.CancelledError:
                 break
             except Exception as e:
+                # This should rarely happen since autonomous_think() catches
+                # its own exceptions, but we handle it for robustness.
                 cycle_failed = True
+                failure_reason = f"exception: {type(e).__name__}: {e}"
                 logger.warning(
                     "Autonomous loop error (streak=%d): %s",
                     self._consecutive_failures + 1,
                     e,
-                )
-                await self.context_log.add_system_message(
-                    f"Loop error (streak={self._consecutive_failures + 1}): {str(e)}"
                 )
 
             # A failed cycle (either via ``None`` return or a raised exception)
@@ -667,26 +697,62 @@ class ClioAgent:
             if cycle_failed:
                 self._consecutive_failures += 1
 
+                # Log the failure with the current streak count
+                await self.context_log.add_system_message(
+                    f"Loop error (streak={self._consecutive_failures}): {failure_reason}"
+                )
+
                 # Circuit breaker: after enough consecutive failures, degrade
                 # gracefully. PAUSE the loop and NOTIFY the operator instead of
                 # nuking the context (which would destroy all state). The loop
-                # only resumes on an explicit operator action (/resume or /start).
+                # only resumes on an explicit operator action (/resume or /start)
+                # OR after CIRCUIT_BREAKER_AUTO_RECOVERY_SECONDS if auto-recovery is enabled.
                 if (
                     self._consecutive_failures >= CIRCUIT_BREAKER_THRESHOLD
                     and not self._circuit_open
                 ):
                     self._circuit_open = True
-                    notice = (
-                        f"⚠️ Circuit breaker tripped after "
-                        f"{self._consecutive_failures} consecutive failures. The "
-                        f"autonomous loop is PAUSED to avoid hammering a failing "
-                        f"provider. Context and memory are preserved. Resume with "
-                        f"/resume (or /start)."
-                    )
+                    # FUNC-05: Determine if auto-recovery is enabled
+                    auto_recovery_enabled = CIRCUIT_BREAKER_AUTO_RECOVERY_SECONDS > 0
+                    if auto_recovery_enabled:
+                        notice = (
+                            f"⚠️ Circuit breaker tripped after "
+                            f"{self._consecutive_failures} consecutive failures. The "
+                            f"autonomous loop is PAUSED to avoid hammering a failing "
+                            f"provider. Context and memory are preserved. "
+                            f"Auto-recovery will attempt in {CIRCUIT_BREAKER_AUTO_RECOVERY_SECONDS:.0f}s. "
+                            f"Manual resume with /resume (or /start)."
+                        )
+                    else:
+                        notice = (
+                            f"⚠️ Circuit breaker tripped after "
+                            f"{self._consecutive_failures} consecutive failures. The "
+                            f"autonomous loop is PAUSED to avoid hammering a failing "
+                            f"provider. Context and memory are preserved. Resume with "
+                            f"/resume (or /start)."
+                        )
                     await self.context_log.add_system_message(notice)
                     await self.send_response(notice)
-                    self.is_running = False
-                    break
+
+                    if auto_recovery_enabled:
+                        # Wait for auto-recovery period, then attempt to close circuit
+                        await asyncio.sleep(CIRCUIT_BREAKER_AUTO_RECOVERY_SECONDS)
+                        if self.is_running and self._circuit_open:
+                            logger.info("Circuit breaker auto-recovery: attempting to close circuit")
+                            self._circuit_open = False
+                            self._consecutive_failures = 0
+                            recovery_notice = (
+                                f"🔄 Circuit breaker auto-recovery: circuit closed after "
+                                f"{CIRCUIT_BREAKER_AUTO_RECOVERY_SECONDS:.0f}s pause. "
+                                f"Resuming autonomous operation."
+                            )
+                            await self.context_log.add_system_message(recovery_notice)
+                            await self.send_response(recovery_notice)
+                            continue  # Resume normal operation
+                    else:
+                        # No auto-recovery: stop the loop and wait for manual resume
+                        self.is_running = False
+                        break
 
                 # Exponential back-off so a dead/slow LLM is not hammered every
                 # cycle. Starts at the normal interval, doubles per failure,
@@ -935,6 +1001,8 @@ class ClioAgent:
                     self.llm_router.set_llm_model(new_model)
                 except LLMSettingsLockedError as e:
                     return f"🔒 {e}\n(Provider was already set to {new_provider}.)"
+                # FUNC-03: Update context log encoding model for accurate token budgeting
+                self.context_log.update_encoding_model(new_model)
                 result = f"LLM updated:\n  Provider: {new_provider}\n  Model: {new_model}"
             else:
                 result = f"Provider set to: {new_provider}\nCurrent model: {getattr(self.llm_router, 'current_model', '') or '(not set)'}"
@@ -1037,6 +1105,8 @@ Examples:
                     self.llm_router.set_llm_model(value)
                 except LLMSettingsLockedError as e:
                     return f"🔒 {e}"
+                # FUNC-03: Update context log encoding model for accurate token budgeting
+                self.context_log.update_encoding_model(value)
                 result = f"✅ Model set to: {value}"
 
             elif setting == "autonomous_mode":

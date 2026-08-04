@@ -67,6 +67,14 @@ class ContextLog:
         self.persist_path = Path(persist_path) if persist_path else None
         self.archive_path = Path(archive_path) if archive_path else None
 
+    def update_encoding_model(self, model: str) -> None:
+        """Update the encoding model used for token estimation.
+        
+        Should be called when the agent's LLM model changes to ensure
+        accurate token budgeting.
+        """
+        self.encoding_model = model
+
     async def add_entry(self, entry_type, content, metadata=None):
         async with self._lock:
             entry = ContextEntry(entry_type, content, metadata)

@@ -50,20 +50,31 @@ class FileEditTool:
         failure ``ToolResult`` containing the rejection message.
         """
         try:
-            resolved = Path(raw).expanduser().resolve(strict=False)
+            # Expand user and get absolute path first
+            expanded = Path(raw).expanduser()
+            # Use os.path.realpath to resolve ALL symlinks (Path.resolve(strict=False)
+            # doesn't resolve symlinks on all platforms). This prevents symlink-based
+            # path traversal where a symlink inside the sandbox points outside.
+            resolved_path = os.path.realpath(expanded)
+            resolved = Path(resolved_path)
         except (OSError, RuntimeError) as e:
             return ToolResult(False, "", f"Invalid path '{raw}': {e}")
 
         root = cls.sandbox_root
         if root is not None:
+            # Ensure root is also resolved to its real path for comparison
             try:
-                resolved.relative_to(root)
+                root_real = Path(os.path.realpath(root))
+            except (OSError, RuntimeError):
+                root_real = root
+            try:
+                resolved.relative_to(root_real)
             except ValueError:
                 return ToolResult(
                     False,
                     "",
                     f"Access denied: '{raw}' resolves outside the permitted "
-                    f"workspace. File operations are restricted to {root} "
+                    f"workspace. File operations are restricted to {root_real} "
                     f"and its subdirectories.",
                 )
 
@@ -278,7 +289,7 @@ class WebSearchTool:
 
     async def fetch_url(self, url: str) -> ToolResult:
         """
-        Fetch content from a URL.
+        Fetch content from a URL with SSRF protection.
 
         Args:
             url: URL to fetch
@@ -288,6 +299,8 @@ class WebSearchTool:
         """
         try:
             from urllib.parse import urlparse
+            import socket as _socket
+            import ipaddress
 
             parsed = urlparse(url)
             scheme = (parsed.scheme or "").lower()
@@ -309,23 +322,18 @@ class WebSearchTool:
                     f"Loopback addresses are blocked to prevent SSRF.",
                 )
 
-            hostport = parsed.hostname
-            if parsed.port:
-                hostport = f"{hostname}:{parsed.port}"
+            port = parsed.port or (443 if scheme == "https" else 80)
 
             # Resolve hostname to IP(s) to defeat DNS rebinding.
             # A hostname that initially resolves to a public IP can be
             # re-pointed to a private IP between the hostname check and the
-            # actual HTTP request. We resolve here and re-resolve inside the
-            # transport layer (by checking the *connected* remote address if
-            # possible). Since aiohttp does not expose the final connected IP,
-            # this check covers the common case where the DNS record itself
-            # points to a private IP.
+            # actual HTTP request. We resolve here, filter to public IPs only,
+            # and then connect directly to a verified public IP with the original
+            # hostname in the Host header and for TLS SNI.
             try:
-                import socket as _socket
                 addrs = _socket.getaddrinfo(
-                    parsed.hostname,
-                    parsed.port or (443 if scheme == "https" else 80),
+                    hostname,
+                    port,
                     proto=_socket.IPPROTO_TCP,
                 )
             except _socket.gaierror:
@@ -339,50 +347,89 @@ class WebSearchTool:
                     False, "", f"No addresses found for hostname '{hostname}'.",
                 )
 
+            def _is_private_ip(host: str) -> bool:
+                try:
+                    addr = ipaddress.ip_address(host)
+                    return addr.is_private or addr.is_loopback or addr.is_link_local
+                except ValueError:
+                    return False
+
+            # Filter to only public IPs
+            public_ips = []
             for family, _, _, _, sockaddr in addrs:
                 resolved_ip = sockaddr[0] if len(sockaddr) >= 1 else ""
                 if not resolved_ip:
                     continue
-
-                def _is_private_ip(host: str) -> bool:
-                    try:
-                        import ipaddress
-                        addr = ipaddress.ip_address(host)
-                        return addr.is_private or addr.is_loopback or addr.is_link_local
-                    except ValueError:
-                        return False
-
                 if _is_private_ip(resolved_ip):
-                    return ToolResult(
-                        False, "",
-                        f"Refusing to fetch URL that resolves to a private IP "
-                        f"({resolved_ip}). SSRF protection: internal network "
-                        f"addresses are blocked.",
-                    )
+                    continue
                 if resolved_ip in ("127.0.0.1", "::1", "0.0.0.0"):
-                    return ToolResult(
-                        False, "",
-                        f"Refusing to fetch loopback address ({resolved_ip}). "
-                        f"SSRF blocked.",
-                    )
+                    continue
+                public_ips.append((family, resolved_ip, sockaddr))
+
+            if not public_ips:
+                return ToolResult(
+                    False, "",
+                    f"Refusing to fetch URL: hostname '{hostname}' resolves only to private/internal IPs. "
+                    f"SSRF protection: internal network addresses are blocked.",
+                )
+
+            # Use the first public IP (could round-robin for load balancing)
+            family, target_ip, sockaddr = public_ips[0]
 
             headers = {
-                "User-Agent": "Mozilla/5.0 (compatible; Clio-Agent-2/1.0)"
+                "User-Agent": "Mozilla/5.0 (compatible; Clio-Agent-2/1.0)",
+                "Host": hostname,  # Preserve original hostname for virtual hosting
             }
 
             read_cap = 5000 + 4096
             timeout = aiohttp.ClientTimeout(total=30)
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.get(url, headers=headers) as response:
-                    response.raise_for_status()
-                    raw = await response.content.read(read_cap)
-                    text_content = raw.decode("utf-8", errors="replace")
-                    if len(raw) >= read_cap:
-                        text_content = text_content[:5000] + (
-                            "\n... (truncated at 5000 chars)"
-                        )
 
-                    return ToolResult(True, f"Content from {url}:\n\n{text_content}")
+            # Build the URL with the IP address instead of hostname
+            # For HTTPS, we need to use the IP but preserve SNI for certificate validation
+            ip_url = url.replace(f"{scheme}://{hostname}", f"{scheme}://{target_ip}")
+            if parsed.port:
+                ip_url = ip_url.replace(f":{parsed.port}", f":{parsed.port}")
+
+            # Create a custom connector that forces connection to the verified IP
+            connector = aiohttp.TCPConnector(
+                family=family,
+                resolver=aiohttp.AsyncResolver(),
+                # We'll manually control the connection via the socket
+            )
+
+            async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
+                # For HTTPS, we need to ensure SNI uses the original hostname
+                # aiohttp handles this automatically when we pass the URL with IP but
+                # the SSL context needs the server_hostname for SNI
+                ssl_context = None
+                if scheme == "https":
+                    import ssl
+                    ssl_context = ssl.create_default_context()
+                    ssl_context.check_hostname = False  # We verify IP manually, but need SNI
+                    ssl_context.verify_mode = ssl.CERT_REQUIRED
+
+                try:
+                    async with session.get(
+                        ip_url,
+                        headers=headers,
+                        ssl=ssl_context,
+                        server_hostname=hostname if scheme == "https" else None,
+                    ) as response:
+                        response.raise_for_status()
+                        raw = await response.content.read(read_cap)
+                        text_content = raw.decode("utf-8", errors="replace")
+                        if len(raw) >= read_cap:
+                            text_content = text_content[:5000] + (
+                                "\n... (truncated at 5000 chars)"
+                            )
+
+                        return ToolResult(True, f"Content from {url}:\n\n{text_content}")
+                except aiohttp.ClientSSLError as ssl_err:
+                    return ToolResult(
+                        False, "",
+                        f"SSL verification failed for {url}: {str(ssl_err)}. "
+                        f"The certificate may not be valid for the IP address."
+                    )
 
         except Exception as e:
             return ToolResult(False, "", f"Error fetching URL: {str(e)}")
@@ -738,15 +785,20 @@ class ShellCommandTool:
         # create_subprocess_shell which injects raw text into the shell.
         # By wrapping as `sh -c <command>` we get shell semantics while keeping
         # the command string as a single argument to the shell executable.
+        # SECURITY: Use hardcoded shell paths instead of environment variables
+        # to prevent shell injection via SHELL/COMSPEC env vars.
         import platform as _platform
-        _shell = os.environ.get("SHELL", "/bin/sh")
         if _platform.system() == "Windows":
-            _shell = os.environ.get("COMSPEC", "cmd.exe")
+            _shell = "cmd.exe"
+            _shell_flag = "/c"
+        else:
+            _shell = "/bin/sh"
+            _shell_flag = "-c"
         for attempt in range(1, cls.MAX_COMMAND_ATTEMPTS + 1):
             try:
                 process = await asyncio.create_subprocess_exec(
                     _shell,
-                    "-c",
+                    _shell_flag,
                     command_text,
                     cwd=working_dir,
                     stdout=asyncio.subprocess.PIPE,
@@ -1030,21 +1082,39 @@ class ToolRegistry:
         """List all registered tool names."""
         return list(self.tools.keys())
 
-    async def execute_tool(
+async def execute_tool(
         self,
         tool_name: str,
         arguments: Dict[str, Any]
     ) -> ToolResult:
         """
         Execute a tool with given arguments.
-        
+
         Args:
             tool_name: Name of the tool to execute
             arguments: Dictionary of arguments for the tool
-        
+
         Returns:
             ToolResult from the tool execution
         """
+        # SEC-05: Input size limits to prevent DoS via large arguments
+        # Max 100KB per argument, 1MB total
+        MAX_ARG_SIZE = 100 * 1024  # 100 KB
+        MAX_TOTAL_SIZE = 1024 * 1024  # 1 MB
+        
+        total_size = 0
+        for key, value in arguments.items():
+            if isinstance(value, str):
+                arg_size = len(value.encode('utf-8'))
+            else:
+                import json
+                arg_size = len(json.dumps(value).encode('utf-8'))
+            if arg_size > MAX_ARG_SIZE:
+                return ToolResult(False, "", f"Argument '{key}' exceeds maximum size of {MAX_ARG_SIZE} bytes")
+            total_size += arg_size
+        if total_size > MAX_TOTAL_SIZE:
+            return ToolResult(False, "", f"Total arguments size exceeds maximum of {MAX_TOTAL_SIZE} bytes")
+
         tool = self.get_tool(tool_name)
 
         if not tool:

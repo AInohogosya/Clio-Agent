@@ -522,7 +522,8 @@ except Exception as e:
             self.discord_bot_token = None
             self.default_llm_provider = "openai"
             self.current_model = ""
-            self.llm_settings_locked = False  # fallback path: allow changes
+            # SEC-07: Default to locked for security (same as real config)
+            self.llm_settings_locked = True
             self.context_log_max_lines = 1000
             self.agent_name = "Clio-Agent-2"
             self.autonomous_mode = True
@@ -550,7 +551,8 @@ except Exception as e:
         def __init__(self, cfg):
             self._default_provider = "openai"
             self._current_model = ""
-            self.llm_settings_locked = False  # fallback path: allow changes
+            # SEC-07: Default to locked for security (same as real config)
+            self.llm_settings_locked = True
         def get_available_providers(self):
             return []
         async def chat(self, messages, **kwargs):

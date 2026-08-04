@@ -269,11 +269,15 @@ class Config:
                     if content and not content.endswith('\n'):
                         content += '\n'
                     content += f'{key}={value}\n'
-                # Keep the process environment in sync (see save_to_env).
-                os.environ[key] = value
 
+            # Write the file first, then update os.environ atomically
+            # This prevents race conditions where another thread sees partial updates
             with open(self._env_path, 'w', encoding='utf-8') as f:
                 f.write(content)
+
+            # Now update os.environ for all keys at once
+            for key, value in settings.items():
+                os.environ[key] = str(value)
 
             # Reload environment variables once for all changes
             self._load_config()

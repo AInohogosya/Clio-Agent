@@ -26,6 +26,34 @@ class AuthenticationError(Exception):
     """Custom exception for authentication errors."""
 
 
+def _sanitize_aiohttp_error(exc: Exception) -> Exception:
+    """
+    Sanitize aiohttp exceptions to remove sensitive data (API keys, tokens).
+
+    aiohttp.ClientResponseError may contain headers/body with Authorization
+    headers in its string representation. We wrap it in a generic exception
+    with a sanitized message.
+    """
+    if isinstance(exc, aiohttp.ClientResponseError):
+        # Sanitize the message - remove any Authorization header values
+        msg = str(exc)
+        # Remove Bearer tokens from the message
+        import re
+        msg = re.sub(r'Bearer\s+[A-Za-z0-9_\-]{20,}', 'Bearer ***REDACTED***', msg)
+        msg = re.sub(r'Authorization:\s*[A-Za-z0-9_\-]{20,}', 'Authorization: ***REDACTED***', msg)
+        msg = re.sub(r'x-goog-api-key:\s*[A-Za-z0-9_\-]{20,}', 'x-goog-api-key: ***REDACTED***', msg, flags=re.IGNORECASE)
+        msg = re.sub(r'x-api-key:\s*[A-Za-z0-9_\-]{20,}', 'x-api-key: ***REDACTED***', msg, flags=re.IGNORECASE)
+        msg = re.sub(r'api-key:\s*[A-Za-z0-9_\-]{20,}', 'api-key: ***REDACTED***', msg, flags=re.IGNORECASE)
+        return aiohttp.ClientResponseError(
+            exc.request_info,
+            exc.history,
+            status=exc.status,
+            message=msg,
+            headers=exc.headers,
+        )
+    return exc
+
+
 # Transient failures that are worth retrying. A completion request that fails
 # for one of these reasons (network blip, provider overload, the per-attempt
 # ``ClientTimeout`` -- now ``LLM_REQUEST_TIMEOUT``, tenfold the original 120s --
@@ -111,14 +139,17 @@ class OpenAIProvider(LLMProvider):
         }
 
         timeout = aiohttp.ClientTimeout(total=kwargs.get("request_timeout", LLM_REQUEST_TIMEOUT))
-        async with aiohttp.ClientSession(timeout=timeout) as session, session.post(
-            f"{self.base_url}/chat/completions",
-            headers=headers,
-            json=payload
-        ) as response:
-            response.raise_for_status()
-            data = await response.json()
-            return data["choices"][0]["message"]["content"]
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session, session.post(
+                f"{self.base_url}/chat/completions",
+                headers=headers,
+                json=payload
+            ) as response:
+                response.raise_for_status()
+                data = await response.json()
+                return data["choices"][0]["message"]["content"]
+        except aiohttp.ClientResponseError as e:
+            raise _sanitize_aiohttp_error(e) from e
 
     async def stream_chat(
         self,
@@ -139,38 +170,44 @@ class OpenAIProvider(LLMProvider):
         }
 
         timeout = aiohttp.ClientTimeout(total=kwargs.get("request_timeout", LLM_REQUEST_TIMEOUT))
-        async with aiohttp.ClientSession(timeout=timeout) as session, session.post(
-            f"{self.base_url}/chat/completions",
-            headers=headers,
-            json=payload
-        ) as response:
-            response.raise_for_status()
-            async for line in response.content:
-                line = line.decode('utf-8').strip()
-                if line.startswith("data: "):
-                    data = line[6:]
-                    if data == "[DONE]":
-                        break
-                    try:
-                        import json
-                        chunk = json.loads(data)
-                        content = chunk["choices"][0].get("delta", {}).get("content", "")
-                        if content:
-                            yield content
-                    except Exception:
-                        continue
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session, session.post(
+                f"{self.base_url}/chat/completions",
+                headers=headers,
+                json=payload
+            ) as response:
+                response.raise_for_status()
+                async for line in response.content:
+                    line = line.decode('utf-8').strip()
+                    if line.startswith("data: "):
+                        data = line[6:]
+                        if data == "[DONE]":
+                            break
+                        try:
+                            import json
+                            chunk = json.loads(data)
+                            content = chunk["choices"][0].get("delta", {}).get("content", "")
+                            if content:
+                                yield content
+                        except Exception:
+                            continue
+        except aiohttp.ClientResponseError as e:
+            raise _sanitize_aiohttp_error(e) from e
 
     async def list_models(self) -> List[str]:
         headers = {"Authorization": f"Bearer {self.api_key}"}
 
         timeout = aiohttp.ClientTimeout(total=60)
-        async with aiohttp.ClientSession(timeout=timeout) as session, session.get(
-            f"{self.base_url}/models",
-            headers=headers
-        ) as response:
-            response.raise_for_status()
-            data = await response.json()
-            return [model["id"] for model in data.get("data", [])]
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session, session.get(
+                f"{self.base_url}/models",
+                headers=headers
+            ) as response:
+                response.raise_for_status()
+                data = await response.json()
+                return [model["id"] for model in data.get("data", [])]
+        except aiohttp.ClientResponseError as e:
+            raise _sanitize_aiohttp_error(e) from e
 
 
 class GoogleProvider(LLMProvider):
@@ -207,14 +244,17 @@ class GoogleProvider(LLMProvider):
         }
 
         timeout = aiohttp.ClientTimeout(total=kwargs.get("request_timeout", LLM_REQUEST_TIMEOUT))
-        async with aiohttp.ClientSession(timeout=timeout) as session, session.post(
-            f"{self.base_url}/models/{model}:generateContent",
-            headers=headers,
-            json=payload
-        ) as response:
-            response.raise_for_status()
-            data = await response.json()
-            return data["candidates"][0]["content"]["parts"][0]["text"]
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session, session.post(
+                f"{self.base_url}/models/{model}:generateContent",
+                headers=headers,
+                json=payload
+            ) as response:
+                response.raise_for_status()
+                data = await response.json()
+                return data["candidates"][0]["content"]["parts"][0]["text"]
+        except aiohttp.ClientResponseError as e:
+            raise _sanitize_aiohttp_error(e) from e
 
     async def stream_chat(
         self,
@@ -239,36 +279,42 @@ class GoogleProvider(LLMProvider):
         }
 
         timeout = aiohttp.ClientTimeout(total=kwargs.get("request_timeout", LLM_REQUEST_TIMEOUT))
-        async with aiohttp.ClientSession(timeout=timeout) as session, session.post(
-            f"{self.base_url}/models/{model}:streamGenerateContent?alt=sse",
-            headers=headers,
-            json=payload
-        ) as response:
-            response.raise_for_status()
-            async for line in response.content:
-                line = line.decode('utf-8').strip()
-                if line:
-                    try:
-                        import json
-                        chunk = json.loads(line)
-                        content = chunk["candidates"][0]["content"]["parts"][0]["text"]
-                        yield content
-                    except Exception:
-                        continue
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session, session.post(
+                f"{self.base_url}/models/{model}:streamGenerateContent?alt=sse",
+                headers=headers,
+                json=payload
+            ) as response:
+                response.raise_for_status()
+                async for line in response.content:
+                    line = line.decode('utf-8').strip()
+                    if line:
+                        try:
+                            import json
+                            chunk = json.loads(line)
+                            content = chunk["candidates"][0]["content"]["parts"][0]["text"]
+                            yield content
+                        except Exception:
+                            continue
+        except aiohttp.ClientResponseError as e:
+            raise _sanitize_aiohttp_error(e) from e
 
     async def list_models(self) -> List[str]:
         timeout = aiohttp.ClientTimeout(total=60)
-        async with aiohttp.ClientSession(timeout=timeout) as session, session.get(
-            f"{self.base_url}/models",
-            headers={"x-goog-api-key": self.api_key},
-        ) as response:
-            response.raise_for_status()
-            data = await response.json()
-            return [
-                model["name"].split("/")[-1]
-                for model in data.get("models", [])
-                if "generateContent" in model.get("supportedGenerationMethods", [])
-            ]
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session, session.get(
+                f"{self.base_url}/models",
+                headers={"x-goog-api-key": self.api_key},
+            ) as response:
+                response.raise_for_status()
+                data = await response.json()
+                return [
+                    model["name"].split("/")[-1]
+                    for model in data.get("models", [])
+                    if "generateContent" in model.get("supportedGenerationMethods", [])
+                ]
+        except aiohttp.ClientResponseError as e:
+            raise _sanitize_aiohttp_error(e) from e
 
 
 class AnthropicProvider(LLMProvider):
@@ -309,14 +355,17 @@ class AnthropicProvider(LLMProvider):
             payload["system"] = "\n".join(m["content"] for m in system_messages)
 
         timeout = aiohttp.ClientTimeout(total=kwargs.get("request_timeout", LLM_REQUEST_TIMEOUT))
-        async with aiohttp.ClientSession(timeout=timeout) as session, session.post(
-            f"{self.base_url}/messages",
-            headers=self.headers,
-            json=payload
-        ) as response:
-            response.raise_for_status()
-            data = await response.json()
-            return data["content"][0]["text"]
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session, session.post(
+                f"{self.base_url}/messages",
+                headers=self.headers,
+                json=payload
+            ) as response:
+                response.raise_for_status()
+                data = await response.json()
+                return data["content"][0]["text"]
+        except aiohttp.ClientResponseError as e:
+            raise _sanitize_aiohttp_error(e) from e
 
     async def stream_chat(
         self,
@@ -340,23 +389,26 @@ class AnthropicProvider(LLMProvider):
             payload["system"] = "\n".join(m["content"] for m in system_messages)
 
         timeout = aiohttp.ClientTimeout(total=kwargs.get("request_timeout", LLM_REQUEST_TIMEOUT))
-        async with aiohttp.ClientSession(timeout=timeout) as session, session.post(
-            f"{self.base_url}/messages",
-            headers=self.headers,
-            json=payload
-        ) as response:
-            response.raise_for_status()
-            async for line in response.content:
-                line = line.decode('utf-8').strip()
-                if line.startswith("data: "):
-                    data = line[6:]
-                    try:
-                        import json
-                        event = json.loads(data)
-                        if event.get("type") == "content_block_delta":
-                            yield event["delta"]["text"]
-                    except Exception:
-                        continue
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session, session.post(
+                f"{self.base_url}/messages",
+                headers=self.headers,
+                json=payload
+            ) as response:
+                response.raise_for_status()
+                async for line in response.content:
+                    line = line.decode('utf-8').strip()
+                    if line.startswith("data: "):
+                        data = line[6:]
+                        try:
+                            import json
+                            event = json.loads(data)
+                            if event.get("type") == "content_block_delta":
+                                yield event["delta"]["text"]
+                        except Exception:
+                            continue
+        except aiohttp.ClientResponseError as e:
+            raise _sanitize_aiohttp_error(e) from e
 
     async def list_models(self) -> List[str]:
         # Anthropic doesn't have a public models endpoint, return known models
@@ -407,26 +459,29 @@ class OpenRouterProvider(LLMProvider):
         }
 
         timeout = aiohttp.ClientTimeout(total=kwargs.get("request_timeout", LLM_REQUEST_TIMEOUT))
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.post(
-                f"{self.base_url}/chat/completions",
-                headers=headers,
-                json=payload
-            ) as response:
-                if response.status == 401:
-                    error_data = await response.json()
-                    raise AuthenticationError(
-                        f"OpenRouter authentication failed: {error_data.get('error', {}).get('message', 'Invalid API key')}"
-                    )
-                elif response.status == 403:
-                    error_data = await response.json()
-                    raise AuthenticationError(
-                        f"OpenRouter access forbidden: {error_data.get('error', {}).get('message', 'Check your API key and referer')}"
-                    )
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(
+                    f"{self.base_url}/chat/completions",
+                    headers=headers,
+                    json=payload
+                ) as response:
+                    if response.status == 401:
+                        error_data = await response.json()
+                        raise AuthenticationError(
+                            f"OpenRouter authentication failed: {error_data.get('error', {}).get('message', 'Invalid API key')}"
+                        )
+                    elif response.status == 403:
+                        error_data = await response.json()
+                        raise AuthenticationError(
+                            f"OpenRouter access forbidden: {error_data.get('error', {}).get('message', 'Check your API key and referer')}"
+                        )
 
-                response.raise_for_status()
-                data = await response.json()
-                return data["choices"][0]["message"]["content"]
+                    response.raise_for_status()
+                    data = await response.json()
+                    return data["choices"][0]["message"]["content"]
+        except aiohttp.ClientResponseError as e:
+            raise _sanitize_aiohttp_error(e) from e
 
     async def stream_chat(
         self,
@@ -444,55 +499,61 @@ class OpenRouterProvider(LLMProvider):
         }
 
         timeout = aiohttp.ClientTimeout(total=kwargs.get("request_timeout", LLM_REQUEST_TIMEOUT))
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.post(
-                f"{self.base_url}/chat/completions",
-                headers=headers,
-                json=payload
-            ) as response:
-                if response.status == 401:
-                    error_data = await response.json()
-                    raise AuthenticationError(
-                        f"OpenRouter authentication failed: {error_data.get('error', {}).get('message', 'Invalid API key')}"
-                    )
-                elif response.status == 403:
-                    error_data = await response.json()
-                    raise AuthenticationError(
-                        f"OpenRouter access forbidden: {error_data.get('error', {}).get('message', 'Check your API key and referer')}"
-                    )
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(
+                    f"{self.base_url}/chat/completions",
+                    headers=headers,
+                    json=payload
+                ) as response:
+                    if response.status == 401:
+                        error_data = await response.json()
+                        raise AuthenticationError(
+                            f"OpenRouter authentication failed: {error_data.get('error', {}).get('message', 'Invalid API key')}"
+                        )
+                    elif response.status == 403:
+                        error_data = await response.json()
+                        raise AuthenticationError(
+                            f"OpenRouter access forbidden: {error_data.get('error', {}).get('message', 'Check your API key and referer')}"
+                        )
 
-                response.raise_for_status()
-                async for line in response.content:
-                    line = line.decode('utf-8').strip()
-                    if line.startswith("data: "):
-                        data = line[6:]
-                        if data == "[DONE]":
-                            break
-                        try:
-                            import json
-                            chunk = json.loads(data)
-                            content = chunk["choices"][0].get("delta", {}).get("content", "")
-                            if content:
-                                yield content
-                        except Exception:
-                            continue
+                    response.raise_for_status()
+                    async for line in response.content:
+                        line = line.decode('utf-8').strip()
+                        if line.startswith("data: "):
+                            data = line[6:]
+                            if data == "[DONE]":
+                                break
+                            try:
+                                import json
+                                chunk = json.loads(data)
+                                content = chunk["choices"][0].get("delta", {}).get("content", "")
+                                if content:
+                                    yield content
+                            except Exception:
+                                continue
+        except aiohttp.ClientResponseError as e:
+            raise _sanitize_aiohttp_error(e) from e
 
     async def list_models(self) -> List[str]:
         headers = self._get_headers()
         timeout = aiohttp.ClientTimeout(total=60)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.get(
-                f"{self.base_url}/models",
-                headers=headers
-            ) as response:
-                if response.status == 401:
-                    error_data = await response.json()
-                    raise AuthenticationError(
-                        f"OpenRouter authentication failed: {error_data.get('error', {}).get('message', 'Invalid API key')}"
-                    )
-                response.raise_for_status()
-                data = await response.json()
-                return [model["id"] for model in data.get("data", [])]
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(
+                    f"{self.base_url}/models",
+                    headers=headers
+                ) as response:
+                    if response.status == 401:
+                        error_data = await response.json()
+                        raise AuthenticationError(
+                            f"OpenRouter authentication failed: {error_data.get('error', {}).get('message', 'Invalid API key')}"
+                        )
+                    response.raise_for_status()
+                    data = await response.json()
+                    return [model["id"] for model in data.get("data", [])]
+        except aiohttp.ClientResponseError as e:
+            raise _sanitize_aiohttp_error(e) from e
 
 
 class GrokProvider(LLMProvider):
@@ -528,14 +589,17 @@ class GrokProvider(LLMProvider):
         }
 
         timeout = aiohttp.ClientTimeout(total=kwargs.get("request_timeout", LLM_REQUEST_TIMEOUT))
-        async with aiohttp.ClientSession(timeout=timeout) as session, session.post(
-            f"{self.base_url}/chat/completions",
-            headers=headers,
-            json=payload
-        ) as response:
-            response.raise_for_status()
-            data = await response.json()
-            return data["choices"][0]["message"]["content"]
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session, session.post(
+                f"{self.base_url}/chat/completions",
+                headers=headers,
+                json=payload
+            ) as response:
+                response.raise_for_status()
+                data = await response.json()
+                return data["choices"][0]["message"]["content"]
+        except aiohttp.ClientResponseError as e:
+            raise _sanitize_aiohttp_error(e) from e
 
     async def stream_chat(
         self,
@@ -556,38 +620,44 @@ class GrokProvider(LLMProvider):
         }
 
         timeout = aiohttp.ClientTimeout(total=kwargs.get("request_timeout", LLM_REQUEST_TIMEOUT))
-        async with aiohttp.ClientSession(timeout=timeout) as session, session.post(
-            f"{self.base_url}/chat/completions",
-            headers=headers,
-            json=payload
-        ) as response:
-            response.raise_for_status()
-            async for line in response.content:
-                line = line.decode('utf-8').strip()
-                if line.startswith("data: "):
-                    data = line[6:]
-                    if data == "[DONE]":
-                        break
-                    try:
-                        import json
-                        chunk = json.loads(data)
-                        content = chunk["choices"][0].get("delta", {}).get("content", "")
-                        if content:
-                            yield content
-                    except Exception:
-                        continue
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session, session.post(
+                f"{self.base_url}/chat/completions",
+                headers=headers,
+                json=payload
+            ) as response:
+                response.raise_for_status()
+                async for line in response.content:
+                    line = line.decode('utf-8').strip()
+                    if line.startswith("data: "):
+                        data = line[6:]
+                        if data == "[DONE]":
+                            break
+                        try:
+                            import json
+                            chunk = json.loads(data)
+                            content = chunk["choices"][0].get("delta", {}).get("content", "")
+                            if content:
+                                yield content
+                        except Exception:
+                            continue
+        except aiohttp.ClientResponseError as e:
+            raise _sanitize_aiohttp_error(e) from e
 
     async def list_models(self) -> List[str]:
         headers = {"Authorization": f"Bearer {self.api_key}"}
 
         timeout = aiohttp.ClientTimeout(total=60)
-        async with aiohttp.ClientSession(timeout=timeout) as session, session.get(
-            f"{self.base_url}/models",
-            headers=headers
-        ) as response:
-            response.raise_for_status()
-            data = await response.json()
-            return [model["id"] for model in data.get("data", [])]
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session, session.get(
+                f"{self.base_url}/models",
+                headers=headers
+            ) as response:
+                response.raise_for_status()
+                data = await response.json()
+                return [model["id"] for model in data.get("data", [])]
+        except aiohttp.ClientResponseError as e:
+            raise _sanitize_aiohttp_error(e) from e
 
 
 class DeepSeekProvider(LLMProvider):
@@ -624,14 +694,17 @@ class DeepSeekProvider(LLMProvider):
         }
 
         timeout = aiohttp.ClientTimeout(total=kwargs.get("request_timeout", LLM_REQUEST_TIMEOUT))
-        async with aiohttp.ClientSession(timeout=timeout) as session, session.post(
-            f"{self.base_url}/chat/completions",
-            headers=headers,
-            json=payload
-        ) as response:
-            response.raise_for_status()
-            data = await response.json()
-            return data["choices"][0]["message"]["content"]
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session, session.post(
+                f"{self.base_url}/chat/completions",
+                headers=headers,
+                json=payload
+            ) as response:
+                response.raise_for_status()
+                data = await response.json()
+                return data["choices"][0]["message"]["content"]
+        except aiohttp.ClientResponseError as e:
+            raise _sanitize_aiohttp_error(e) from e
 
     async def stream_chat(
         self,
@@ -652,38 +725,44 @@ class DeepSeekProvider(LLMProvider):
         }
 
         timeout = aiohttp.ClientTimeout(total=kwargs.get("request_timeout", LLM_REQUEST_TIMEOUT))
-        async with aiohttp.ClientSession(timeout=timeout) as session, session.post(
-            f"{self.base_url}/chat/completions",
-            headers=headers,
-            json=payload
-        ) as response:
-            response.raise_for_status()
-            async for line in response.content:
-                line = line.decode('utf-8').strip()
-                if line.startswith("data: "):
-                    data = line[6:]
-                    if data == "[DONE]":
-                        break
-                    try:
-                        import json
-                        chunk = json.loads(data)
-                        content = chunk["choices"][0].get("delta", {}).get("content", "")
-                        if content:
-                            yield content
-                    except Exception:
-                        continue
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session, session.post(
+                f"{self.base_url}/chat/completions",
+                headers=headers,
+                json=payload
+            ) as response:
+                response.raise_for_status()
+                async for line in response.content:
+                    line = line.decode('utf-8').strip()
+                    if line.startswith("data: "):
+                        data = line[6:]
+                        if data == "[DONE]":
+                            break
+                        try:
+                            import json
+                            chunk = json.loads(data)
+                            content = chunk["choices"][0].get("delta", {}).get("content", "")
+                            if content:
+                                yield content
+                        except Exception:
+                            continue
+        except aiohttp.ClientResponseError as e:
+            raise _sanitize_aiohttp_error(e) from e
 
     async def list_models(self) -> List[str]:
         headers = {"Authorization": f"Bearer {self.api_key}"}
 
         timeout = aiohttp.ClientTimeout(total=60)
-        async with aiohttp.ClientSession(timeout=timeout) as session, session.get(
-            f"{self.base_url}/models",
-            headers=headers
-        ) as response:
-            response.raise_for_status()
-            data = await response.json()
-            return [model["id"] for model in data.get("data", [])]
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session, session.get(
+                f"{self.base_url}/models",
+                headers=headers
+            ) as response:
+                response.raise_for_status()
+                data = await response.json()
+                return [model["id"] for model in data.get("data", [])]
+        except aiohttp.ClientResponseError as e:
+            raise _sanitize_aiohttp_error(e) from e
 
 
 class NVIDIAProvider(LLMProvider):
@@ -732,14 +811,17 @@ class NVIDIAProvider(LLMProvider):
         payload.update({k: v for k, v in kwargs.items() if k not in ("request_timeout",)})
 
         timeout = aiohttp.ClientTimeout(total=kwargs.get("request_timeout", LLM_REQUEST_TIMEOUT))
-        async with aiohttp.ClientSession(timeout=timeout) as session, session.post(
-            f"{self.base_url}/chat/completions",
-            headers=headers,
-            json=payload
-        ) as response:
-            response.raise_for_status()
-            data = await response.json()
-            return data["choices"][0]["message"]["content"]
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session, session.post(
+                f"{self.base_url}/chat/completions",
+                headers=headers,
+                json=payload
+            ) as response:
+                response.raise_for_status()
+                data = await response.json()
+                return data["choices"][0]["message"]["content"]
+        except aiohttp.ClientResponseError as e:
+            raise _sanitize_aiohttp_error(e) from e
 
     async def stream_chat(
         self,
@@ -769,42 +851,48 @@ class NVIDIAProvider(LLMProvider):
         payload.update({k: v for k, v in kwargs.items() if k not in ("request_timeout",)})
 
         timeout = aiohttp.ClientTimeout(total=kwargs.get("request_timeout", LLM_REQUEST_TIMEOUT))
-        async with aiohttp.ClientSession(timeout=timeout) as session, session.post(
-            f"{self.base_url}/chat/completions",
-            headers=headers,
-            json=payload
-        ) as response:
-            response.raise_for_status()
-            async for line in response.content:
-                line = line.decode("utf-8").strip()
-                if not line.startswith("data: "):
-                    continue
-                data = line[6:]
-                if data == "[DONE]":
-                    break
-                try:
-                    import json
-                    chunk = json.loads(data)
-                except Exception:
-                    continue
-                delta = chunk.get("choices", [{}])[0].get("delta", {})
-                reasoning = delta.get("reasoning_content")
-                if reasoning is not None:
-                    yield reasoning
-                content = delta.get("content")
-                if content is not None:
-                    yield content
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session, session.post(
+                f"{self.base_url}/chat/completions",
+                headers=headers,
+                json=payload
+            ) as response:
+                response.raise_for_status()
+                async for line in response.content:
+                    line = line.decode("utf-8").strip()
+                    if not line.startswith("data: "):
+                        continue
+                    data = line[6:]
+                    if data == "[DONE]":
+                        break
+                    try:
+                        import json
+                        chunk = json.loads(data)
+                    except Exception:
+                        continue
+                    delta = chunk.get("choices", [{}])[0].get("delta", {})
+                    reasoning = delta.get("reasoning_content")
+                    if reasoning is not None:
+                        yield reasoning
+                    content = delta.get("content")
+                    if content is not None:
+                        yield content
+        except aiohttp.ClientResponseError as e:
+            raise _sanitize_aiohttp_error(e) from e
 
     async def list_models(self) -> List[str]:
         headers = {"Authorization": f"Bearer {self.api_key}"}
         timeout = aiohttp.ClientTimeout(total=60)
-        async with aiohttp.ClientSession(timeout=timeout) as session, session.get(
-            f"{self.base_url}/models",
-            headers=headers
-        ) as response:
-            response.raise_for_status()
-            data = await response.json()
-            return [model["id"] for model in data.get("data", [])]
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session, session.get(
+                f"{self.base_url}/models",
+                headers=headers
+            ) as response:
+                response.raise_for_status()
+                data = await response.json()
+                return [model["id"] for model in data.get("data", [])]
+        except aiohttp.ClientResponseError as e:
+            raise _sanitize_aiohttp_error(e) from e
 
 
 class OpenAICompatibleProvider(LLMProvider):
@@ -894,14 +982,17 @@ class OpenAICompatibleProvider(LLMProvider):
         }
 
         timeout = aiohttp.ClientTimeout(total=kwargs.get("request_timeout", LLM_REQUEST_TIMEOUT))
-        async with aiohttp.ClientSession(timeout=timeout) as session, session.post(
-            f"{self.base_url}/chat/completions",
-            headers=headers,
-            json=payload
-        ) as response:
-            response.raise_for_status()
-            data = await response.json()
-            return data["choices"][0]["message"]["content"]
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session, session.post(
+                f"{self.base_url}/chat/completions",
+                headers=headers,
+                json=payload
+            ) as response:
+                response.raise_for_status()
+                data = await response.json()
+                return data["choices"][0]["message"]["content"]
+        except aiohttp.ClientResponseError as e:
+            raise _sanitize_aiohttp_error(e) from e
 
 
     async def stream_chat(
@@ -925,26 +1016,29 @@ class OpenAICompatibleProvider(LLMProvider):
         }
 
         timeout = aiohttp.ClientTimeout(total=kwargs.get("request_timeout", LLM_REQUEST_TIMEOUT))
-        async with aiohttp.ClientSession(timeout=timeout) as session, session.post(
-            f"{self.base_url}/chat/completions",
-            headers=headers,
-            json=payload
-        ) as response:
-            response.raise_for_status()
-            async for line in response.content:
-                line = line.decode("utf-8").strip()
-                if line.startswith("data: "):
-                    data = line[6:]
-                    if data == "[DONE]":
-                        break
-                    try:
-                        import json
-                        chunk = json.loads(data)
-                        content = chunk["choices"][0].get("delta", {}).get("content", "")
-                        if content:
-                            yield content
-                    except Exception:
-                        continue
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session, session.post(
+                f"{self.base_url}/chat/completions",
+                headers=headers,
+                json=payload
+            ) as response:
+                response.raise_for_status()
+                async for line in response.content:
+                    line = line.decode("utf-8").strip()
+                    if line.startswith("data: "):
+                        data = line[6:]
+                        if data == "[DONE]":
+                            break
+                        try:
+                            import json
+                            chunk = json.loads(data)
+                            content = chunk["choices"][0].get("delta", {}).get("content", "")
+                            if content:
+                                yield content
+                        except Exception:
+                            continue
+        except aiohttp.ClientResponseError as e:
+            raise _sanitize_aiohttp_error(e) from e
 
     async def list_models(self) -> List[str]:
         # Not every OpenAI-compatible server implements a /models endpoint
@@ -962,6 +1056,8 @@ class OpenAICompatibleProvider(LLMProvider):
             ) as response:
                 response.raise_for_status()
                 data = await response.json()
+        except aiohttp.ClientResponseError as e:
+            raise _sanitize_aiohttp_error(e) from e
         except Exception:
             return []
 

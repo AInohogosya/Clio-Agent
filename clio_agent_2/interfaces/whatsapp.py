@@ -188,6 +188,9 @@ class WhatsAppInterface:
             sender_id = msg.from_user.wa_id if msg.from_user else "unknown"
             logger.info(f"Received message from {sender_id}: {text[:100]}...")
 
+            # FUNC-09: Track last user for proactive/autonomous messages
+            self._set_last_user(sender_id)
+
             # Access control: if allowed users exist, reject unauthorized senders.
             if not self._is_authorized(sender_id):
                 logger.warning(
@@ -248,18 +251,25 @@ class WhatsAppInterface:
             return
         await self.send_message(message)
 
+    def _set_last_user(self, wa_id: str) -> None:
+        """Track the last user who sent a message for proactive delivery."""
+        self._last_user_wa_id = wa_id
+
     async def send_message(self, message: str) -> None:
         """
-        Best-effort send a text message to the last known WhatsApp chat.
-        This is intended for autonomous / proactive delivery. In the webhook
-        model there is no persistent ``msg`` object outside a request handler,
-        so this is a no-op unless the framework surfaces an outbound sender.
+        Best-effort send a text message to the last known WhatsApp user.
+        This is intended for autonomous / proactive delivery.
         """
         if not PYWA_AVAILABLE or self._wa is None:
             return
+        # FUNC-09: Send to last known user, not the bot's own phone number
+        target_wa_id = getattr(self, "_last_user_wa_id", None)
+        if not target_wa_id:
+            logger.warning("No WhatsApp user to send proactive message to")
+            return
         try:
             await self._wa.send_message(
-                to=self.phone_number_id, text=message,
+                to=target_wa_id, text=message,
             )
         except Exception as e:
             logger.warning("Could not send proactive WhatsApp message: %s", e)

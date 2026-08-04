@@ -49,6 +49,8 @@ class DiscordInterface:
         # ``on_ready`` event can fire multiple times (every reconnect/resume),
         # so we guard registration to avoid ``CommandAlreadyRegistered`` errors.
         self._commands_registered = False
+        # FUNC-07: Initialize restored message to None to avoid sending on early on_ready
+        self._restored_msg = None
 
         cfg = getattr(agent, "config", None)
         from main import get_authorized_users, get_authorized_discord_user_ids

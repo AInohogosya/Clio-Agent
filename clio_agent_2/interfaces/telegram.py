@@ -367,15 +367,18 @@ class TelegramInterface:
             loop = asyncio.get_running_loop()
             deadline = loop.time() + MESSAGE_PROCESS_TIMEOUT
             try:
+                # FUNC-06: Use a slightly longer timeout for the outer watchdog
+                # so it doesn't cut off the agent's internal retries which stop
+                # at the deadline. Add 5 seconds buffer.
                 response = await asyncio.wait_for(
                     self.agent.process_message(user_message, deadline=deadline),
-                    timeout=MESSAGE_PROCESS_TIMEOUT,
+                    timeout=MESSAGE_PROCESS_TIMEOUT + 5.0,
                 )
             except asyncio.TimeoutError:
                 logger.error(
                     "Telegram message from chat %s timed out after %.0fs",
                     chat_id,
-                    MESSAGE_PROCESS_TIMEOUT,
+                    MESSAGE_PROCESS_TIMEOUT + 5.0,
                 )
                 await self._send_one(
                     context.bot,
