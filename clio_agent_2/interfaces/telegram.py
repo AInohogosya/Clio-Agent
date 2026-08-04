@@ -199,6 +199,31 @@ class TelegramInterface:
         # or shut down cleanly instead of crashing with a traceback.
         self._conflict_event: Optional[asyncio.Event] = None
 
+        cfg = getattr(agent, "config", None)
+        from main import get_authorized_users, get_authorized_telegram_chat_ids
+        self._allowed_users = get_authorized_users(cfg) if cfg else frozenset()
+        self._allowed_chat_ids = get_authorized_telegram_chat_ids() if cfg else frozenset()
+
+    def _is_authorized(self, username: str, user_id: str, chat_id: int) -> bool:
+        """Return True if the sender is allowed to command this agent.
+
+        If no allowed users/chat IDs are configured, everyone is allowed
+        (the friendly local-agent default). When allowed lists are set,
+        the username, user_id, or chat_id must be in the set.
+        """
+        if not self._allowed_users and not self._allowed_chat_ids:
+            return True
+        identity = (username or "").lower()
+        if identity and identity in self._allowed_users:
+            return True
+        user_id_str = str(user_id or "").lower()
+        if user_id_str and user_id_str in self._allowed_users:
+            return True
+        chat_id_str = str(chat_id)
+        if chat_id_str in self._allowed_chat_ids:
+            return True
+        return False
+
     async def _send_one(self, bot, cid: int, *, markdown: bool, text: str, fallback_text: str):
         """
         Send a single message to ``cid``.
@@ -286,8 +311,24 @@ class TelegramInterface:
         chat_id = update.effective_chat.id
         user_message = update.message.text
         user_name = update.effective_user.username or update.effective_user.first_name
+        user_id = str(update.effective_user.id)
 
         if not user_message:
+            return
+
+        # Access control: if allowed users exist, reject unauthorized senders.
+        if not self._is_authorized(user_name, user_id, chat_id):
+            logger.warning(
+                "Unauthorized Telegram user %s (id=%s, chat=%s) tried to command the bot.",
+                user_name, user_id, chat_id,
+            )
+            try:
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text="⛔ You are not authorised to control this agent.",
+                )
+            except Exception:
+                pass
             return
 
         # Log the incoming message to console (same as CLI mode)
@@ -359,11 +400,10 @@ class TelegramInterface:
             # Log the response to console
             print(f"[Telegram] Agent: {response[:200]}..." if len(response) > 200 else f"[Telegram] Agent: {response}")
 
-            # The reply system has been removed: process_message no longer
-            # returns a natural-language reply, so there is nothing to send
-            # here in the normal case. User-facing output is delivered through
-            # the response callback (send_response -> handle_autonomous_message).
-            # Only non-empty returns (e.g. internal errors) are sent.
+            # User-facing output is delivered solely through the response
+            # callback (say tool -> handle_autonomous_message). process_message
+            # returns "" by contract; checking for a non-empty response here is
+            # dead code retained for defensive backward compatibility.
             if response:
                 await self._send_long_message(context.bot, chat_id, response)
 

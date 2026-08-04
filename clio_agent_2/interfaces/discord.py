@@ -50,6 +50,25 @@ class DiscordInterface:
         # so we guard registration to avoid ``CommandAlreadyRegistered`` errors.
         self._commands_registered = False
 
+        cfg = getattr(agent, "config", None)
+        from main import get_authorized_users, get_authorized_discord_user_ids
+        self._allowed_users = get_authorized_users(cfg) if cfg else frozenset()
+        self._allowed_discord_ids = get_authorized_discord_user_ids() if cfg else frozenset()
+
+    def _is_authorized(self, username: str, user_id: int) -> bool:
+        """Return True if the sender is allowed to command this agent."""
+        if not self._allowed_users and not self._allowed_discord_ids:
+            return True
+        identity = (username or "").lower()
+        if identity and identity in self._allowed_users:
+            return True
+        user_id_str = str(user_id)
+        if user_id_str in self._allowed_users:
+            return True
+        if user_id_str in self._allowed_discord_ids:
+            return True
+        return False
+
     async def send_message(self, message: str, channel: discord.TextChannel = None):
         """
         Send a message through the Discord bot.
@@ -88,6 +107,22 @@ class DiscordInterface:
             return
 
         user_message = message.content
+
+        # Access control: if allowed users exist, reject unauthorized senders.
+        user_name = message.author.name
+        user_id = message.author.id
+        if not self._is_authorized(user_name, user_id):
+            logger.warning(
+                "Unauthorized Discord user %s (id=%s) tried to command the bot.",
+                user_name, user_id,
+            )
+            try:
+                await message.channel.send(
+                    "⛔ You are not authorised to control this agent."
+                )
+            except Exception:
+                pass
+            return
 
         # Check if bot is mentioned (for server messages)
         if isinstance(message.channel, discord.TextChannel):
@@ -133,18 +168,9 @@ class DiscordInterface:
                     )
                     return
 
-                # ``process_message`` is guaranteed to return a string, but
-                # never let a ``None`` reach ``len()`` in ``send_message``
-                # (defence-in-depth against an empty model completion).
-                if response is None:
-                    response = "⚠️ Sorry, I was unable to generate a response."
-
-                # The reply system has been removed: process_message no longer
-                # returns a natural-language reply, so there is nothing to send
-                # here in the normal case. User-facing output is delivered
-                # through the response callback (send_response ->
-                # handle_autonomous_message). Only non-empty returns (e.g.
-                # internal errors) are sent.
+                # process_message returns "" by contract; user-facing output is delivered
+                # solely through the response callback (say tool -> handle_autonomous_message).
+                # This check is retained for defensive backward compatibility.
                 if response:
                     await self.send_message(response, message.channel)
 

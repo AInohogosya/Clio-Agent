@@ -185,8 +185,12 @@ class ClioAgent:
             Compressed summary string
         """
         try:
-            # Create summary request
-            entries_text = "\n".join([str(e) for e in entries_to_compress[-50:]])  # Last 50 entries
+            # Create summary request — limit to last 30 entries and cap total
+            # raw text to avoid sending a huge block that overflows the
+            # compressor's own context window.
+            entries_text = "\n".join([str(e) for e in entries_to_compress[-30:]])
+            if len(entries_text) > 4000:
+                entries_text = entries_text[:4000] + "\n... (truncated)"
 
             messages = [
                 {"role": "system", "content": "Summarize the following agent activity log concisely, preserving key information:"},

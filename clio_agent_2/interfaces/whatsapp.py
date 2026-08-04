@@ -91,6 +91,22 @@ class WhatsAppInterface:
         self._server_task = None
         self._wa = None
 
+        cfg = getattr(agent, "config", None)
+        from main import get_authorized_users, get_authorized_whatsapp_ids
+        self._allowed_users = get_authorized_users(cfg) if cfg else frozenset()
+        self._allowed_wa_ids = get_authorized_whatsapp_ids() if cfg else frozenset()
+
+    def _is_authorized(self, wa_id: str) -> bool:
+        """Return True if the sender is allowed to command this agent."""
+        if not self._allowed_users and not self._allowed_wa_ids:
+            return True
+        wa_id_lower = (wa_id or "").lower()
+        if wa_id_lower in self._allowed_users:
+            return True
+        if wa_id_lower in self._allowed_wa_ids:
+            return True
+        return False
+
     async def start(self) -> None:
         """Start the WhatsApp interface and begin listening for messages."""
         if not PYWA_AVAILABLE:
@@ -172,6 +188,15 @@ class WhatsAppInterface:
             sender_id = msg.from_user.wa_id if msg.from_user else "unknown"
             logger.info(f"Received message from {sender_id}: {text[:100]}...")
 
+            # Access control: if allowed users exist, reject unauthorized senders.
+            if not self._is_authorized(sender_id):
+                logger.warning(
+                    "Unauthorized WhatsApp user %s tried to command the bot.",
+                    sender_id,
+                )
+                await msg.reply("⛔ You are not authorised to control this agent.")
+                return
+
             # Process through agent with timeout
             try:
                 response = await asyncio.wait_for(
@@ -213,6 +238,31 @@ class WhatsAppInterface:
                 else:
                     await msg.reply(f"(cont.) {chunk}")
                 await asyncio.sleep(0.5)  # Small delay between chunks
+
+    async def handle_autonomous_message(self, message: str):
+        """
+        Callback for autonomous mode messages — mirrors the Telegram/Discord
+        pattern so the agent's ``say`` tool can reach WhatsApp users.
+        """
+        if message.startswith("[Autonomous Thought]"):
+            return
+        await self.send_message(message)
+
+    async def send_message(self, message: str) -> None:
+        """
+        Best-effort send a text message to the last known WhatsApp chat.
+        This is intended for autonomous / proactive delivery. In the webhook
+        model there is no persistent ``msg`` object outside a request handler,
+        so this is a no-op unless the framework surfaces an outbound sender.
+        """
+        if not PYWA_AVAILABLE or self._wa is None:
+            return
+        try:
+            await self._wa.send_message(
+                to=self.phone_number_id, text=message,
+            )
+        except Exception as e:
+            logger.warning("Could not send proactive WhatsApp message: %s", e)
 
     async def stop(self) -> None:
         """Stop the WhatsApp interface gracefully."""
@@ -287,6 +337,18 @@ async def run_whatsapp() -> None:
         webhook_url=config.whatsapp_webhook_url,
         port=config.whatsapp_webhook_port or 8080
     )
+
+    # Register the response callback so the agent can send messages back.
+    # Without this, the agent's ``say`` command has no way to reach the user
+    # and messages are silently dropped.
+    agent.register_response_callback(interface.handle_autonomous_message)
+    restored_msg = await agent.initialize()
+    if restored_msg:
+        try:
+            await interface.send_message(restored_msg)
+        except Exception:
+            pass
+    await agent.ensure_autonomous_loop()
 
     try:
         await interface.start()

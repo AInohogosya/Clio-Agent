@@ -76,6 +76,15 @@ class ContextLog:
             while len(self.working_window) > self.window_size:
                 self._cold_pending.append(self.working_window.popleft())
 
+            # Enforce max_lines by dropping the oldest entries from the cold
+            # pending queue. Without this, the internal storage grows unbounded
+            # even though the hot window is kept small.
+            while (len(self.working_window) + len(self._cold_pending)) > self.max_lines:
+                if self._cold_pending:
+                    self._cold_pending.pop(0)
+                else:
+                    self.working_window.popleft()
+
             self._dirty = True
             if self.persist_path and self._entry_count % 10 == 0:
                 await asyncio.to_thread(self._save_to_file)

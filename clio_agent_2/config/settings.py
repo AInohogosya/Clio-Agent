@@ -82,8 +82,9 @@ def _dump_yaml_scalar(value) -> str:
         s == ""
         or s.lower() in ("true", "false", "null", "yes", "no", "on", "off")
         or s[0] in ("!", "&", "*", "?", "|", ">", "%", "@", "`", "#", "-", "{", "[")
-        or ":" in s or "#" in s
-        or any(c in s for c in (": ", "#"))
+        or s[0] in ("'", '"')
+        or ": " in s or "#" in s
+        or " #" in s
     )
     if needs_quote:
         escaped = s.replace("\\", "\\\\").replace('"', '\\"')
@@ -151,6 +152,12 @@ class Config:
         # Bot Tokens
         self.telegram_bot_token: Optional[str] = os.getenv("TELEGRAM_BOT_TOKEN", "").strip() or None
         self.discord_bot_token: Optional[str] = os.getenv("DISCORD_BOT_TOKEN", "").strip() or None
+
+        # Bot Interface Access Control
+        self.allowed_users: Optional[str] = os.getenv("ALLOWED_USERS", "").strip() or None
+        self.allowed_telegram_chat_ids: Optional[str] = os.getenv("ALLOWED_TELEGRAM_CHAT_IDS", "").strip() or None
+        self.allowed_discord_user_ids: Optional[str] = os.getenv("ALLOWED_DISCORD_USER_IDS", "").strip() or None
+        self.allowed_whatsapp_ids: Optional[str] = os.getenv("ALLOWED_WHATSAPP_IDS", "").strip() or None
 
         # WhatsApp Business API Configuration
         self.whatsapp_phone_number_id: Optional[str] = os.getenv("WHATSAPP_PHONE_NUMBER_ID", "").strip() or None
@@ -538,6 +545,10 @@ class Config:
             "agent_name": self.agent_name,
             "autonomous_mode": self.autonomous_mode,
             "thinking_interval": self.thinking_interval,
+            "allowed_users": self.allowed_users,
+            "allowed_telegram_chat_ids": self.allowed_telegram_chat_ids,
+            "allowed_discord_user_ids": self.allowed_discord_user_ids,
+            "allowed_whatsapp_ids": self.allowed_whatsapp_ids,
             "api_keys_configured": self.validate_api_keys(),
             "custom_providers": custom,
         }

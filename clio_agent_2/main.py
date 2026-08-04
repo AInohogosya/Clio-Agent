@@ -409,6 +409,14 @@ DEEPSEEK_API_KEY=your_deepseek_api_key_here
 # DEEPINFRA_API_KEY=your_deepinfra_api_key_here
 # OLLAMA_API_KEY=your_ollama_api_key_here
 
+# Bot Access Control (optional — restrict which users can command the bot)
+# Comma-separated usernames, chat IDs, or WhatsApp phone numbers.
+# Leave blank to allow anyone (INSECURE for production).
+ALLOWED_USERS=
+ALLOWED_TELEGRAM_CHAT_IDS=
+ALLOWED_DISCORD_USER_IDS=
+ALLOWED_WHATSAPP_IDS=
+
 # Bot Tokens (optional - for Telegram/Discord/WhatsApp interfaces)
 TELEGRAM_BOT_TOKEN=your_telegram_bot_token_here
 DISCORD_BOT_TOKEN=your_discord_bot_token_here
@@ -622,6 +630,44 @@ def _is_real_secret(value) -> bool:
         return config._is_real_secret(value)
     except Exception:
         return False
+
+
+
+def get_authorized_users(cfg) -> frozenset:
+    """Return the set of authorized usernames/IDs for bot interfaces.
+
+    Reads ALLOWED_USERS (comma-separated, case-insensitive). When non-empty,
+    only these users may command the bot. When empty, *no* restriction is applied
+    (defaults to the sharing-friendly local-agent posture). For production
+    deployment, populate this list so any random Telegram/Discord user
+    cannot drive an agent that runs shell commands and writes files.
+    """
+    raw = (getattr(cfg, "allowed_users", "") or "").strip()
+    if not raw:
+        return frozenset()
+    return frozenset(u.strip().lower() for u in raw.split(",") if u.strip())
+
+
+def get_authorized_telegram_chat_ids() -> frozenset:
+    """Return per-interface Telegram allowed chat IDs."""
+    raw = (getattr(config, "allowed_telegram_chat_ids", "") or "").strip()
+    if not raw:
+        return frozenset()
+    return frozenset(u.strip().lower() for u in raw.split(",") if u.strip())
+
+
+def get_authorized_discord_user_ids() -> frozenset:
+    raw = (getattr(config, "allowed_discord_user_ids", "") or "").strip()
+    if not raw:
+        return frozenset()
+    return frozenset(u.strip().lower() for u in raw.split(",") if u.strip())
+
+
+def get_authorized_whatsapp_ids() -> frozenset:
+    raw = (getattr(config, "allowed_whatsapp_ids", "") or "").strip()
+    if not raw:
+        return frozenset()
+    return frozenset(u.strip().lower() for u in raw.split(",") if u.strip())
 
 
 

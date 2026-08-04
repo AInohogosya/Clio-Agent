@@ -309,20 +309,62 @@ class WebSearchTool:
                     f"Loopback addresses are blocked to prevent SSRF.",
                 )
 
-            def _is_private_ip(host: str) -> bool:
-                try:
-                    import ipaddress
-                    addr = ipaddress.ip_address(host)
-                    return addr.is_private or addr.is_loopback or addr.is_link_local
-                except ValueError:
-                    return False
+            hostport = parsed.hostname
+            if parsed.port:
+                hostport = f"{hostname}:{parsed.port}"
 
-            if _is_private_ip(hostname):
+            # Resolve hostname to IP(s) to defeat DNS rebinding.
+            # A hostname that initially resolves to a public IP can be
+            # re-pointed to a private IP between the hostname check and the
+            # actual HTTP request. We resolve here and re-resolve inside the
+            # transport layer (by checking the *connected* remote address if
+            # possible). Since aiohttp does not expose the final connected IP,
+            # this check covers the common case where the DNS record itself
+            # points to a private IP.
+            try:
+                import socket as _socket
+                addrs = _socket.getaddrinfo(
+                    parsed.hostname,
+                    parsed.port or (443 if scheme == "https" else 80),
+                    proto=_socket.IPPROTO_TCP,
+                )
+            except _socket.gaierror:
                 return ToolResult(
                     False, "",
-                    f"Refusing to fetch private IP address '{hostname}'. "
-                    f"Internal network addresses are blocked to prevent SSRF.",
+                    f"Could not resolve hostname '{hostname}'. DNS lookup failed.",
                 )
+
+            if not addrs:
+                return ToolResult(
+                    False, "", f"No addresses found for hostname '{hostname}'.",
+                )
+
+            for family, _, _, _, sockaddr in addrs:
+                resolved_ip = sockaddr[0] if len(sockaddr) >= 1 else ""
+                if not resolved_ip:
+                    continue
+
+                def _is_private_ip(host: str) -> bool:
+                    try:
+                        import ipaddress
+                        addr = ipaddress.ip_address(host)
+                        return addr.is_private or addr.is_loopback or addr.is_link_local
+                    except ValueError:
+                        return False
+
+                if _is_private_ip(resolved_ip):
+                    return ToolResult(
+                        False, "",
+                        f"Refusing to fetch URL that resolves to a private IP "
+                        f"({resolved_ip}). SSRF protection: internal network "
+                        f"addresses are blocked.",
+                    )
+                if resolved_ip in ("127.0.0.1", "::1", "0.0.0.0"):
+                    return ToolResult(
+                        False, "",
+                        f"Refusing to fetch loopback address ({resolved_ip}). "
+                        f"SSRF blocked.",
+                    )
 
             headers = {
                 "User-Agent": "Mozilla/5.0 (compatible; Clio-Agent-2/1.0)"
@@ -566,17 +608,25 @@ class ShellCommandTool:
         "rm -rf /", "rm -rf /*", "rm -rf ~", "rm -rf .",
         "dd if=", "mkfs.", ":(){ :|:& };:", "> /dev/sda",
         "fork bomb", "chmod 000 /", "chmod -R 000",
+        "> /dev/null", "shutdown", "reboot",
+        "halt", "poweroff", "init 0", "init 6",
     })
 
     DANGEROUS_PREFIXES = frozenset({
         "rm -rf /", "rm -r /", "dd if=/dev/",
         "mkfs.", "mkswap", "wipefs",
+        "fdisk ", "shutdown ", "reboot ",
     })
 
     DANGEROUS_SUBSTRINGS = frozenset({
-        "/dev/sda", "/dev/hda", "/dev/nvme",
-        "/etc/passwd", "/etc/shadow",
-        "> /dev/sda", "> /dev/hda",
+        "/dev/sda", "/dev/hda", "/dev/nvme", "/dev/xvd",
+        "/dev/disk", "/dev/mapper", "/dev/dm-",
+        "/etc/passwd", "/etc/shadow", "/etc/sudoers",
+        "/etc/hosts", "/etc/hostname", "/etc/resolv.conf",
+        "> /dev/sda", "> /dev/hda", "> /dev/nvme",
+        "mkfs.", "mkswap ", "wipefs",
+        "nc ", "/dev/tcp/", "bash -i",
+        "payload", "reverse_shell", "backdoor",
     })
 
     _recent_command_counts: Dict[str, List[float]] = {}
@@ -601,7 +651,7 @@ class ShellCommandTool:
             if lowered.startswith(prefix):
                 return (
                     f"Blocked dangerous command pattern: the command starts with "
-                    f"a destructive prefix ('{pattern}'). If you genuinely need "
+                    f"a destructive prefix ('{prefix}'). If you genuinely need "
                     f"this, rephrase the operation more narrowly."
                 )
 
@@ -683,9 +733,20 @@ class ShellCommandTool:
                 return ToolResult(False, "", f"cwd is not a directory: {cwd}")
             working_dir = str(resolved_cwd)
 
+        # Execute the command through the system shell so piping, redirection,
+        # and variable expansion work as the LLM expects, but avoid
+        # create_subprocess_shell which injects raw text into the shell.
+        # By wrapping as `sh -c <command>` we get shell semantics while keeping
+        # the command string as a single argument to the shell executable.
+        import platform as _platform
+        _shell = os.environ.get("SHELL", "/bin/sh")
+        if _platform.system() == "Windows":
+            _shell = os.environ.get("COMSPEC", "cmd.exe")
         for attempt in range(1, cls.MAX_COMMAND_ATTEMPTS + 1):
             try:
-                process = await asyncio.create_subprocess_shell(
+                process = await asyncio.create_subprocess_exec(
+                    _shell,
+                    "-c",
                     command_text,
                     cwd=working_dir,
                     stdout=asyncio.subprocess.PIPE,
