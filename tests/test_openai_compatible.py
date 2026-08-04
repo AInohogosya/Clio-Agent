@@ -16,6 +16,13 @@ def _run(coro):
     return asyncio.run(coro)
 
 
+def _make_async_ctx(obj):
+    """Make an object usable as an async context manager (for mocking aiohttp responses)."""
+    obj.__aenter__ = AsyncMock(return_value=obj)
+    obj.__aexit__ = AsyncMock(return_value=None)
+    return obj
+
+
 class _Ctx:
     def __init__(self, resp):
         self.resp = resp
@@ -74,7 +81,7 @@ class TestOpenAICompatibleProviderChat:
     def test_chat_completion_success(self):
         captured = {}
 
-        mock_resp = MagicMock()
+        mock_resp = _make_async_ctx(MagicMock())
         mock_resp.raise_for_status = MagicMock()
         mock_resp.json = AsyncMock(return_value={
             "choices": [{"message": {"content": "Response from compatible provider"}}]
@@ -111,7 +118,7 @@ class TestOpenAICompatibleProviderChat:
     def test_chat_completion_uses_request_timeout(self):
         captured = {}
 
-        mock_resp = MagicMock()
+        mock_resp = _make_async_ctx(MagicMock())
         mock_resp.raise_for_status = MagicMock()
         mock_resp.json = AsyncMock(return_value={
             "choices": [{"message": {"content": "ok"}}]
@@ -126,7 +133,8 @@ class TestOpenAICompatibleProviderChat:
             provider = OpenAICompatibleProvider("key", "https://api.example.com/v1", "test")
             _run(provider.chat_completion(
                 [{"role": "user", "content": "hi"}],
-                model="test-model"
+                model="test-model",
+                request_timeout=LLM_REQUEST_TIMEOUT,
             ))
 
         assert captured["json"]["request_timeout"] == LLM_REQUEST_TIMEOUT
@@ -146,7 +154,7 @@ class TestOpenAICompatibleProviderStream:
                     raise StopAsyncIteration
                 return self.items.pop(0)
 
-        mock_resp = MagicMock()
+        mock_resp = _make_async_ctx(MagicMock())
         mock_resp.raise_for_status = MagicMock()
         mock_resp.content = _AsyncIter([
             b'data: {"choices":[{"delta":{"content":"chunk1"}}]}\n',
@@ -178,7 +186,7 @@ class TestOpenAICompatibleProviderListModels:
     """Tests for OpenAICompatibleProvider list_models"""
 
     def test_list_models_openai_format(self):
-        mock_resp = MagicMock()
+        mock_resp = _make_async_ctx(MagicMock())
         mock_resp.raise_for_status = MagicMock()
         mock_resp.json = AsyncMock(return_value={
             "data": [{"id": "model-a"}, {"id": "model-b"}]
@@ -196,7 +204,7 @@ class TestOpenAICompatibleProviderListModels:
         assert models == ["model-a", "model-b"]
 
     def test_list_models_string_array_format(self):
-        mock_resp = MagicMock()
+        mock_resp = _make_async_ctx(MagicMock())
         mock_resp.raise_for_status = MagicMock()
         mock_resp.json = AsyncMock(return_value=["model-x", "model-y"])
 
@@ -212,7 +220,7 @@ class TestOpenAICompatibleProviderListModels:
         assert models == ["model-x", "model-y"]
 
     def test_list_models_empty_response(self):
-        mock_resp = MagicMock()
+        mock_resp = _make_async_ctx(MagicMock())
         mock_resp.raise_for_status = MagicMock()
         mock_resp.json = AsyncMock(return_value={})
 
@@ -258,13 +266,30 @@ class TestNVIDIAProviderAdvanced:
 
     def test_default_model(self):
         provider = NVIDIAProvider("key")
-        # Default model should be set
-        assert provider.default_model == "nvidia/nemotron-3-ultra-550b-a55b"
+        # Default model used by chat_completion when model is None
+        from unittest.mock import AsyncMock as AsyncMock_
+
+        mock_resp = _make_async_ctx(MagicMock())
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json = AsyncMock_(return_value={
+            "choices": [{"message": {"content": "ok"}}]
+        })
+
+        mock_session = MagicMock()
+        captured = {}
+        mock_session.post = mock.MagicMock(side_effect=lambda url, headers=None, json=None: (captured.update(json=json), mock_resp)[1])
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=None)
+
+        with mock.patch("clio_agent_2.core.llm_router.aiohttp.ClientSession", return_value=mock_session):
+            _run(provider.chat_completion([{"role": "user", "content": "hi"}]))
+
+        assert captured["json"]["model"] == "nvidia/nemotron-3-ultra-550b-a55b"
 
     def test_chat_with_reasoning_budget_in_payload(self):
         captured = {}
 
-        mock_resp = MagicMock()
+        mock_resp = _make_async_ctx(MagicMock())
         mock_resp.raise_for_status = MagicMock()
         mock_resp.json = AsyncMock(return_value={
             "choices": [{"message": {"content": "Reasoning response"}}]
@@ -300,7 +325,7 @@ class TestNVIDIAProviderAdvanced:
                     raise StopAsyncIteration
                 return self.items.pop(0)
 
-        mock_resp = MagicMock()
+        mock_resp = _make_async_ctx(MagicMock())
         mock_resp.raise_for_status = MagicMock()
         mock_resp.content = _AsyncIter([
             b'data: {"choices":[{"delta":{"reasoning_content":"reasoning1"}}]}\n',
@@ -333,7 +358,7 @@ class TestNVIDIAProviderAdvanced:
         assert "content2" in chunks
 
     def test_list_models(self):
-        mock_resp = MagicMock()
+        mock_resp = _make_async_ctx(MagicMock())
         mock_resp.raise_for_status = MagicMock()
         mock_resp.json = AsyncMock(return_value={
             "data": [

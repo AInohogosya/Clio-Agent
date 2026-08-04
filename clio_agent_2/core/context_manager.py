@@ -1,6 +1,7 @@
 import asyncio
 import json
 import shutil
+import threading
 from collections import deque
 from datetime import datetime
 from pathlib import Path
@@ -55,13 +56,14 @@ class ContextLog:
         self.encoding_model = encoding_model
         self._entry_count = 0
 
-        self.working_window = deque(maxlen=window_size)
+        self.working_window = deque()
         self.working_summary = ""
         self._cold_pending = []
 
         self.is_compressing = False
         self._dirty = False
         self._lock = asyncio.Lock()
+        self._file_lock = threading.Lock()
         self.persist_path = Path(persist_path) if persist_path else None
         self.archive_path = Path(archive_path) if archive_path else None
 
@@ -106,17 +108,23 @@ class ContextLog:
         try:
             batch = self._cold_pending
             self._cold_pending = []
+            if self.archive_path and batch:
+                await asyncio.to_thread(self._append_archive, batch)
+            self._dirty = True
+            await asyncio.to_thread(self._save_to_file)
             if self.compression_callback and batch:
                 try:
                     summary = await self.compression_callback(batch)
                 except Exception as exc:
                     summary = f"(summary unavailable: {exc})"
                 if summary:
-                    self.working_summary = f"{self.working_summary}\n{summary}".strip() if self.working_summary else summary
-            if self.archive_path and batch:
-                await asyncio.to_thread(self._append_archive, batch)
-            self._dirty = True
-            await asyncio.to_thread(self._save_to_file)
+                    async with self._lock:
+                        self.working_summary = (
+                            f"{self.working_summary}\n{summary}".strip()
+                            if self.working_summary else summary
+                        )
+                        self._dirty = True
+                    await asyncio.to_thread(self._save_to_file)
         finally:
             self.is_compressing = False
 
@@ -132,7 +140,12 @@ class ContextLog:
             messages.append({"role": role, "content": content})
         if max_tokens:
             total = sum(estimate_tokens(m["content"], self.encoding_model) for m in messages)
-            while len(messages) > 1 and total > max_tokens:
+            # Remove oldest entries while we're over budget, but always keep at
+            # least the 3 most recent entries so the LLM sees what just happened
+            # (even if that overshoots the budget slightly — better to
+            # slightly overflow than to confuse the model with a gap).
+            min_keep = min(3, len(messages))
+            while len(messages) > min_keep and total > max_tokens:
                 dropped = messages.pop(0)
                 total -= estimate_tokens(dropped["content"], self.encoding_model)
         return messages
@@ -283,8 +296,9 @@ class ContextLog:
         return True
 
     def save(self):
-        self._save_to_file()
-        self._dirty = False
+        with self._file_lock:
+            self._save_to_file()
+            self._dirty = False
 
     async def save_async(self):
         await asyncio.to_thread(self._save_to_file)

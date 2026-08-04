@@ -196,7 +196,10 @@ class GoogleProvider(LLMProvider):
             role = "user" if msg["role"] in ["user", "system"] else "model"
             contents.append({"role": role, "parts": [{"text": msg["content"]}]})
 
-        headers = {"Content-Type": "application/json"}
+        headers = {
+            "Content-Type": "application/json",
+            "x-goog-api-key": self.api_key,
+        }
 
         payload = {
             "contents": contents,
@@ -205,7 +208,7 @@ class GoogleProvider(LLMProvider):
 
         timeout = aiohttp.ClientTimeout(total=kwargs.get("request_timeout", LLM_REQUEST_TIMEOUT))
         async with aiohttp.ClientSession(timeout=timeout) as session, session.post(
-            f"{self.base_url}/models/{model}:generateContent?key={self.api_key}",
+            f"{self.base_url}/models/{model}:generateContent",
             headers=headers,
             json=payload
         ) as response:
@@ -225,7 +228,10 @@ class GoogleProvider(LLMProvider):
             role = "user" if msg["role"] in ["user", "system"] else "model"
             contents.append({"role": role, "parts": [{"text": msg["content"]}]})
 
-        headers = {"Content-Type": "application/json"}
+        headers = {
+            "Content-Type": "application/json",
+            "x-goog-api-key": self.api_key,
+        }
 
         payload = {
             "contents": contents,
@@ -234,7 +240,7 @@ class GoogleProvider(LLMProvider):
 
         timeout = aiohttp.ClientTimeout(total=kwargs.get("request_timeout", LLM_REQUEST_TIMEOUT))
         async with aiohttp.ClientSession(timeout=timeout) as session, session.post(
-            f"{self.base_url}/models/{model}:streamGenerateContent?alt=sse&key={self.api_key}",
+            f"{self.base_url}/models/{model}:streamGenerateContent?alt=sse",
             headers=headers,
             json=payload
         ) as response:
@@ -253,7 +259,8 @@ class GoogleProvider(LLMProvider):
     async def list_models(self) -> List[str]:
         timeout = aiohttp.ClientTimeout(total=60)
         async with aiohttp.ClientSession(timeout=timeout) as session, session.get(
-            f"{self.base_url}/models?key={self.api_key}"
+            f"{self.base_url}/models",
+            headers={"x-goog-api-key": self.api_key},
         ) as response:
             response.raise_for_status()
             data = await response.json()

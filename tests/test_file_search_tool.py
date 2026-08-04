@@ -203,7 +203,7 @@ class TestFileSearchToolSearchContent:
 
             assert result.success is True
             lines = result.output.split("\n")
-            match_lines = [l for l in lines if "match" in l and ":" in l]
+            match_lines = [l for l in lines if "match" in l and ":" in l and "Found" not in l]
             assert len(match_lines) <= 5
 
     def test_search_content_skips_binary_files(self):

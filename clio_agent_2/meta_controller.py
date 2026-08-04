@@ -140,10 +140,10 @@ def extract_action_block(text: str) -> str:
     # Normalise line endings for predictable matching.
     normalized = text.replace("\r\n", "\n").replace("\r", "\n")
 
-    # 1) Prefer a fenced code block that actually contains the word ACTION.
+    # 1) Prefer a fenced code block that contains ACTION as a line header.
     for match in _FENCED_BLOCK_RE.finditer(normalized):
         block = match.group(1).strip()
-        if re.search(r"\bACTION\b", block, re.IGNORECASE):
+        if re.search(r"(?m)^ACTION\b", block, re.IGNORECASE):
             return block
 
     # 2) Fall back to an explicit "ACTION" header in the free text. group(0)

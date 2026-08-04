@@ -116,7 +116,7 @@ class ClioAgent:
         self.name = config.agent_name
 
         # Import ToolRegistry here to avoid circular imports
-        from tools.tool_registry import ToolRegistry
+        from clio_agent_2.tools.tool_registry import ToolRegistry
 
         # Determine the context persist path
         project_root = Path(__file__).parent.parent
@@ -145,6 +145,8 @@ class ClioAgent:
             # Wire the agent's response channel into the `say` tool so it runs
             # like any other tool yet still reaches the user.
             response_sink=self.send_response,
+            # Restrict file operations to the project directory tree.
+            project_root=str(project_root),
         )
 
         # State management
@@ -530,7 +532,7 @@ class ClioAgent:
             continue
 
     async def process_message(
-        self, message: str, deadline: Optional[float] = None
+        self, message: str, deadline: Optional[float] = None, *, sender_id: Optional[str] = None
     ) -> str:
         """
         Process a user message.
@@ -552,13 +554,21 @@ class ClioAgent:
 
         Args:
             message: User message text
+            deadline: Optional monotonic deadline before which LLM retries
+                should stop (so the interface watchdog fires cleanly).
+            sender_id: Optional opaque platform-specific sender identifier
+                (e.g. WhatsApp phone number). Stored in the context log
+                alongside the message for multi-tenant bot platforms.
 
         Returns:
             Always an empty string. Failures are persisted to the context
             log, not returned.
         """
         try:
-            await self.context_log.add_user_message(message)
+            prefix = ""
+            if sender_id:
+                prefix = f"[{sender_id}] "
+            await self.context_log.add_user_message(prefix + message)
             messages = self._build_context_messages(message)
             await self._run_agent_turn(messages, deadline=deadline)
             # ``_run_agent_turn`` never raises here: on an LLM failure it

@@ -29,7 +29,7 @@ class TestWhatsAppInterface:
 
         mock_agent = mock.MagicMock()
         mock_agent.name = "TestBot"
-        interface = WhatsAppInterface(mock_agent)
+        interface = WhatsAppInterface(mock_agent, "123456", "fake-token")
 
         assert interface.agent is mock_agent
 
@@ -37,7 +37,7 @@ class TestWhatsAppInterface:
         from clio_agent_2.interfaces.whatsapp import WhatsAppInterface
 
         mock_agent = mock.MagicMock()
-        interface = WhatsAppInterface(mock_agent)
+        interface = WhatsAppInterface(mock_agent, "123456", "fake-token")
 
         # Verify basic structure
         assert hasattr(interface, 'agent')
@@ -62,5 +62,5 @@ class TestWhatsAppHandleMessage:
         from clio_agent_2.interfaces.whatsapp import WhatsAppInterface
 
         mock_agent = mock.MagicMock()
-        interface = WhatsAppInterface(mock_agent)
+        interface = WhatsAppInterface(mock_agent, "123456", "fake-token")
         assert interface is not None

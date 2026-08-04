@@ -280,8 +280,10 @@ class CLIInterface:
 
     async def _handle_message(self, text: str) -> None:
         try:
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + MESSAGE_PROCESS_TIMEOUT
             response = await asyncio.wait_for(
-                self.agent.process_message(text),
+                self.agent.process_message(text, deadline=deadline),
                 timeout=MESSAGE_PROCESS_TIMEOUT,
             )
             if response:

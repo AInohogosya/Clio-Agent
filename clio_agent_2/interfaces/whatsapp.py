@@ -66,7 +66,32 @@ MAX_CAPTION_LENGTH = 1024
 MAX_BUTTONS = 3
 MAX_LIST_ROWS = 10
 
-async def start(self) -> None:
+
+class WhatsAppInterface:
+    """WhatsApp Business API interface for Clio-Agent-2."""
+
+    def __init__(
+        self,
+        agent: ClioAgent,
+        phone_number_id: str,
+        access_token: str,
+        app_secret: str = "",
+        webhook_verify_token: str = "",
+        webhook_url: str = "",
+        port: int = 8080,
+    ):
+        self.agent = agent
+        self.phone_number_id = phone_number_id
+        self.access_token = access_token
+        self.app_secret = app_secret
+        self.webhook_verify_token = webhook_verify_token
+        self.webhook_url = webhook_url
+        self.port = port
+        self._running = False
+        self._server_task = None
+        self._wa = None
+
+    async def start(self) -> None:
         """Start the WhatsApp interface and begin listening for messages."""
         if not PYWA_AVAILABLE:
             raise RuntimeError(
@@ -111,7 +136,7 @@ async def start(self) -> None:
         # Keep running until cancelled
         try:
             while self._running:
-                await asyncio.sleep(3600)  # Sleep for an hour at a time
+                await asyncio.sleep(3600)
         except (KeyboardInterrupt, asyncio.CancelledError):
             pass
         finally:

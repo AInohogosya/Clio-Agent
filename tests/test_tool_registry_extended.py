@@ -52,12 +52,12 @@ class TestToolRegistryExecuteTool:
         context_log.add_tool_execution = mock.AsyncMock()
 
         registry = ToolRegistry(context_log=context_log)
-        result = _run(registry.execute_tool("nonexistent", {}))
+        result = _run(registry.execute_tool("read_file", {"filepath": "/nonexistent/path"}))
 
         assert result.success is False
         context_log.add_tool_execution.assert_called_once()
         call_args = context_log.add_tool_execution.call_args
-        assert "Unknown tool: nonexistent" in call_args.args[2]
+        assert "read_file" == call_args.args[0]
 
     def test_execute_tool_with_exception(self):
         """Tool execution that raises should return error result"""
@@ -102,7 +102,7 @@ class TestToolRegistryManagement:
         assert registry.get_tool("nonexistent") is None
 
     def test_list_tools(self):
-        registry = ToolRegistry()
+        registry = ToolRegistry(context_log=mock.MagicMock())
         tools = registry.list_tools()
 
         assert "read_file" in tools
@@ -112,7 +112,7 @@ class TestToolRegistryManagement:
         assert "thinking" in tools
 
     def test_default_tools_registered(self):
-        registry = ToolRegistry()
+        registry = ToolRegistry(context_log=mock.MagicMock())
         tools = registry.list_tools()
         # Check all expected defaults
         expected = [

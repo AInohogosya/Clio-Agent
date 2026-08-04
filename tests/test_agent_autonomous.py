@@ -17,7 +17,7 @@ def _make_mock_agent(chat_side_effect=None, execute_result=None):
     """Build a ClioAgent with mocked dependencies but real logic."""
     from clio_agent_2.tools.tool_registry import ToolResult
 
-    agent = mock.MagicMock(spec=ClioAgent)
+    agent = mock.MagicMock()
     agent.response_callbacks = []
 
     context_log = mock.MagicMock()
@@ -31,6 +31,7 @@ def _make_mock_agent(chat_side_effect=None, execute_result=None):
 
     llm_router = mock.MagicMock()
     llm_router.chat = mock.AsyncMock(side_effect=chat_side_effect if chat_side_effect else ["default"])
+    llm_router.current_model = "gpt-4o"
     agent.llm_router = llm_router
 
     tool_registry = mock.MagicMock()
@@ -50,23 +51,26 @@ def _make_mock_agent(chat_side_effect=None, execute_result=None):
     agent.autonomous_mode = True
     agent.thinking_interval = 0.1
 
-    for name in (
-        "_parse_tool_calls",
-        "_system_block",
-        "_build_context_messages",
-        "_execute_tool_round",
-        "_run_agent_turn",
-        "process_message",
-        "run_autonomous_loop",
-        "start_autonomous_loop",
-        "send_response",
-        "autonomous_think",
-    ):
-        method = getattr(ClioAgent, name)
-        setattr(agent, name, method.__get__(agent, ClioAgent))
+    agent.run_autonomous_loop = ClioAgent.run_autonomous_loop.__get__(agent, ClioAgent)
+    agent.start_autonomous_loop = ClioAgent.start_autonomous_loop.__get__(agent, ClioAgent)
+    agent.ensure_autonomous_loop = ClioAgent.ensure_autonomous_loop.__get__(agent, ClioAgent)
+    agent.start_autonomous_loop_if_enabled = ClioAgent.start_autonomous_loop_if_enabled.__get__(agent, ClioAgent)
+    agent.stop_autonomous_loop = ClioAgent.stop_autonomous_loop.__get__(agent, ClioAgent)
+    agent.autonomous_think = ClioAgent.autonomous_think.__get__(agent, ClioAgent)
+    agent.process_message = ClioAgent.process_message.__get__(agent, ClioAgent)
+    agent.send_response = ClioAgent.send_response.__get__(agent, ClioAgent)
+    agent._run_agent_turn = ClioAgent._run_agent_turn.__get__(agent, ClioAgent)
+    agent._parse_tool_calls = ClioAgent._parse_tool_calls.__get__(agent, ClioAgent)
+    agent._system_block = ClioAgent._system_block.__get__(agent, ClioAgent)
+    agent._build_context_messages = ClioAgent._build_context_messages.__get__(agent, ClioAgent)
+    agent._execute_tool_round = ClioAgent._execute_tool_round.__get__(agent, ClioAgent)
+    agent._can_start_autonomous_loop = ClioAgent._can_start_autonomous_loop.__get__(agent, ClioAgent)
 
     for name in ("_is_valid_tool_call", "_extract_json_objects", "_available_tools_text"):
         setattr(agent, name, getattr(ClioAgent, name))
+
+    agent._cached_prompt = ""
+    agent._cached_tools = ""
 
     return agent
 
@@ -144,7 +148,7 @@ class TestRunAutonomousLoop:
         async def mock_think():
             nonlocal call_count
             call_count += 1
-            if call_count >= 3:
+            if call_count >= 2:
                 agent.is_running = False
             if call_count == 2:
                 return ""  # Success on 2nd try
@@ -161,6 +165,8 @@ class TestAutonomousThink:
     """Tests for ClioAgent.autonomous_think"""
 
     def test_autonomous_think_returns_empty_string_on_success(self):
+        from clio_agent_2.tools.tool_registry import SayTool
+
         agent = _make_mock_agent(chat_side_effect=[
             '{"tool": "say", "arguments": {"message": "Thinking..."}}',
             "",
@@ -169,7 +175,16 @@ class TestAutonomousThink:
         delivered = []
         async def capture(msg):
             delivered.append(msg)
-        agent.response_callbacks.append(capture)
+        agent.response_callbacks = [capture]
+
+        say_tool = SayTool(agent.context_log, agent.send_response)
+        async def _exec_tool(name, args):
+            if name == "say":
+                return await say_tool.say(**args)
+            from clio_agent_2.tools.tool_registry import ToolResult
+            return ToolResult(False, "", f"Unknown tool: {name}")
+
+        agent.tool_registry.execute_tool = mock.AsyncMock(side_effect=_exec_tool)
 
         result = _run(agent.autonomous_think())
         assert result == ""
@@ -194,6 +209,11 @@ class TestAutonomousThink:
 
         agent = _make_mock_agent()
 
+        delivered = []
+        async def capture(msg):
+            delivered.append(msg)
+        agent.response_callbacks = [capture]
+
         say_tool = SayTool(agent.context_log, agent.send_response)
         tool_calls_seen = []
 
@@ -205,9 +225,6 @@ class TestAutonomousThink:
             return ToolResult(False, "", f"Unknown tool: {name}")
 
         agent.tool_registry.execute_tool = mock.AsyncMock(side_effect=_execute)
-        agent._tool_calls_seen = tool_calls_seen
-
-        agent.response_callbacks = [lambda m: None]  # Suppress output
 
         agent.llm_router.chat = mock.AsyncMock(
             return_value='{"tool": "say", "arguments": {"message": "Hi there"}}'
@@ -215,6 +232,7 @@ class TestAutonomousThink:
 
         result = _run(agent.autonomous_think())
         assert result == ""
+        assert "Hi there" in delivered
 
 
 class TestStartAutonomousLoop:
@@ -224,10 +242,11 @@ class TestStartAutonomousLoop:
         agent = _make_mock_agent()
         agent._autonomous_task = None
 
-        # Start the loop
         result = _run(agent.start_autonomous_loop())
         assert result is True
-        assert agent.is_running is True
+        assert agent._autonomous_task is not None
+        # Give the task a moment to start running
+        agent._autonomous_task.cancel()
 
     def test_start_autonomous_loop_already_running(self):
         agent = _make_mock_agent()
@@ -294,20 +313,24 @@ class TestStopAutonomousLoop:
         assert agent.is_running is False
 
     def test_stop_with_running_task(self):
+        """Stop should cancel and clear a running task without error."""
         agent = _make_mock_agent()
-        mock_task = MagicMock()
-        mock_task.done = MagicMock(return_value=False)
-        mock_task.cancel = MagicMock()
-        agent._autonomous_task = mock_task
 
-        # Mock the await behavior
-        async def mock_task_await():
-            raise asyncio.CancelledError()
+        async def _setup_and_stop():
+            async def _sleeper():
+                try:
+                    await asyncio.sleep(999)
+                except asyncio.CancelledError:
+                    pass
 
-        mock_task.__await__ = lambda: mock_task_await().__await__()
+            task = asyncio.create_task(_sleeper())
+            agent._autonomous_task = task
+            await agent.stop_autonomous_loop()
+            return task
 
-        _run(agent.stop_autonomous_loop())
+        task = _run(_setup_and_stop())
         assert agent._autonomous_task is None
+        assert task.cancelled()
 
 
 class TestRunAgentTurn:

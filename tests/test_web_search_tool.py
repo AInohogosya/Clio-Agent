@@ -13,6 +13,12 @@ def _run(coro):
     return asyncio.run(coro)
 
 
+def _make_async_ctx(obj):
+    obj.__aenter__ = AsyncMock(return_value=obj)
+    obj.__aexit__ = AsyncMock(return_value=None)
+    return obj
+
+
 class TestWebSearchTool:
     """Tests for WebSearchTool"""
 
@@ -22,7 +28,7 @@ class TestWebSearchTool:
         result = _run(tool.search("test query", num_results=5))
 
         assert result.success is True
-        assert "no API key provided" in result.output.lower()
+        assert "no api key provided" in result.output.lower()
         assert "SEARCH_API_KEY" in result.output
         assert "test query" in result.output
 
@@ -31,7 +37,7 @@ class TestWebSearchTool:
         tool = WebSearchTool(search_api_key="test_key")
 
         # Mock the aiohttp session
-        mock_resp = MagicMock()
+        mock_resp = _make_async_ctx(MagicMock())
         mock_resp.status = 200
         mock_resp.json = AsyncMock(return_value={
             "organic": [
@@ -58,7 +64,7 @@ class TestWebSearchTool:
         """Test search with API error response"""
         tool = WebSearchTool(search_api_key="test_key")
 
-        mock_resp = MagicMock()
+        mock_resp = _make_async_ctx(MagicMock())
         mock_resp.status = 401
         mock_resp.json = AsyncMock(return_value={})
 
@@ -96,10 +102,11 @@ class TestWebSearchToolFetchUrl:
         """Test successful URL fetch"""
         tool = WebSearchTool(search_api_key=None)
 
-        mock_resp = MagicMock()
-        mock_resp.status = 200
-        mock_resp.content.read = AsyncMock(return_value=b"Page content here")
+        mock_resp = _make_async_ctx(MagicMock())
         mock_resp.raise_for_status = MagicMock()
+        mock_content = MagicMock()
+        mock_content.read = AsyncMock(return_value=b"Page content here")
+        mock_resp.content = mock_content
 
         mock_session = MagicMock()
         mock_session.get = MagicMock(return_value=mock_resp)
@@ -118,10 +125,11 @@ class TestWebSearchToolFetchUrl:
         tool = WebSearchTool(search_api_key=None)
 
         large_content = "x" * 10000
-        mock_resp = MagicMock()
-        mock_resp.status = 200
-        mock_resp.content.read = AsyncMock(return_value=large_content.encode())
+        mock_resp = _make_async_ctx(MagicMock())
         mock_resp.raise_for_status = MagicMock()
+        mock_content = MagicMock()
+        mock_content.read = AsyncMock(return_value=large_content.encode())
+        mock_resp.content = mock_content
 
         mock_session = MagicMock()
         mock_session.get = MagicMock(return_value=mock_resp)
@@ -139,8 +147,7 @@ class TestWebSearchToolFetchUrl:
         """Test fetch_url with HTTP error"""
         tool = WebSearchTool(search_api_key=None)
 
-        mock_resp = MagicMock()
-        mock_resp.status = 404
+        mock_resp = _make_async_ctx(MagicMock())
         mock_resp.raise_for_status = MagicMock(side_effect=Exception("404 Not Found"))
 
         mock_session = MagicMock()
@@ -175,10 +182,11 @@ class TestWebSearchToolFetchUrl:
 
         captured = {}
 
-        mock_resp = MagicMock()
-        mock_resp.status = 200
-        mock_resp.content.read = AsyncMock(return_value=b"OK")
+        mock_resp = _make_async_ctx(MagicMock())
         mock_resp.raise_for_status = MagicMock()
+        mock_content = MagicMock()
+        mock_content.read = AsyncMock(return_value=b"OK")
+        mock_resp.content = mock_content
 
         mock_session = MagicMock()
 

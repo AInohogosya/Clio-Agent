@@ -1,85 +1,16 @@
 """
 Tests for Telegram interface markdown sanitization functions.
-Covers escape_markdown, safe_markdown_text, sanitize_markdown.
+Covers sanitize_markdown, the only markdown sanitizer in use.
 """
 import asyncio
 from unittest import mock
 from unittest.mock import AsyncMock, MagicMock
 
 from clio_agent_2.interfaces.telegram import (
-    escape_markdown,
-    safe_markdown_text,
     sanitize_markdown,
     _retry_bot_request,
     TelegramInterface,
 )
-
-
-class TestEscapeMarkdown:
-    """Tests for escape_markdown function"""
-
-    def test_plain_text(self):
-        text = "Hello world"
-        result = escape_markdown(text)
-        assert result == "Hello world"
-
-    def test_none_text(self):
-        result = escape_markdown(None)
-        assert result is None
-
-    def test_empty_string(self):
-        assert escape_markdown("") == ""
-
-    def test_preserves_code_blocks(self):
-        text = "```\ncode block\n```"
-        result = escape_markdown(text)
-        assert "```" in result
-        assert "code block" in result
-
-    def test_preserves_inline_code(self):
-        text = "This has `inline code` here"
-        result = escape_markdown(text)
-        assert "`inline code`" in result
-
-    def test_special_characters(self):
-        text = "Test_underscore*asterisk"
-        result = escape_markdown(text)
-        # Should handle special characters without crashing
-        assert result is not None
-
-
-class TestSafeMarkdownText:
-    """Tests for safe_markdown_text function"""
-
-    def test_none_input(self):
-        result = safe_markdown_text(None)
-        assert result is None
-
-    def test_empty_input(self):
-        assert safe_markdown_text("") == ""
-
-    def test_preserves_code_blocks(self):
-        text = "```\ncode\n```"
-        result = safe_markdown_text(text)
-        assert "code" in result
-        assert "```" in result
-
-    def test_preserves_urls(self):
-        text = "Check [this link](https://example.com) out"
-        result = safe_markdown_text(text)
-        assert "https://example.com" in result
-
-    def test_handles_backslashes(self):
-        text = "Path\\to\\file"
-        result = safe_markdown_text(text)
-        assert result is not None
-
-    def test_complex_markdown(self):
-        text = "**bold** _italic_ `code` [url](https://x.com)"
-        result = safe_markdown_text(text)
-        assert "bold" in result
-        assert "code" in result
-        assert "https://x.com" in result
 
 
 class TestSanitizeMarkdown:
@@ -102,6 +33,28 @@ class TestSanitizeMarkdown:
         text = "Here is `some code`"
         result = sanitize_markdown(text)
         assert "`some code`" in result
+
+    def test_preserves_urls(self):
+        text = "Check [this link](https://example.com) out"
+        result = sanitize_markdown(text)
+        assert "https://example.com" in result
+
+    def test_preserves_bold(self):
+        text = "This is **bold text** here"
+        result = sanitize_markdown(text)
+        assert "**bold text**" in result
+
+    def test_plain_text_unchanged(self):
+        text = "Hello world"
+        result = sanitize_markdown(text)
+        assert result == "Hello world"
+
+    def test_complex_markdown(self):
+        text = "**bold** _italic_ `code` [url](https://x.com)"
+        result = sanitize_markdown(text)
+        assert "bold" in result
+        assert "code" in result
+        assert "https://x.com" in result
 
 
 class TestRetryBotRequest:
@@ -189,7 +142,6 @@ class TestTelegramInterfaceSendMessage:
         interface = TelegramInterface(agent, "fake-token")
         interface.application = None
 
-        # Should silently return
         result = asyncio.run(interface.send_message("Hello", chat_id=123))
         assert result is None
 
@@ -240,17 +192,8 @@ class TestTelegramInterfaceHandleMessage:
         update.message.text = ""
         context = MagicMock()
 
-        # Should return early
-        asyncio.run(interface._TelegramInterface__dict__["handle_message"](interface, update, context)
-                    if hasattr(interface, '_TelegramInterface__dict__') else _dummy())
-
-        # Actually, just test the early return directly
         result = asyncio.run(interface.handle_message(update, context))
         assert result is None
-
-
-def _dummy():
-    pass
 
 
 class TestTelegramInterfaceHandleCommand:
@@ -265,6 +208,7 @@ class TestTelegramInterfaceHandleCommand:
         update.effective_chat.id = 12345
 
         context = MagicMock()
+        context.bot.send_message = AsyncMock()
 
         asyncio.run(interface._handle_command(update, context, "/start"))
 
@@ -343,7 +287,7 @@ class TestTelegramInterfaceLongMessage:
         mock_send = AsyncMock()
         mock_bot.send_message = mock_send
 
-        long_text = "x" * 5000  # Exceeds 4000 char limit
+        long_text = "x" * 5000
         asyncio.run(interface._send_long_message(mock_bot, 123, long_text))
 
         assert mock_send.call_count >= 2
@@ -391,8 +335,11 @@ class TestTelegramInterfaceErrorHandling:
 
     def test_stop_autonomous_loop(self):
         agent = mock.MagicMock()
+        agent.stop_autonomous_loop = AsyncMock()
         interface = TelegramInterface(agent, "fake-token")
         interface.application = MagicMock()
+        interface.application.stop = AsyncMock()
+        interface.application.shutdown = AsyncMock()
         interface.application.updater = MagicMock()
         interface.application.updater.running = False
 

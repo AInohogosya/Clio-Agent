@@ -235,8 +235,14 @@ class TestConfigCustomProviders:
             assert "CUSTOM_MY_PROVIDER_123_BASE_URL" in content
 
     def test_add_custom_provider_with_advanced_settings(self):
+        import os as test_os
         with tempfile.TemporaryDirectory() as tmp:
             env_path = Path(tmp) / ".env"
+            # Clear CUSTOM_PROVIDERS from os.environ to prevent leakage from other tests
+            for key in list(test_os.environ):
+                if key.startswith("CUSTOM_"):
+                    del test_os.environ[key]
+
             config = Config(env_path=str(env_path))
 
             config.add_custom_provider(
@@ -247,8 +253,8 @@ class TestConfigCustomProviders:
             )
 
             providers = config.load_custom_providers()
-            assert len(providers) == 1
-            p = providers[0]
+            p = next((pr for pr in providers if pr["id"] == "myai"), None)
+            assert p is not None, f"myai not found in providers: {providers}"
             assert p["auth_header"] == "X-API-Key"
             assert p["auth_prefix"] == ""
             assert p["models_path"] == "/v1/models"
@@ -260,6 +266,9 @@ class TestConfigValidateApiKeys:
 
     def test_validate_api_keys_all_false(self):
         config = Config(env_path="/nonexistent/.env")
+        config.openai_api_key = None
+        config.google_api_key = None
+        config.telegram_bot_token = None
         status = config.validate_api_keys()
 
         assert status["openai"] is False
@@ -272,6 +281,7 @@ class TestConfigValidateApiKeys:
             env_path.write_text("OPENAI_API_KEY=sk-realkey123\nGOOGLE_API_KEY=AIza-realkey\n")
 
             config = Config(env_path=str(env_path))
+            config.custom_providers = []
             status = config.validate_api_keys()
 
             assert status["openai"] is True
@@ -302,9 +312,12 @@ class TestConfigGetApiKey:
     """Tests for Config.get_api_key"""
 
     def test_get_api_key_openai(self):
+        import os as test_os
         with tempfile.TemporaryDirectory() as tmp:
             env_path = Path(tmp) / ".env"
             env_path.write_text("OPENAI_API_KEY=sk-test123\n")
+            # Clear any OPENAI_API_KEY from os.environ to ensure it reads from file
+            test_os.environ.pop("OPENAI_API_KEY", None)
 
             config = Config(env_path=str(env_path))
             assert config.get_api_key("openai") == "sk-test123"
@@ -314,9 +327,11 @@ class TestConfigGetApiKey:
         assert config.get_api_key("unknown") is None
 
     def test_get_api_key_case_insensitive(self):
+        import os as test_os
         with tempfile.TemporaryDirectory() as tmp:
             env_path = Path(tmp) / ".env"
             env_path.write_text("OPENAI_API_KEY=sk-test123\n")
+            test_os.environ.pop("OPENAI_API_KEY", None)
 
             config = Config(env_path=str(env_path))
             assert config.get_api_key("OPENAI") == "sk-test123"

@@ -8,7 +8,7 @@ from unittest import mock
 
 from clio_agent_2.core.agent import ClioAgent
 from clio_agent_2.core.llm_router import LLMRouter
-from clio_agent_2.tools.tool_registry import ToolRegistry, ToolResult
+from clio_agent_2.tools.tool_registry import ToolRegistry, ToolResult, FileEditTool
 from clio_agent_2.config.settings import Config
 
 
@@ -87,21 +87,25 @@ class TestAgentToolRegistryIntegration:
 
     def test_agent_file_operations(self):
         agent = self._make_agent()
+        # Disable sandbox for test — files are in a temp directory.
+        FileEditTool.sandbox_root = None
+        try:
+            # Write a file
+            result = _run(agent.tool_registry.execute_tool(
+                "write_file",
+                {"filepath": str(agent.context_log.persist_path.parent / "test.txt"), "content": "Hello"}
+            ))
+            assert result.success is True
 
-        # Write a file
-        result = _run(agent.tool_registry.execute_tool(
-            "write_file",
-            {"filepath": str(agent.context_log.persist_path.parent / "test.txt"), "content": "Hello"}
-        ))
-        assert result.success is True
-
-        # Read it back
-        result = _run(agent.tool_registry.execute_tool(
-            "read_file",
-            {"filepath": str(agent.context_log.persist_path.parent / "test.txt")}
-        ))
-        assert result.success is True
-        assert "Hello" in result.output
+            # Read it back
+            result = _run(agent.tool_registry.execute_tool(
+                "read_file",
+                {"filepath": str(agent.context_log.persist_path.parent / "test.txt")}
+            ))
+            assert result.success is True
+            assert "Hello" in result.output
+        finally:
+            FileEditTool.sandbox_root = None
 
     def test_agent_shell_command(self):
         agent = self._make_agent()

@@ -112,9 +112,14 @@ class DiscordInterface:
             try:
                 # Process message through agent. Bound by a watchdog so a slow
                 # or unreachable LLM can never freeze this channel indefinitely.
+                # We hand the agent the same deadline so its internal LLM retries
+                # stop *before* this watchdog fires — a flaky model fails cleanly
+                # instead of being cut off mid-retry.
+                loop = asyncio.get_running_loop()
+                deadline = loop.time() + MESSAGE_PROCESS_TIMEOUT
                 try:
                     response = await asyncio.wait_for(
-                        self.agent.process_message(user_message),
+                        self.agent.process_message(user_message, deadline=deadline),
                         timeout=MESSAGE_PROCESS_TIMEOUT,
                     )
                 except asyncio.TimeoutError:

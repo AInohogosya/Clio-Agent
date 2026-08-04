@@ -61,7 +61,7 @@ class TestRepetitionDetectorAdditional:
         assert detector.is_stuck() is True  # Last 3: i=1, i=2, i=2 -> 2 matches
 
     def test_reset_works(self):
-        detector = RepetitionDetector()
+        detector = RepetitionDetector(threshold=2)
         detector.record("tool", {"a": 1}, True)
         detector.record("tool", {"a": 1}, True)
         assert detector.is_stuck() is True

@@ -4,10 +4,17 @@ Covers read_file, write_file, append_file, and edit_file methods.
 """
 import asyncio
 import tempfile
+import pytest
 from pathlib import Path
 from unittest import mock
 
 from clio_agent_2.tools.tool_registry import FileEditTool, ToolResult
+
+
+@pytest.fixture(autouse=True)
+def _reset_file_sandbox():
+    FileEditTool.sandbox_root = None
+    yield
 
 
 def _run(coro):

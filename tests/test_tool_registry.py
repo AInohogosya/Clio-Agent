@@ -107,7 +107,7 @@ def test_shell_command_is_registered_with_common_aliases():
 
 
 def test_shell_command_runs_successfully():
-    result = _run(ShellCommandTool.run_command(command="printf hello"))
+    result = _run(ShellCommandTool.run_command(command="echo hello"))
 
     assert result.success is True
     assert "Exit code: 0" in result.output
@@ -115,14 +115,14 @@ def test_shell_command_runs_successfully():
 
 
 def test_shell_command_accepts_cmd_alias():
-    result = _run(ShellCommandTool.run_command(cmd="printf alias"))
+    result = _run(ShellCommandTool.run_command(cmd="echo alias"))
 
     assert result.success is True
     assert "alias" in result.output
 
 
 def test_shell_command_surfaces_nonzero_exit_code():
-    result = _run(ShellCommandTool.run_command(command="exit 7"))
+    result = _run(ShellCommandTool.run_command(command="bash -c 'exit 7'"))
 
     assert result.success is False
     assert "Exit code: 7" in result.output

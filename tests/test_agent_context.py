@@ -15,6 +15,8 @@ def _run(coro):
 class TestSystemBlock:
     """Tests for ClioAgent._system_block"""
 
+    TEST_SYSTEM_PROMPT = "system: Clio-Agent-2\nAVAILABLE TOOLS:\nread_file\nwrite_file\nsay\nthinking\n\nSay command"
+
     def _make_agent(self):
         agent = mock.MagicMock(spec=ClioAgent)
         agent.context_log = mock.MagicMock()
@@ -26,6 +28,7 @@ class TestSystemBlock:
         agent._cached_prompt = ""
         agent._cached_tools = ""
         agent._available_tools_text = ClioAgent._available_tools_text.__get__(agent, ClioAgent)
+        type(agent).BASE_SYSTEM_PROMPT = mock.PropertyMock(return_value=TestSystemBlock.TEST_SYSTEM_PROMPT)
         return agent
 
     def test_system_block_has_system_role(self):
@@ -154,6 +157,7 @@ class TestExecuteToolRound:
         agent = mock.MagicMock(spec=ClioAgent)
         agent.tool_registry = mock.MagicMock()
         agent.tool_registry.execute_tool = mock.AsyncMock()
+        agent._execute_tool_round = ClioAgent._execute_tool_round.__get__(agent, ClioAgent)
         return agent
 
     def test_successful_tool_execution(self):

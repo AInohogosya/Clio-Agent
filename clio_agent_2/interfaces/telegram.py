@@ -35,132 +35,6 @@ from telegram.request import HTTPXRequest
 logger = logging.getLogger(__name__)
 
 
-def escape_markdown(text: str) -> str:
-    """
-    Escape special characters for Telegram Markdown v1.
-    
-    Special characters: _ * [ ] ( ) ~ ` > # + - = | { } . !
-    
-    Args:
-        text: Text to escape
-        
-    Returns:
-        Escaped text safe for Telegram Markdown
-    """
-    # Characters that need escaping in Markdown v1
-    escape_chars = r'_*[]()~`>#+-=|{}.!'
-
-    def escape_char(match):
-        return '\\' + match.group(0)
-
-    # Escape special characters, but preserve intentional markdown from agent responses
-    # We only escape if the character is not part of a proper markdown structure
-    result = text
-
-    # First, protect code blocks by temporarily replacing them
-    code_blocks = []
-    def save_code_block(match):
-        code_blocks.append(match.group(0))
-        return f'__CODE_BLOCK_{len(code_blocks)-1}__'
-
-    # Save triple backtick code blocks
-    result = re.sub(r'```[\s\S]*?```', save_code_block, result)
-
-    # Save single backtick inline code
-    inline_codes = []
-    def save_inline_code(match):
-        inline_codes.append(match.group(0))
-        return f'__INLINE_CODE_{len(inline_codes)-1}__'
-
-    result = re.sub(r'`[^`]+`', save_inline_code, result)
-
-    # Now escape special characters outside of protected sections
-    # We need to be careful not to break intentional formatting
-    # Strategy: escape underscores and asterisks that are likely problematic
-
-    # Escape underscores that are not part of italic formatting (_text_)
-    # This is tricky, so we'll use a conservative approach
-
-    # For safety, we'll escape characters in a way that preserves most formatting
-    # but prevents parse errors
-
-    # Restore code blocks
-    for i, block in enumerate(code_blocks):
-        result = result.replace(f'__CODE_BLOCK_{i}__', block)
-
-    for i, code in enumerate(inline_codes):
-        result = result.replace(f'__INLINE_CODE_{i}__', code)
-
-    return result
-
-
-def safe_markdown_text(text: str) -> str:
-    """
-    Make text safe for Telegram Markdown by escaping problematic characters.
-    
-    This is a more aggressive approach that ensures no parse errors.
-    It preserves code blocks but escapes other special characters.
-    
-    Args:
-        text: Text to make safe
-        
-    Returns:
-        Safe text for Telegram Markdown
-    """
-    if not text:
-        return text
-
-    # Protect code blocks first
-    code_blocks = []
-    def save_code_block(match):
-        code_blocks.append(match.group(0))
-        return f'\x00CODEBLOCK{len(code_blocks)-1}\x00'
-
-    text = re.sub(r'```[\s\S]*?```', save_code_block, text)
-
-    # Protect inline code
-    inline_codes = []
-    def save_inline_code(match):
-        inline_codes.append(match.group(0))
-        return f'\x00INLINECODE{len(inline_codes)-1}\x00'
-
-    text = re.sub(r'`[^`]+`', save_inline_code, text)
-
-    # Protect URLs [text](url)
-    urls = []
-    def save_url(match):
-        urls.append(match.group(0))
-        return f'\x00URL{len(urls)-1}\x00'
-
-    text = re.sub(r'\[[^\]]+\]\([^)]+\)', save_url, text)
-
-    # Escape special characters that commonly cause issues
-    # Be conservative - only escape characters that are likely to cause problems
-    # when they appear in certain contexts
-
-    # Escape backslashes first
-    text = text.replace('\\', '\\\\')
-
-    # Escape underscores that might be misinterpreted
-    # (those not surrounded by spaces or at word boundaries for italics)
-    # This is complex, so we'll use a simpler heuristic
-
-    # For maximum safety, escape these characters
-    # But try to preserve common markdown patterns
-
-    # Restore protected sections
-    for i, block in enumerate(code_blocks):
-        text = text.replace(f'\x00CODEBLOCK{i}\x00', block)
-
-    for i, code in enumerate(inline_codes):
-        text = text.replace(f'\x00INLINECODE{i}\x00', code)
-
-    for i, url in enumerate(urls):
-        text = text.replace(f'\x00URL{i}\x00', url)
-
-    return text
-
-
 def sanitize_markdown(text: str) -> str:
     """
     Sanitize text for Telegram Markdown parsing to prevent parse errors.
@@ -274,6 +148,10 @@ async def _retry_bot_request(
             )
             await asyncio.sleep(wait_time)
         except (TimedOut, NetworkError) as exc:  # noqa: BLE001
+            # BadRequest is a NetworkError subclass but is never transient —
+            # retrying would only repeat the malformed request and waste time.
+            if isinstance(exc, BadRequest):
+                raise
             last_exc = exc
             if attempt >= max_retries:
                 break

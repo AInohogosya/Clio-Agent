@@ -592,46 +592,36 @@ def create_agent():
 
 
 def _is_token_configured(token):
-    """Return True only if `token` is a real, usable token."""
-    if not token or not str(token).strip():
-        return False
-    stripped = str(token).strip()
-    lowered = stripped.lower()
-    if lowered.startswith("your_") or "placeholder" in lowered:
-        return False
-    if "<" in stripped or ">" in stripped:
-        return False
-    return True
+    """Return True only if `token` is a real, usable token.
+
+    Delegates to ``Config._is_real_secret`` (the single source of truth).
+    """
+    try:
+        return config._is_real_secret(token)
+    except Exception:
+        if not token or not str(token).strip():
+            return False
+        stripped = str(token).strip()
+        lowered = stripped.lower()
+        if lowered.startswith("your_") or "placeholder" in lowered:
+            return False
+        if "<" in stripped or ">" in stripped:
+            return False
+        return True
 
 
 
 def _is_real_secret(value) -> bool:
-    """Return True only if `value` is a usable, non-placeholder secret.
+    """Thin wrapper around ``config._is_real_secret``.
 
-    Beyond the checks in :func:`_is_token_configured`, this also rejects the
-    common "looks real but isn't" placeholders that ship in the template
-    ``.env.example`` (e.g. ``sk-your-actual-openai-api-key-here`` or
-    ``your_openai_api_key_here``) so a freshly-seeded config is correctly
-    treated as "not configured" and the first-run setup screen is shown.
+    Returns False when the config object is absent so callers that were
+    forward-referenced before ``config`` was assigned (e.g. top-level
+    ``is_config_ready`` via ``auto_configure_if_needed``) still work.
     """
-    if value is None:
+    try:
+        return config._is_real_secret(value)
+    except Exception:
         return False
-    s = str(value).strip()
-    if not s:
-        return False
-    lowered = s.lower()
-    if (
-        "your_" in lowered
-        or lowered.startswith("your-")
-        or "sk-your" in lowered
-        or "placeholder" in lowered
-        or "example" in lowered
-        or "xxxx" in lowered
-    ):
-        return False
-    if "<" in s or ">" in s:
-        return False
-    return True
 
 
 

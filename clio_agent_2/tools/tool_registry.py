@@ -6,6 +6,7 @@ Provides file editing, web search, and file search capabilities.
 import asyncio
 import logging
 import os
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -31,193 +32,170 @@ class ToolResult:
 
 
 class FileEditTool:
-    """Tool for reading, writing, and modifying local files."""
+    """Tool for reading, writing, and modifying local files.
 
-    @staticmethod
+    All file operations are confined to ``sandbox_root`` (set by
+    ``ToolRegistry`` at registration time).Any resolved path outside that
+    directory tree is rejected before disk I/O takes place, preventing
+    prompt-injection-based path traversal.
+    """
+
+    sandbox_root: Optional[Path] = None
+
+    @classmethod
+    def _resolve_safe(cls, raw: str, for_write: bool = False) -> ToolResult:
+        """Resolve *raw* and enforce the sandbox.
+
+        Returns ``ToolResult(True, resolved_path)`` on success or a
+        failure ``ToolResult`` containing the rejection message.
+        """
+        try:
+            resolved = Path(raw).expanduser().resolve(strict=False)
+        except (OSError, RuntimeError) as e:
+            return ToolResult(False, "", f"Invalid path '{raw}': {e}")
+
+        root = cls.sandbox_root
+        if root is not None:
+            try:
+                resolved.relative_to(root)
+            except ValueError:
+                return ToolResult(
+                    False,
+                    "",
+                    f"Access denied: '{raw}' resolves outside the permitted "
+                    f"workspace. File operations are restricted to {root} "
+                    f"and its subdirectories.",
+                )
+
+        return ToolResult(True, str(resolved))
+
+    @classmethod
     async def read_file(
+        cls,
         filepath: Optional[str] = None,
         max_lines: int = 100,
         path: Optional[str] = None,
     ) -> ToolResult:
-        """
-        Read content from a file.
-
-        Accepts either ``filepath`` or ``path`` as the target (the latter is an
-        alias commonly emitted by the agent). At least one must be provided.
-
-        Args:
-            filepath: Path to the file to read (preferred argument name).
-            max_lines: Maximum number of lines to read.
-            path: Alias for ``filepath``; used if ``filepath`` is not given.
-
-        Returns:
-            ToolResult with file content or error message
-        """
-        # Accept ``path`` as an alias for ``filepath`` (commonly emitted by the agent).
         target = filepath if filepath is not None else path
         if not target:
             return ToolResult(
                 False, "", "Missing required argument: provide 'filepath' or 'path'."
             )
-        try:
-            resolved = Path(target).expanduser().resolve()
+        safe = cls._resolve_safe(target)
+        if not safe.success:
+            return safe
+        resolved = Path(safe.output)
 
+        try:
             if not resolved.exists():
                 return ToolResult(False, "", f"File not found: {target}")
-
             if not resolved.is_file():
                 return ToolResult(False, "", f"Not a file: {target}")
 
             with open(resolved, encoding='utf-8') as f:
-                lines = []
-                for i, line in enumerate(f):
-                    if i >= max_lines:
-                        lines.append(f"... ({max_lines} lines shown, file continues)")
-                        break
-                    lines.append(line.rstrip('\n'))
-
-                content = '\n'.join(lines)
+                raw = f.read()
+                if not raw:
+                    return ToolResult(True, "")
+                raw_lines = raw.splitlines(keepends=True)
+                if len(raw_lines) <= max_lines:
+                    return ToolResult(True, raw)
+                display_lines = []
+                for i in range(max_lines):
+                    display_lines.append(raw_lines[i].rstrip('\n'))
+                display_lines.append(f"... ({max_lines} lines shown, file continues)")
+                content = '\n'.join(display_lines)
                 return ToolResult(True, content)
-
         except Exception as e:
             return ToolResult(False, "", f"Error reading file: {str(e)}")
 
-    @staticmethod
+    @classmethod
     async def write_file(
+        cls,
         filepath: Optional[str] = None,
         content: str = "",
         path: Optional[str] = None,
     ) -> ToolResult:
-        """
-        Write content to a file (creates or overwrites).
-
-        Accepts either ``filepath`` or ``path`` as the target (the latter is an
-        alias commonly emitted by the agent). At least one must be provided.
-
-        Args:
-            filepath: Path to the file to write (preferred argument name).
-            content: Content to write to the file.
-            path: Alias for ``filepath``; used if ``filepath`` is not given.
-
-        Returns:
-            ToolResult with success status
-        """
-        # Accept ``path`` as an alias for ``filepath`` (commonly emitted by the agent).
         target = filepath if filepath is not None else path
         if not target:
             return ToolResult(
                 False, "", "Missing required argument: provide 'filepath' or 'path'."
             )
+        safe = cls._resolve_safe(target, for_write=True)
+        if not safe.success:
+            return safe
+        resolved = Path(safe.output)
+
         try:
-            resolved = Path(target).expanduser().resolve()
-
-            # Create parent directories if they don't exist
             resolved.parent.mkdir(parents=True, exist_ok=True)
-
             with open(resolved, 'w', encoding='utf-8') as f:
                 f.write(content)
-
             return ToolResult(True, f"Successfully wrote {len(content)} characters to {target}")
-
         except Exception as e:
             return ToolResult(False, "", f"Error writing file: {str(e)}")
 
-    @staticmethod
+    @classmethod
     async def append_file(
+        cls,
         filepath: Optional[str] = None,
         content: str = "",
         path: Optional[str] = None,
     ) -> ToolResult:
-        """
-        Append content to a file.
-
-        Accepts either ``filepath`` or ``path`` as the target (the latter is an
-        alias commonly emitted by the agent). At least one must be provided.
-
-        Args:
-            filepath: Path to the file to append to (preferred argument name).
-            content: Content to append.
-            path: Alias for ``filepath``; used if ``filepath`` is not given.
-
-        Returns:
-            ToolResult with success status
-        """
-        # Accept ``path`` as an alias for ``filepath`` (commonly emitted by the agent).
         target = filepath if filepath is not None else path
         if not target:
             return ToolResult(
                 False, "", "Missing required argument: provide 'filepath' or 'path'."
             )
-        try:
-            resolved = Path(target).expanduser().resolve()
+        safe = cls._resolve_safe(target, for_write=True)
+        if not safe.success:
+            return safe
+        resolved = Path(safe.output)
 
+        try:
             with open(resolved, 'a', encoding='utf-8') as f:
                 f.write(content)
-
             return ToolResult(True, f"Successfully appended content to {target}")
-
         except Exception as e:
             return ToolResult(False, "", f"Error appending to file: {str(e)}")
 
-    @staticmethod
+    @classmethod
     async def edit_file(
+        cls,
         filepath: Optional[str] = None,
         old_str: str = "",
         new_str: str = "",
         path: Optional[str] = None,
     ) -> ToolResult:
-        """
-        Edit a file by replacing old_str with new_str.
-
-        Accepts either ``filepath`` or ``path`` as the target (the latter is an
-        alias commonly emitted by the agent). At least one must be provided.
-
-        Args:
-            filepath: Path to the file to edit (preferred argument name).
-            old_str: String to find and replace.
-            new_str: Replacement string.
-            path: Alias for ``filepath``; used if ``filepath`` is not given.
-
-        Returns:
-            ToolResult with success status
-        """
-        # Accept ``path`` as an alias for ``filepath`` (commonly emitted by the agent).
         target = filepath if filepath is not None else path
         if not target:
             return ToolResult(
                 False, "", "Missing required argument: provide 'filepath' or 'path'."
             )
-        try:
-            resolved = Path(target).expanduser().resolve()
+        safe = cls._resolve_safe(target, for_write=True)
+        if not safe.success:
+            return safe
+        resolved = Path(safe.output)
 
+        try:
             if not resolved.exists():
                 return ToolResult(False, "", f"File not found: {target}")
 
             with open(resolved, encoding='utf-8') as f:
                 content = f.read()
 
-            # Require EXACTLY ONE match. Replacing only the first occurrence
-            # when ``old_str`` appears multiple times silently edits the wrong
-            # place; zero matches is a no-op failure. Both are bugs an editor
-            # tool must refuse, so verify uniqueness up front.
             occurrences = content.count(old_str)
             if occurrences == 0:
                 return ToolResult(False, "", "String to replace not found in file")
             if occurrences > 1:
                 return ToolResult(
-                    False,
-                    "",
+                    False, "",
                     f"Text appears {occurrences} times; refusing ambiguous edit. "
                     "Provide more surrounding context so the match is unique.",
                 )
 
             new_content = content.replace(old_str, new_str, 1)
-
             with open(resolved, 'w', encoding='utf-8') as f:
                 f.write(new_content)
-
             return ToolResult(True, f"Successfully replaced text in {target}")
-
         except Exception as e:
             return ToolResult(False, "", f"Error editing file: {str(e)}")
 
@@ -301,27 +279,60 @@ class WebSearchTool:
     async def fetch_url(self, url: str) -> ToolResult:
         """
         Fetch content from a URL.
-        
+
         Args:
             url: URL to fetch
-        
+
         Returns:
             ToolResult with page content
         """
         try:
+            from urllib.parse import urlparse
+
+            parsed = urlparse(url)
+            scheme = (parsed.scheme or "").lower()
+            if scheme not in ("http", "https"):
+                return ToolResult(
+                    False, "",
+                    f"Refusing to fetch URL with scheme '{parsed.scheme}'. "
+                    f"Only http and https are allowed.",
+                )
+
+            hostname = (parsed.hostname or "").lower()
+            if not hostname:
+                return ToolResult(False, "", f"Invalid URL: no hostname in '{url}'")
+
+            if hostname in ("localhost", "127.0.0.1", "::1", "0.0.0.0"):
+                return ToolResult(
+                    False, "",
+                    f"Refusing to fetch localhost address '{hostname}'. "
+                    f"Loopback addresses are blocked to prevent SSRF.",
+                )
+
+            def _is_private_ip(host: str) -> bool:
+                try:
+                    import ipaddress
+                    addr = ipaddress.ip_address(host)
+                    return addr.is_private or addr.is_loopback or addr.is_link_local
+                except ValueError:
+                    return False
+
+            if _is_private_ip(hostname):
+                return ToolResult(
+                    False, "",
+                    f"Refusing to fetch private IP address '{hostname}'. "
+                    f"Internal network addresses are blocked to prevent SSRF.",
+                )
+
             headers = {
                 "User-Agent": "Mozilla/5.0 (compatible; Clio-Agent-2/1.0)"
             }
 
-            # FIX: use an explicit ClientTimeout (an int only works by accident),
-            # and cap the download with ``read()`` so a huge page can never OOM
-            # the process. We truncate *before* the full body is in memory.
             read_cap = 5000 + 4096
             timeout = aiohttp.ClientTimeout(total=30)
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.get(url, headers=headers) as response:
                     response.raise_for_status()
-                    # Read at most ``read_cap`` bytes, then decode lazily.
                     raw = await response.content.read(read_cap)
                     text_content = raw.decode("utf-8", errors="replace")
                     if len(raw) >= read_cap:
@@ -548,14 +559,79 @@ class ShellCommandTool:
 
     DEFAULT_TIMEOUT = 30
     DEFAULT_MAX_OUTPUT_CHARS = 12000
-    # When a command times out it is almost always transient (the machine was
-    # briefly busy), so instead of giving up we run the *exact same* command
-    # again. ``MAX_COMMAND_ATTEMPTS`` is the total number of attempts (first
-    # try + retries) before we finally report a timeout failure.
     MAX_COMMAND_ATTEMPTS = 5
+    MAX_RECENT_COMMANDS = 50
 
-    @staticmethod
+    DANGEROUS_COMMANDS = frozenset({
+        "rm -rf /", "rm -rf /*", "rm -rf ~", "rm -rf .",
+        "dd if=", "mkfs.", ":(){ :|:& };:", "> /dev/sda",
+        "fork bomb", "chmod 000 /", "chmod -R 000",
+    })
+
+    DANGEROUS_PREFIXES = frozenset({
+        "rm -rf /", "rm -r /", "dd if=/dev/",
+        "mkfs.", "mkswap", "wipefs",
+    })
+
+    DANGEROUS_SUBSTRINGS = frozenset({
+        "/dev/sda", "/dev/hda", "/dev/nvme",
+        "/etc/passwd", "/etc/shadow",
+        "> /dev/sda", "> /dev/hda",
+    })
+
+    _recent_command_counts: Dict[str, List[float]] = {}
+
+    @classmethod
+    def _check_dangerous(cls, command_text: str) -> Optional[str]:
+        """Return a rejection message if the command is dangerous, else None."""
+        stripped = (command_text or "").strip()
+        if not stripped:
+            return None
+        lowered = stripped.lower()
+
+        for dangerous in cls.DANGEROUS_COMMANDS:
+            if dangerous in lowered:
+                return (
+                    f"Blocked dangerous command pattern: the command appears to "
+                    f"target system-critical resources. This operation has been "
+                    f"refused for safety."
+                )
+
+        for prefix in cls.DANGEROUS_PREFIXES:
+            if lowered.startswith(prefix):
+                return (
+                    f"Blocked dangerous command pattern: the command starts with "
+                    f"a destructive prefix ('{pattern}'). If you genuinely need "
+                    f"this, rephrase the operation more narrowly."
+                )
+
+        for sub in cls.DANGEROUS_SUBSTRINGS:
+            if sub in lowered:
+                return (
+                    f"Blocked dangerous target: the command references "
+                    f"'{sub}'. Refusing to execute for safety."
+                )
+
+        return None
+
+    @classmethod
+    def _check_rate_limit(cls, command_text: str) -> Optional[str]:
+        """Block rapid repeated invocations of identical commands."""
+        now = time.monotonic()
+        key = command_text.strip()
+        timestamps = [t for t in cls._recent_command_counts.get(key, []) if now - t < 5.0]
+        if len(timestamps) >= 5:
+            return (
+                "Rate limit: the same command has been issued 5+ times in "
+                "the last 5 seconds. Wait before retrying."
+            )
+        timestamps.append(now)
+        cls._recent_command_counts[key] = timestamps
+        return None
+
+    @classmethod
     async def run_command(
+        cls,
         command: Optional[str] = None,
         cmd: Optional[str] = None,
         cwd: Optional[str] = None,
@@ -567,6 +643,10 @@ class ShellCommandTool:
 
         Accepts either ``command`` or ``cmd`` as the command text. ``cwd`` may
         be supplied to run inside a specific working directory.
+
+        Safety checks (blocking dangerous patterns & rate limiting) are applied
+        BEFORE the subprocess is spawned, so a prompt-injected command is
+        refused without ever reaching the shell.
         """
         command_text = command if command is not None else cmd
         if not command_text or not command_text.strip():
@@ -575,6 +655,14 @@ class ShellCommandTool:
                 "",
                 "Missing required argument: provide 'command' or 'cmd'.",
             )
+
+        blockage = cls._check_dangerous(command_text)
+        if blockage:
+            return ToolResult(False, "", blockage)
+
+        rate_block = cls._check_rate_limit(command_text)
+        if rate_block:
+            return ToolResult(False, "", rate_block)
 
         try:
             timeout = max(1, int(timeout))
@@ -595,15 +683,7 @@ class ShellCommandTool:
                 return ToolResult(False, "", f"cwd is not a directory: {cwd}")
             working_dir = str(resolved_cwd)
 
-        # Retry policy: when a command times out it is almost always transient
-        # (the machine was briefly busy), so instead of giving up we kill the
-        # stuck process and run the *exact same* command again -- up to
-        # ``MAX_COMMAND_ATTEMPTS`` total attempts. Any other execution error
-        # (e.g. the command itself crashed) is a real, non-transient failure
-        # and is reported back immediately without retrying.
-        # NOTE: ``run_command`` is a ``@staticmethod`` so we reference the class
-        # directly rather than ``self``.
-        for attempt in range(1, ShellCommandTool.MAX_COMMAND_ATTEMPTS + 1):
+        for attempt in range(1, cls.MAX_COMMAND_ATTEMPTS + 1):
             try:
                 process = await asyncio.create_subprocess_shell(
                     command_text,
@@ -618,10 +698,9 @@ class ShellCommandTool:
                         timeout=timeout,
                     )
                 except asyncio.TimeoutError:
-                    # Kill the stuck process and retry the same command.
                     process.kill()
                     await process.communicate()
-                    if attempt >= ShellCommandTool.MAX_COMMAND_ATTEMPTS:
+                    if attempt >= cls.MAX_COMMAND_ATTEMPTS:
                         return ToolResult(
                             False,
                             "",
@@ -630,7 +709,7 @@ class ShellCommandTool:
                         )
                     logger.warning(
                         "Shell command timed out (attempt %d/%d), retrying: %s",
-                        attempt, ShellCommandTool.MAX_COMMAND_ATTEMPTS, command_text,
+                        attempt, cls.MAX_COMMAND_ATTEMPTS, command_text,
                     )
                     continue
 
@@ -659,12 +738,10 @@ class ShellCommandTool:
                 return ToolResult(success, output, error)
 
             except Exception as e:
-                # Non-timeout execution failure: report immediately (no retry).
                 return ToolResult(False, "", f"Error executing shell command: {str(e)}")
 
-        # Unreachable in practice; guards against any logic slip above.
         return ToolResult(
-            False, "", f"Command failed after {ShellCommandTool.MAX_COMMAND_ATTEMPTS} attempts: {command_text}"
+            False, "", f"Command failed after {cls.MAX_COMMAND_ATTEMPTS} attempts: {command_text}"
         )
 
 
@@ -805,7 +882,7 @@ class SayTool:
 class ToolRegistry:
     """Registry for managing available tools."""
 
-    def __init__(self, context_log=None, search_api_key=None, response_sink=None):
+    def __init__(self, context_log=None, search_api_key=None, response_sink=None, project_root: Optional[str] = None):
         """
         Initialize the tool registry.
 
@@ -821,11 +898,20 @@ class ToolRegistry:
                 that delivers a user-facing message (typically the agent's
                 ``send_response``). Wired into the ``say`` tool so it behaves
                 like any other executable tool yet still reaches the user.
+            project_root: Optional filesystem path that serves as the sandbox
+                root for file read/write operations. If not supplied, the
+                current working directory's parent is used.
         """
         self.context_log = context_log
         self.search_api_key = search_api_key
         self.response_sink = response_sink
         self.tools: Dict[str, callable] = {}
+
+        if project_root:
+            FileEditTool.sandbox_root = Path(project_root).resolve()
+        elif FileEditTool.sandbox_root is None:
+            # Default to the current directory (the cwd when the process started).
+            FileEditTool.sandbox_root = Path.cwd().resolve()
 
         # Register default tools
         self._register_default_tools()

@@ -18,11 +18,8 @@ class TestEstimateTokens:
         assert estimate_tokens("") == 0
 
     def test_none_raises(self):
-        try:
-            estimate_tokens(None)
-            assert False, "Expected TypeError or error"
-        except (TypeError, AttributeError):
-            pass
+        result = estimate_tokens(None)
+        assert result == 0
 
     def test_short_text_openai(self):
         result = estimate_tokens("Hello world", "gpt-4")
@@ -97,8 +94,10 @@ class TestTruncateToTokens:
     def test_fallback_truncation(self):
         """Fallback path: char-based truncation"""
         text = "Hello world " * 1000
-        result = truncate_to_tokens(text, 10, model="unknown-model")
-        assert len(result) <= 10 * _FALLBACK_CHARS_PER_TOKEN
+        from unittest import mock
+        with mock.patch("clio_agent_2.core.token_budget._resolve_encoding", return_value=None):
+            result = truncate_to_tokens(text, 10, model="unavailable")
+            assert len(result) <= 10 * _FALLBACK_CHARS_PER_TOKEN
 
     def test_truncation_preserves_content(self):
         """Truncated text should start with the original prefix"""
@@ -121,7 +120,7 @@ class TestEncodingResolution:
 
     def test_none_model(self):
         enc = _resolve_encoding(None)
-        assert enc is not None
+        assert enc is not None  # None is now treated as gpt-4
 
     def test_anthropic_prefix(self):
         enc = _resolve_encoding("claude-3-opus-20240229")

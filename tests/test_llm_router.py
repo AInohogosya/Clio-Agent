@@ -76,8 +76,10 @@ class TestLLMRouterInit:
         assert "openai" in router.providers
 
     def test_router_defaults_to_locked(self):
-        """LLM settings are locked by default"""
-        router = LLMRouter(_TestConfig(llm_settings_locked=None))
+        """LLM settings are locked by default unless explicitly unlocked"""
+        config = _TestConfig()
+        del config.llm_settings_locked
+        router = LLMRouter(config)
         assert router.llm_settings_locked is True
 
     def test_router_max_chat_attempts_default(self):
@@ -139,7 +141,7 @@ class TestLLMRouterStreamChat:
         router = LLMRouter(_TestConfig())
 
         stub = _StubProvider()
-        async def _stream():
+        async def _stream(*args, **kwargs):
             yield "chunk1"
             yield "chunk2"
         stub.stream_chat = _stream

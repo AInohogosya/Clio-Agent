@@ -27,16 +27,22 @@ ROOT = Path(__file__).resolve().parent
 
 
 def _patch(path, replacements, label):
+    if not path.exists():
+        print("  [WARN] %s: file %s does not exist — skipped" % (label, path.name))
+        return
     text = path.read_text(encoding="utf-8")
     original = text
     for old, new in replacements:
         count = text.count(old)
         if count == 0:
-            print("  [WARN] %s: pattern not found, skipped:\n        %r" % (label, old))
+            print("  [WARN] %s: pattern not found (already patched?), skipped:\n        %r" % (label, old))
             continue
         text = text.replace(old, new)
         print("  [OK]   %s: replaced %d occurrence(s) of:\n        %r" % (label, count, old))
     if text != original:
+        backup = path.with_suffix(path.suffix + ".pre_apply_fix")
+        print("  -> backing up to %s" % backup.name)
+        backup.write_text(original, encoding="utf-8")
         path.write_text(text, encoding="utf-8")
         print("  -> wrote %s\n" % path.name)
     else:
@@ -86,6 +92,23 @@ except ImportError:
         return False
 
 '''
+
+
+def _is_token_configured(token):
+    """Return True only if `token` is a real, usable token."""
+    if not token or not str(token).strip():
+        return False
+    stripped = str(token).strip()
+    lowered = stripped.lower()
+    if lowered.startswith("your_") or "placeholder" in lowered:
+        return False
+    if "<" in stripped or ">" in stripped:
+        return False
+    if "xxxx" in lowered:
+        return False
+    if lowered.startswith("sk-your"):
+        return False
+    return True
 
 
 def main():

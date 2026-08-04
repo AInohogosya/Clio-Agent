@@ -129,7 +129,12 @@ class TestGoogleProvider:
         })
 
         mock_session = MagicMock()
-        mock_session.post = mock.MagicMock(side_effect=lambda url, headers=None, json=None: (captured.update(url=url), _Ctx(mock_resp))[1])
+        mock_session.post = mock.MagicMock(
+            side_effect=lambda url, headers=None, json=None: (
+                captured.update(url=url, headers=headers or {}),
+                _Ctx(mock_resp),
+            )[1]
+        )
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
         mock_session.__aexit__ = AsyncMock(return_value=None)
 
@@ -139,7 +144,7 @@ class TestGoogleProvider:
 
         assert result == "Hello from Google"
         assert "generativelanguage.googleapis.com" in captured["url"]
-        assert "key=key" in captured["url"]
+        assert captured.get("headers", {}).get("x-goog-api-key") == "key"
 
 
 class TestAnthropicProvider:

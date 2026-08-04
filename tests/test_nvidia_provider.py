@@ -13,6 +13,13 @@ def _run(coro):
     return asyncio.run(coro)
 
 
+def _make_async_ctx(obj):
+    """Make an object usable as an async context manager (for mocking aiohttp responses)."""
+    obj.__aenter__ = AsyncMock(return_value=obj)
+    obj.__aexit__ = AsyncMock(return_value=None)
+    return obj
+
+
 class _AsyncIter:
     def __init__(self, items):
         self.items = list(items)
@@ -30,9 +37,7 @@ class TestNVIDIAProviderStreaming:
     """Tests for NVIDIAProvider stream_chat"""
 
     def test_stream_yields_reasoning_and_content(self):
-        captured = {}
-
-        mock_resp = MagicMock()
+        mock_resp = _make_async_ctx(MagicMock())
         mock_resp.raise_for_status = MagicMock()
         mock_resp.content = _AsyncIter([
             b'data: {"choices":[{"delta":{"reasoning_content":"thinking step 1"}}]}\n',
@@ -63,7 +68,7 @@ class TestNVIDIAProviderStreaming:
         assert "final answer part 2" in chunks
 
     def test_stream_handles_malformed_json(self):
-        mock_resp = MagicMock()
+        mock_resp = _make_async_ctx(MagicMock())
         mock_resp.raise_for_status = MagicMock()
         mock_resp.content = _AsyncIter([
             b'data: not valid json\n',
@@ -90,7 +95,7 @@ class TestNVIDIAProviderStreaming:
 
     def test_stream_empty_delta(self):
         """Stream should handle empty deltas gracefully"""
-        mock_resp = MagicMock()
+        mock_resp = _make_async_ctx(MagicMock())
         mock_resp.raise_for_status = MagicMock()
         mock_resp.content = _AsyncIter([
             b'data: {"choices":[{"delta":{}}]}\n',
@@ -123,7 +128,7 @@ class TestNVIDIAProviderChatCompletion:
     def test_chat_with_reasoning_budget(self):
         captured = {}
 
-        mock_resp = MagicMock()
+        mock_resp = _make_async_ctx(MagicMock())
         mock_resp.raise_for_status = MagicMock()
         mock_resp.json = AsyncMock(return_value={
             "choices": [{"message": {"content": "Response with reasoning"}}]
@@ -152,7 +157,7 @@ class TestNVIDIAProviderChatCompletion:
     def test_chat_without_reasoning(self):
         captured = {}
 
-        mock_resp = MagicMock()
+        mock_resp = _make_async_ctx(MagicMock())
         mock_resp.raise_for_status = MagicMock()
         mock_resp.json = AsyncMock(return_value={
             "choices": [{"message": {"content": "Simple response"}}]
@@ -177,7 +182,7 @@ class TestNVIDIAProviderChatCompletion:
     def test_default_model_used(self):
         captured = {}
 
-        mock_resp = MagicMock()
+        mock_resp = _make_async_ctx(MagicMock())
         mock_resp.raise_for_status = MagicMock()
         mock_resp.json = AsyncMock(return_value={
             "choices": [{"message": {"content": "Default model response"}}]
@@ -203,7 +208,7 @@ class TestNVIDIAProviderListModels:
     """Tests for NVIDIAProvider list_models"""
 
     def test_list_models(self):
-        mock_resp = MagicMock()
+        mock_resp = _make_async_ctx(MagicMock())
         mock_resp.raise_for_status = MagicMock()
         mock_resp.json = AsyncMock(return_value={
             "data": [
@@ -231,7 +236,8 @@ class TestNVIDIAProviderErrorHandling:
     """Tests for NVIDIAProvider error handling"""
 
     def test_chat_401_raises_auth_error(self):
-        mock_resp = MagicMock()
+        mock_resp = _make_async_ctx(MagicMock())
+        mock_resp.raise_for_status = MagicMock()
         mock_resp.status = 401
         mock_resp.json = AsyncMock(return_value={"error": {"message": "Invalid API key"}})
 
@@ -249,7 +255,7 @@ class TestNVIDIAProviderErrorHandling:
                 assert "authentication" in str(e).lower() or "401" in str(e)
 
     def test_stream_error_handling(self):
-        mock_resp = MagicMock()
+        mock_resp = _make_async_ctx(MagicMock())
         mock_resp.raise_for_status = MagicMock(side_effect=Exception("Network error"))
 
         mock_session = MagicMock()

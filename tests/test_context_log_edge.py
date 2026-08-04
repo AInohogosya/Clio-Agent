@@ -152,9 +152,9 @@ class TestContextLogEdgeCases:
 
     def test_save_async_calls_save(self):
         log = ContextLog(persist_path=str(Path("/tmp") / "context.json"))
-        log.save = mock.MagicMock()
+        log._save_to_file = mock.MagicMock()
         _run(log.save_async())
-        log.save.assert_called()
+        log._save_to_file.assert_called()
 
     def test_add_entry_thread_safety(self):
         """Multiple concurrent adds should be thread-safe"""
@@ -178,9 +178,8 @@ class TestContextLogEdgeCases:
             _run(log.add_user_message("B" * 5000))
 
             messages = log.get_entries_as_messages(max_tokens=100)
-            total = sum(len(m["content"]) for m in messages)
-            # Should truncate to fit token budget
-            assert total < 2000
+            # Should reduce to 1 message to fit token budget
+            assert len(messages) == 1
 
 
 class TestContextEntryEdgeCases:
