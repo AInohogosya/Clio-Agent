@@ -602,19 +602,19 @@ class ClioAgent:
                 prefix = f"[{sender_id}] "
             await self.context_log.add_user_message(prefix + message)
             messages = self._build_context_messages(message)
-            await self._run_agent_turn(messages, deadline=deadline)
-            # ``_run_agent_turn`` never raises here: on an LLM failure it
-            # logs the detail to the context log and returns. We
-            # intentionally do not surface a per-turn error to the user -- the
-            # loop continues and the failure is already recorded. Returning ""
-            # keeps this consistent with a normal turn where the model simply
-            # chose not to ``say`` anything.
+            turn_result = await self._run_agent_turn(messages, deadline=deadline)
+            if turn_result is None:
+                return (
+                    "⚠️ Sorry, I was unable to reach the language model to process your message. "
+                    "This is likely a temporary provider issue. Please try again in a moment."
+                )
             return ""
         except (asyncio.TimeoutError, aiohttp.ClientError, ConnectionError, OSError, RuntimeError) as e:
-            # Expected runtime failures (network, LLM, etc.) - log and continue silently.
-            # The failure is already recorded in the context log by _run_agent_turn.
             logger.warning("Process message runtime error (handled): %s", e)
-            return ""
+            return (
+                "⚠️ Sorry, a network or timeout error occurred while processing your message. "
+                "Please try again in a moment."
+            )
         except Exception as e:
             # Programming errors (AttributeError, TypeError, etc.) - log with full
             # traceback at ERROR level and re-raise so they're not silently swallowed.

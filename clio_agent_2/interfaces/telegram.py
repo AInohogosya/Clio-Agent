@@ -403,10 +403,10 @@ class TelegramInterface:
             # Log the response to console
             print(f"[Telegram] Agent: {response[:200]}..." if len(response) > 200 else f"[Telegram] Agent: {response}")
 
-            # User-facing output is delivered solely through the response
-            # callback (say tool -> handle_autonomous_message). process_message
-            # returns "" by contract; checking for a non-empty response here is
-            # dead code retained for defensive backward compatibility.
+            # User-facing output is normally delivered through the response
+            # callback (say tool -> handle_autonomous_message). When
+            # process_message returns a non-empty string it is an error / status
+            # message that the interface should deliver to the user.
             if response:
                 await self._send_long_message(context.bot, chat_id, response)
 

@@ -109,11 +109,12 @@ class TestProcessMessageEdgeCases:
         agent.tool_registry.execute_tool.assert_called()
 
     def test_process_message_llm_exception(self):
-        """LLM exception should be caught and return empty string"""
+        """LLM exception should be caught and return a user-facing error message"""
         agent = _make_agent(chat_side_effect=Exception("Provider down"))
         result = _run(agent.process_message("test"))
-        assert result == ""
-        agent.context_log.add_system_message.assert_called()
+        assert isinstance(result, str)
+        assert len(result) > 0
+        assert "unable to reach" in result.lower()
 
     def test_process_message_tool_exception(self):
         """Exception from tool execution should be caught"""
