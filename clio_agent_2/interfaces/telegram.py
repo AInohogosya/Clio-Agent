@@ -251,20 +251,21 @@ class TelegramInterface:
                         )
                     )
                 except Exception as fallback_error:
-                    print(f"Error sending Telegram message (fallback): {fallback_error}")
+                    print(f"[Telegram] ⚠️ Send failed (fallback) to chat {cid}: {fallback_error}")
+                    logger.error("Error sending Telegram message (fallback) to chat %s: %s", cid, fallback_error)
             else:
-                print(f"Error sending Telegram message: {e}")
+                print(f"[Telegram] ⚠️ BadRequest to chat {cid}: {e}")
+                logger.error("BadRequest sending Telegram message to chat %s: %s", cid, e)
         except (TimedOut, NetworkError) as e:
-            # All retries exhausted -- best effort, do not re-raise to the caller.
-            # Provide detailed error message explaining what happened
-            print(f"Error sending Telegram message after multiple retry attempts: {e}")
-            print("This indicates a persistent network issue. Possible causes:")
-            print("  - Unstable internet connection")
-            print("  - Telegram server is temporarily unavailable")
-            print("  - Firewall or proxy blocking Telegram API")
-            print("Please check your network connection and try again.")
+            print(f"[Telegram] ⚠️ Send failed after retries to chat {cid}: {e}")
+            logger.error(
+                "Failed to send Telegram message to chat %s after retries: %s. "
+                "Possible causes: unstable internet, Telegram server issues, firewall.",
+                cid, e,
+            )
         except Exception as e:
-            print(f"Error sending Telegram message: {e}")
+            print(f"[Telegram] ⚠️ Unexected send error to chat {cid}: {e}")
+            logger.error("Unexpected error sending Telegram message to chat %s: %s", cid, e)
 
     async def send_message(self, message: str, chat_id: int = None):
         """
@@ -309,12 +310,15 @@ class TelegramInterface:
             context: Telegram context object
         """
         chat_id = update.effective_chat.id
-        user_message = update.message.text
-        user_name = update.effective_user.username or update.effective_user.first_name
-        user_id = str(update.effective_user.id)
+        user_message = update.message.text if update.message else None
+        user_name = update.effective_user.username or update.effective_user.first_name if update.effective_user else "unknown"
+        user_id = str(update.effective_user.id) if update.effective_user else "unknown"
 
         if not user_message:
+            logger.debug("Skipping Telegram update without message text (chat=%s, type=%s)", chat_id, type(update.message).__name__ if update.message else "None")
             return
+
+        logger.info("Telegram handle_message: chat=%s user=%s id=%s text=%s", chat_id, user_name, user_id, user_message[:100] if len(user_message) > 100 else user_message)
 
         # Access control: if allowed users exist, reject unauthorized senders.
         if not self._is_authorized(user_name, user_id, chat_id):
@@ -331,8 +335,8 @@ class TelegramInterface:
                 pass
             return
 
-        # Log the incoming message to console (same as CLI mode)
         print(f"\n[Telegram] {user_name}: {user_message}")
+        logger.info("Received Telegram message from %s (chat=%s): %s", user_name, chat_id, user_message)
 
         # Store chat session
         if chat_id not in self.chat_sessions:
@@ -356,6 +360,7 @@ class TelegramInterface:
                 logger.warning("Could not send typing indicator: %s", e)
 
             # Log message processing
+            logger.info("Telegram message processing started for chat %s", chat_id)
             print("[Telegram] Processing message...")
 
             # Process message through agent. Bound by a watchdog so a slow or
@@ -408,6 +413,11 @@ class TelegramInterface:
             # process_message returns a non-empty string it is an error / status
             # message that the interface should deliver to the user.
             if response:
+                print(f"[Telegram] Sending error/status to chat {chat_id}: {response[:200]}")
+                logger.info(
+                    "Telegram sending error/status response to chat %s (%d chars): %s",
+                    chat_id, len(response), response[:200],
+                )
                 await self._send_long_message(context.bot, chat_id, response)
 
         except Exception as e:
@@ -563,7 +573,7 @@ class TelegramInterface:
                     fallback_text=f"{chunk}\n\n_Part {i+1}/{len(chunks)}_",
                 )
 
-    async def handle_autonomous_message(self, message: str, response_target: Any = None):
+    async def handle_autonomous_message(self, message: str, response_target: str = None):
         """
         Callback for autonomous mode messages.
         
@@ -575,10 +585,12 @@ class TelegramInterface:
             return
 
         if response_target is not None:
-            # Send to specific chat (e.g., in response to a user message)
+            print(f"[Telegram] Sending agent response to chat {response_target} ({len(message)} chars)")
+            logger.info("Sending agent response to Telegram chat %s (%d chars)", response_target, len(message))
             await self.send_message(message, chat_id=response_target)
         else:
-            # Broadcast to all known chats (autonomous/proactive messages)
+            print(f"[Telegram] Broadcasting agent response to {len(self.chat_sessions)} chats ({len(message)} chars)")
+            logger.info("Broadcasting agent response to all %d known Telegram chats (%d chars)", len(self.chat_sessions), len(message))
             await self.send_message(message)
 
     async def _handle_telegram_error(self, update, context):

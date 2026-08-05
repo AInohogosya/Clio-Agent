@@ -604,6 +604,8 @@ class ClioAgent:
             messages = self._build_context_messages(message)
             turn_result = await self._run_agent_turn(messages, deadline=deadline)
             if turn_result is None:
+                print("[Agent] ⚠️ LLM/router failed — returning error to Telegram")
+                logger.warning("LLM/router returned None for user message — returning error string to interface")
                 return (
                     "⚠️ Sorry, I was unable to reach the language model to process your message. "
                     "This is likely a temporary provider issue. Please try again in a moment."
@@ -677,6 +679,7 @@ class ClioAgent:
                 if result is None:
                     cycle_failed = True
                     failure_reason = "autonomous_think returned None"
+                    print("[Agent] ⚠️ Autonomous think returned None")
 
                 # A successful cycle keeps the circuit closed and runs at the
                 # normal cadence.
@@ -703,6 +706,13 @@ class ClioAgent:
             # breaker below.
             if cycle_failed:
                 self._consecutive_failures += 1
+                # FUNC-06: When LLM calls are failing, add a cooldown between
+                # cycles to prevent rapid-fire hammering of a dead/rate-limited
+                # API. Without this, the loop restarts immediately after a ~31s
+                # retry cycle finishes, creating a near-continuous request stream
+                # that exacerbates 429 rate limiting.
+                cooldown = min(self.thinking_interval, 5.0)
+                await asyncio.sleep(cooldown)
 
                 # Log the failure with the current streak count
                 await self.context_log.add_system_message(
