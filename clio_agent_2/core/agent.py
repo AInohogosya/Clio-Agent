@@ -66,7 +66,11 @@ _SYSTEM_PROMPT_BASE = (
     "If I want you to see something, I have to wrap it in the Say command.\n"
     '- Only the "message" value gets to you \u2014 never the surrounding JSON.\n'
     "- CRITICAL: Never put raw tool-call JSON as text you'd see. "
-    "To talk, I use the Say command; to act, I emit the tool call by itself.\n\n"
+    "To talk, I use the Say command; to act, I emit the tool call by itself.\n"
+    "- No need to keep resending the same message until I get a reply: "
+    "this is a chat app, so once I send a message it's delivered forever and "
+    "I'll see it whenever I check in \u2014 even if I don't answer right away. "
+    "Send it once and move on; repeating myself won't make a reply come any faster.\n\n"
     "USING TOOLS:\n"
     "- When I want to do something, I emit exactly ONE tool-call JSON object on its own.\n"
     "- I ONLY use tool names from the AVAILABLE TOOLS list below.\n"
