@@ -184,6 +184,15 @@ class Config:
         self.agent_name: str = os.getenv("AGENT_NAME", "Clio-Agent-2")
         self.autonomous_mode: bool = os.getenv("AUTONOMOUS_MODE", "true").lower() == "true"
         self.thinking_interval: float = float(os.getenv("THINKING_INTERVAL", "5.0"))
+        # A tripped circuit stays paused by default. Set a positive value only
+        # when unattended auto-recovery is explicitly desired.
+        try:
+            self.circuit_breaker_auto_recovery_seconds: float = max(
+                0.0,
+                float(os.getenv("CIRCUIT_BREAKER_AUTO_RECOVERY_SECONDS", "0")),
+            )
+        except ValueError:
+            self.circuit_breaker_auto_recovery_seconds = 0.0
 
     def save_to_env(self, key: str, value: str) -> bool:
         """
@@ -549,6 +558,9 @@ class Config:
             "agent_name": self.agent_name,
             "autonomous_mode": self.autonomous_mode,
             "thinking_interval": self.thinking_interval,
+            "circuit_breaker_auto_recovery_seconds": (
+                self.circuit_breaker_auto_recovery_seconds
+            ),
             "allowed_users": self.allowed_users,
             "allowed_telegram_chat_ids": self.allowed_telegram_chat_ids,
             "allowed_discord_user_ids": self.allowed_discord_user_ids,
