@@ -362,7 +362,10 @@ async def run_whatsapp() -> None:
     # Register the response callback so the agent can send messages back.
     # Without this, the agent's ``say`` command has no way to reach the user
     # and messages are silently dropped.
-    agent.register_response_callback(interface.handle_autonomous_message)
+    agent.register_response_callback(
+        interface.handle_autonomous_message,
+        response_target_filter=lambda target: isinstance(target, str),
+    )
     restored_msg = await agent.initialize()
     if restored_msg:
         try:

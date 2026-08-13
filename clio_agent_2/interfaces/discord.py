@@ -8,7 +8,7 @@ import logging
 import re
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -366,8 +366,14 @@ class DiscordInterface:
 
     async def start(self):
         """Start the Discord bot."""
-        # Register callback for agent responses
-        self.agent.register_response_callback(self.handle_autonomous_message)
+        # Register callback for agent responses. A Discord channel exposes an
+        # async ``send`` method; other interface target types are ignored.
+        self.agent.register_response_callback(
+            self.handle_autonomous_message,
+            response_target_filter=lambda target: callable(
+                getattr(target, "send", None)
+            ),
+        )
 
         # Initialize agent and capture restored message
         self._restored_msg = await self.agent.initialize()

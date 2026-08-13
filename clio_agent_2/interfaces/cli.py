@@ -634,7 +634,10 @@ class CLIInterface:
     # ------------------------------------------------------------------
 
     async def start(self) -> None:
-        self.agent.register_response_callback(self.send_to_agent)
+        self.agent.register_response_callback(
+            self.send_to_agent,
+            response_target_filter=lambda _target: False,
+        )
         restored_msg = await self.agent.initialize()
         if restored_msg:
             self.messages.append(ChatMessage("system", restored_msg))

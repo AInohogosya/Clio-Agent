@@ -651,8 +651,13 @@ class TelegramInterface:
 
     async def start(self):
         """Start the Telegram bot."""
-        # Register callback for agent responses
-        self.agent.register_response_callback(self.handle_autonomous_message)
+        # Register callback for agent responses. Telegram chat IDs are integers;
+        # bool is excluded because it is an ``int`` subclass in Python.
+        self.agent.register_response_callback(
+            self.handle_autonomous_message,
+            response_target_filter=lambda target: isinstance(target, int)
+            and not isinstance(target, bool),
+        )
 
         # Initialize agent
         restored_msg = await self.agent.initialize()
