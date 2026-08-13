@@ -2,6 +2,8 @@
 Tests for the agent process_message edge cases and tool execution flow.
 """
 import asyncio
+
+import aiohttp
 from unittest import mock
 from unittest.mock import AsyncMock, MagicMock
 
@@ -18,6 +20,8 @@ def _make_agent(chat_side_effect=None, execute_result=None):
     agent = mock.MagicMock(spec=ClioAgent)
     agent.BASE_SYSTEM_PROMPT = "system"
     agent.response_callbacks = []
+    agent._response_callback_filters = {}
+    agent._current_response_target = None
 
     context_log = mock.MagicMock()
     context_log.get_entries_as_messages.return_value = []
@@ -47,6 +51,7 @@ def _make_agent(chat_side_effect=None, execute_result=None):
         "process_message",
         "run_autonomous_loop",
         "start_autonomous_loop",
+        "register_response_callback",
         "send_response",
         "autonomous_think",
     ):
@@ -129,6 +134,17 @@ class TestProcessMessageEdgeCases:
         result = _run(agent.process_message("test"))
         assert result == ""
 
+    def test_process_message_handles_aiohttp_error(self):
+        """Expected HTTP client errors must not be masked by a NameError."""
+        agent = _make_agent()
+        agent._build_context_messages = mock.MagicMock(
+            side_effect=aiohttp.ClientConnectionError("network unavailable")
+        )
+
+        result = _run(agent.process_message("test"))
+
+        assert "network or timeout error" in result.lower()
+
     def test_process_message_no_context_log_add(self):
         """Message should be added to context log"""
         agent = _make_agent(chat_side_effect=[""])
@@ -164,6 +180,9 @@ class TestExecuteToolRoundEdgeCases:
 
     def test_execute_tool_round_unknown_tool(self):
         agent = _make_agent()
+        agent.tool_registry.execute_tool = mock.AsyncMock(
+            return_value=ToolResult(False, "", "Unknown tool: nonexistent")
+        )
 
         tool_calls = [{"tool": "nonexistent", "arguments": {}}]
         feedback = _run(agent._execute_tool_round(tool_calls))
@@ -265,6 +284,49 @@ class TestSendResponseEdgeCases:
 
         _run(agent.send_response("hello"))
         assert delivered == ["hello", "hello"]
+
+
+class TestResponseTargetRouting:
+    """Tests for targeted delivery across multiple interfaces."""
+
+    def test_targeted_response_only_reaches_owning_callback(self):
+        agent = _make_agent()
+        delivered = []
+
+        async def telegram_callback(message, response_target=None):
+            delivered.append(("telegram", message, response_target))
+
+        async def whatsapp_callback(message, response_target=None):
+            delivered.append(("whatsapp", message, response_target))
+
+        agent.register_response_callback(
+            telegram_callback,
+            response_target_filter=lambda target: isinstance(target, int)
+            and not isinstance(target, bool),
+        )
+        agent.register_response_callback(
+            whatsapp_callback,
+            response_target_filter=lambda target: isinstance(target, str),
+        )
+        agent._current_response_target = "+819012345678"
+
+        _run(agent.send_response("Reply"))
+
+        assert delivered == [("whatsapp", "Reply", "+819012345678")]
+
+    def test_unfiltered_callback_keeps_legacy_targeted_delivery(self):
+        agent = _make_agent()
+        delivered = []
+
+        async def callback(message, response_target=None):
+            delivered.append((message, response_target))
+
+        agent.register_response_callback(callback)
+        agent._current_response_target = 12345
+
+        _run(agent.send_response("Reply"))
+
+        assert delivered == [("Reply", 12345)]
 
 
 class TestRegisterResponseCallback:

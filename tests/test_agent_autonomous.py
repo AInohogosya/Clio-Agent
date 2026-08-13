@@ -19,6 +19,8 @@ def _make_mock_agent(chat_side_effect=None, execute_result=None):
 
     agent = mock.MagicMock()
     agent.response_callbacks = []
+    agent._response_callback_filters = {}
+    agent._current_response_target = None
 
     context_log = mock.MagicMock()
     context_log.get_entries_as_messages.return_value = []
@@ -50,6 +52,7 @@ def _make_mock_agent(chat_side_effect=None, execute_result=None):
     agent._circuit_open = False
     agent.autonomous_mode = True
     agent.thinking_interval = 0.1
+    agent.circuit_breaker_auto_recovery_seconds = 0.0
 
     agent.run_autonomous_loop = ClioAgent.run_autonomous_loop.__get__(agent, ClioAgent)
     agent.start_autonomous_loop = ClioAgent.start_autonomous_loop.__get__(agent, ClioAgent)

@@ -36,6 +36,22 @@ class TestConfigInit:
         config = Config(env_path="/some/path/.env")
         assert config.get_yaml_path() == Path("/some/path/config.yaml")
 
+    def test_circuit_breaker_auto_recovery_defaults_to_manual_resume(self):
+        with mock.patch.dict("os.environ", {}, clear=True):
+            config = Config(env_path="/nonexistent/.env")
+
+        assert config.circuit_breaker_auto_recovery_seconds == 0.0
+
+    def test_circuit_breaker_auto_recovery_reads_positive_env_value(self):
+        with mock.patch.dict(
+            "os.environ",
+            {"CIRCUIT_BREAKER_AUTO_RECOVERY_SECONDS": "90"},
+            clear=True,
+        ):
+            config = Config(env_path="/nonexistent/.env")
+
+        assert config.circuit_breaker_auto_recovery_seconds == 90.0
+
 
 class TestConfigSaveToEnv:
     """Tests for Config.save_to_env"""

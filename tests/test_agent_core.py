@@ -86,22 +86,21 @@ class TestClioAgentInitialize:
     """Tests for ClioAgent.initialize"""
 
     def test_initialize_loads_context(self):
-        with mock.patch.object(ClioAgent, 'context_log') as mocked_log:
-            config = _MockConfig()
-            llm_router = mock.MagicMock(spec=LLMRouter)
-            llm_router.current_model = "gpt-4o"
-            agent = ClioAgent.__new__(ClioAgent)
-            agent.config = config
-            agent.name = "TestAgent"
-            agent.context_log = mock.MagicMock()
-            agent.context_log.load_from_file = mock.MagicMock(return_value=True)
-            agent.context_log.get_line_count = mock.MagicMock(return_value=5)
-            agent.context_log.add_system_message = mock.AsyncMock()
+        config = _MockConfig()
+        llm_router = mock.MagicMock(spec=LLMRouter)
+        llm_router.current_model = "gpt-4o"
+        agent = ClioAgent.__new__(ClioAgent)
+        agent.config = config
+        agent.name = "TestAgent"
+        agent.context_log = mock.MagicMock()
+        agent.context_log.load_from_file = mock.MagicMock(return_value=True)
+        agent.context_log.get_line_count = mock.MagicMock(return_value=5)
+        agent.context_log.add_system_message = mock.AsyncMock()
 
-            result = _run(agent.initialize())
+        result = _run(agent.initialize())
 
-            assert "Context restored" in result
-            agent.context_log.add_system_message.assert_called()
+        assert "Context restored" in result
+        agent.context_log.add_system_message.assert_called()
 
     def test_initialize_no_prior_context(self):
         config = _MockConfig()
@@ -132,6 +131,7 @@ class TestClioAgentStatus:
         agent.llm_router = llm_router
         agent.name = "TestAgent"
         agent.is_running = False
+        agent.autonomous_mode = True
         agent.tool_registry = mock.MagicMock()
         agent.tool_registry.list_tools = mock.MagicMock(return_value=["read_file"])
         agent.context_log = mock.MagicMock()
@@ -215,7 +215,9 @@ class TestClioAgentAutonomousLoopLifecycle:
         agent._circuit_open = True
         agent.context_log = mock.MagicMock()
         agent.context_log.add_system_message = mock.AsyncMock()
-        agent._autonomous_task = None
+        running_task = MagicMock()
+        running_task.done = MagicMock(return_value=False)
+        agent._autonomous_task = running_task
 
         result = _run(agent.start_autonomous_loop())
 
@@ -265,7 +267,7 @@ class TestClioAgentAutonomousLoopLifecycle:
         assert result is False
         agent.context_log.add_system_message.assert_called()
         call_args = agent.context_log.add_system_message.call_args
-        assert "no LLM model" in call_args[0][0].lower()
+        assert "no llm model" in call_args[0][0].lower()
 
     def test_stop_autonomous_loop(self):
         config = _MockConfig()
@@ -307,7 +309,6 @@ class TestClioAgentAutonomousLoopLifecycle:
                 pass
 
         agent._autonomous_task = mock_task
-        agent._stop_autonomous_loop_async = lambda: wait_side_effect()
 
         agent.stop()
         assert agent.is_running is False
@@ -451,7 +452,6 @@ class TestClioAgentSystemBlock:
         agent.tool_registry.list_tools = mock.MagicMock(return_value=["read_file", "say"])
         agent._cached_prompt = ""
         agent._cached_tools = ""
-        agent.BASE_SYSTEM_PROMPT_TEMPLATE = ClioAgent.BASE_SYSTEM_PROMPT_TEMPLATE
 
         block = agent._system_block()
         assert block["role"] == "system"
@@ -487,7 +487,6 @@ class TestClioAgentSystemBlock:
         agent.tool_registry.list_tools = mock.MagicMock(return_value=["read_file"])
         agent._cached_prompt = ""
         agent._cached_tools = ""
-        agent.BASE_SYSTEM_PROMPT_TEMPLATE = ClioAgent.BASE_SYSTEM_PROMPT_TEMPLATE
 
         messages = agent._build_context_messages("User message here")
 
