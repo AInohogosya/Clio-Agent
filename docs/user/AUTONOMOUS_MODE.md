@@ -94,6 +94,18 @@ To prevent a failing loop from hammering an API, the autonomous loop has a **cir
 
 This resets the failure counter and restarts the loop. Your context is preserved.
 
+### Optional Auto-Recovery
+
+Manual recovery is the default. For unattended deployments, set a positive
+number of seconds to opt in to automatic recovery after a tripped circuit:
+
+```text
+CIRCUIT_BREAKER_AUTO_RECOVERY_SECONDS=300
+```
+
+Set the value to `0` (the default) to require `/resume` or `/start` after every
+circuit-breaker trip.
+
 ### Exponential Back-off
 
 When a cycle fails, the next wait is doubled (1 cycle = 5s, 2 failures = 10s, 4 failures = 40s, etc.), capped at **300 seconds (5 minutes)**. This prevents aggressive retries against a failing service.
