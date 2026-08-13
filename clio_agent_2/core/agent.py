@@ -1,6 +1,8 @@
 import asyncio
 import json
 import logging
+
+import aiohttp
 from datetime import datetime
 from pathlib import Path
 from collections.abc import Callable
@@ -15,9 +17,12 @@ MESSAGE_PROCESS_TIMEOUT = 3600.0
 MAX_CONTEXT_TOKENS = 8000
 MAX_TOOL_ITERATIONS = 5
 CIRCUIT_BREAKER_THRESHOLD = 5
-# FUNC-05: Auto-recovery for circuit breaker (seconds to wait before attempting recovery)
-# Set to 0 or negative to disable auto-recovery
-CIRCUIT_BREAKER_AUTO_RECOVERY_SECONDS = 300.0  # 5 minutes
+# A tripped circuit must remain paused until an operator explicitly resumes it
+# unless auto-recovery is configured.  Zero is intentionally the safe default.
+DEFAULT_CIRCUIT_BREAKER_AUTO_RECOVERY_SECONDS = 0.0
+# Backward-compatible module constant for integrations that imported the old
+# setting directly. New instances read the value from Config instead.
+CIRCUIT_BREAKER_AUTO_RECOVERY_SECONDS = DEFAULT_CIRCUIT_BREAKER_AUTO_RECOVERY_SECONDS
 DEFAULT_CONTEXT_WINDOW_SIZE = 50
 COLD_ARCHIVE_BATCH = 25
 
@@ -88,9 +93,10 @@ class ClioAgent:
     __slots__ = (
         'config', 'llm_router', 'name', 'context_log', 'tool_registry',
         'is_running', '_consecutive_failures', '_circuit_open',
-        'autonomous_mode', 'thinking_interval', '_autonomous_task',
-        'response_callbacks', 'current_task', '_cached_prompt', '_cached_tools',
-        '_current_response_target',
+        'autonomous_mode', 'thinking_interval',
+        'circuit_breaker_auto_recovery_seconds', '_autonomous_task',
+        'response_callbacks', '_response_callback_filters', 'current_task',
+        '_cached_prompt', '_cached_tools', '_current_response_target',
     )
 
     def _available_tools_text(self):
@@ -103,8 +109,10 @@ class ClioAgent:
     @property
     def BASE_SYSTEM_PROMPT(self):
         tool_text = self._available_tools_text()
-        if tool_text == self._cached_tools:
-            return self._cached_prompt
+        cached_tools = getattr(self, "_cached_tools", None)
+        cached_prompt = getattr(self, "_cached_prompt", "")
+        if tool_text == cached_tools and cached_prompt:
+            return cached_prompt
         prompt = _SYSTEM_PROMPT_BASE.replace("<<AVAILABLE_TOOLS>>", tool_text)
         result = prompt + "\n\nCurrent time: " + datetime.now().isoformat()
         self._cached_tools = tool_text
@@ -169,9 +177,27 @@ class ClioAgent:
         self._circuit_open = False
         self.autonomous_mode = config.autonomous_mode
         self.thinking_interval = config.thinking_interval
+        # By default a tripped circuit stays paused until /resume or /start.
+        # An operator can opt into auto-recovery through the environment config.
+        try:
+            self.circuit_breaker_auto_recovery_seconds = max(
+                0.0,
+                float(
+                    getattr(
+                        config,
+                        "circuit_breaker_auto_recovery_seconds",
+                        DEFAULT_CIRCUIT_BREAKER_AUTO_RECOVERY_SECONDS,
+                    )
+                ),
+            )
+        except (TypeError, ValueError):
+            self.circuit_breaker_auto_recovery_seconds = (
+                DEFAULT_CIRCUIT_BREAKER_AUTO_RECOVERY_SECONDS
+            )
         self._autonomous_task: Optional[asyncio.Task] = None
 
         self.response_callbacks = []
+        self._response_callback_filters: Dict[Callable, Callable[[Any], bool]] = {}
         self.current_task = None
         self._cached_prompt = ""
         self._cached_tools = ""
@@ -179,14 +205,21 @@ class ClioAgent:
         # responses back to the correct conversation.
         self._current_response_target: Any = None
 
-    def register_response_callback(self, callback: Callable):
-        """
-        Register a callback for sending responses to platforms.
-        
-        Args:
-            callback: Async function that takes (message: str) as argument
+    def register_response_callback(
+        self,
+        callback: Callable,
+        response_target_filter: Optional[Callable[[Any], bool]] = None,
+    ):
+        """Register a callback for sending responses to platforms.
+
+        ``response_target_filter`` lets an interface opt in to targeted delivery.
+        It receives the target supplied by ``process_message`` and returns whether
+        that callback owns the target. Callbacks registered without a filter retain
+        the legacy broadcast behavior.
         """
         self.response_callbacks.append(callback)
+        if response_target_filter is not None:
+            self._response_callback_filters[callback] = response_target_filter
 
     async def _compress_context(self, entries_to_compress: List) -> str:
         """
@@ -734,14 +767,15 @@ class ClioAgent:
                 ):
                     self._circuit_open = True
                     # FUNC-05: Determine if auto-recovery is enabled
-                    auto_recovery_enabled = CIRCUIT_BREAKER_AUTO_RECOVERY_SECONDS > 0
+                    auto_recovery_seconds = self.circuit_breaker_auto_recovery_seconds
+                    auto_recovery_enabled = auto_recovery_seconds > 0
                     if auto_recovery_enabled:
                         notice = (
                             f"⚠️ Circuit breaker tripped after "
                             f"{self._consecutive_failures} consecutive failures. The "
                             f"autonomous loop is PAUSED to avoid hammering a failing "
                             f"provider. Context and memory are preserved. "
-                            f"Auto-recovery will attempt in {CIRCUIT_BREAKER_AUTO_RECOVERY_SECONDS:.0f}s. "
+                            f"Auto-recovery will attempt in {auto_recovery_seconds:.0f}s. "
                             f"Manual resume with /resume (or /start)."
                         )
                     else:
@@ -757,14 +791,14 @@ class ClioAgent:
 
                     if auto_recovery_enabled:
                         # Wait for auto-recovery period, then attempt to close circuit
-                        await asyncio.sleep(CIRCUIT_BREAKER_AUTO_RECOVERY_SECONDS)
+                        await asyncio.sleep(auto_recovery_seconds)
                         if self.is_running and self._circuit_open:
                             logger.info("Circuit breaker auto-recovery: attempting to close circuit")
                             self._circuit_open = False
                             self._consecutive_failures = 0
                             recovery_notice = (
                                 f"🔄 Circuit breaker auto-recovery: circuit closed after "
-                                f"{CIRCUIT_BREAKER_AUTO_RECOVERY_SECONDS:.0f}s pause. "
+                                f"{auto_recovery_seconds:.0f}s pause. "
                                 f"Resuming autonomous operation."
                             )
                             await self.context_log.add_system_message(recovery_notice)
@@ -789,17 +823,32 @@ class ClioAgent:
         await self.context_log.add_system_message("Autonomous loop stopped")
 
     async def send_response(self, message: str):
-        """Send a response through all registered callbacks."""
-        target = self._current_response_target
+        """Send a response through registered callbacks.
+
+        An in-turn response is delivered only to callbacks whose target filter
+        accepts the originating conversation. Unfiltered callbacks preserve the
+        historical broadcast contract for third-party integrations.
+        """
+        target = getattr(self, "_current_response_target", None)
+        callback_filters = getattr(self, "_response_callback_filters", {})
         for callback in self.response_callbacks:
+            if target is not None:
+                response_target_filter = callback_filters.get(callback)
+                if response_target_filter is not None:
+                    try:
+                        if not response_target_filter(target):
+                            continue
+                    except Exception:
+                        logger.warning("Response target filter failed", exc_info=True)
+                        continue
             try:
-                # Pass target as keyword argument for backward compatibility
+                # Pass target as keyword argument for backward compatibility.
                 if target is not None:
                     await callback(message, response_target=target)
                 else:
                     await callback(message)
             except Exception:
-                pass  # Ignore individual callback failures
+                logger.warning("Response callback failed", exc_info=True)
 
     def stop(self):
         """Stop the autonomous loop."""
@@ -829,6 +878,11 @@ class ClioAgent:
         self.config.current_model = getattr(self.llm_router, "current_model", "")
         self.config.autonomous_mode = self.autonomous_mode
         self.config.thinking_interval = self.thinking_interval
+        self.config.circuit_breaker_auto_recovery_seconds = getattr(
+            self,
+            "circuit_breaker_auto_recovery_seconds",
+            DEFAULT_CIRCUIT_BREAKER_AUTO_RECOVERY_SECONDS,
+        )
         self.config.context_log_max_lines = self.context_log.max_lines
         self.config.agent_name = self.name
 
@@ -838,6 +892,13 @@ class ClioAgent:
             "DEFAULT_MODEL": self.config.current_model or "",
             "AUTONOMOUS_MODE": "true" if self.autonomous_mode else "false",
             "THINKING_INTERVAL": str(self.thinking_interval),
+            "CIRCUIT_BREAKER_AUTO_RECOVERY_SECONDS": str(
+                getattr(
+                    self,
+                    "circuit_breaker_auto_recovery_seconds",
+                    DEFAULT_CIRCUIT_BREAKER_AUTO_RECOVERY_SECONDS,
+                )
+            ),
             "CONTEXT_LOG_MAX_LINES": str(self.context_log.max_lines),
             "AGENT_NAME": self.name or "Clio-Agent-2",
         })
