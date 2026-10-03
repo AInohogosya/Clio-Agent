@@ -1,0 +1,303 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * One substrate, two lighting rigs. Both themes keep the same three-step
+ * luminance ladder (well < canvas < raised) and the same industrial language:
+ * a lit top bevel, a shaded bottom lip, and a real cast shadow. Only the
+ * direction of the light changes.
+ */
+:root {
+  color-scheme: dark;
+  --accent: #F97316;
+  --accent-ink: #17120e;
+  --accent-soft: color-mix(in srgb, var(--accent) 14%, transparent);
+  --accent-faint: color-mix(in srgb, var(--accent) 7%, transparent);
+  --accent-text: var(--accent);
+  --accent-line: color-mix(in srgb, var(--accent) 62%, var(--line));
+  --accent-halo: color-mix(in srgb, var(--accent) 38%, transparent);
+  --focus-ring: color-mix(in srgb, var(--accent) 40%, transparent);
+  --canvas: #101210;
+  --canvas-raised: #171a17;
+  --canvas-well: #0c0e0c;
+  --ink: #f0eee8;
+  --ink-muted: #989c93;
+  --ink-faint: #82887e;
+  --line: rgba(232, 235, 222, 0.1);
+  --line-strong: rgba(232, 235, 222, 0.17);
+  --ok: #34d399;
+  --ok-dot: #34d399;
+  --ok-soft: color-mix(in srgb, var(--ok) 10%, transparent);
+  --ok-line: color-mix(in srgb, var(--ok) 32%, transparent);
+  --warn: #fbbf24;
+  --warn-dot: #fbbf24;
+  --danger: #fb7185;
+  --danger-dot: #fb7185;
+  --danger-soft: color-mix(in srgb, var(--danger) 12%, transparent);
+  --danger-hover: color-mix(in srgb, var(--danger) 19%, transparent);
+  --danger-line: color-mix(in srgb, var(--danger) 36%, transparent);
+  --ambient-cool: rgba(120, 132, 112, 0.07);
+  --shadow-panel: 0 1px 0 rgba(255, 255, 255, 0.035) inset, 0 -1px 0 rgba(0, 0, 0, 0.28) inset, 0 14px 32px rgba(0, 0, 0, 0.4);
+  --shadow-emboss: 0 1px 0 rgba(255, 255, 255, 0.045) inset, 0 -1px 0 rgba(0, 0, 0, 0.3) inset, 0 10px 24px rgba(0, 0, 0, 0.13);
+  --shadow-well: 0 2px 5px rgba(0, 0, 0, 0.22) inset, 0 -1px 0 rgba(255, 255, 255, 0.025) inset;
+  --shadow-accent: 0 1px 0 rgba(255, 255, 255, 0.24) inset, 0 -2px 0 rgba(0, 0, 0, 0.16) inset;
+}
+
+/*
+ * Daylight. A warm paper stock lit from the top left: the bevels flip so the
+ * highlight is a bright lip and the recess reads from a dark inner shadow,
+ * and the accent is pulled toward the ink so it stays legible as text. Every
+ * ink level clears 4.5:1 on all three surfaces.
+ */
+:root[data-theme='light'] {
+  color-scheme: light;
+  --accent-ink: #1c1206;
+  --accent-soft: color-mix(in srgb, var(--accent) 15%, var(--canvas-raised));
+  --accent-faint: color-mix(in srgb, var(--accent) 8%, var(--canvas-raised));
+  --accent-text: color-mix(in srgb, var(--accent) 55%, var(--ink));
+  --accent-line: color-mix(in srgb, var(--accent) 58%, var(--ink));
+  --accent-halo: color-mix(in srgb, var(--accent) 30%, var(--canvas));
+  --focus-ring: color-mix(in srgb, var(--accent) 34%, var(--ink));
+  --canvas: #efede7;
+  --canvas-raised: #fbfaf7;
+  --canvas-well: #e5e2da;
+  --ink: #1b1a16;
+  --ink-muted: #4e4b43;
+  --ink-faint: #645e53;
+  --line: rgba(40, 33, 22, 0.11);
+  --line-strong: rgba(40, 33, 22, 0.2);
+  --ok: #047857;
+  --ok-dot: #059669;
+  --ok-soft: color-mix(in srgb, var(--ok) 8%, transparent);
+  --ok-line: color-mix(in srgb, var(--ok) 36%, transparent);
+  --warn: #b45309;
+  --warn-dot: #d97706;
+  --danger: #be123c;
+  --danger-dot: #e11d48;
+  --danger-soft: color-mix(in srgb, var(--danger) 8%, transparent);
+  --danger-hover: color-mix(in srgb, var(--danger) 14%, transparent);
+  --danger-line: color-mix(in srgb, var(--danger) 42%, transparent);
+  --ambient-cool: rgba(88, 104, 124, 0.08);
+  --shadow-panel: 0 1px 0 rgba(255, 255, 255, 0.9) inset, 0 -1px 0 rgba(48, 40, 28, 0.09) inset, 0 1px 2px rgba(48, 40, 28, 0.05), 0 12px 28px -8px rgba(48, 40, 28, 0.16);
+  --shadow-emboss: 0 1px 0 rgba(255, 255, 255, 0.95) inset, 0 -1px 0 rgba(48, 40, 28, 0.1) inset, 0 1px 1px rgba(48, 40, 28, 0.04), 0 6px 16px -6px rgba(48, 40, 28, 0.16);
+  --shadow-well: 0 2px 5px rgba(52, 44, 30, 0.08) inset, 0 -1px 0 rgba(255, 255, 255, 0.85) inset;
+  --shadow-accent: 0 1px 0 rgba(255, 255, 255, 0.4) inset, 0 -2px 0 rgba(0, 0, 0, 0.1) inset, 0 1px 2px rgba(48, 40, 28, 0.16);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  min-height: 100%;
+  margin: 0;
+}
+
+body {
+  min-width: 320px;
+  overflow: hidden;
+  background: var(--canvas);
+  color: var(--ink);
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+}
+
+::selection {
+  background: var(--accent-soft);
+  color: var(--ink);
+}
+
+.instrument-canvas {
+  background:
+    radial-gradient(circle at 15% -10%, var(--accent-faint), transparent 32rem),
+    radial-gradient(circle at 100% 0%, var(--ambient-cool), transparent 28rem),
+    var(--canvas);
+}
+
+.instrument-panel {
+  background: var(--canvas-raised);
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow-panel);
+}
+
+.instrument-well {
+  background: var(--canvas-well);
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow-well);
+}
+
+.instrument-button {
+  transition: transform 120ms ease, border-color 120ms ease, background 120ms ease, color 120ms ease;
+}
+
+.instrument-button:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
+.instrument-button:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.accent-text {
+  color: var(--accent-text);
+}
+
+.accent-ink {
+  color: var(--accent-ink);
+}
+
+.accent-border {
+  border-color: var(--accent-line);
+}
+
+.accent-button {
+  background: var(--accent);
+  color: var(--accent-ink);
+  border-color: color-mix(in srgb, var(--accent) 78%, #fff 22%);
+  box-shadow: var(--shadow-accent);
+}
+
+.accent-button:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 90%, #fff 10%);
+}
+
+.signal-pulse {
+  animation: signal-pulse 1.8s ease-in-out infinite;
+}
+
+@keyframes signal-pulse {
+  0%, 100% { opacity: 0.42; transform: scale(0.86); }
+  50% { opacity: 1; transform: scale(1); }
+}
+
+.scrollbar-thin {
+  scrollbar-width: thin;
+  scrollbar-color: var(--ink-faint) transparent;
+}
+
+.scrollbar-thin::-webkit-scrollbar {
+  width: 7px;
+}
+
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  background: var(--ink-faint);
+  border-radius: 99px;
+}
+
+/*
+ * The composer field's height policy, and the easing of it.
+ *
+ * A floor of one line, because an empty field is one line. A ceiling tied to the
+ * viewport as well as to a length, because a composer that may grow to a fixed
+ * 20rem is half a screen on a laptop and the whole of a phone — past that point
+ * the field stops growing and scrolls, which is what a long message is: long
+ * enough to need a scrollbar, not long enough to take the conversation away.
+ *
+ * The transition is the other half of growing well. A field that snaps from one
+ * height to the next is the right size at every keystroke and still reads as a
+ * glitch, because the eye is on the words and the words' frame jumps under it
+ * once per wrapped line. So the height eases, short enough that the field is
+ * never behind the keystroke that made it taller, and out of ease so the box
+ * has settled before the eye leaves it. The measurement that feeds it is taken
+ * in a layout effect, so what eases is the new height rather than one frame
+ * late. The reduced-motion block at the end of this file takes all of it away.
+ */
+.composer-field {
+  min-height: 2.75rem;
+  max-height: min(40vh, 20rem);
+  transition: height 140ms cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+
+input[type='color'] {
+  padding: 0.2rem;
+}
+
+input[type='color']::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+input[type='color']::-webkit-color-swatch {
+  border: 0;
+  border-radius: 0.35rem;
+}
+
+/*
+ * The preview-mode box.
+ *
+ * `accent-color` alone would tint the tick and leave the box a default grey that
+ * belongs to no panel on this page, so the frame is drawn from the same tokens as
+ * the wells and fields around it and only the tick takes the accent. Set through
+ * a class rather than inline because there is exactly one of these and it is a
+ * named thing on this screen, not a general style for checkboxes.
+ */
+.preview-toggle {
+  appearance: none;
+  border: 1px solid var(--line-strong);
+  border-radius: 0.3rem;
+  background-color: var(--canvas-well);
+  background-image: none;
+  display: grid;
+  place-content: center;
+}
+
+.preview-toggle::before {
+  content: '';
+  width: 0.6rem;
+  height: 0.6rem;
+  transform: scale(0);
+  transition: transform 120ms cubic-bezier(0.22, 0.61, 0.36, 1);
+  box-shadow: inset 1em 1em var(--accent);
+  clip-path: polygon(14% 44%, 0 65%, 50% 100%, 100% 16%, 80% 0%, 43% 62%);
+}
+
+.preview-toggle:checked::before {
+  transform: scale(1);
+}
+
+.preview-toggle:focus-visible {
+  outline: none;
+  border-color: var(--accent-line);
+  box-shadow: 0 0 0 2px var(--focus-ring);
+}
+
+/*
+ * The disabled box is not dimmed by `opacity` here: the tick is `inset 1em 1em
+ * var(--accent)`, so fading the whole control also fades the one thing that says
+ * which way it is set. The frame goes faint and the tick goes quiet on its own,
+ * which keeps "on but you cannot change it" legible.
+ */
+.preview-toggle:disabled {
+  border-color: var(--line);
+  background-color: var(--canvas);
+}
+
+.preview-toggle:disabled::before {
+  box-shadow: inset 1em 1em var(--ink-faint);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

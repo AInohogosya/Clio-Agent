@@ -1,0 +1,34 @@
+# The agent's contact book.
+#
+# `channels` maps a door to the address that door knows this person by, and it is
+# what makes "answer them on Telegram" a complete instruction. The two are
+# different words for a person-to-person channel: Telegram posts to a chat id,
+# WhatsApp to a `wa_id`, and Slack and Discord to a *channel* — so none of them
+# accepts the person's own id. The adapters enforce that — `TelegramAdapter.send`
+# refuses anything that is not `tg:<chat id>`, `WhatsappAdapter.send` anything
+# that is not `wa:<number>` — and the interface bridge resolves this map before it
+# records a message, so a send naming a door this person has no address on is
+# refused rather than written as a conversation that never happened.
+#
+# A Slack or Discord address is a channel rather than a user because a reply has
+# to go back to the conversation it was asked in, and a person with two
+# conversations has no single one to pick.
+#
+# `web` and `cli` need no entry: those deliver to whoever is reading the
+# transcript, so the person is the address.
+#
+# To fill these in: message the bot and read the id it reports (`/id` on
+# Telegram, `contacts[0].wa_id` in a WhatsApp webhook body, `event.channel` in a
+# Slack event, `channel_id` in a Discord `MESSAGE_CREATE`).
+people:
+  - id: owner
+    display_name: Owner
+    relation: owner
+    trust: 0.9
+    channels:
+      web: "owner"
+      # telegram: "tg:819012345678"
+      # whatsapp: "wa:819012345678"
+      # slack: "slack:C0E2E"
+      # discord: "dc:9999"
+    preferences: {}

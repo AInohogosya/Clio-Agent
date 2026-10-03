@@ -1,0 +1,84 @@
+attention:
+  weights:
+    src: 0.35
+    urg: 0.30
+    rel: 0.20
+    nov: 0.15
+  sender:
+    owner: 0.9
+    known: 0.6
+    unknown: 0.3
+    system: 0.4
+  refine_band: [0.3, 0.8]
+  interrupt_thresholds:
+    THINKING_FOCUSED: 0.65
+    THINKING_REFLECTING: 0.40
+    RESTING: 0.50
+    default: 0.65
+
+drives:
+  base:
+    commitment: 0.20
+    curiosity: 0.25
+    mastery: 0.15
+    creation: 0.15
+    order: 0.10
+    social: 0.10
+    homeostasis: 0.20
+  weights:
+    commitment: 0.30
+    curiosity: 0.15
+    mastery: 0.15
+    creation: 0.15
+    order: 0.10
+    social: 0.10
+    homeostasis: 0.05
+  lambda0: 0.08
+  tau: 0.15
+  propose_threshold: 0.4
+  deadline_bypass_h: 24
+
+energy:
+  # The agent has no bedtime. It runs at 04:00 as readily as at 16:00, so uptime
+  # cannot be what drains it — see `EnergyConfig`. These two bounds are a daily
+  # rhythm, not a sleep window: the agent is slower and less initiative at the
+  # trough, and never off. `night_floor` sits above `low_energy` on purpose, so
+  # the small hours are never by themselves a reason to stop.
+  night_floor: 0.55
+  peak_hour: 10.0
+  rest_boost_per_30min: 0.1
+  cap: 1.0
+  low_energy: 0.35
+  min_impulse_utility: 0.1
+
+focus:
+  max_session_min: 90
+  micro_break_min: 5
+
+mind_wandering:
+  min_gap_min: 20
+  max_gap_min: 40
+  sample_memories: 3
+
+# What the agent is drawn to when nothing is due. Minutes, not ticks: this is
+# the difference between an agent that thinks when it is not spoken to and one
+# that idles until spoken to.
+reverie:
+  enabled: true
+  min_gap_min: 12
+  max_gap_min: 45
+  max_tokens: 400
+  sample_memories: 4
+  recent_window: 8
+  repeat_threshold: 0.6
+  min_interest: 0.2
+
+ticks:
+  THINKING_FOCUSED: 2
+  THINKING_REFLECTING: 4
+  ACTING: 1
+  WAITING: 8
+  NOTIFYING: 2
+  RESTING: 60
+  RESUMING: 1
+  PAUSED: 5

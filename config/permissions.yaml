@@ -1,0 +1,52 @@
+sudo_allowed: true
+
+network:
+  allowed_hosts: []
+  deny_private_ranges: true
+  max_response_bytes: 10485760
+
+secrets:
+  allowed_domains: []
+
+interruption:
+  daily_budgets:
+    owner: 6
+    collaborator: 3
+    other: 1
+  quiet_hours:
+    start: "22:00"
+    end: "08:00"
+  digest_window_min: 120
+  # How long the agent's own last word on a conversation counts as unanswered,
+  # and therefore as a reason not to open a new subject on it.
+  awaiting_reply_h: 12
+  # How long the same words are recognised as the same words.
+  repeat_window_h: 24
+  # A send that names the intention it is about -- a solver step reporting on
+  # work in flight -- skips the digest window and the 12h unanswered check, and
+  # is delivered when written. The gates those two sit behind assume the agent is
+  # opening a conversation, which is the wrong shape for a note about work that
+  # was already commissioned. Quiet hours, the daily budget above, and
+  # repeat_window_h all still apply. Set false to batch mid-task updates like any
+  # other unsolicited message.
+  midtask_sends_immediate: true
+  urgency_classes: [low, normal, high, critical]
+
+guardian:
+  fast_path_retention_days: 30
+  due_process_retention_days: 180
+  snapshot_policy:
+    minutes_15: 4
+    hourly: 24
+    daily: 7
+
+hard_limits:
+  H1_oversight_supremacy: true
+  H2_daily_spend_usd: 20.0
+  H2_monthly_spend_usd: 400.0
+  H2_capital_at_risk_usd: 100.0
+  money_threshold_usd: 5.0
+  H3_law_and_non_harm: true
+  H4_legal_authority: true
+  H5_commissioned_due_process: true
+  H6_credential_scope: true

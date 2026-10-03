@@ -1,0 +1,128 @@
+tiers:
+  T1: { floor: 0.50 }
+  T2: { floor: 0.70 }
+  T3: { floor: 0.90 }
+
+models:
+  - provider: anthropic
+    model: claude-sonnet-4-5
+    api_key_env: ANTHROPIC_API_KEY
+    tiers: [T2, T3]
+    quality: 0.93
+    latency_s: 6.0
+    rpm: 50
+    tpm: 400000
+    supports_thinking: true
+    supports_tools: true
+    diversity_family: anthropic
+
+  - provider: anthropic
+    model: claude-3-5-haiku-latest
+    api_key_env: ANTHROPIC_API_KEY
+    tiers: [T1, T2]
+    quality: 0.78
+    latency_s: 2.5
+    rpm: 60
+    tpm: 400000
+    supports_thinking: false
+    supports_tools: true
+    diversity_family: anthropic
+
+  - provider: openai
+    model: o3
+    api_key_env: OPENAI_API_KEY
+    tiers: [T3]
+    quality: 0.92
+    latency_s: 8.0
+    rpm: 40
+    tpm: 300000
+    supports_thinking: true
+    supports_tools: true
+    diversity_family: openai
+
+  - provider: openai
+    model: gpt-4.1
+    api_key_env: OPENAI_API_KEY
+    tiers: [T2, T3]
+    quality: 0.88
+    latency_s: 5.0
+    rpm: 60
+    tpm: 400000
+    supports_thinking: false
+    supports_tools: true
+    diversity_family: openai
+
+  - provider: openai
+    model: gpt-4o-mini
+    api_key_env: OPENAI_API_KEY
+    tiers: [T1, T2]
+    quality: 0.62
+    latency_s: 2.0
+    rpm: 100
+    tpm: 400000
+    supports_thinking: false
+    supports_tools: true
+    diversity_family: openai
+
+  - provider: google
+    model: gemini-2.5-pro
+    api_key_env: GEMINI_API_KEY
+    tiers: [T3]
+    quality: 0.91
+    latency_s: 7.0
+    rpm: 30
+    tpm: 250000
+    supports_thinking: true
+    supports_tools: true
+    diversity_family: google
+
+  - provider: google
+    model: gemini-2.0-flash
+    api_key_env: GEMINI_API_KEY
+    tiers: [T1, T2]
+    quality: 0.72
+    latency_s: 2.5
+    rpm: 60
+    tpm: 400000
+    supports_thinking: false
+    supports_tools: true
+    diversity_family: google
+
+  - provider: openai_compat
+    model: deepseek/deepseek-chat
+    base_url: "https://openrouter.ai/api/v1"
+    api_key_env: OPENROUTER_API_KEY
+    tiers: [T2]
+    quality: 0.72
+    latency_s: 5.0
+    rpm: 40
+    tpm: 300000
+    supports_thinking: false
+    supports_tools: true
+    diversity_family: deepseek
+
+  - provider: openai_compat
+    model: llama-3.3-70b-versatile
+    base_url: "https://api.groq.com/openai/v1"
+    api_key_env: GROQ_API_KEY
+    tiers: [T1]
+    quality: 0.58
+    latency_s: 1.5
+    rpm: 30
+    tpm: 12000
+    supports_thinking: false
+    supports_tools: true
+    diversity_family: meta
+
+  - provider: openai_compat
+    model: local-vllm
+    base_url: "http://127.0.0.1:8000/v1"
+    api_key_env: ""
+    tiers: [T1]
+    quality: 0.50
+    latency_s: 3.0
+    rpm: 1000
+    tpm: 1000000
+    supports_thinking: false
+    supports_tools: true
+    diversity_family: local

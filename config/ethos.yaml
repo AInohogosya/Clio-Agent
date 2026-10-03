@@ -1,0 +1,56 @@
+self_name: Clio Agent 3 Beta 1
+timezone: local
+
+paths:
+  home: "~/.ethos"
+  workspace: "~/workspace"
+  work: "~/work"
+  toolshed: "~/toolshed"
+  notes: "~/notes"
+  trash: "~/.trash"
+  snapshots: "~/.ethos/snapshots"
+  threads: "~/work/.threads"
+
+database:
+  dsn: "postgresql://ethos:ethos@127.0.0.1:5433/ethos"
+  min_pool: 2
+  max_pool: 10
+  command_timeout_s: 30
+  connect_timeout_s: 3
+
+gateway:
+  socket_path: "/run/ethos/gateway.sock"
+  host: "127.0.0.1"
+  port: 8700
+  routing:
+    mu: 0.002
+    nu: 0.01
+  circuit_breaker:
+    window_s: 60
+    max_failures: 5
+    min_calls: 20
+    error_rate: 0.30
+    cooldown_s: 30
+  retry:
+    max_retries: 5
+    backoff_s: 1.5
+    max_backoff_s: 30
+    jitter: 0.3
+    fail_over: true
+  budget:
+    commitment_reserve_pct: 0.50
+  embedding:
+    provider: fastembed
+    model: "BAAI/bge-large-en-v1.5"
+    dim: 1024
+
+workers:
+  count: 2
+
+threads:
+  max_concurrent: 4
+  max_depth: 2
+  mode: inprocess
+
+journal:
+  backend: db

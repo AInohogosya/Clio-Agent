@@ -1,0 +1,37 @@
+[Unit]
+Description=Clio Agent 3 Beta 1 communication adapters
+After=network.target postgresql.service
+Wants=postgresql.service
+
+# The agent's filesystem reach is exactly this service user's: it has no chroot,
+# no ProtectHome, no read-only mounts and no path allowlist, so it can read and
+# write anything the `User=` account below can. That is deliberate -- the agent is
+# meant to work on the owner's files, and a confinement here would be the wrong
+# tool for the job anyway, since the guardian makes operations recoverable rather
+# than forbidden.
+#
+# What this line therefore *is* is a statement of whose files those are. Under
+# `User=ethos` they are the `ethos` account's, and nothing in the agent can reach
+# a file owned by the person who deployed this -- which is the usual reason a
+# server deployment reports that the agent "cannot see my files", and it is an
+# account question, not a permission-model question.
+#
+# To give the agent the deploying user's own reach instead, change `User=` to that
+# account, keep `Group=` consistent, and repoint `WorkingDirectory` and
+# `ETHOS_HOME` at paths that account owns. Then `sudo chown -R <user> /opt/ethos
+# /home/ethos` (or point the checkout at a directory it already owns) and restart.
+# `ethos doctor` reports the identity it is actually running as, and whether the
+# directories it was asked to work in are reachable from it.
+[Service]
+Type=simple
+User=ethos
+WorkingDirectory=/opt/ethos
+Environment=ETHOS_HOME=/home/ethos
+Environment=ETHOS_CONFIG_DIR=/opt/ethos/config
+EnvironmentFile=-/home/ethos/.config/ethos/channel-keys.env
+ExecStart=/opt/ethos/.venv/bin/python -m ethos comms
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=ethos.target

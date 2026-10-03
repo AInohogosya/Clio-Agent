@@ -1,93 +1,148 @@
 # Python
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
-*.pyc
-
-# Dependencies
+*.py[cod]
 .venv/
-venv/
-env/
-.env
-.env.local
-*.env.*
-.env.*.local
-
-# Logs and temp files
-*.log
-*.tmp
-*.swp
-*.bak
-*.backup
-
-# Editors
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# Build artifacts
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.tox/
+.eggs/
+*.egg-info/
 dist/
 build/
-target/
-*.o
-*.obj
-*.out
-*.egg-info/
-*.egg/
-*.whl
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Runtime data
-data/
-context_log.json
-context_log.json.bak
-clio_agent.log
-
-# Test cache
-.pytest_cache/
 .coverage
+.coverage.*
 htmlcov/
-.tox/
-.mypy_cache/
-.ruff_cache/
+coverage/
+# direnv exports the venv into the shell; the venv itself is above, this is the
+# environment file a `direnv allow` leaves beside it.
+.envrc
 
-# IDE / CI
+# Node
+node_modules/
+web/dist/
+interface/packages/*/dist/
+# Build and incremental-compile output. `*.tsbuildinfo` is what `tsc -b` and
+# the Vite plugin write next to the tsconfigs; without these a build makes the
+# tree dirty and a `git add -A` sweeps the caches into the next commit.
+*.tsbuildinfo
+.turbo/
+.parcel-cache/
+.next/
+.eslintcache
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Local state
+#
+# Everything the agent writes about itself lives under the configured home
+# (`paths.home`, `~/.ethos` by default, with `ETHOS_HOME` or `--home` on top).
+# That is where the message exchange logs, the Postgres cluster, the
+# age-encrypted secret vault and its key, the agent's own memory and its sockets
+# end up. None of it is source, and the vault is the one thing here that must
+# never be published.
+#
+# `data/` is this checkout's own local state rather than the agent's home: the
+# Postgres cluster that `scripts/ensure_postgres.sh` builds when there is no
+# Docker, its build log, and a `home/` left by checkouts that predated the move
+# to `~/.ethos`. Ignored wholesale so a stray run cannot commit one.
+data/
+*.age
+
+# Logs and the rest of what a run leaves behind, wherever a run points home.
+# The per-process logs are `<name>.log` under the data dir; the pattern is
+# here so that a stray one cannot be committed by pointing home at the
+# checkout itself.
+*.log
+*.log.*
+*.sock
+*.pid
+*.db
+*.sqlite
+*.sqlite3
+
+# Local secrets
+.env
+.env.*
+!.env.example
+# The two credential files the systemd units name as `EnvironmentFile`
+# (`channel-keys.env`, `api-keys.env`), for a checkout that put them beside the
+# units rather than in `/home/ethos/.config/ethos/` where they belong.
+*.env
+
+# Credentials in file form, for the deployment that keeps one on disk instead of
+# in a variable. The agent's own credentials are age-encrypted in its home
+# (`*.age`, above) and are reached through `*_env` names in `config/`, so nothing
+# under `config/` should ever need a key beside it — but a stray paste should not
+# be one `git add -A` away from being published either.
+*.pem
+*.key
+*.crt
+*.cer
+*.der
+*.p12
+*.pfx
+*.jks
+*.keystore
+id_rsa
+id_dsa
+id_ecdsa
+id_ed25519
+.netrc
+.npmrc
+.pgpass
+
+# A secret that has been written beside the file that reads it, which is how
+# `channels.yaml` gets a token pasted into it by hand rather than through the
+# interface. Both the obvious name and the `*.local` convention that keeps an
+# override beside the default it overrides.
+config/channels.local.yaml
+config/people.local.yaml
+config/models.local.yaml
+config/secrets.yaml
+config/vault.yaml
+*.local.yaml
+
+# The agent's home, for a checkout whose `paths.home` was pointed at the
+# checkout itself rather than at `~/.ethos` — `ETHOS_HOME=. ./start.sh` does
+# that, and it puts the vault key, the message logs and the memory database in
+# the tree. Ignored by name so that mistake cannot be published.
+.ethos/
+home/
+
+# Separate projects that happen to sit beside this checkout
+#
+# `Clio Agent 3 mascots/` is its own repository with its own remote and ~27MB of
+# generated images. It is not part of Ethos — nothing here reads it — and it is
+# ignored by name because it carries a `.git` of its own: left alone, `git add
+# -A` would stage it as a gitlink and the checkout would come out with a broken
+# reference to a repository nobody was handed. This line is the shared copy of
+# what `.git/info/exclude` already held locally, so the exclusion survives a
+# clone instead of living on one machine.
+Clio Agent 3 mascots/
+
+# Editors and IDEs
+#
+# Workspace state, run configurations and local overrides. None of it describes
+# the program, and `.vscode/` in particular tends to carry machine-specific
+# interpreter paths.
+.idea/
+.vscode/
 *.swp
 *.swo
 *~
-.idea/
-.vscode/
-*.suo
-*.ntvs*
-*.njsproj
-*.sln
-*.sw?
+*.orig
+*.rej
+*.bak
 
-# Config files (secrets)
-clio_agent_2/config/.env
-clio_agent_2/config/config.yaml
-config/.env
-config/config.yaml
-
-# Node.js (for WhatsApp service)
-node_modules/
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-.pnpm-debug.log*
-
-# TypeScript cache
-*.tsbuildinfo
-
-# Coverage
-coverage/
-.nyc_output/
-
-# Package
-*.tgz
-.otto
+# OS
+.DS_Store
+.AppleDouble
+.LSOverride
+Thumbs.db
+Desktop.ini
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+ehthumbs_vista.db

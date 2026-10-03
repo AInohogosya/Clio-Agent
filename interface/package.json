@@ -1,0 +1,33 @@
+{
+  "name": "project-phone",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Clio Agent 3 Beta 1 interface kit for AI model providers",
+  "bin": {
+    "phone": "./packages/cli/dist/index.js"
+  },
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace @project-phone/core && npm run build --workspace @project-phone/web && npm run build --workspace @project-phone/cli",
+    "typecheck": "npm run build --workspace @project-phone/core && npm run typecheck --workspace @project-phone/core && npm run typecheck --workspace @project-phone/web && npm run typecheck --workspace @project-phone/cli",
+    "lint": "eslint . --max-warnings=0",
+    "start": "npm run start --workspace @project-phone/web --",
+    "dev": "npm run dev --workspace @project-phone/web --",
+    "tui": "npm run tui --workspace @project-phone/cli",
+    "phone": "npm run phone --workspace @project-phone/cli --",
+    "test": "npm run test --workspace @project-phone/core && npm run test --workspace @project-phone/cli && npm run test --workspace @project-phone/web"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "eslint": "^9.17.0",
+    "globals": "^14.0.0",
+    "typescript": "^5.7.2",
+    "typescript-eslint": "^8.19.1"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
