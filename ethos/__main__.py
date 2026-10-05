@@ -25,7 +25,7 @@ def _release_line() -> str:
     """The one-line answer to "which build is this", shared by every spelling.
 
     The product name carries the version already, so it is printed rather than
-    repeated next to it: `Clio Agent 3 Beta 1` is the version, and a second "3 Beta 1"
+    repeated next to it: `Clio Agent 3 Beta` is the version, and a second "3 Beta"
     beside it would be a second thing to keep in step. The date is stated rather than
     left to the file's mtime because a build copied between machines has the mtime of
     the copy, and a release date is a fact about the release.
@@ -69,7 +69,7 @@ def cli(
         help="the agent's own home, for memory, journals and sockets (default: $ETHOS_HOME, then ~/.ethos)",
     ),
 ) -> None:
-    """Clio Agent 3 Beta 1: a continuously existing, general-purpose autonomous agent.
+    """Clio Agent 3 Beta: a continuously existing, general-purpose autonomous agent.
 
     The one command that brings the agent up is `ethos up`; `ethos status` asks
     whether it is there, `ethos stop` ends it, `ethos logs` follows it, and

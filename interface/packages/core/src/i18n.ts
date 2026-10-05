@@ -16,7 +16,7 @@ import type { Language, ProviderId } from './types.js';
  * out and a reply that was refused all look identical if they share a sentence.
  */
 const en = {
-  appName: 'Clio Agent 3 Beta 1',
+  appName: 'Clio Agent 3 Beta',
   appTagline: 'An interface for AI models',
   settings: 'Settings',
   liveChat: 'Live chat',
@@ -326,8 +326,8 @@ const en = {
   // the honest part of it is a name a person chose — which the agent then introduces
   // itself with, in every prompt it ever sends.
   agentName: 'Name',
-  agentNameHint: 'The name the agent answers to. It becomes the first line of its own prompt, where it introduces itself as an AI agent based on Clio Agent 3 Beta 1.',
-  agentNamePlaceholder: 'Clio Agent 3 Beta 1',
+  agentNameHint: 'The name the agent answers to. It becomes the first line of its own prompt, where it introduces itself as an AI agent based on Clio Agent 3 Beta.',
+  agentNamePlaceholder: 'Clio Agent 3 Beta',
   agentNameSaved: 'The agent will answer to {name}.',
   agentNameCleared: 'The agent is back to the name in its configuration.',
   agentNameRestart: 'It takes effect the next time the agent starts.',
@@ -498,7 +498,7 @@ type TranslationKey = keyof typeof en;
 type TranslationTable = Record<TranslationKey, string>;
 
 const ja: TranslationTable = {
-  appName: 'Clio Agent 3 Beta 1',
+  appName: 'Clio Agent 3 Beta',
   appTagline: 'AIモデルとの対話のためのインターフェース',
   settings: '設定',
   liveChat: 'ライブチャット',
@@ -780,8 +780,8 @@ const ja: TranslationTable = {
   cliAgentCatalogue: 'カタログ（{count} モデル）',
 
   agentName: '名前',
-  agentNameHint: 'エージェントが名乗る名前です。自身のプロンプトの最初の一行になり、「Clio Agent 3 Beta 1 に基づく AI エージェント」として自己紹介します。',
-  agentNamePlaceholder: 'Clio Agent 3 Beta 1',
+  agentNameHint: 'エージェントが名乗る名前です。自身のプロンプトの最初の一行になり、「Clio Agent 3 Beta に基づく AI エージェント」として自己紹介します。',
+  agentNamePlaceholder: 'Clio Agent 3 Beta',
   agentNameSaved: 'エージェントは {name} と名乗ります。',
   agentNameCleared: 'エージェントは設定ファイルに書かれた名前に戻りました。',
   agentNameRestart: 'エージェントを次に起動した時点で反映されます。',
@@ -940,7 +940,7 @@ const ja: TranslationTable = {
 };
 
 const zh: TranslationTable = {
-  appName: 'Clio Agent 3 Beta 1',
+  appName: 'Clio Agent 3 Beta',
   appTagline: '用于与 AI 模型对话的界面',
   settings: '设置',
   liveChat: '实时聊天',
@@ -1222,8 +1222,8 @@ const zh: TranslationTable = {
   cliAgentCatalogue: '自带目录，{count} 个模型',
 
   agentName: '名字',
-  agentNameHint: '智能体自称的名字。它会出现在智能体自身提示词的第一行，用来说明自己是一个基于 Clio Agent 3 Beta 1 的 AI 智能体。',
-  agentNamePlaceholder: 'Clio Agent 3 Beta 1',
+  agentNameHint: '智能体自称的名字。它会出现在智能体自身提示词的第一行，用来说明自己是一个基于 Clio Agent 3 Beta 的 AI 智能体。',
+  agentNamePlaceholder: 'Clio Agent 3 Beta',
   agentNameSaved: '智能体将自称 {name}。',
   agentNameCleared: '智能体已恢复使用配置中的名字。',
   agentNameRestart: '智能体下次启动时生效。',

@@ -1,5 +1,5 @@
 [Unit]
-Description=Clio Agent 3 Beta 1 delegated thread workers
+Description=Clio Agent 3 Beta delegated thread workers
 After=network.target ethos-gateway.service ethos-toolhost.service postgresql.service
 Wants=ethos-gateway.service ethos-toolhost.service
 

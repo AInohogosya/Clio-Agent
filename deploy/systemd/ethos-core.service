@@ -1,5 +1,5 @@
 [Unit]
-Description=Clio Agent 3 Beta 1 core (self, life loop)
+Description=Clio Agent 3 Beta core (self, life loop)
 After=network.target ethos-gateway.service ethos-toolhost.service ethos-comms.service ethos-workers.service postgresql.service
 Wants=ethos-gateway.service ethos-toolhost.service ethos-comms.service ethos-workers.service
 

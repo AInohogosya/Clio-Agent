@@ -12,7 +12,7 @@ import { WebSocketServer } from "ws";
 /**
  * The interface bridge.
  *
- * The interface is Clio Agent 3 Beta 1's: a browser page and a terminal client that both read
+ * The interface is Clio Agent 3 Beta's: a browser page and a terminal client that both read
  * this agent and ask it to do things. So this process has exactly two jobs, and
  * it is a peer of the agent rather than part of it — it holds no state of its own,
  * and everything it shows is a row the agent wrote.
@@ -2361,7 +2361,7 @@ server.listen(PORT, "127.0.0.1", () => {
   // this line is served without a restart and the line above it is not a
   // prediction that has since stopped being true.
   const ui = fs.existsSync(indexFile())
-    ? `Clio Agent 3 Beta 1 on http://127.0.0.1:${PORT}`
+    ? `Clio Agent 3 Beta on http://127.0.0.1:${PORT}`
     : "interface not built yet (the API is live; the page appears once `npm run build` finishes)";
   console.log(`ethos-web listening on http://127.0.0.1:${PORT} — ${ui}`);
 });

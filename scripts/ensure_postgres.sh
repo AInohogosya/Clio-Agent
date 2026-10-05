@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Bring up the one thing Clio Agent 3 Beta 1 cannot run without: PostgreSQL 16 + pgvector,
+# Bring up the one thing Clio Agent 3 Beta cannot run without: PostgreSQL 16 + pgvector,
 # reachable at $ETHOS_DSN, with the application role, database and extensions
 # already in place.
 #

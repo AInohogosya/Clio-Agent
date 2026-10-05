@@ -2,7 +2,7 @@
   "name": "ethos-web",
   "version": "1.0.0",
   "private": true,
-  "description": "The Clio Agent 3 Beta 1 interface bridge: serves the interface and speaks its agent protocol",
+  "description": "The Clio Agent 3 Beta interface bridge: serves the interface and speaks its agent protocol",
   "type": "module",
   "scripts": {
     "start": "node server/index.mjs",

@@ -189,7 +189,7 @@ test('version and help answer on their own', async () => {
   await withConfig(async ({ phone }) => {
     const version = await phone(['--version']);
     assert.equal(version.status, 0);
-    assert.match(version.stdout, /Clio Agent 3 Beta 1 — released \d{4}-\d{2}-\d{2} \(JST\)/);
+    assert.match(version.stdout, /Clio Agent 3 Beta — released \d{4}-\d{2}-\d{2} \(JST\)/);
 
     const help = await phone(['help', '--width', '80']);
     assert.equal(help.status, 0);

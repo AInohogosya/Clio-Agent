@@ -70,7 +70,7 @@ import { AgentTui } from './agent-tui.js';
 // `--version` answer all follow. The date is a fact about the build rather than
 // something read from the clock, because a copy of it on another machine has that
 // machine's clock and this machine's contents.
-export const VERSION = '3 Beta 1';
+export const VERSION = '3 Beta';
 export const PRODUCT_NAME = `Clio Agent ${VERSION}`;
 export const RELEASE_DATE = '2026-10-03';
 export const RELEASE_TIMEZONE = 'JST';

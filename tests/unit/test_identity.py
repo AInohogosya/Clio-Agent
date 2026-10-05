@@ -64,18 +64,18 @@ def _reply_path_system(self_name: str, text: str = "are you there?") -> str:
 
 def test_the_prompt_says_what_this_is_and_what_it_is_called():
     assert build_identity_kernel("Aria").startswith(
-        "# Identity\n\nI am Aria, an AI agent based on Clio Agent 3 Beta 1.\n"
+        "# Identity\n\nI am Aria, an AI agent based on Clio Agent 3 Beta.\n"
     )
 
 
 def test_the_lineage_is_a_constant_and_not_a_setting():
     """It is a fact about the program. Only the name is somebody's to choose."""
-    assert AGENT_LINEAGE == "Clio Agent 3 Beta 1"
-    assert identity_line("Aria") == "I am Aria, an AI agent based on Clio Agent 3 Beta 1."
+    assert AGENT_LINEAGE == "Clio Agent 3 Beta"
+    assert identity_line("Aria") == "I am Aria, an AI agent based on Clio Agent 3 Beta."
 
 
 def test_a_name_a_person_chose_reaches_the_prompt():
-    assert "I am Aria, an AI agent based on Clio Agent 3 Beta 1." in build_identity_kernel("Aria")
+    assert "I am Aria, an AI agent based on Clio Agent 3 Beta." in build_identity_kernel("Aria")
 
 
 def test_a_self_description_does_not_cost_the_prompt_its_lineage():
@@ -88,7 +88,7 @@ def test_a_self_description_does_not_cost_the_prompt_its_lineage():
     can take away, and this is the case where the two are in conflict.
     """
     kernel = build_identity_kernel("Aria", self_description="I am a small and careful thing.")
-    assert "an AI agent based on Clio Agent 3 Beta 1." in kernel
+    assert "an AI agent based on Clio Agent 3 Beta." in kernel
     assert "I am a small and careful thing." in kernel
 
 
@@ -111,7 +111,7 @@ def test_the_name_is_stated_as_a_fact_and_not_only_as_a_clause():
     The name used to appear once, inside the lineage sentence — as a modifier on
     what this is rather than a claim about itself.
 
-    "I am Aria, an AI agent based on Clio Agent 3 Beta 1" is true and the agent can read it,
+    "I am Aria, an AI agent based on Clio Agent 3 Beta" is true and the agent can read it,
     but grammatically Aria is a subordinate clause on the lineage, and that is the
     shape a model skips: nothing in it says the word *is* the agent's. So the name is
     now said outright, as a fact of its own, and this is the sentence doing it.
@@ -624,7 +624,7 @@ def test_the_shipped_default_is_the_fallback_and_is_itself_usable():
     no name chosen and a bad default still ends up with. It has to be a name the same
     rules would accept, or the fallback is the one value that reaches a prompt unrefused.
     """
-    assert DEFAULT_SELF_NAME == "Clio Agent 3 Beta 1"
+    assert DEFAULT_SELF_NAME == "Clio Agent 3 Beta"
     assert is_valid_agent_name(DEFAULT_SELF_NAME)
 
 

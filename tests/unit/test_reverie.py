@@ -431,7 +431,7 @@ class _SelfModel:
         return "Aria" if key == "name" else default
 
     async def identity_document(self, **_: Any) -> str:
-        return "# Identity\n\nI am Aria, an AI agent based on Clio Agent 3 Beta 1."
+        return "# Identity\n\nI am Aria, an AI agent based on Clio Agent 3 Beta."
 
 
 class _NoMessageWaiting:

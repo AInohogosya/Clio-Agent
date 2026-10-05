@@ -1,5 +1,5 @@
 [Unit]
-Description=Clio Agent 3 Beta 1 interface bridge (serves the interface)
+Description=Clio Agent 3 Beta interface bridge (serves the interface)
 After=network.target ethos-comms.service postgresql.service
 Wants=ethos-comms.service
 

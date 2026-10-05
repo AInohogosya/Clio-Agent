@@ -260,7 +260,7 @@ def identity_line(self_name: str, lineage: str = AGENT_LINEAGE) -> str:
 # What the name is *for*, which the line above cannot carry.
 #
 # The name used to appear exactly once in this prompt, as a subordinate clause inside a
-# sentence about what this is: "I am Aria, an AI agent based on Clio Agent 3 Beta 1." The
+# sentence about what this is: "I am Aria, an AI agent based on Clio Agent 3 Beta." The
 # name is real there and the agent can read it, but grammatically it is a modifier on the
 # lineage rather than a fact in its own right, and that is the shape a model skips.
 # Nothing told it the word was *its*, so nothing told it what to do when the word
