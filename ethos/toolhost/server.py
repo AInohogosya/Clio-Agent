@@ -4,6 +4,8 @@ import asyncio
 import json
 import time
 from abc import ABC, abstractmethod
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI
@@ -345,7 +347,25 @@ def _redacted_args(name: str, args: dict[str, Any]) -> dict[str, Any]:
 
 
 def create_toolhost_app(host: Toolhost) -> FastAPI:
-    app = FastAPI(title=f"{PRODUCT_NAME} toolhost", version=__version__)
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        yield
+        # `Toolhost.aclose` has existed since the first version of this process
+        # and nothing has ever called it, which is why a toolhost the supervisor
+        # restarted left its Chromium sessions behind: the pool was closed by the
+        # interpreter dying, not by anything deciding to close it. Under the
+        # supervisor that is a real orphan — the new toolhost starts straight
+        # away, and the browsers the old one was holding are not in its process
+        # group, so nothing else reaps them either.
+        #
+        # Swallowed, because an exception here would replace a clean shutdown
+        # with a stack trace and leave precisely the orphans this closes.
+        try:
+            await host.aclose()
+        except Exception:
+            logger.exception("toolhost.aclose_failed")
+
+    app = FastAPI(title=f"{PRODUCT_NAME} toolhost", version=__version__, lifespan=lifespan)
 
     @app.get("/healthz")
     async def healthz() -> dict[str, Any]:

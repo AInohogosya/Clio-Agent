@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from collections import OrderedDict
 from typing import Any
 
 from ethos.config import EthosConfig
@@ -52,7 +53,24 @@ class ThreadManager:
         self.bus = bus
         self.audit = audit
         self.gateway = gateway
+        """Threads that have not finished yet, keyed by thread id.
+
+        Inserted when the handle is created and removed the moment it reaches a
+        terminal state, so its size is a fact about work in progress. A caller
+        that wants a handle after the fact already holds the object, so losing it
+        from this table costs nothing — and leaving it here means the table's
+        length, which is the one number somebody would measure, says something
+        true.
+        """
         self.active: dict[str, ThreadHandle] = {}
+        """The recent past, newest last, capped at `finished_retention`.
+
+        Bounded rather than unbounded because the alternative is the leak this
+        replaces: a manager that ran for a week held every thread it had ever
+        run, results and specs both, and none of it was reachable.
+        """
+        self.finished: OrderedDict[str, ThreadHandle] = OrderedDict()
+        self.finished_retention = max(0, config.threads.retention)
         self.worker_factory = worker_factory
         self.mode = config.threads.mode
         if self.bus is not None and self.mode == "process":
@@ -60,6 +78,22 @@ class ThreadManager:
 
     def _running_count(self) -> int:
         return sum(1 for h in self.active.values() if h.status == "running")
+
+    def _retire(self, thread_id: str) -> None:
+        """Move a finished handle out of `active` and into the bounded LRU.
+
+        `retention: 0` means the handle is simply dropped. The caller's reference
+        still works; only the post-mortem window closes, which is the point of
+        asking for zero.
+        """
+        handle = self.active.pop(thread_id, None)
+        if handle is None or self.finished_retention == 0:
+            return
+        self.finished[thread_id] = handle
+        self.finished.move_to_end(thread_id)
+        while len(self.finished) > self.finished_retention:
+            self.finished.popitem(last=False)
+        metrics.THREADS_FINISHED_KEPT.set(len(self.finished))
 
     async def spawn_spec(self, spec: dict[str, Any]) -> ThreadHandle:
         if self._running_count() >= self.config.threads.max_concurrent:
@@ -125,6 +159,8 @@ class ThreadManager:
             handle.finish(error=str(event.payload.get("error", "worker failed")))
         else:
             handle.finish(result=event.payload.get("result"))
+        self._retire(thread_id)
+        metrics.THREADS_ACTIVE.set(self._running_count())
 
     async def _run(self, handle: ThreadHandle, worker: Any) -> None:
         try:
@@ -155,6 +191,11 @@ class ThreadManager:
                     pass
         finally:
             metrics.THREADS_ACTIVE.set(self._running_count())
+            # Retire after the result has been published, so a subscriber woken by
+            # the bus event can still find the handle in `active` while it reads
+            # it — the ordering that keeps `_on_process_result`'s own retirement
+            # from racing this one.
+            self._retire(handle.thread_id)
             if self.bus is not None:
                 try:
                     await self.bus.publish(

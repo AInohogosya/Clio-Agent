@@ -151,7 +151,8 @@ class _FakeDB:
 async def test_retriever_no_rows(memory_config):
     retriever = HybridRetriever(_FakeDB(), HashingEmbedder(1024), memory_config)
     result = await retriever._candidates([0.1] * 1024, 10)
-    assert result == []
+    assert result.hits == []
+    assert len(result) == 0
 
 
 # --------------------------------------------------------------------------

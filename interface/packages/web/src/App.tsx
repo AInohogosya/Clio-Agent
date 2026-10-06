@@ -29,6 +29,7 @@ export default function App() {
     refresh,
     conversation,
     conversations,
+    doors,
     closedChannels,
     setConversation,
   } = controller;
@@ -103,6 +104,7 @@ export default function App() {
           connected={link !== 'offline'}
           conversation={conversation}
           conversations={conversations}
+          doors={doors}
           closedChannels={closedChannels}
           notice={notice}
           onArmEmergency={setArmedEmergency}

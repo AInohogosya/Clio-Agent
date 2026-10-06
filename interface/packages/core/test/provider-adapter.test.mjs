@@ -71,7 +71,8 @@ test('a system message is never sent as a turn to Gemini', async () => {
   const { calls, fetcher } = recorder(() => jsonResponse({
     candidates: [{ content: { parts: [{ text: 'ok' }] } }],
   }));
-  const settings = createSettings({ provider: 'gemini', apiKey: 'gemini-test' });
+  // Gemini ships no default model, so the request names one.
+  const settings = createSettings({ provider: 'gemini', apiKey: 'gemini-test', model: 'gemini-2.0-flash' });
   await requestProviderCompletion(settings, 'second question', fetcher, undefined, history);
 
   const sent = calls[0].body;

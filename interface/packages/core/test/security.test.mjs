@@ -16,7 +16,7 @@ test('provider changes do not retain the previous credential tuple', () => {
       provider: 'openai',
       apiKey: 'openai-secret',
       baseUrl: 'https://api.openai.com/v1',
-      model: 'gpt-4o-mini',
+      model: 'gpt-6.1-sol',
     },
   });
 
@@ -25,5 +25,7 @@ test('provider changes do not retain the previous credential tuple', () => {
   assert.equal(settings.provider, 'anthropic');
   assert.equal(settings.apiKey, '');
   assert.equal(settings.baseUrl, 'https://api.anthropic.com/v1');
-  assert.equal(settings.model, 'claude-3-5-sonnet-latest');
+  // Only OpenAI has a default model: switching clears the model rather than
+  // substituting one nobody chose.
+  assert.equal(settings.model, '');
 });

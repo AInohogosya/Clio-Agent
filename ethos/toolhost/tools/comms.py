@@ -4,6 +4,13 @@ from typing import Any
 
 from ethos.toolhost.server import Tool, ToolContext, Toolhost
 
+#: The channels an outbound send may name. The same set the web bridge checks
+#: `POST /api/message` against, restated here for the same reason: `channel`
+#: decides where the reply is delivered and which conversation the row is filed
+#: under, so a free-text one is a way to file the agent's own words under a
+#: conversation nobody can find.
+SEND_CHANNELS = ("web", "cli", "telegram", "whatsapp", "slack", "discord", "email")
+
 
 class CommSendTool(Tool):
     name = "comm.send"
@@ -23,7 +30,7 @@ class CommSendTool(Tool):
         "type": "object",
         "properties": {
             "person_id": {"type": "string"},
-            "channel": {"type": "string"},
+            "channel": {"type": "string", "enum": list(SEND_CHANNELS)},
             "text": {"type": "string"},
             "urgency": {"type": "string", "enum": ["low", "normal", "high", "critical"]},
             "conversation_key": {"type": "string"},
@@ -37,7 +44,7 @@ class CommSendTool(Tool):
             raise RuntimeError("comms outbound pipeline is not available in this toolhost")
         return await sender(
             person_id=str(args["person_id"]),
-            channel=str(args.get("channel", "web")),
+            channel=_send_channel(args.get("channel")),
             text=str(args["text"]),
             urgency=str(args.get("urgency", "normal")),
             conversation_key=args.get("conversation_key"),
@@ -46,4 +53,18 @@ class CommSendTool(Tool):
         )
 
 
-__all__ = ["CommSendTool"]
+def _send_channel(value: Any) -> str:
+    """The channel a send goes out of, or the local line for anything else.
+
+    The model names the channel, and a model that answers with `None`, an
+    urgency, or a phrase it read out of the conversation is not naming a door.
+    The local line is the fallback rather than a refusal, because the row is
+    still recorded either way — a refusal here would file the words under a
+    channel nobody can find, which is how a transcript fills with conversations
+    that do not exist.
+    """
+    name = str(value if value is not None else "").strip().lower()
+    return name if name in SEND_CHANNELS else "web"
+
+
+__all__ = ["CommSendTool", "SEND_CHANNELS"]

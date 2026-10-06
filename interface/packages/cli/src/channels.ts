@@ -4,6 +4,7 @@ import {
   createTranslator,
   findDoor,
   sanitizeTerminalText,
+  type AgentConversation,
   type AgentDoor,
   type ChatMessage,
   type Language,
@@ -79,9 +80,12 @@ export function resolveDoor(
 ): DoorChoice | DoorRefusal {
   const name = wanted?.trim() ?? '';
   if (!name) {
-    // No `--channel` means the local line, and the local line is the only door
-    // that always works: it needs nothing configured and nothing looked up.
-    return { ok: true, channel: 'web', address: to?.trim() || null };
+    // No `--channel` means this terminal's own line, and the local line is the
+    // one door that always works: it needs nothing configured and nothing looked
+    // up. The terminal's words travel on the terminal's door — `cli` — because
+    // `web` is the conversation the browser conducts, and filing the terminal's
+    // turns under it would put two interfaces' words in one conversation.
+    return { ok: true, channel: 'cli', address: to?.trim() || null };
   }
   const found = findDoor(doors, name);
   if (!found.ok) {
@@ -109,6 +113,27 @@ export function resolveDoor(
 /** The refusal as the `CliError` the one-shot commands report. */
 export function doorRefusalError(refusal: DoorRefusal): CliError {
   return new CliError(refusal.code, refusal.values);
+}
+
+/**
+ * The conversation a name selects, when that name is one the transcript holds.
+ *
+ * A conversation id is `{door}:{address}` — the key the transcript files messages
+ * under and the browser's people list selects on — so a reader who copies an id
+ * out of `/channels` opens the same conversation the browser's list would. A
+ * door name holds no colon, which is what keeps the two spellings apart.
+ *
+ * Returns `null` for a name that is not one the transcript holds, and the caller
+ * falls back to the door refusals, which name what would have worked. A reader
+ * who mistypes a conversation id is no worse off than one who mistypes a door.
+ */
+export function findConversation(
+  conversations: readonly AgentConversation[],
+  wanted: string,
+): AgentConversation | null {
+  const key = wanted.trim();
+  if (!key.includes(':')) return null;
+  return conversations.find((entry) => entry.id === key) ?? null;
 }
 
 /** The refusal as the sentence a reader sees. */

@@ -217,7 +217,7 @@ export function configScreen(state: SharedState, options: RenderOptions, field?:
   lines.push('');
   lines.push(`  ${rule(Math.max(10, width - 4), palette)}`);
   lines.push(`  ${note(t('cliConfigGet'), palette, 'muted')}  ${palette.faint('phone config get provider')}`);
-  lines.push(`  ${note(t('cliConfigSet'), palette, 'muted')}  ${palette.faint('phone config set model gpt-4o-mini')}`);
+  lines.push(`  ${note(t('cliConfigSet'), palette, 'muted')}  ${palette.faint('phone config set model gpt-6.1-sol')}`);
   lines.push(`  ${note(t('cliConfigUnset'), palette, 'muted')}  ${palette.faint('phone config unset accent')}`);
   lines.push('');
   return lines;

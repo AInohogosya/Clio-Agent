@@ -13,6 +13,7 @@ import {
   stateTone,
   channelLabel,
   type AgentBaseModel,
+  type AgentConversation,
   type AgentDoor,
   type AgentIdentity,
   type AgentIntention,
@@ -476,7 +477,7 @@ function label(value: string): string {
 /**
  * The doors the agent can be reached on, and the one this terminal is using.
  *
- * The same panel the browser's channel filter is, for the same reason it exists
+ * The same panel the browser's people list is, for the same reason it exists
  * at all: a deployment with Telegram open is one fact, and a terminal that could
  * not see it would be a terminal where a conversation happening on somebody's
  * phone is invisible and unreachable. Three facts per door, and the third is what
@@ -484,14 +485,22 @@ function label(value: string): string {
  * for *you* is still a door you cannot use, and finding that out here is cheaper
  * than finding it out after a deliberation.
  *
+ * Above the doors, the conversations the transcript holds — the people, named
+ * the way the browser names them, from the same function. The two lists answer
+ * different questions and a reader needs both: a door is how a conversation
+ * travels, a person is who it is with, and the id beside each name is the one
+ * that opens it here, the way a click opens it there.
+ *
  * A closed door is listed rather than hidden. Those are in the transcript — a
  * conversation happened there — and the agent can no longer be spoken to on them,
  * which from a filter looks exactly like nothing having been said.
  */
 export function ChannelsPanel({
-  current, doors, closed, personId, palette, t, width,
+  current, currentConversation, conversations, doors, closed, personId, palette, t, width,
 }: {
   current: string;
+  currentConversation: string;
+  conversations: readonly AgentConversation[];
   doors: readonly AgentDoor[];
   closed: readonly string[];
   personId: string;
@@ -502,32 +511,57 @@ export function ChannelsPanel({
   return (
     <Panel palette={palette} title={t('panelChannels')} width={width}>
       <Box flexDirection="column">
-        {doors.length === 0 ? <Text color={palette.inkFaint}>{t('cliChannelsEmpty')}</Text> : null}
-        {doors.map((door) => {
-          const inUse = door.id === current;
-          return (
-            <Box flexDirection="column" key={door.id} marginBottom={1}>
-              <Box gap={1}>
-                <Text color={toneHex(palette, inUse ? 'accent' : door.admits ? 'success' : 'warning')}>
-                  {inUse ? '●' : door.admits ? '●' : '○'}
-                </Text>
+        <Box flexDirection="column" marginBottom={1}>
+          <Text bold color={palette.inkFaint}>{t('peopleFilter').toUpperCase()}</Text>
+          {conversations.map((conversation) => {
+            const active = conversation.id === currentConversation;
+            return (
+              <Box key={conversation.id} gap={1}>
+                <Text color={toneHex(palette, active ? 'accent' : 'muted')}>{active ? '●' : '○'}</Text>
                 <Text
-                  bold={inUse}
-                  color={inUse ? toneHex(palette, 'accent') : toneHex(palette, 'muted')}
+                  bold={active}
+                  color={active ? toneHex(palette, 'accent') : toneHex(palette, 'muted')}
+                  wrap="truncate"
                 >
-                  {truncateWidth(channelLabel(door.id), Math.max(8, width - 24))}
+                  {truncateWidth(conversation.label, Math.max(8, width - 30))}
                 </Text>
-                {inUse ? <Text color={palette.accent}>{t('cliChannelsCurrent')}</Text> : null}
-                <Text color={palette.inkFaint}>{truncateWidth(door.id, 12)}</Text>
+                <Text color={palette.inkFaint} wrap="truncate">
+                  {truncateWidth(`${channelLabel(conversation.channel)} · ${conversation.id}`, 24)}
+                </Text>
               </Box>
-              <Text color={palette.inkFaint}>
-                {door.admits
-                  ? doorStateNote(door, personId, palette, width - 4, (key) => t(key as never))
-                  : t('cliChannelsAdmitsNobody')}
-              </Text>
-            </Box>
-          );
-        })}
+            );
+          })}
+          <Text color={palette.inkFaint}>{t('cliPeopleSwitch')}</Text>
+        </Box>
+        <Box flexDirection="column" marginBottom={1}>
+          <Text bold color={palette.inkFaint}>{t('cliDoorsTitle').toUpperCase()}</Text>
+          {doors.length === 0 ? <Text color={palette.inkFaint}>{t('cliChannelsEmpty')}</Text> : null}
+          {doors.map((door) => {
+            const inUse = door.id === current;
+            return (
+              <Box flexDirection="column" key={door.id} marginBottom={1}>
+                <Box gap={1}>
+                  <Text color={toneHex(palette, inUse ? 'accent' : door.admits ? 'success' : 'warning')}>
+                    {inUse ? '●' : door.admits ? '●' : '○'}
+                  </Text>
+                  <Text
+                    bold={inUse}
+                    color={inUse ? toneHex(palette, 'accent') : toneHex(palette, 'muted')}
+                  >
+                    {truncateWidth(channelLabel(door.id), Math.max(8, width - 24))}
+                  </Text>
+                  {inUse ? <Text color={palette.accent}>{t('cliChannelsCurrent')}</Text> : null}
+                  <Text color={palette.inkFaint}>{truncateWidth(door.id, 12)}</Text>
+                </Box>
+                <Text color={palette.inkFaint}>
+                  {door.admits
+                    ? doorStateNote(door, personId, palette, width - 4, (key) => t(key as never))
+                    : t('cliChannelsAdmitsNobody')}
+                </Text>
+              </Box>
+            );
+          })}
+        </Box>
         {closed.length > 0 ? (
           <Box flexDirection="column" marginTop={1}>
             <Text bold color={palette.inkFaint}>{label(t('channelClosed'))}</Text>

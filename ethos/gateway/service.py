@@ -13,7 +13,7 @@ from ethos import PRODUCT_NAME, __version__
 from ethos.config import EthosConfig, base_model_path, load_base_model
 from ethos.db import Database
 from ethos.gateway.cost import BudgetExceededError, CostCalculator, SpendGuard
-from ethos.gateway.embeddings import EmbeddingProvider, build_embedder
+from ethos.gateway.embeddings import EmbeddingProvider, build_role_embedder
 from ethos.gateway.normalizer import estimate_tokens, was_truncated
 from ethos.gateway.providers.anthropic_native import AnthropicNativeProvider
 from ethos.gateway.providers.base import Provider, ProviderError
@@ -140,9 +140,7 @@ class GatewayService:
         self.spend = SpendGuard(db, config)
         self.http = http or httpx.AsyncClient()
         self._owns_http = http is None
-        self.embedder = embedder or build_embedder(
-            config.gateway.embedding.provider, config.gateway.embedding.model, config.gateway.embedding.dim
-        )
+        self.embedder = embedder or build_role_embedder("gateway", config)
         self.providers: dict[Any, Provider] = providers if providers is not None else {}
         # The catalogue is the shipped file and does not move under a running
         # agent, so it is held apart from the resolved list: `sync_base_model`

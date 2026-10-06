@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AgentClient,
+  channelLabel,
   conversationsIn,
   createAgentTransport,
   reconcileDoors,
@@ -56,9 +57,11 @@ export interface AgentLinkController {
   /**
    * The conversation this surface is on.
    *
+   * The web line before anything else has been chosen — it is the conversation
+   * this interface conducts, and it is the one on screen when the page opens.
    * Never `null` once the link has a transcript, and not nullable for that
    * reason: a pane with no conversation chosen has nothing to draw and nowhere
-   * for a reply to go, so the newest is chosen rather than leaving the reader to
+   * for a reply to go, so the reader's own is chosen rather than leaving them to
    * work out that they must pick something first.
    */
   conversation: AgentConversation | null;
@@ -79,6 +82,15 @@ export interface AgentLinkController {
    * it would type into a door with nothing behind it.
    */
   closedChannels: string[];
+  /**
+   * The doors the agent has open, as its configuration reported them.
+   *
+   * The bar of places a conversation can happen is built from these rather than
+   * from the transcript: a door with a bot token on file is a place a
+   * conversation can *start*, and a list derived from what has been said would
+   * offer only the doors that already have traffic in them.
+   */
+  doors: AgentDoor[];
   /**
    * Asks the agent which doors it has, again.
    *
@@ -153,15 +165,40 @@ export function useAgentLink(
   // The conversation being read, decided here rather than in the pane so that the
   // door the agent will answer on and the conversation being drawn cannot be two
   // different answers to one question.
-  const conversations = useMemo(
-    () => conversationsIn(transcript, agentPerson),
-    [transcript, agentPerson],
-  );
+  const conversations = useMemo(() => {
+    const found = [...conversationsIn(transcript, agentPerson)];
+    // The terminal's line is a conversation before anything has been typed in
+    // it, the same way the web line is: the bar offers it, and a pane that
+    // offered a door it could not open would be a door that reads as broken.
+    const terminal = `cli:${agentPerson}`;
+    if (!found.some((entry) => entry.id === terminal)) {
+      found.push({
+        id: terminal, channel: 'cli', person: agentPerson,
+        label: channelLabel('cli'), messages: 0, lastAt: 0,
+      });
+    }
+    // A door with a bot token on file is a place a conversation can start, so it
+    // is offered before anybody has written on it — the way the web line is.
+    // One entry per door, which disappears the moment a real conversation does,
+    // because a list that keeps an empty door beside the people on it is a list
+    // that reads twice.
+    for (const door of doors) {
+      if (door.id === 'web' || door.id === 'cli') continue;
+      if (!found.some((entry) => entry.channel === door.id)) {
+        found.push({
+          id: `${door.id}:`, channel: door.id, person: '',
+          label: channelLabel(door.id), messages: 0, lastAt: 0,
+        });
+      }
+    }
+    return found;
+  }, [transcript, agentPerson, doors]);
   // A conversation that has fallen out of the transcript cannot be read, so the
-  // reader lands on the newest one that can rather than on an empty pane.
+  // reader lands on the web line — the conversation this interface conducts, and
+  // the one the page opens on — rather than on the newest one that can.
   const conversation = selected && conversations.some((entry) => entry.id === selected.id)
     ? conversations.find((entry) => entry.id === selected.id) ?? null
-    : conversations[0] ?? null;
+    : conversations.find((entry) => entry.id === `web:${agentPerson}`) ?? null;
 
   /**
    * Points the agent at this conversation's door, and at the person on it.
@@ -288,12 +325,13 @@ export function useAgentLink(
     reconnect,
     conversations,
     conversation,
+    doors,
     closedChannels: closed,
     setConversation: setSelected,
     refreshDoors,
   }), [
     current, currentTransport, view, link, streaming, notice,
     dismissNotice, control, undoAction, closeIntention, refresh, reconnect,
-    conversations, conversation, closed, refreshDoors,
+    conversations, conversation, doors, closed, refreshDoors,
   ]);
 }

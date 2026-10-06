@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { createTranslator, type ClientSnapshot } from '@project-phone/core';
+import { createTranslator, formatClock, type ClientSnapshot } from '@project-phone/core';
 import { Composer } from '../components/Composer';
 import { ConversationFeed, useConversationFeed } from '../components/ConversationFeed';
 import { Icon } from '../components/Icon';
@@ -25,15 +25,6 @@ interface ChatScreenProps {
 }
 
 type Translator = ReturnType<typeof createTranslator>;
-
-function formatTime(timestamp: number, language: string): string {
-  if (!Number.isFinite(timestamp)) return '--';
-  try {
-    return new Intl.DateTimeFormat(language, { hour: '2-digit', minute: '2-digit' }).format(timestamp);
-  } catch {
-    return '--';
-  }
-}
 
 function statusLabel(snapshot: ClientSnapshot, t: Translator): { status: 'online' | 'offline' | 'busy'; label: string } {
   if (snapshot.status === 'offline') return { status: 'offline', label: t('offline') };
@@ -150,8 +141,8 @@ export function ChatScreen({ snapshot, coordination, onSend, onInterrupt, onClea
                       ) : null}
                       <div className={classNames('max-w-[min(86%,680px)]', isUser ? 'items-end' : 'items-start')}>
                         <div className={classNames('mb-1 flex items-center gap-2 text-[0.65rem] text-[var(--ink-faint)]', isUser ? 'justify-end' : 'justify-start')}>
-                          <span>{isSystem ? t('system') : isUser ? t('you') : t('assistant')}</span>
-                          <span>{formatTime(message.createdAt, snapshot.settings.language)}</span>
+                          <span>{isSystem ? t('system') : isUser ? (message.author ?? t('you')) : t('assistant')}</span>
+                          <span>{formatClock(message.createdAt, snapshot.settings.language)}</span>
                         </div>
                         <div className={classNames(
                           'whitespace-pre-wrap rounded-2xl px-4 py-3 text-sm leading-6',
@@ -226,7 +217,7 @@ export function ChatScreen({ snapshot, coordination, onSend, onInterrupt, onClea
               <div className="space-y-3 text-xs">
                 <div className="flex items-center justify-between gap-3"><span className="text-[var(--ink-faint)]">{t('statusLabel')}</span><StatusPill status={currentStatus.status} label={currentStatus.label} /></div>
                 <div className="flex items-center justify-between gap-3"><span className="text-[var(--ink-faint)]">{snapshot.messages.length === 1 ? t('messageCountOne', { count: snapshot.messages.length }) : t('messageCount', { count: snapshot.messages.length })}</span><span className="text-[var(--ink-muted)]">{snapshot.messages.length.toString().padStart(2, '0')}</span></div>
-                <div className="flex items-center justify-between gap-3"><span className="text-[var(--ink-faint)]">{t('lastActivity')}</span><span className="text-[var(--ink-muted)]">{snapshot.lastActivityAt ? formatTime(snapshot.lastActivityAt, snapshot.settings.language) : '—'}</span></div>
+                <div className="flex items-center justify-between gap-3"><span className="text-[var(--ink-faint)]">{t('lastActivity')}</span><span className="text-[var(--ink-muted)]">{snapshot.lastActivityAt ? formatClock(snapshot.lastActivityAt, snapshot.settings.language) : '—'}</span></div>
               </div>
             </section>
           </aside>

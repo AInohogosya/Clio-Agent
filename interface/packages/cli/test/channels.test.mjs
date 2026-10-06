@@ -1,6 +1,6 @@
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
-import { doorNeedsAddress, doorSummary, resolveDoor } from '../dist/channels.js';
+import { doorNeedsAddress, doorSummary, findConversation, resolveDoor } from '../dist/channels.js';
 
 /** The doors a deployment with Telegram and an empty Slack would report. */
 const DOORS = [
@@ -35,12 +35,14 @@ test('a local door needs no address, because it delivers to whoever is reading',
   assert.equal(doorNeedsAddress('discord'), true);
 });
 
-test('no channel at all is the local line, and always works', () => {
+test('no channel at all is this terminal\'s own line, and always works', () => {
   // The local line is the one door whose being open is a property of the bridge
-  // rather than of a config file, so it is the answer that cannot fail.
+  // rather than of a config file, so it is the answer that cannot fail. The
+  // terminal's words travel on the terminal's door — `web` is the conversation
+  // the browser conducts.
   const choice = resolveDoor(DOORS, 'owner');
   assert.equal(choice.ok, true);
-  assert.equal(choice.ok && choice.channel, 'web');
+  assert.equal(choice.ok && choice.channel, 'cli');
   assert.equal(choice.ok && choice.address, null);
 });
 
@@ -122,4 +124,43 @@ test('a door the transcript has never held is not called closed', () => {
   // door nobody has ever spoken on is simply not mentioned.
   const { closed } = doorSummary(DOORS, []);
   assert.deepEqual(closed, []);
+});
+
+// ----------------------------------------------------------- picking a conversation
+
+/** Three correspondents, from the conversations the transcript holds. */
+const CONVERSATIONS = [
+  { id: 'telegram:tg:819012345678', channel: 'telegram', person: 'tg:819012345678', label: 'Ada Lovelace', messages: 2, lastAt: 3 },
+  { id: 'telegram:tg:2', channel: 'telegram', person: 'tg:2', label: 'Grace Hopper', messages: 1, lastAt: 2 },
+  { id: 'web:owner', channel: 'web', person: 'owner', label: 'owner', messages: 1, lastAt: 1 },
+];
+
+test('a conversation id opens the conversation, and not merely the door', () => {
+  // Two people writing in on one Telegram door are one door and two
+  // conversations. Selecting the door would answer both of them in one voice, so
+  // the id a reader copies out of `/channels` has to carry the address with it —
+  // which is exactly the key the browser's people list selects on.
+  const found = findConversation(CONVERSATIONS, 'telegram:tg:2');
+  assert.equal(found?.label, 'Grace Hopper');
+  assert.equal(found?.channel, 'telegram');
+  assert.equal(found?.person, 'tg:2');
+});
+
+test('the reader\'s own conversation is opened the same way', () => {
+  // The local line is a conversation too, and it is the one a terminal is on by
+  // default — so the spelling that opens it has to be the same as every other's.
+  assert.equal(findConversation(CONVERSATIONS, 'web:owner')?.channel, 'web');
+});
+
+test('a door name is not a conversation, so the two spellings cannot be confused', () => {
+  // A door id holds no colon, which is what keeps `/channel telegram` meaning the
+  // door and `/channel telegram:tg:2` meaning one exchange on it.
+  assert.equal(findConversation(CONVERSATIONS, 'telegram'), null);
+});
+
+test('an id nothing holds is left to the door refusals, which name what would work', () => {
+  // A mistyped conversation is no worse off than a mistyped door: the caller falls
+  // through to `resolveDoor`, whose refusal lists the doors that are open.
+  assert.equal(findConversation(CONVERSATIONS, 'telegram:tg:999'), null);
+  assert.equal(findConversation(CONVERSATIONS, ''), null);
 });

@@ -16,6 +16,16 @@ logger = get_logger("ethos.comms.email")
 
 THREAD_TAG_RE = re.compile(r"\[ethos:([0-9a-f-]+)\]")
 
+# How many message UIDs the dedupe set remembers, and how many it drops when it
+# is over. The same shape and the same numbers the Telegram adapter uses, for the
+# same reason: this set bridges a restart rather than being a log, and a mailbox
+# polled every 30 seconds is a stream that never ends. It was the only adapter
+# whose set did not have a ceiling, so a long-running poller on a busy mailbox
+# grew one Python int per message forever — and unlike its siblings it had nobody
+# else's habit to copy.
+SEEN_UID_LIMIT = 4096
+SEEN_UID_DROP = 1024
+
 
 class EmailAdapter(ChannelAdapter):
     """IMAP idle polling + SMTP sending. Conversations carry an [ethos:<id>] tag."""
@@ -40,6 +50,22 @@ class EmailAdapter(ChannelAdapter):
         self._task: asyncio.Task | None = None
         self._running = False
         self._seen_uids: set[int] = set()
+
+    def mark_seen_uid(self, uid: int) -> bool:
+        """True the first time a UID is offered, False for every redelivery.
+
+        IMAP hands out strictly increasing UIDs, so "oldest" and "lowest" are the
+        same end and the eviction below drops the oldest messages first — which
+        is the right end to forget, since anything above the window has already
+        been delivered and will not be offered again.
+        """
+        if uid in self._seen_uids:
+            return False
+        self._seen_uids.add(uid)
+        if len(self._seen_uids) > SEEN_UID_LIMIT:
+            for stale in sorted(self._seen_uids)[:SEEN_UID_DROP]:
+                self._seen_uids.discard(stale)
+        return True
 
     async def start(self) -> None:
         # Nothing: sending is SMTP and `send` opens its own connection, so this
@@ -89,9 +115,8 @@ class EmailAdapter(ChannelAdapter):
         count = 0
         for uid in uids[:20]:
             uid_int = int(uid)
-            if uid_int in self._seen_uids:
+            if not self.mark_seen_uid(uid_int):
                 continue
-            self._seen_uids.add(uid_int)
             result, fetched = await client.uid("fetch", uid, "(RFC822)")
             if result != "OK" or not fetched:
                 continue

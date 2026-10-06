@@ -469,7 +469,10 @@ function completionBody(
   stream: boolean,
 ): BuiltBody {
   const turns = prepareHistory(history);
-  const model = settings.model || providerFor(settings.provider).defaultModel;
+  // Only OpenAI has a default model, and the send path refuses a request with
+  // none, so the empty string here is a shape the caller never sees rather than
+  // a model anybody asked for.
+  const model = settings.model || providerFor(settings.provider).defaultModel || '';
 
   if (settings.provider === 'anthropic') {
     const { system, rest } = liftSystem(turns);

@@ -4,6 +4,7 @@ import {
   createTranslator,
   type AgentControlAction,
   type AgentConversation,
+  type AgentDoor,
   type AgentView,
   type ClientSnapshot,
   type Language,
@@ -14,9 +15,10 @@ import { ConversationFeed, useConversationFeed } from '../components/Conversatio
 import { Icon } from '../components/Icon';
 import { Button, Divider, IconButton, SectionLabel, StatusPill, classNames } from '../components/Primitives';
 import {
+  ChannelBar,
   EmptyNote,
   IntentionNode,
-  PeopleFilter,
+  PersonList,
   SpendBar,
   TONE_DOT,
   TONE_TEXT,
@@ -57,6 +59,8 @@ interface AgentScreenProps {
   onOpenSettings: () => void;
   /** Everyone the agent is talking to, out of the transcript, most recent first. */
   conversations: readonly AgentConversation[];
+  /** Doors the agent has open, as its configuration reported them. */
+  doors: readonly AgentDoor[];
   /** Doors the agent has spoken on and no longer has open. */
   closedChannels: readonly string[];
   /** The conversation this surface is on, or `null` before the transcript says. */
@@ -96,6 +100,7 @@ export function AgentScreen({
   onRefresh,
   onOpenSettings,
   conversations,
+  doors,
   closedChannels,
   conversation,
   onSelectConversation,
@@ -109,23 +114,42 @@ export function AgentScreen({
   /**
    * The people, named the way this screen names them.
    *
-   * The reader's own line is the one name the store does not hold: `owner` is
-   * what the contact book calls them, and a list of correspondents with the
-   * reader in it under a deployment's word for them is a list they have to read
-   * twice to work out who they are. Everywhere else the name on file is the right
-   * one, because the channel's own spelling of a person is the one they
-   * recognise.
+   * The reader's own lines — the web line and the terminal's line — are the two
+   * names the store does not hold: they are the conversations this reader
+   * conducts themselves, and a list of correspondents with the reader in it
+   * under a deployment's word for them is a list they have to read twice to work
+   * out who they are. Everywhere else the name on file is the right one, because
+   * the channel's own spelling of a person is the one they recognise.
    *
    * Only the label moves. Which conversation is selected is the door and the
    * address, and that is decided where the reply will be sent from — renaming a
    * conversation here cannot change where anything goes.
    */
   const localLine = `web:${snapshot.settings.agentPerson}`;
+  const terminalLine = `cli:${snapshot.settings.agentPerson}`;
   const people = useMemo(
-    () => conversations.map((entry) => (entry.id === localLine ? { ...entry, label: t('you') } : entry)),
-    [conversations, localLine, t],
+    () => conversations.map((entry) => (
+      entry.id === localLine || entry.id === terminalLine
+        ? { ...entry, label: t('you') }
+        : entry
+    )),
+    [conversations, localLine, terminalLine, t],
   );
   const current = people.find((entry) => entry.id === conversation?.id) ?? null;
+
+  /**
+   * A place in the bar is a click to a conversation.
+   *
+   * The interfaces are one conversation each — the reader's own on that door. A
+   * messaging app is many, so its newest is opened and the list of names below
+   * the bar is how the reader moves between them; a door nobody has written on
+   * yet opens with no one in it, which the pane says rather than hiding.
+   */
+  const selectChannel = (id: string) => {
+    const onChannel = people.filter((entry) => entry.channel === id);
+    const newest = [...onChannel].sort((left, right) => right.lastAt - left.lastAt)[0];
+    onSelectConversation(newest?.id ?? `${id}:`);
+  };
 
   const submit = () => {
     const value = draft.trim();
@@ -154,9 +178,9 @@ export function AgentScreen({
               t={t}
             />
             <Button icon="activity" variant="outline" onClick={onRefresh} title={t('presenceUpdated')}>
-            {formatClock(view.presence.ts, language)}
-          </Button>
-          <IconButton icon="settings" label={t('settings')} onClick={onOpenSettings} />
+              {formatClock(view.presence.ts, language)}
+            </Button>
+            <IconButton icon="settings" label={t('settings')} onClick={onOpenSettings} />
           </div>
         </div>
         {armedEmergency ? <p className="mx-auto mt-2 w-full max-w-[1600px] text-xs text-[var(--danger)]">{t('controlArmEmergency')}</p> : null}
@@ -169,10 +193,12 @@ export function AgentScreen({
           closedChannels={closedChannels}
           conversation={current}
           conversations={people}
+          doors={doors}
           draft={draft}
           language={language}
           onDraft={setDraft}
           onInterrupt={onInterrupt}
+          onSelectChannel={selectChannel}
           onSelectConversation={onSelectConversation}
           onSubmit={submit}
           snapshot={snapshot}
@@ -382,7 +408,7 @@ function CycleStrip({ view, t }: { view: AgentView; t: AgentT }) {
 
 function TimelinePane({
   snapshot, draft, language, t, onDraft, onSubmit, onInterrupt,
-  conversations, closedChannels, conversation, onSelectConversation,
+  conversations, doors, closedChannels, conversation, onSelectChannel, onSelectConversation,
 }: {
   snapshot: ClientSnapshot;
   draft: string;
@@ -392,8 +418,10 @@ function TimelinePane({
   onSubmit: () => void;
   onInterrupt: () => void;
   conversations: readonly AgentConversation[];
+  doors: readonly AgentDoor[];
   closedChannels: readonly string[];
   conversation: AgentConversation | null;
+  onSelectChannel: (channel: string) => void;
   onSelectConversation: (id: string) => void;
 }) {
   /**
@@ -412,6 +440,18 @@ function TimelinePane({
     [snapshot.messages, conversation],
   );
   const feed = useConversationFeed();
+  // A messaging app is a door several people talk through, so it is the one
+  // place with a list of names under the bar. The interfaces are one
+  // conversation each, and a list of one name would be chrome around nothing.
+  const isApp = conversation !== null
+    && conversation.channel !== 'web'
+    && conversation.channel !== 'cli';
+  const people = useMemo(
+    () => (conversation
+      ? conversations.filter((entry) => entry.channel === conversation.channel && entry.person)
+      : []),
+    [conversations, conversation],
+  );
 
   /**
    * A different conversation is a different place in the scrollback, so it opens
@@ -449,15 +489,24 @@ function TimelinePane({
         </div>
       </div>
 
+      {/* The bar is the whole navigation: the interfaces one click to one
+          conversation each, and a messaging app one click to its list of names
+          below. One bar, not a filter and a list competing for the same row. */}
       <div className="shrink-0 border-b border-[var(--line)] px-4 py-2.5 sm:px-5">
-        <PeopleFilter
-          closed={closedChannels}
-          conversations={conversations}
-          door={conversation?.channel ?? null}
-          onSelect={onSelectConversation}
-          selected={conversation?.id ?? null}
+        <ChannelBar
+          doors={doors}
+          onSelect={onSelectChannel}
+          selected={conversation?.channel ?? 'web'}
           t={t}
         />
+        {isApp ? (
+          <PersonList
+            conversations={people}
+            onSelect={onSelectConversation}
+            selected={conversation?.id ?? null}
+            t={t}
+          />
+        ) : null}
       </div>
 
       <ConversationFeed
@@ -470,7 +519,13 @@ function TimelinePane({
             <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl border border-[var(--line-strong)] bg-[var(--canvas-raised)] accent-text shadow-emboss">
               <Icon name="spark" size={24} />
             </div>
-            <p className="max-w-sm text-sm leading-6 text-[var(--ink-muted)]">{t('agentSendHint')}</p>
+            {/* An app nobody has written on yet is not the same empty as the
+                reader's own line: the hint has to say which of the two it is,
+                or a reader waiting for a first message reads a prompt to send
+                one into a door with nobody on it. */}
+            <p className="max-w-sm text-sm leading-6 text-[var(--ink-muted)]">
+              {isApp && people.length === 0 ? t('channelNobody') : t('agentSendHint')}
+            </p>
           </div>
         ) : (
           messages.map((message) => {
@@ -507,6 +562,11 @@ function TimelinePane({
                     {message.text}
                   </div>
                 </div>
+                {isUser ? (
+                  <div className="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-[var(--line)] bg-[var(--canvas-raised)] text-[var(--ink-muted)]">
+                    <Icon name="home" size={15} />
+                  </div>
+                ) : null}
               </div>
             );
           })
@@ -538,8 +598,13 @@ function TimelinePane({
         pending={snapshot.pending}
         // Said above the field, and enforced here: a conversation on a door the
         // agent has stopped having can still be read, and a question typed into
-        // it would go nowhere while the pane said it had been asked.
-        disabled={conversation !== null && closedChannels.includes(conversation.channel)}
+        // it would go nowhere while the pane said it had been asked. The same is
+        // true of a messaging app with nobody on it yet — a reply has to go to
+        // somebody, and "the door" is not an address.
+        disabled={conversation !== null && (
+          closedChannels.includes(conversation.channel)
+          || (conversation.channel !== 'web' && conversation.channel !== 'cli' && !conversation.person)
+        )}
         placeholder={t('agentSendHint')}
         sendLabel={t('send')}
       />

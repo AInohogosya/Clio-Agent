@@ -21,7 +21,7 @@ from ethos.engine.life import Life, LifeDeps
 from ethos.engine.reverie import Reverie
 from ethos.engine.rhythm import RhythmController
 from ethos.gateway.client import DirectGateway
-from ethos.gateway.embeddings import build_embedder
+from ethos.gateway.embeddings import build_role_embedder
 from ethos.gateway.secrets import SecretVault
 from ethos.gateway.service import GatewayService
 from ethos.observability import metrics
@@ -75,10 +75,12 @@ class CoreRuntime:
         self.db = db
         self.bus = EventBus(db, source="core")
         self.audit = AuditLog(DbAuditSink(db))
-        self.embedder = build_embedder(
-            config.gateway.embedding.provider, config.gateway.embedding.model,
-            config.gateway.embedding.dim,
-        )
+        # Asked of one function which processes load a model and which borrow the
+        # gateway's. `core` loads its own: it embeds a focus title and a percept
+        # summary on every cycle, and a loopback round trip for that is a cost
+        # paid on the agent's critical path to save a session it then mostly sits
+        # on. Everything that only needs a vector occasionally does not.
+        self.embedder = build_role_embedder("core", config)
         from ethos.memory.store import MemoryStore
 
         self.memory = MemoryStore(db, self.embedder, config, bus=self.bus)

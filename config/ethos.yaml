@@ -41,8 +41,19 @@ gateway:
     commitment_reserve_pct: 0.50
   embedding:
     provider: fastembed
+    # 1.2 GB of ONNX weights. The smallest model that keeps the vector width this
+    # schema stores is `BAAI/bge-small-en-v1.5` at 0.067 GB — but it is 384
+    # dimensional, so it also needs `dim: 384` below and a migration that widens
+    # the columns, and memories already in the store were embedded by *this*
+    # model. `ETHOS_EMBEDDING=hashing` needs no model at all and no width.
     model: "BAAI/bge-large-en-v1.5"
     dim: 1024
+    # ONNX intra-op threads. `None` (fastembed's default) sizes the arena to the
+    # core count; one thread per session is what this workload actually needs.
+    threads: 1
+    # Empty means `<data_dir>/models/fastembed`. Set it to keep the weights on a
+    # mounted volume so a restart does not download 1.2 GB again.
+    cache_dir: ""
 
 workers:
   count: 2

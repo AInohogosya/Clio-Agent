@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections import defaultdict
+from collections import defaultdict, deque
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -15,6 +15,26 @@ from ethos.schemas.events import Event
 logger = logging.getLogger(__name__)
 
 BUS_CHANNEL = "ethos_events"
+
+# How many recently-seen event ids the dedupe set remembers.
+#
+# This set exists to make one event one event: `LISTEN/NOTIFY` on a connection
+# that reconnects re-delivers, and a NOTIFY is not a promise of exactly one
+# delivery, so the same id can arrive twice and enqueueing it twice means the
+# agent deliberates on the same message and answers it twice.
+#
+# It was a plain set cleared wholesale at 100,000. Clearing is the wrong shape
+# here for two reasons, and both of them are about the clearing itself. It throws
+# away the dedupe window the instant it fills — so at id 100,001 every id the
+# bus had already delivered is deliverable again — and it does it in one
+# statement, which is a latency spike on a process that was about to be
+# answering a phone.
+#
+# So the window is the unit and it is bounded, and the oldest ids leave one at a
+# time. 16,384 is comfortably larger than the burst a reconnecting connection can
+# replay while still being a few hundred kilobytes rather than the 8 MB a set of
+# 100,000 ints occupies.
+SEEN_ID_WINDOW = 16_384
 
 
 class EventBus:
@@ -35,6 +55,11 @@ class EventBus:
         self._dispatch_task: asyncio.Task[None] | None = None
         self._running = False
         self._seen_ids: set[int] = set()
+        # Insertion order for `_seen_ids`, so the oldest id is known without
+        # sorting the whole set on every event. `maxlen` is the backstop: it caps
+        # this deque at the same window the eviction below maintains, and it caps
+        # it even if `_seen_add` were somehow not called.
+        self._seen_order: deque[int] = deque(maxlen=SEEN_ID_WINDOW)
 
     async def start(self) -> None:
         self._listener_conn = await self.db.new_listener_connection()
@@ -81,13 +106,23 @@ class EventBus:
         if row is None:
             return
         event = self._row_to_event(row)
-        self._seen_ids.add(event_id)
         self._seen_add(event_id)
         await self._queue.put(event)
 
-    def _seen_add(self, _event_id: int) -> None:
-        if len(self._seen_ids) > 100_000:
-            self._seen_ids.clear()
+    def _seen_add(self, event_id: int) -> None:
+        """Remember an id, evicting the oldest once the window is full.
+
+        One id in, one id out. `drain` below also records ids, and it goes
+        through here too so both paths share one window — an id claimed by the
+        startup gap recovery must still be recognised as seen by the NOTIFY
+        arriving for the same insert.
+        """
+        if event_id in self._seen_ids:
+            return
+        self._seen_ids.add(event_id)
+        if len(self._seen_order) >= self._seen_order.maxlen:
+            self._seen_ids.discard(self._seen_order[0])
+        self._seen_order.append(event_id)
 
     @staticmethod
     def _row_to_event(row: asyncpg.Record) -> Event:
@@ -180,5 +215,5 @@ class EventBus:
                 consumer, row["id"],
             )
             events.append(self._row_to_event(row))
-            self._seen_ids.add(int(row["id"]))
+            self._seen_add(int(row["id"]))
         return events

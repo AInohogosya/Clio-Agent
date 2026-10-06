@@ -1,13 +1,15 @@
-import React, { useCallback, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Box, Text, useApp } from 'ink';
 import {
   controlSummary,
+  conversationKey,
   createSettings,
   createTranslator,
   flattenIntentions,
   MAX_TERMINAL_TEXT_LENGTH,
   sanitizeTerminalText,
   type AgentControlAction,
+  type AgentConversation,
   type AgentDoor,
   type AgentLinkStatus,
   type AgentView,
@@ -85,7 +87,7 @@ const HELP_COMMANDS: Array<[string, string]> = [
   ['/name [<name>]', 'What the agent is called, or what to call it.'],
   ['/person <name>', 'The name the agent knows you by.'],
   ['/model [<provider> <model>]', 'What the agent thinks with, or what it should.'],
-  ['/channel [<name>]', 'Which door to talk through, or which one this is.'],
+  ['/channel [<name>|<door:person>]', 'Which door to talk through, or which conversation to open.'],
   ['/channels', 'Every door the agent has open, and who each can reach.'],
   ['/presence', 'What the agent is doing right now.'],
   ['/intentions', 'What it intends, as a tree.'],
@@ -141,9 +143,9 @@ export function AgentTui({ initialConfig, debug, width, height, depth }: AgentTu
 
   const session = useAgentSession(initialConfig, debug, onSettled);
   const { client, snapshot, view, link, streaming, config, debugLines, toast, say } = session;
-  // The door the transcript is narrowed to, and the one replies go out of. Read
-  // off the session rather than kept here, so the two can never disagree.
-  const { channel } = session;
+  // The conversation the transcript is narrowed to, and the door replies go out
+  // of. Read off the session rather than kept here, so the two can never disagree.
+  const { channel, conversationKey: currentKey, conversations } = session;
 
   const t = useMemo(() => createTranslator(snapshot.settings.language), [snapshot.settings.language]);
   const palette = useMemo(
@@ -157,24 +159,23 @@ export function AgentTui({ initialConfig, debug, width, height, depth }: AgentTu
   const debugRows = debug ? DEBUG_PANEL_ROWS : 0;
   const chatHeight = Math.max(MIN_CHAT_HEIGHT, height - CHROME_ROWS - debugRows);
 
-  // The transcript, narrowed to the door this terminal is talking through.
+  // The transcript, narrowed to the conversation this terminal is reading —
+  // `{door}:{address}`, the same unit the browser's pane keeps.
   //
-  // The same control the browser's channel filter is, and the same double duty:
-  // it decides what is drawn *and* where the next reply goes, which is why it
-  // lives beside the composer rather than in a settings screen. Filtering on its
-  // own would be a reading tool — useful, and not what makes a conversation on
-  // somebody's phone answerable from here.
+  // The same control the browser's people list is, and the same double duty: it
+  // decides what is drawn *and* where the next reply goes, which is why it lives
+  // beside the composer rather than in a settings screen. Narrowing by the door
+  // alone would draw several people's arrivals on one door as one stream, which
+  // is the cluttered transcript a browser keeps out by narrowing to the pair.
   //
-  // Derived rather than stored, because the door is state the session already
-  // owns and a second copy of it would be one more thing to keep in step. The
-  // local line is not filtered: it is the door the surface's own turns live on,
-  // and showing an empty conversation to a reader who has just typed something
-  // would look like the agent had lost it.
+  // Derived rather than stored, because the conversation is state the session
+  // already owns and a second copy of it would be one more thing to keep in
+  // step. The local line is the reader's own conversation, and showing an empty
+  // one to a reader who has just typed something would look like the agent had
+  // lost it — their own turn is filed there the moment Enter is pressed.
   const shown = useMemo(
-    () => (channel === 'web'
-      ? snapshot.messages
-      : snapshot.messages.filter((message) => (message.channel ?? 'web') === channel)),
-    [channel, snapshot.messages],
+    () => snapshot.messages.filter((message) => conversationKey(message) === currentKey),
+    [currentKey, snapshot.messages],
   );
 
   const lines = useMemo(
@@ -183,6 +184,15 @@ export function AgentTui({ initialConfig, debug, width, height, depth }: AgentTu
   );
   const visible = windowLines(lines, chatHeight, scroll);
   const limit = maxScroll(lines, chatHeight);
+
+  // A different conversation is a different place in the scrollback, so it opens
+  // where that one ends — the same re-anchor the browser's pane keeps. Without
+  // this the reader would keep the place they were in another conversation's
+  // scrollbar, which is how you end up looking at the oldest message of a
+  // conversation that has never scrolled.
+  useEffect(() => {
+    follow();
+  }, [currentKey, follow]);
 
   const cyclePanel = useCallback((backwards: boolean) => {
     const order: Screen[] = ['chat', ...PANEL_SCREENS];
@@ -289,6 +299,8 @@ export function AgentTui({ initialConfig, debug, width, height, depth }: AgentTu
     session.channel,
     session.closedChannels,
     snapshot.settings.agentPerson,
+    conversations,
+    currentKey,
   );
 
   return (
@@ -382,6 +394,8 @@ function renderPanel(
   channel: string,
   closedChannels: readonly string[],
   personId: string,
+  conversations: readonly AgentConversation[],
+  currentConversation: string,
 ): React.ReactElement | null {
   const language = settings.language;
   const now = Date.now();
@@ -406,7 +420,9 @@ function renderPanel(
       return (
         <ChannelsPanel
           closed={closedChannels}
+          conversations={conversations}
           current={channel}
+          currentConversation={currentConversation}
           doors={doors}
           palette={palette}
           personId={personId}
@@ -574,8 +590,10 @@ function Composer({
   //
   // The door badge comes out of that budget when it is shown, and the text budget
   // shrinks to match — the badge is never allowed to push the draft off the row,
-  // and the draft is what the reader is in the middle of.
-  const badge = channel === 'web' ? '' : channelBadge(channel);
+  // and the draft is what the reader is in the middle of. The local doors need no
+  // badge: they deliver to whoever is reading, and the default is the terminal's
+  // own line.
+  const badge = channel === 'web' || channel === 'cli' ? '' : channelBadge(channel);
   const room = Math.max(4, width - 7 - (badge ? displayWidth(badge) + 1 : 0));
   const lead = Math.max(0, displayWidth(before) - room + 1);
   const visibleBefore = lead > 0 ? `…${before.slice(lead)}` : before;

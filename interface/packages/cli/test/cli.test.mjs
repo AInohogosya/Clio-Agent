@@ -464,7 +464,8 @@ test('config reads, writes and resets individual values', async () => {
     const state = JSON.parse(readFileSync(path, 'utf8'));
     assert.equal(state.settings.provider, 'xai');
     assert.equal(state.settings.baseUrl, 'https://api.x.ai/v1');
-    assert.equal(state.settings.model, 'grok-2-latest');
+    // Only OpenAI has a default model: switching providers clears the model.
+    assert.equal(state.settings.model, '');
 
     await phone(['config', 'unset', 'accent']);
     assert.equal((await phone(['config', 'get', 'accent'])).stdout.trim(), '#F97316');

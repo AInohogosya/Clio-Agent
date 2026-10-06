@@ -11,6 +11,7 @@ import {
   intentionTone,
   stateTone,
   type AgentConversation,
+  type AgentDoor,
   type AgentIntention,
   type Language,
 } from '@project-phone/core';
@@ -140,81 +141,114 @@ export function EmptyNote({ children }: { children: ReactNode }) {
 }
 
 /**
- * Who the agent is talking to, and the one this surface is talking to.
+ * The places a conversation can happen, as a bar above the transcript.
  *
- * People, not doors. A door is how a conversation travels; a person is who it is
- * with, and an agent that can be written to from four channels has several
- * conversations going at once — which is why this is a list of names and why the
- * names are the thing that is drawn: a reader opening a transcript full of
- * arrivals is asking "who said this", and a list of vendors answers a different
- * question.
+ * The interfaces first — the web line and the terminal's line, each one
+ * conversation the reader conducts themselves — and then every messaging app
+ * with a bot token on file, as the agent's configuration reported them. The bar
+ * is built from the configuration rather than from the transcript, because a
+ * door with a token is a place a conversation can *start*, and a list derived
+ * from what has been said would offer only the doors that already have traffic
+ * in them.
  *
- * The label is the sender as that door spells them, and the address goes with it
- * in the tooltip rather than being invented away: a correspondent who has
- * renamed themselves is named as they are, and the address is still there for
- * the reader who has two of the same name.
- *
- * There is no "all". A pane that shows every conversation at once cannot label
- * a bubble, because the label is what the pane selects on — and a transcript
- * drawn as one undifferentiated stream is exactly the thing that made four
- * correspondents read as the reader talking to themselves.
- *
- * The selected conversation decides where a reply goes, not just what is drawn.
- * That is the whole reason this sits next to the composer and not in a settings
- * page: a filter that only filtered would be a reading tool, and this one is a
- * statement about which conversation a question belongs to.
- *
- * `closed` is said out loud rather than hidden. That door is in the transcript —
- * a conversation happened there — and the agent has since stopped having it, so
- * the two remaining readings of an empty reply box are "nothing has been said"
- * and "you cannot speak there any more", and only one of them is true.
+ * An interface is one click to one conversation. A messaging app is not: it is
+ * a door several people talk through, so clicking one opens the list of names
+ * below this bar rather than a conversation of its own — and the name is what
+ * opens the conversation.
  */
-export function PeopleFilter({
-  conversations, closed, door, selected, onSelect, t,
-}: {
-  conversations: readonly AgentConversation[];
-  /** Doors the selected conversation is on, so the reader can name it. */
-  door: string | null;
-  closed: readonly string[];
+export function ChannelBar({ doors, selected, onSelect, t }: {
+  /** Doors the bridge reported, including the messaging apps with tokens on file. */
+  doors: readonly AgentDoor[];
   selected: string | null;
-  onSelect: (id: string) => void;
+  onSelect: (channel: string) => void;
   t: AgentT;
 }) {
-  if (conversations.length < 2) return null;
+  const items = [
+    { id: 'web', label: 'Web', icon: 'globe' as const },
+    { id: 'cli', label: 'TUI', icon: 'terminal' as const },
+    ...doors
+      .filter((door) => door.id !== 'web' && door.id !== 'cli')
+      .map((door) => ({ id: door.id, label: channelLabel(door.id), icon: 'globe' as const })),
+  ];
   return (
     <div className="flex min-w-0 items-center gap-2">
       <span className="shrink-0 text-[0.62rem] uppercase tracking-[0.14em] text-[var(--ink-faint)]">
-        {t('peopleFilter')}
+        {t('channelBar')}
       </span>
-      <div aria-label={t('peopleFilter')} className="scrollbar-thin flex min-w-0 shrink items-center gap-1.5 overflow-x-auto" role="group">
-        {conversations.map((conversation) => {
-          const active = conversation.id === selected;
+      <div
+        aria-label={t('channelBar')}
+        className="scrollbar-thin flex min-w-0 shrink items-center gap-1.5 overflow-x-auto"
+        role="group"
+      >
+        {items.map((item) => {
+          const active = item.id === selected;
           return (
             <button
               aria-pressed={active}
               className={classNames(
-                'inline-flex min-w-0 shrink-0 items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-[0.68rem] font-medium transition',
+                'inline-flex shrink-0 items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-[0.68rem] font-medium transition',
                 active
                   ? 'border-[var(--accent-line)] bg-[var(--accent-soft)] accent-text'
                   : 'border-[var(--line)] bg-[var(--canvas-raised)] text-[var(--ink-faint)] hover:text-[var(--ink-muted)]',
               )}
-              key={conversation.id}
-              onClick={() => onSelect(conversation.id)}
-              title={`${conversation.label} · ${channelLabel(conversation.channel)}`}
+              key={item.id}
+              onClick={() => onSelect(item.id)}
               type="button"
             >
-              <Icon name="globe" size={12} />
-              <span className="max-w-[11rem] truncate">{conversation.label}</span>
+              <Icon name={item.icon} size={12} />
+              <span>{item.label}</span>
             </button>
           );
         })}
       </div>
-      {door ? (
-        <p className="shrink-0 text-[0.65rem] text-[var(--ink-faint)]">
-          {t('channelVia', { channel: channelLabel(door) })}
-          {closed.includes(door) ? ` — ${t('channelClosed')}` : null}
-        </p>
-      ) : null}
+    </div>
+  );
+}
+
+/**
+ * The people one messaging app holds, named as they spell themselves.
+ *
+ * Shown under the bar only while an app is the selected place, because the
+ * interfaces are one conversation each and need no list. The names are the senders
+ * the agent worked out, one conversation per person — clicking a name opens the
+ * conversation between that person and the agent, and decides where the next
+ * reply goes, which is why the selection is the conversation key and not a label.
+ */
+export function PersonList({ conversations, selected, onSelect, t }: {
+  /** The people this channel holds — every conversation with a name on it. */
+  conversations: readonly AgentConversation[];
+  selected: string | null;
+  onSelect: (id: string) => void;
+  t: AgentT;
+}) {
+  if (conversations.length === 0) return null;
+  return (
+    <div
+      aria-label={t('peopleFilter')}
+      className="mt-2 flex min-w-0 items-center gap-1.5 overflow-x-auto scrollbar-thin"
+      role="group"
+    >
+      {conversations.map((conversation) => {
+        const active = conversation.id === selected;
+        return (
+          <button
+            aria-pressed={active}
+            className={classNames(
+              'inline-flex shrink-0 items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-[0.68rem] font-medium transition',
+              active
+                ? 'border-[var(--accent-line)] bg-[var(--accent-soft)] accent-text'
+                : 'border-[var(--line)] bg-[var(--canvas-raised)] text-[var(--ink-faint)] hover:text-[var(--ink-muted)]',
+            )}
+            key={conversation.id}
+            onClick={() => onSelect(conversation.id)}
+            title={conversation.label}
+            type="button"
+          >
+            <Icon name="globe" size={12} />
+            <span className="max-w-[11rem] truncate">{conversation.label}</span>
+          </button>
+        );
+      })}
     </div>
   );
 }

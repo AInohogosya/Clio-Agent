@@ -203,11 +203,11 @@ test('a door that admits nobody is not shown as though it did', { skip }, async 
 test('a bare /channel names the door the terminal is talking through', { skip }, async () => {
   await withAgent(async () => {
     // A bare `/channel` reports rather than moves — the same way a bare `/name`
-    // reports the name — and the answer is the local line until something moves
-    // it. Reporting with silence would make the reporting form a no-op that looks
-    // like a broken command.
+    // reports the name — and the answer is the terminal's own line until
+    // something moves it. Reporting with silence would make the reporting form a
+    // no-op that looks like a broken command.
     const screen = await drive([['/channel', 600], ['\r', 1500]]);
-    assert.match(screen, /via Web/);
+    assert.match(screen, /via TUI/);
   });
 });
 

@@ -1,6 +1,6 @@
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
-import { createSettings } from '@project-phone/core';
+import { createSettings, PROVIDER_DEFAULTS } from '@project-phone/core';
 import { BRIDGE_ROUTES, bridgePath, BRIDGE_PREFIX } from '../src/bridge-protocol.ts';
 import { isLoopbackAddress, isLoopbackAuthority, isLoopbackRemoteAddress, isTrustedOrigin, mergeIncoming } from '../vite.config.ts';
 
@@ -11,7 +11,7 @@ function state(overrides = {}) {
     updatedAt: 1_700_000_000_000,
     origin: 'cli',
     transport: 'file',
-    settings: createSettings({ provider: 'openai', model: 'gpt-4o-mini' }),
+    settings: createSettings({ provider: 'openai', model: PROVIDER_DEFAULTS.openai.model }),
     messages: [],
     credential: { present: false, source: 'none', hint: '' },
     ...overrides,

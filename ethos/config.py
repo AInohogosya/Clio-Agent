@@ -168,6 +168,40 @@ class EmbeddingConfig(BaseModel):
     model: str = "BAAI/bge-large-en-v1.5"
     dim: int = 1024
 
+    """ONNX intra-op threads per embedding session.
+
+    fastembed leaves this at `None`, which sizes the arena to the machine's core
+    count — 10 cores here means ten worker threads and ten arenas of per-thread
+    scratch inside a session that is asked to embed one sentence at a time. Two
+    processes were doing that simultaneously for no measurable latency gain. `1`
+    is the default for the same reason the remote roles are the default: the
+    embedding model is not this agent's bottleneck and its thread count was a
+    memory cost nobody had asked for.
+    """
+    threads: int = 1
+
+    """Where the ONNX weights live between runs.
+
+    Empty means "under the agent's own data directory", resolved by
+    `resolve_cache_dir` — which is the point. fastembed's own default is a
+    per-user cache that a fresh container, a different service account, or a
+    cleaned temp directory silently empties, and a 1.2 GB download per restart is
+    the most expensive thing this agent does. An absolute path here wins.
+    """
+    cache_dir: str = ""
+
+    remote_timeout_s: float = 30.0
+    remote_retries: int = 3
+
+    def resolve_cache_dir(self, config: EthosConfig) -> str | None:
+        """The directory the weights are cached in, or None to use fastembed's own."""
+        if self.cache_dir:
+            return self.cache_dir
+        try:
+            return str(Path(config.paths.data_dir) / "models" / "fastembed")
+        except Exception:
+            return None
+
 
 class GatewayConfig(BaseModel):
     socket_path: str = "/run/ethos/gateway.sock"
@@ -205,6 +239,24 @@ class ThreadsConfig(BaseModel):
     max_concurrent: int = 4
     max_depth: int = 2
     mode: str = "inprocess"
+
+    """Finished handles kept resident after their thread is done.
+
+    `active` used to be both the in-flight table and the archive of everything
+    that had ever run, so every delegation the agent ever performed stayed
+    resident for the life of the process — each handle pinning its `spec` (the
+    goal, its success criteria, its constraints) and its `result`, which for a
+    thread that browsed or searched is the largest object the agent produces.
+    Nothing reads a handle after the caller has been handed the result: `wait` is
+    called on the object the caller already holds, and the post-mortem path goes
+    through Postgres, which is where a thread's record belongs.
+
+    So this is a bounded cache of the recent past, sized to answer "what did that
+    one say" without being a second unbounded ledger. 64 is roughly a day's
+    delegations for an agent that spawns a few an hour. Zero is allowed and means
+    nothing is kept.
+    """
+    retention: int = 64
 
 
 class JournalConfig(BaseModel):
@@ -469,6 +521,16 @@ class RetrievalConfig(BaseModel):
     mmr_lambda: float = 0.7
     candidate_k: int = 48
     top_k: int = 24
+
+    """Ceiling on `k * 2`, the widening that gives MMR and BM25 something to pick from.
+
+    A caller asking for a few hundred hits would otherwise pull four times that
+    from each of four tables, every one of them a 1024-dim vector parsed on the
+    way in. It bounds the widening and never the request: the effective limit is
+    `max(this, k)`, so asking for more than this still gets the k that was asked
+    for.
+    """
+    max_candidate_k: int = 256
 
 
 class SpacingConfig(BaseModel):
@@ -1505,7 +1567,35 @@ def load_config(config_dir_override: str | Path | None = None) -> EthosConfig:
         cfg.self_name = DEFAULT_SELF_NAME
     if os.environ.get("ETHOS_EMBEDDING") == "hashing":
         cfg.gateway.embedding.provider = "hashing"
+    # The three knobs an operator reaches for when the agent is too fat to run,
+    # read from the environment because that is where a container gets them and
+    # where a memory ceiling is discovered. `ETHOS_EMBEDDING=hashing` above is the
+    # fourth and needs no model at all.
+    #
+    # `ETHOS_EMBEDDING_MODEL` is deliberately paired with `ETHOS_EMBEDDING_DIM`:
+    # the smaller models are 384-dimensional and the columns are `vector(1024)`,
+    # so setting one without the other is refused loudly at start-up by
+    # `assert_model_dim` rather than quietly filling the store with vectors
+    # Postgres will not take.
+    _apply_embedding_env(cfg)
     return cfg
+
+
+def _apply_embedding_env(cfg: EthosConfig) -> None:
+    """Environment overrides for the embedding model, its width and its threads."""
+    emb = cfg.gateway.embedding
+    model = os.environ.get("ETHOS_EMBEDDING_MODEL")
+    if model:
+        emb.model = model
+    dim = os.environ.get("ETHOS_EMBEDDING_DIM")
+    if dim and dim.isdigit():
+        emb.dim = int(dim)
+    threads = os.environ.get("ETHOS_EMBEDDING_THREADS")
+    if threads and threads.isdigit():
+        emb.threads = max(1, int(threads))
+    cache = os.environ.get("ETHOS_EMBEDDING_CACHE")
+    if cache:
+        emb.cache_dir = cache
 
 
 @lru_cache(maxsize=1)

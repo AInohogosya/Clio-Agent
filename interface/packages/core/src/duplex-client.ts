@@ -286,15 +286,17 @@ export class DuplexClient {
     // A provider change is a change of identity, not a tweak: the endpoint, the
     // model and the credential belong to the provider that was just left behind,
     // so any of them the caller did not touch moves to the new provider's
-    // defaults. A credential is never carried across, because that would post
-    // one provider's key to another provider's endpoint.
+    // defaults. Only OpenAI has a default model, so switching to any other
+    // provider clears the model and leaves the choice to the person. A
+    // credential is never carried across, because that would post one
+    // provider's key to another provider's endpoint.
     const safeSettings = candidate.provider === current.provider
       ? candidate
       : createSettings({
         ...candidate,
         apiKey: candidate.apiKey === current.apiKey ? '' : candidate.apiKey,
         baseUrl: candidate.baseUrl === current.baseUrl ? defaults.baseUrl : candidate.baseUrl,
-        model: candidate.model === current.model ? defaults.model : candidate.model,
+        model: candidate.model === current.model ? defaults.model ?? '' : candidate.model,
       });
     this.update((snapshot) => ({ ...snapshot, settings: safeSettings }));
     this.emit({ type: 'settings', settings: { ...safeSettings } });

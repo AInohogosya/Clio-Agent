@@ -60,10 +60,12 @@ test('changing provider from the command line drops the old provider key', () =>
     const settings = storedSettings(path);
     assert.equal(settings.provider, 'anthropic');
     // The endpoint, the model and the key all belong to the provider that was
-    // just left behind; keeping the key would post it to another vendor.
+    // just left behind; keeping the key would post it to another vendor, and
+    // only OpenAI has a default model — so the model is cleared rather than
+    // substituted.
     assert.equal(settings.apiKey, '');
     assert.equal(settings.baseUrl, 'https://api.anthropic.com/v1');
-    assert.equal(settings.model, 'claude-3-5-sonnet-latest');
+    assert.equal(settings.model, '');
     assert.equal(JSON.parse(readFileSync(path, 'utf8')).credential.present, false);
     assert.equal(readFileSync(path, 'utf8').includes('sk-openai-secret'), false);
   });
@@ -95,7 +97,7 @@ test('every field can be read back as plain text', () => {
   withConfig(({ phone }) => {
     const expected = {
       provider: 'openai',
-      model: 'gpt-4o-mini',
+      model: 'gpt-6.1-sol',
       baseUrl: 'https://api.openai.com/v1',
       language: 'en',
       theme: 'dark',

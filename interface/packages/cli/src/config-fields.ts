@@ -36,8 +36,9 @@ export function isValueField(field: ConfigField): field is ValueField {
   return STRING_FIELDS.has(field);
 }
 
+/** The fresh-install value of a provider field: an endpoint, and a model only for OpenAI. */
 function providerDefault<K extends 'baseUrl' | 'model'>(field: K, provider: ProviderId): string {
-  return PROVIDER_DEFAULTS[provider][field];
+  return PROVIDER_DEFAULTS[provider][field] ?? '';
 }
 
 /**

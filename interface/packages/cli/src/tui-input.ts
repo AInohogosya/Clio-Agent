@@ -94,14 +94,18 @@ export interface ComposerActions {
    */
   agentName?: (argument: string) => void;
   /**
-   * Shows or changes the door this terminal talks to the agent through.
+   * Shows or changes where this terminal talks to the agent, or opens one
+   * conversation.
    *
-   * Two spellings, because a terminal has no dropdown: `/channels` opens the
-   * list, and `/channel <name>` moves onto one. A bare `/channel` says which one
-   * is in use, the same way a bare `/name` reports the name and a bare `/person`
-   * reports the person — reporting is what the no-argument form is *for*, and it
-   * is the form a reader reaches for when they want to know where their words
-   * are going.
+   * Three spellings, because a terminal has no dropdown: `/channels` opens the
+   * lists, `/channel <name>` moves onto a door, and `/channel <door:person>`
+   * opens one conversation — the key the transcript files messages under and the
+   * browser's people list selects on, so several people on one door are not
+   * drawn as one stream here either. A bare `/channel` says which one is in use,
+   * the same way a bare `/name` reports the name and a bare `/person` reports
+   * the person — reporting is what the no-argument form is *for*, and it is the
+   * form a reader reaches for when they want to know where their words are
+   * going.
    */
   agentChannel?: (argument: string) => void;
 }

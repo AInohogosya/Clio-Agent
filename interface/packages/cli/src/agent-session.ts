@@ -4,6 +4,7 @@ import {
   baseModelFailureKey,
   bindAgentConversation,
   channelLabel,
+  conversationsIn,
   createAgentTransport,
   createTranslator,
   DuplexClient,
@@ -14,6 +15,7 @@ import {
   sanitizeTerminalText,
   toChatMessages,
   type AgentControlAction,
+  type AgentConversation,
   type AgentDoor,
   type AgentLinkStatus,
   type AgentTransport,
@@ -22,7 +24,7 @@ import {
   type ClientSnapshot,
   type Settings,
 } from '@project-phone/core';
-import { doorRefusalText, doorSummary, resolveDoor } from './channels.js';
+import { doorRefusalText, doorSummary, findConversation, resolveDoor } from './channels.js';
 import { saveConfig, watchConfig, type PhoneConfig } from './config.js';
 import { controlLabel } from './agent-screen.js';
 import type { Tone } from './palette.js';
@@ -77,6 +79,22 @@ export interface AgentSession {
   doors: AgentDoor[];
   channel: string;
   closedChannels: string[];
+  /**
+   * Everyone the transcript holds, most recently active first.
+   *
+   * The same list the browser's people list is, from the same function, because a
+   * conversation is one fact: a terminal that grouped a channel's arrivals into
+   * one stream and a browser that kept one conversation per person would be two
+   * answers to "who said this".
+   */
+  conversations: AgentConversation[];
+  /**
+   * The key of the conversation this terminal reads, `{door}:{address}`.
+   *
+   * The transcript is narrowed to it the way the browser's pane is, so messages
+   * from several people on one door are not drawn as one stream here either.
+   */
+  conversationKey: string;
   say: (text: string, tone?: Tone) => void;
   dismissToast: () => void;
   interrupt: () => void;
@@ -130,6 +148,11 @@ export function useAgentSession(
     agentRef.current = new AgentClient({
       url: initialConfig.settings.agentUrl,
       personId: initialConfig.settings.agentPerson,
+      // The terminal's own words travel on the terminal's own door. The web door
+      // is the browser's conversation, and filing the terminal's turns under it
+      // would put two interfaces' words in one conversation — which is the
+      // categorization the reader cannot untangle.
+      sendChannel: 'cli',
     });
   }
   const agent = agentRef.current;
@@ -140,12 +163,22 @@ export function useAgentSession(
   }
   const transport = transportRef.current;
 
+  /**
+   * Where the terminal's own turn goes, read by the client at the moment it is
+   * asked. A ref rather than a value because the conversation is a decision the
+   * reader changes while looking at the transcript — the same indirection the
+   * browser keeps, so a question typed here is filed into the conversation it
+   * was sent into instead of turning up in another one's scrollbar.
+   */
+  const destinationRef = useRef<{ channel?: string; person?: string }>({});
+
   const clientRef = useRef<DuplexClient | null>(null);
   if (clientRef.current === null) {
     clientRef.current = new DuplexClient({
       settings: initialConfig.settings,
       initialMessages: initialConfig.messages,
       transport: transportRef.current,
+      destination: () => destinationRef.current,
     });
   }
   const client = clientRef.current;
@@ -166,7 +199,21 @@ export function useAgentSession(
    * would be lost every time the list was replaced.
    */
   const [doors, setDoors] = useState<AgentDoor[]>([]);
-  const [channel, setChannelState] = useState<string>('web');
+  // The terminal's own line, not the browser's: `web` is the conversation the
+  // standard web interface conducts, and starting there would put this
+  // terminal's words in somebody else's pane.
+  const [channel, setChannelState] = useState<string>('cli');
+  /**
+   * The address replies go out of on the current door, or `''` when the door
+   * could not be given one.
+   *
+   * Kept beside `channel` rather than folded into it, for the same reason the
+   * door list is separate state: the conversation is the pair, and a transcript
+   * narrowed by the channel alone would draw several people's messages as one
+   * stream — which is exactly the clutter a browser keeps out by narrowing to
+   * the pair.
+   */
+  const [address, setAddressState] = useState<string>('');
 
   const configRef = useRef<PhoneConfig>(initialConfig);
   const lastWriteRef = useRef<number>(-1);
@@ -261,6 +308,46 @@ export function useAgentSession(
     };
   }, [agent, snapshot.settings.agentUrl]);
 
+  const agentPerson = snapshot.settings.agentPerson;
+  // The local doors need no address: they deliver to whoever is reading, so the
+  // person is whoever this terminal is.
+  const localDoor = channel === 'web' || channel === 'cli';
+
+  /**
+   * The conversation this terminal reads, as the key the transcript files
+   * messages under.
+   *
+   * The local line is the reader's own: on a local door the person is whoever
+   * this terminal is, and on any other door it is the address the reply goes
+   * out of. One conversation, not one channel — the same narrowing the browser's
+   * pane keeps, so messages from several people on one door are never drawn as
+   * one stream here either.
+   */
+  const conversationKey = localDoor
+    ? `${channel}:${agentPerson}`
+    : `${channel}:${address}`;
+
+  // The turn the terminal writes for itself is filed into the conversation it
+  // was sent into, read at the moment it is asked — the same rule the browser
+  // keeps, so a question typed here appears in the pane it was typed over
+  // instead of vanishing until the agent's row lands.
+  useEffect(() => {
+    destinationRef.current = localDoor
+      ? { channel, person: agentPerson }
+      : address
+        ? { channel, person: address }
+        : {};
+  }, [address, agentPerson, channel, localDoor]);
+
+  // Everyone the transcript holds. The same function the browser's list runs,
+  // with the terminal's own line as the local one, so both surfaces answer "who
+  // is this agent talking to" with one list rather than two vocabularies for one
+  // agent.
+  const conversations = useMemo(
+    () => conversationsIn(snapshot.messages, agentPerson, 'cli'),
+    [snapshot.messages, agentPerson],
+  );
+
   const channelDoor = useCallback(
     () => doors.find((door) => door.id === channel),
     [doors, channel],
@@ -288,24 +375,45 @@ export function useAgentSession(
       say(t('channelViaLabel', { channel: channelLabel(channel) }), 'accent');
       return;
     }
+    // A conversation id — `{door}:{address}` — is the key the transcript files
+    // messages under and the browser's people list selects on, so it is the
+    // spelling that opens one conversation here too. A name nothing holds falls
+    // through to the refusals below, which name the doors that would have worked.
+    const opened = findConversation(conversations, wanted);
+    if (opened) {
+      setChannelState(opened.channel);
+      setAddressState(opened.person);
+      agent.setChannel(opened.channel);
+      agent.setAddress(opened.person || null);
+      say(t('channelViaLabel', { channel: channelLabel(opened.channel) }), 'accent');
+      return;
+    }
     const choice = resolveDoor(doors, client.getSnapshot().settings.agentPerson, wanted);
     if (!choice.ok) {
       say(doorRefusalText(choice, client.getSnapshot().settings.language), 'warning');
       return;
     }
     setChannelState(choice.channel);
-    agent.setChannel(choice.channel);
     // The address follows the door. A terminal that moved to Telegram and left a
     // Discord channel id in place would be refused by the bridge for a reason that
     // has nothing to do with Telegram, and the reader would have no way to see
-    // that the stale value was there.
+    // that the stale value was there. On a local door the person is the reader
+    // themselves, because that is who the transcript files the terminal's own
+    // turns under — a door contact's word for them is a second spelling of one
+    // person, and two spellings would split one conversation in two.
+    const local = choice.channel === 'web' || choice.channel === 'cli';
+    const person = local
+      ? client.getSnapshot().settings.agentPerson
+      : choice.address ?? '';
+    setAddressState(person);
+    agent.setChannel(choice.channel);
     agent.setAddress(choice.address);
     // The label rather than the id, for the same reason the one-shot send does:
     // `slack` is a word a person says and `channel` is the word the config uses,
     // and a toast reading `via slack` is indistinguishable from one reading
     // `via web`. The id is in `/channels` for anybody who needs to type it.
     say(t('channelViaLabel', { channel: channelLabel(choice.channel) }), 'accent');
-  }, [agent, channel, client, doors, say, t]);
+  }, [agent, channel, client, conversations, doors, say, t]);
 
   useEffect(() => bindAgentConversation(client, agent), [agent, client]);
 
@@ -522,6 +630,8 @@ export function useAgentSession(
     doors,
     channel,
     closedChannels,
+    conversations,
+    conversationKey,
     say,
     dismissToast,
     interrupt,

@@ -6,10 +6,11 @@ import {
   SETUP_STEPS,
   commitDraftSettings,
   createTranslator,
-  credentialsForProvider,
-  discoverProviderModels,
-  filterModels,
-  languageLabel,
+   credentialsForProvider,
+   discoverProviderModels,
+   filterModels,
+   filterProviders,
+   languageLabel,
   LANGUAGES,
   providerDescriptionKey,
   providerFor,
@@ -63,6 +64,14 @@ export function SettingsWizard({ settings, width, height, depth, onSave, onCance
   // Which appearance row step 4 has focused: 0 language, 1 theme, 2 accent.
   const [row, setRow] = useState(0);
   const providerIds = useMemo(() => Object.keys(PROVIDER_DEFINITIONS) as ProviderId[], []);
+  // The provider list is long, so it is offered with a search: what is typed on
+  // the provider step filters it, the way the model step's search filters a
+  // catalogue. The index is into the visible list, and a new search restarts it.
+  const [providerQuery, setProviderQuery] = useState('');
+  const visibleProviders = useMemo(
+    () => filterProviders(providerIds, providerQuery),
+    [providerIds, providerQuery],
+  );
   const [providerIndex, setProviderIndex] = useState(() => {
     const index = providerIds.indexOf(settings.provider);
     return index === -1 ? 0 : index;
@@ -153,20 +162,35 @@ export function SettingsWizard({ settings, width, height, depth, onSave, onCance
 
     if (step === 1) {
       if (key.upArrow) {
-        setProviderIndex((current) => (current - 1 + providerIds.length) % providerIds.length);
+        if (visibleProviders.length) {
+          setProviderIndex((current) => (current - 1 + visibleProviders.length) % visibleProviders.length);
+        }
         return;
       }
       if (key.downArrow) {
-        setProviderIndex((current) => (current + 1) % providerIds.length);
+        if (visibleProviders.length) {
+          setProviderIndex((current) => (current + 1) % visibleProviders.length);
+        }
         return;
       }
       if (key.return) {
-        const provider = providerIds[providerIndex] ?? 'openai';
+        const provider = visibleProviders[providerIndex] ?? 'openai';
         setModels([]);
         setSource('offline');
+        setProviderQuery('');
         patch({ provider, ...credentialsForProvider(provider) });
         setField('apiKey');
         setStep(2);
+        return;
+      }
+      if (key.backspace || key.delete) {
+        setProviderQuery((current) => current.slice(0, -1));
+        setProviderIndex(0);
+        return;
+      }
+      if (value && !key.ctrl && !key.meta) {
+        setProviderQuery((current) => current + value);
+        setProviderIndex(0);
       }
       return;
     }
@@ -280,7 +304,7 @@ export function SettingsWizard({ settings, width, height, depth, onSave, onCance
       </Box>
       <Box marginTop={1}>
         {step === 1 ? (
-          <ProviderStep palette={palette} providerIds={providerIds} providerIndex={providerIndex} width={width} language={settings.language} />
+          <ProviderStep palette={palette} providerIds={visibleProviders} providerIndex={providerIndex} query={providerQuery} width={width} height={height} language={settings.language} />
         ) : null}
         {step === 2 ? (
           <CredentialsStep draft={draft} error={error} field={field} palette={palette} width={width} />
@@ -339,21 +363,37 @@ function ProviderStep({
   palette,
   providerIds,
   providerIndex,
+  query,
   width,
+  height,
   language,
 }: {
   palette: Palette;
   providerIds: ProviderId[];
   providerIndex: number;
+  query: string;
   width: number;
+  height: number;
   language: Language;
 }): React.ReactElement {
   const t = createTranslator(language);
+  // The catalogue is far longer than one screen, so the list is windowed around
+  // the selection: the window opens at the top and scrolls only when the
+  // selection would leave it. A list that paints past the bottom of the
+  // terminal would fold providers into each other on the way out.
+  const rows = Math.max(3, height - 12);
+  const start = Math.max(0, Math.min(providerIndex - rows + 1, providerIds.length - rows));
+  const shown = providerIds.slice(start, start + rows);
   return (
     <Box flexDirection="column">
       <Text color={palette.inkMuted}>{truncateWidth(t('providerDescription'), width - 4)}</Text>
+      <Text color={palette.inkFaint}>{`${t('searchProviders')}  ${query}`}</Text>
+      {providerIds.length === 0 ? (
+        <Text color={palette.inkFaint}>{t('providerNoMatches', { query })}</Text>
+      ) : null}
       <Box flexDirection="column" marginTop={1}>
-        {providerIds.map((provider, index) => {
+        {shown.map((provider, offset) => {
+          const index = start + offset;
           const definition = PROVIDER_DEFINITIONS[provider];
           const active = index === providerIndex;
           const room = Math.max(10, width - 6 - displayWidth(definition.label));

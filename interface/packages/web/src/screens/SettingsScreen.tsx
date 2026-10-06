@@ -8,10 +8,11 @@ import {
   commitDraftSettings,
   createSettings,
   createTranslator,
-  credentialsForProvider,
-  discoveryProblem,
-  filterModels,
-  isProviderId,
+   credentialsForProvider,
+   discoveryProblem,
+   filterModels,
+   filterProviders,
+   isProviderId,
   languageLabel,
   identityFailureKey,
   MAX_AGENT_NAME_LENGTH,
@@ -151,11 +152,39 @@ const INTERFACES: Array<{ id: InterfaceId; label: 'interfaceAgent' | 'interfaceD
 ];
 
 /**
+ * The providers the grid shows before the fold: a quick pick for each of the
+ * vendors a person is most likely to be reaching for. Everything else lives
+ * behind the fold below.
+ */
+const QUICK_PROVIDERS: ProviderId[] = [
+  'openai',
+  'anthropic',
+  'gemini',
+  'openrouter',
+  'deepseek',
+  'mistral',
+  'groq',
+  'xai',
+  'ollama',
+  'lmstudio',
+];
+
+/**
  * The providers on offer, as a choice of who to talk to.
  *
  * Shared rather than written twice, because the two modes offer the same list
  * for different reasons and a form that drifted between them would be a form
  * that offered a different set of providers depending on which tab it was on.
+ *
+ * The list is long — a quick pick each for the major vendors, then a hundred
+ * more — so it is offered the way the doors section below is: the quick picks
+ * are always on the screen, the rest live behind a fold that names how many it
+ * is keeping, and a search box answers the question the fold cannot — "which of
+ * the hundred is the one I want". Searching reads the whole list, folded or
+ * not, because a person who typed "bedrock" has already said they would rather
+ * not unfold anything to find it. And the fold opens by itself when the provider
+ * in use is one it holds, because a selected card that is not on the screen
+ * reads as no selection at all.
  */
 function ProviderGrid({
   selected,
@@ -164,33 +193,90 @@ function ProviderGrid({
 }: {
   selected: ProviderId;
   onChoose: (provider: ProviderId) => void;
-  t: (key: 'apiKeyRequiredShort' | 'apiKeyNoneShort') => string;
+  t: ReturnType<typeof createTranslator>;
 }) {
+  const [query, setQuery] = useState('');
+  // Folded by default, and opened by itself when the provider in use lives
+  // behind it. Not a control whose state is the point — the cards are — so a
+  // checkbox would be the wrong shape here; the heading is what unfolds it,
+  // the way the doors section's heading does.
+  const [expanded, setExpanded] = useState(() => !QUICK_PROVIDERS.includes(selected));
+  const providers = useMemo(() => Object.keys(PROVIDER_DEFINITIONS) as ProviderId[], []);
+  const quick = useMemo(() => providers.filter((provider) => QUICK_PROVIDERS.includes(provider)), [providers]);
+  const more = useMemo(() => providers.filter((provider) => !QUICK_PROVIDERS.includes(provider)), [providers]);
+  const searching = query.trim() !== '';
+  const matches = useMemo(
+    () => (searching ? filterProviders(providers, query) : []),
+    [providers, query, searching],
+  );
+
+  useEffect(() => {
+    if (!QUICK_PROVIDERS.includes(selected)) setExpanded(true);
+  }, [selected]);
+
+  const renderCard = (provider: ProviderId) => {
+    const active = selected === provider;
+    return (
+      <button
+        aria-pressed={active}
+        className={classNames(
+          'instrument-panel flex items-center gap-3 rounded-xl p-3 text-left',
+          active ? 'accent-border ring-1 ring-[var(--accent-halo)]' : 'hover:border-[var(--line-strong)]',
+        )}
+        key={provider}
+        onClick={() => onChoose(provider)}
+        type="button"
+      >
+        <Icon className={active ? 'accent-text shrink-0' : 'shrink-0 text-[var(--ink-muted)]'} name={providerIcon(provider)} size={16} />
+        <span className="min-w-0">
+          <span className="block truncate text-sm font-medium text-[var(--ink)]">{PROVIDER_DEFINITIONS[provider].label}</span>
+          <span className="block truncate text-[0.66rem] text-[var(--ink-faint)]">
+            {providerFor(provider).requiresApiKey ? t('apiKeyRequiredShort') : t('apiKeyNoneShort')}
+          </span>
+        </span>
+      </button>
+    );
+  };
+
   return (
-    <div className="grid gap-2 sm:grid-cols-2">
-      {(Object.keys(PROVIDER_DEFINITIONS) as ProviderId[]).map((provider) => {
-        const active = selected === provider;
-        return (
+    <div className="space-y-2">
+      <div className="relative">
+        <Icon className="pointer-events-none absolute left-3 top-2.5 text-[var(--ink-faint)]" name="search" size={15} />
+        <Input className="pl-10" onChange={(event) => setQuery(event.target.value)} placeholder={t('searchProviders')} value={query} />
+      </div>
+      {searching ? (
+        // Matches from the whole list, folded or not, and the selection keeps
+        // itself: a card here is a choice, and whatever the search says the
+        // draft holds what was pressed.
+        matches.length ? (
+          <div className="grid gap-2 sm:grid-cols-2">{matches.map(renderCard)}</div>
+        ) : (
+          <p className="text-[0.68rem] leading-5 text-[var(--ink-faint)]">{t('providerNoMatches', { query })}</p>
+        )
+      ) : (
+        <>
+          <div className="grid gap-2 sm:grid-cols-2">{quick.map(renderCard)}</div>
           <button
-            aria-pressed={active}
+            aria-expanded={expanded}
             className={classNames(
-              'instrument-panel flex items-center gap-3 rounded-xl p-3 text-left',
-              active ? 'accent-border ring-1 ring-[var(--accent-halo)]' : 'hover:border-[var(--line-strong)]',
+              'flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition',
+              expanded
+                ? 'accent-border bg-[var(--accent-soft)] accent-text'
+                : 'border-[var(--line)] text-[var(--ink-muted)] hover:border-[var(--line-strong)]',
             )}
-            key={provider}
-            onClick={() => onChoose(provider)}
+            onClick={() => setExpanded((current) => !current)}
             type="button"
           >
-            <Icon className={active ? 'accent-text shrink-0' : 'shrink-0 text-[var(--ink-muted)]'} name={providerIcon(provider)} size={16} />
-            <span className="min-w-0">
-              <span className="block truncate text-sm font-medium text-[var(--ink)]">{PROVIDER_DEFINITIONS[provider].label}</span>
-              <span className="block truncate text-[0.66rem] text-[var(--ink-faint)]">
-                {providerFor(provider).requiresApiKey ? t('apiKeyRequiredShort') : t('apiKeyNoneShort')}
-              </span>
-            </span>
+            {expanded ? t('moreProvidersHide') : t('moreProvidersShow', { count: more.length })}
+            <Icon
+              className={classNames('transition-transform', expanded ? 'rotate-90' : '')}
+              name="chevron"
+              size={13}
+            />
           </button>
-        );
-      })}
+          {expanded ? <div className="grid gap-2 sm:grid-cols-2">{more.map(renderCard)}</div> : null}
+        </>
+      )}
     </div>
   );
 }
@@ -817,6 +903,11 @@ export function SettingsScreen({
   // failed rather than the form.
   const [doors, setDoors] = useState<AgentChannelSetup | null>(null);
   const [doorSaving, setDoorSaving] = useState<string | null>(null);
+  // The doors section is long — one card per app — so it starts folded and the
+  // heading is what unfolds it. Collapsed is the default: a person who is not
+  // setting up a door should not scroll past every app's fields to reach the
+  // sections below.
+  const [doorsExpanded, setDoorsExpanded] = useState(false);
   // Whether the write that turns preview mode on or off is in flight. The value
   // itself is not held here: it belongs to the agent, and the view this screen is
   // given comes back with the answer after the write, so a second copy would be a
@@ -922,7 +1013,9 @@ export function SettingsScreen({
             ...current,
             provider,
             baseUrl: found.baseUrl || PROVIDER_DEFINITIONS[provider].defaultBaseUrl,
-            model: found.model || PROVIDER_DEFINITIONS[provider].defaultModel,
+            // Only OpenAI has a default model; an agent on another provider
+            // reports what it uses or the field stays empty.
+            model: found.model || PROVIDER_DEFINITIONS[provider].defaultModel || '',
             // Deliberately left empty: the key is on the agent's side and this
             // page has never held it. `fileEnv` is what says so underneath, when
             // the agent reads one out of the environment rather than from a file.
@@ -1133,9 +1226,11 @@ export function SettingsScreen({
 
   const chooseProvider = (provider: ProviderId) => {
     // A provider is a change of identity: its endpoint, model and key belong to
-    // it, so nothing is carried across from the one being left behind.
+    // it, so nothing is carried across from the one being left behind. Only
+    // OpenAI has a default model, so the catalog starts empty anywhere else and
+    // the choice is made from a real catalogue or not at all.
     const definition = PROVIDER_DEFINITIONS[provider];
-    setModels([definition.defaultModel]);
+    setModels(definition.defaultModel ? [definition.defaultModel] : []);
     setSource('offline');
     setModelQuery('');
     setEnvProvider(null);
@@ -1594,27 +1689,51 @@ export function SettingsScreen({
             for a secret it does not keep.
           */}
           {agentMode ? (
-            <section className="space-y-4 border-t border-[var(--line)] pt-5">
-              <div>
+            <section className="border-t border-[var(--line)] pt-5">
+              <div className="flex items-center justify-between gap-3">
                 <SectionLabel icon="link">{t('doorSection')}</SectionLabel>
-                <p className="mt-2 text-[0.68rem] leading-5 text-[var(--ink-faint)]">
-                  {doors === null && readDoors ? t('doorUnreachable') : t('doorSectionHint')}
-                </p>
-                {doors?.file ? (
-                  <p className="mt-1 text-[0.68rem] leading-5 text-[var(--ink-faint)]">
-                    {t('doorSavedIn', { file: doors.file })}
-                  </p>
-                ) : null}
+                <button
+                  aria-expanded={doorsExpanded}
+                  className={classNames(
+                    'flex shrink-0 items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs font-medium transition',
+                    doorsExpanded
+                      ? 'accent-border bg-[var(--accent-soft)] accent-text'
+                      : 'border-[var(--line)] text-[var(--ink-muted)] hover:border-[var(--line-strong)]',
+                  )}
+                  onClick={() => setDoorsExpanded((current) => !current)}
+                  type="button"
+                >
+                  {doorsExpanded ? t('doorSectionHide') : t('doorSectionShow')}
+                  <Icon
+                    className={classNames('transition-transform', doorsExpanded ? 'rotate-90' : '')}
+                    name="chevron"
+                    size={13}
+                  />
+                </button>
               </div>
-              {doors?.doors.map((door) => (
-                <DoorCard
-                  door={door}
-                  key={door.id}
-                  language={draft.language}
-                  onSave={writeDoor}
-                  saving={doorSaving === door.id}
-                />
-              ))}
+              {doorsExpanded ? (
+                <div className="space-y-4">
+                  <div>
+                    <p className="text-[0.68rem] leading-5 text-[var(--ink-faint)]">
+                      {doors === null && readDoors ? t('doorUnreachable') : t('doorSectionHint')}
+                    </p>
+                    {doors?.file ? (
+                      <p className="mt-1 text-[0.68rem] leading-5 text-[var(--ink-faint)]">
+                        {t('doorSavedIn', { file: doors.file })}
+                      </p>
+                    ) : null}
+                  </div>
+                  {doors?.doors.map((door) => (
+                    <DoorCard
+                      door={door}
+                      key={door.id}
+                      language={draft.language}
+                      onSave={writeDoor}
+                      saving={doorSaving === door.id}
+                    />
+                  ))}
+                </div>
+              ) : null}
             </section>
           ) : null}
 

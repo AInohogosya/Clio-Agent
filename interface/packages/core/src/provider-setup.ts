@@ -57,13 +57,16 @@ export function sanitizeDraftSettings(draft: Settings): Settings {
 /**
  * The credential tuple a provider starts from.
  *
- * The key is deliberately empty: an endpoint, a model and a key all belong to
- * the provider they were chosen for, so carrying one across would post a
- * provider's key to a different vendor's endpoint.
+ * The key is deliberately empty, and so is the model unless the provider is
+ * OpenAI: an endpoint, a model and a key all belong to the provider they were
+ * chosen for, so carrying one across would post a provider's key to a different
+ * vendor's endpoint — and a model a person never chose is a default presented
+ * as a choice. Choosing a provider clears the model; discovery or the picker
+ * fills it back in.
  */
 export function credentialsForProvider(provider: ProviderId): Pick<Settings, 'apiKey' | 'baseUrl' | 'model'> {
   const definition = providerFor(provider);
-  return { apiKey: '', baseUrl: definition.defaultBaseUrl, model: definition.defaultModel };
+  return { apiKey: '', baseUrl: definition.defaultBaseUrl, model: definition.defaultModel ?? '' };
 }
 
 /** What, if anything, must be fixed before a direct-provider draft can be saved. */
@@ -328,4 +331,20 @@ export function filterModels(models: readonly string[], query: string): string[]
   const needle = query.trim().toLowerCase();
   if (!needle) return [...models];
   return models.filter((model) => model.toLowerCase().includes(needle));
+}
+
+/**
+ * Case-insensitive substring search over the provider list, by label and id.
+ *
+ * Shared by the surfaces that offer more providers than a screen can show at
+ * once: a list of a hundred needs a search box, and the rule the box applies
+ * lives here rather than in a component, so the page and any other surface
+ * cannot disagree about what a match is.
+ */
+export function filterProviders(providers: readonly ProviderId[], query: string): ProviderId[] {
+  const needle = query.trim().toLowerCase();
+  if (!needle) return [...providers];
+  return providers.filter((provider) => (
+    providerFor(provider).label.toLowerCase().includes(needle) || provider.includes(needle)
+  ));
 }

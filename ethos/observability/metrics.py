@@ -83,6 +83,10 @@ GUARDIAN_DECISIONS = Counter(
     ["path", "verdict"],
 )
 THREADS_ACTIVE = Gauge("ethos_threads_active", "Currently running delegated threads")
+THREADS_FINISHED_KEPT = Gauge(
+    "ethos_threads_finished_kept",
+    "Finished thread handles still resident in the bounded retention cache",
+)
 
 _started: list[int] = []
 

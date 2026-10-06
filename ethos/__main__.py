@@ -238,6 +238,7 @@ async def _serve_toolhost(config) -> None:
     from ethos.bus.event_bus import EventBus
     from ethos.core.control import ControlPlane
     from ethos.core.runner import connect_database
+    from ethos.gateway.embeddings import build_role_embedder
     from ethos.guardian.gate import GuardianGate, ModelDueProcessVerifier
     from ethos.guardian.journal import ActionJournal
     from ethos.guardian.registry import ArtifactRegistry
@@ -279,10 +280,14 @@ async def _serve_toolhost(config) -> None:
     bus.subscribe(EventKind.CONTROL_UPDATE, _on_control_update)
     await bus.start()
 
-    embedder = __import__("ethos.gateway.embeddings", fromlist=["build_embedder"]).build_embedder(
-        config.gateway.embedding.provider, config.gateway.embedding.model, config.gateway.embedding.dim,
-    )
-    memory = MemoryStore(db, embedder, config)
+    # No embedder here. This process used to build its own — a second ~1.2 GB
+    # `bge-large` ONNX arena, in a process whose only use of it was turning one
+    # episode summary into a vector for `memory.record`. The gateway already
+    # serves exactly that over its socket, so the toolhost asks for the vector
+    # instead of owning a copy of the thing that makes it. One model in the
+    # supervisor instead of two, and no ONNX session in the process that is
+    # restarted most often.
+    memory = MemoryStore(db, build_role_embedder("toolhost", config), config)
     audit = AuditLog(DbAuditSink(db))
     registry = ArtifactRegistry(db)
     trash = TrashStore(
@@ -406,15 +411,18 @@ def worker() -> None:
         from uuid import UUID
 
         from ethos.gateway.client import DirectGateway
-        from ethos.gateway.embeddings import build_embedder
+        from ethos.gateway.embeddings import build_role_embedder
         from ethos.gateway.service import GatewayService
         from ethos.memory.store import MemoryStore
         from ethos.schemas.gsl import IntentionStatus
         from ethos.threads.worker import run_thread
 
-        embedder = build_embedder(config.gateway.embedding.provider,
-                                  config.gateway.embedding.model,
-                                  config.gateway.embedding.dim)
+        # One embedder for the thread's writes, borrowed rather than owned. This
+        # process is one of `workers.count` and was holding a full ONNX session
+        # each — so raising the worker count, the cheapest way to make the agent
+        # busier, multiplied the largest single allocation in the supervisor by
+        # two. The gateway answers the same question over its socket.
+        embedder = build_role_embedder("worker", config)
         memory = MemoryStore(db, embedder, config)
         gateway_service = GatewayService(config, db=db, embedder=embedder)
         gateway = DirectGateway(gateway_service)

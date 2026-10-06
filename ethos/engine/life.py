@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections import deque
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
@@ -26,6 +27,34 @@ logger = get_logger("ethos.life")
 # patience and inside the longest tick a working agent has, so "paused" is
 # reported as paused rather than as silence.
 PARKED_HEARTBEAT_S = 30.0
+
+# How many thoughts the running buffer keeps.
+#
+# Everything that reads `_thoughts` reads a tail of it — the last 10 for the
+# wake-up report, the last `reverie.recent_window` (8) for musing — and nothing
+# counts it, sums it or indexes from the front. It was a plain list that only
+# ever grew, so a long-lived process accumulated one string per decision for as
+# long as it was left running, and the only thing that ever freed any of it was
+# the process exiting. Those two readers want 8 and 10.
+#
+# 256 is a wide margin over both, sized so the buffer still holds a working day
+# of the agent's own reasoning if something ever wants a longer look, while
+# being a number of strings rather than an unbounded number of them.
+THOUGHT_BUFFER = 256
+
+
+def _tail(buffer: deque[str], n: int) -> list[str]:
+    """The last `n` entries of a bounded ring, as a plain list.
+
+    `deque` has no slice syntax — `d[-10:]` is a `TypeError`, not an empty
+    result — so both of the reads that were list slices go through here. The copy
+    is bounded by `len(buffer)`, which is what the `maxlen` is for; nothing about
+    it grows with how long the agent has been running.
+    """
+    if n <= 0:
+        return []
+    items = list(buffer)
+    return items[-n:] if n < len(items) else items
 
 
 class LifeDeps:
@@ -109,7 +138,11 @@ class Life:
         self.spent_discretionary_session = 0.0
         self.cycles = 0
         self._percept_queue: Any = None
-        self._thoughts: list[str] = []
+        # A bounded ring, not a list. `deque(maxlen=...)` drops the oldest entry
+        # on append, so the buffer cannot outgrow its own window. The two readers
+        # that used to be list slices go through `_tail` instead, because `deque`
+        # has no slice syntax at all.
+        self._thoughts: deque[str] = deque(maxlen=THOUGHT_BUFFER)
         self._consolidation_done_tonight: str | None = None
 
     # ------------------------------------------------------------- wake
@@ -286,7 +319,7 @@ class Life:
             memories = await self.memory.search(query, k=12)
         except Exception:
             memories = []
-        thought_texts = self._thoughts[-10:]
+        thought_texts = _tail(self._thoughts, 10)
         thread, recent = self.context.render_blocks()
         conversations = await self._conversations_block()
         return self.assembler.assemble(
@@ -804,7 +837,7 @@ class Life:
         """
         window = self.config.rhythm.reverie.recent_window
         result = await self.reverie.muse(
-            recent_thoughts=self._thoughts[-window:],
+            recent_thoughts=_tail(self._thoughts, window),
             energy=self.deps.rhythm.energy(self.spent_discretionary_session),
         )
         if result.thought:

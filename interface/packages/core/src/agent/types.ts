@@ -1039,10 +1039,17 @@ export interface AgentConversation {
  * guessed at because the local line has to be offered before it exists: a browser
  * that has never been typed into holds no `web` row at all, and a filter built
  * only from what has been said offers nothing to say it with.
+ *
+ * `localChannel` is the door the reading surface's own words travel through —
+ * the browser's is `web`, the terminal's is `cli` — because the local line is
+ * offered per surface, not once for everybody. Each interface's own turn is a
+ * conversation of its own, and the one this surface is on by default is the one
+ * its own words are filed under.
  */
 export function conversationsIn(
   messages: readonly ChatMessage[],
   self = '',
+  localChannel = 'web',
 ): AgentConversation[] {
   const found = new Map<string, AgentConversation>();
   for (const message of messages) {
@@ -1068,13 +1075,14 @@ export function conversationsIn(
     });
   }
   const mine = self.trim();
+  const home = localChannel.trim() || 'web';
   const local: AgentConversation = {
-    id: `web:${mine}`,
-    channel: 'web',
+    id: `${home}:${mine}`,
+    channel: home,
     person: mine,
     // The reader's own name is the surface's to say, not the store's: `owner` is
     // what the contact book calls them and is rarely what they are called.
-    label: mine || 'web',
+    label: mine || channelLabel(home),
     messages: 0,
     lastAt: 0,
   };
@@ -1381,7 +1389,7 @@ export function reconcileDoors(
 export function channelLabel(channel: string): string {
   const known: Record<string, string> = {
     web: 'Web',
-    cli: 'Terminal',
+    cli: 'TUI',
     telegram: 'Telegram',
     whatsapp: 'WhatsApp',
     slack: 'Slack',

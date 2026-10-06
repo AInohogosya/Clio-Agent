@@ -549,12 +549,14 @@ function readEnvKeys() {
 }
 
 test('every provider is reported, whether or not it has a key', async () => {
-  // All ten, not only the ones with something in them: a form can only offer the
-  // button for a provider somebody has already picked, so the answer to "which
-  // providers could I use" cannot depend on the current selection.
+  // Every vendor, not only the ones with something in them: a form can only
+  // offer the button for a provider somebody has already picked, so the answer
+  // to "which providers could I use" cannot depend on the current selection.
+  // The quick picks lead, in their order on the screen, and the hosted list
+  // follows them.
   const { keys } = await readEnvKeys();
-  assert.equal(keys.length, 10);
-  assert.deepEqual(keys.map((entry) => entry.provider), [
+  assert.equal(keys.length, 111);
+  assert.deepEqual(keys.map((entry) => entry.provider).slice(0, 10), [
     'openai', 'anthropic', 'gemini', 'openrouter', 'deepseek',
     'mistral', 'groq', 'xai', 'ollama', 'lmstudio',
   ]);

@@ -263,6 +263,532 @@ const PORT = resolvePort();
  * for, and a provider that is not in this table is not one the agent can be
  * pointed at.
  */
+/**
+ * The hosted vendors beyond the ten entries above. Every one of them speaks the
+ * OpenAI-compatible protocol — a chat request in, a completion out, a bearer key
+ * on it — so one table maps each vendor to the three things the handlers need:
+ * the environment variables that hold a key, the endpoint a base model starts
+ * from, and the ids a catalogue falls back to when the vendor cannot be asked.
+ * Endpoints that name a region, project or account start from a placeholder the
+ * first request will refuse until the base URL is pointed at the real one.
+ */
+const HOSTED_OPENAI_COMPAT = {
+  together: {
+    env: ["TOGETHER_API_KEY"],
+    base: "https://api.together.xyz/v1",
+    models: ["meta-llama/Llama-3.3-70B-Instruct-Turbo", "Qwen/Qwen2.5-72B-Instruct-Turbo", "deepseek-ai/DeepSeek-V3"],
+  },
+  fireworks: {
+    env: ["FIREWORKS_API_KEY"],
+    base: "https://api.fireworks.ai/inference/v1",
+    models: ["accounts/fireworks/models/llama4-maverick-instruct-basic", "accounts/fireworks/models/deepseek-v3"],
+  },
+  deepinfra: {
+    env: ["DEEPINFRA_API_KEY"],
+    base: "https://api.deepinfra.com/v1/openai",
+    models: ["meta-llama/Llama-3.3-70B-Instruct", "deepseek-ai/DeepSeek-V3", "Qwen/Qwen2.5-72B-Instruct"],
+  },
+  cerebras: {
+    env: ["CEREBRAS_API_KEY"],
+    base: "https://api.cerebras.ai/v1",
+    models: ["llama-3.3-70b", "llama3.1-8b", "qwen-3-32b"],
+  },
+  sambanova: {
+    env: ["SAMBANOVA_API_KEY"],
+    base: "https://api.sambanova.ai/v1",
+    models: ["Meta-Llama-3.3-70B-Instruct", "Qwen2.5-72B-Instruct"],
+  },
+  cohere: {
+    env: ["COHERE_API_KEY"],
+    base: "https://api.cohere.ai/compatibility/v1",
+    models: ["command-a-03-2025", "command-r-plus-08-2024", "command-r-08-2024"],
+  },
+  perplexity: {
+    env: ["PERPLEXITY_API_KEY"],
+    base: "https://api.perplexity.ai",
+    models: ["sonar", "sonar-pro", "sonar-reasoning"],
+  },
+  bedrock: {
+    env: ["AWS_BEARER_TOKEN_BEDROCK", "AWS_ACCESS_KEY_ID"],
+    base: "https://bedrock-runtime.us-east-1.amazonaws.com/openai/v1",
+    models: ["anthropic.claude-3-5-sonnet-20241022-v2:0", "amazon.nova-pro-v1:0", "meta.llama3-3-70b-instruct-v1:0"],
+  },
+  azure: {
+    env: ["AZURE_OPENAI_API_KEY"],
+    base: "https://YOUR-RESOURCE.openai.azure.com/openai/v1",
+    models: ["gpt-4o-mini", "gpt-4o", "o4-mini"],
+  },
+  vertex: {
+    env: ["VERTEX_API_KEY", "GOOGLE_VERTEX_API_KEY"],
+    base: "https://aiplatform.googleapis.com/v1/projects/PROJECT/locations/us-central1/endpoints/openapi",
+    models: ["gemini-2.0-flash", "gemini-2.5-pro"],
+  },
+  huggingface: {
+    env: ["HF_TOKEN", "HUGGINGFACE_API_KEY"],
+    base: "https://router.huggingface.co/v1",
+    models: ["meta-llama/Llama-3.3-70B-Instruct", "Qwen/Qwen2.5-72B-Instruct"],
+  },
+  replicate: {
+    env: ["REPLICATE_API_TOKEN", "REPLICATE_API_KEY"],
+    base: "https://api.replicate.com/v1",
+    models: ["openai/gpt-4o-mini", "meta/meta-llama-3.1-405b-instruct"],
+  },
+  cloudflare: {
+    env: ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_API_KEY"],
+    base: "https://api.cloudflare.com/client/v4/accounts/ACCOUNT/ai/v1",
+    models: ["@cf/meta/llama-3.3-70b-instruct-fp8-fast", "@cf/qwen/qwen2.5-coder-32b-instruct"],
+  },
+  nvidia: {
+    env: ["NVIDIA_API_KEY", "NVIDIA_NIM_API_KEY"],
+    base: "https://integrate.api.nvidia.com/v1",
+    models: ["meta/llama-3.3-70b-instruct", "nvidia/llama-3.1-nemotron-70b-instruct"],
+  },
+  siliconflow: {
+    env: ["SILICONFLOW_API_KEY"],
+    base: "https://api.siliconflow.cn/v1",
+    models: ["deepseek-ai/DeepSeek-V3", "Qwen/Qwen2.5-72B-Instruct"],
+  },
+  nebius: {
+    env: ["NEBIUS_API_KEY"],
+    base: "https://api.studio.nebius.ai/v1",
+    models: ["deepseek-ai/DeepSeek-V3", "meta-llama/Llama-3.3-70B-Instruct"],
+  },
+  baseten: {
+    env: ["BASETEN_API_KEY"],
+    base: "https://inference.baseten.co/v1",
+    models: ["deepseek-ai/DeepSeek-V3-0324", "meta-llama/Llama-4-Maverick-17B-128E-Instruct"],
+  },
+  zhipu: {
+    env: ["ZHIPU_API_KEY", "ZHIPUAI_API_KEY"],
+    base: "https://open.bigmodel.cn/api/paas/v4",
+    models: ["glm-4.5", "glm-4-plus", "glm-4-flash"],
+  },
+  dashscope: {
+    env: ["DASHSCOPE_API_KEY", "ALIBABA_API_KEY"],
+    base: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    models: ["qwen-max", "qwen-plus", "qwen-turbo"],
+  },
+  moonshot: {
+    env: ["MOONSHOT_API_KEY", "KIMI_API_KEY"],
+    base: "https://api.moonshot.cn/v1",
+    models: ["kimi-k2-0711-preview", "moonshot-v1-8k", "moonshot-v1-32k"],
+  },
+  minimax: {
+    env: ["MINIMAX_API_KEY"],
+    base: "https://api.minimax.chat/v1",
+    models: ["MiniMax-Text-01", "abab6.5s-chat"],
+  },
+  lambda: {
+    env: ["LAMBDA_API_KEY"],
+    base: "https://api.lambda.ai/v1",
+    models: ["llama3.3-70b-instruct", "hermes3-70b"],
+  },
+  runpod: {
+    env: ["RUNPOD_API_KEY"],
+    base: "https://api.runpod.ai/v1",
+    models: ["openai/gpt-oss-120b", "deepseek-ai/DeepSeek-V3"],
+  },
+  vastai: {
+    env: ["VAST_API_KEY"],
+    base: "https://api.vast.ai/v1",
+    models: ["meta-llama/Llama-3.3-70B-Instruct"],
+  },
+  coreweave: {
+    env: ["COREWEAVE_API_KEY"],
+    base: "https://api.coreweave.com/v1",
+    models: ["meta-llama/Llama-3.3-70B-Instruct"],
+  },
+  modal: {
+    env: ["MODAL_API_KEY", "MODAL_TOKEN"],
+    base: "https://api.modal.com/v1",
+    models: ["meta-llama/Llama-3.3-70B-Instruct"],
+  },
+  anyscale: {
+    env: ["ANYSCALE_API_KEY"],
+    base: "https://api.endpoints.anyscale.com/v1",
+    models: ["meta-llama/Llama-3-70b-instruct"],
+  },
+  octoai: {
+    env: ["OCTOAI_API_KEY"],
+    base: "https://text.octoai.run/v1",
+    models: ["meta-llama-3.1-8b-instruct"],
+  },
+  lepton: {
+    env: ["LEPTON_API_KEY"],
+    base: "https://api.lepton.run/api/v1",
+    models: ["llama3.3-70b"],
+  },
+  fluidstack: {
+    env: ["FLUIDSTACK_API_KEY"],
+    base: "https://api.fluidstack.io/v1",
+    models: ["meta-llama/Llama-3.3-70B-Instruct"],
+  },
+  jarvislabs: {
+    env: ["JARVISLABS_API_KEY", "JARVIS_API_KEY"],
+    base: "https://api.jarvislabs.ai/v1",
+    models: ["meta-llama/Llama-3.3-70B-Instruct"],
+  },
+  paperspace: {
+    env: ["PAPERSPACE_API_KEY"],
+    base: "https://api.paperspace.com/v1",
+    models: ["meta-llama/Llama-3.3-70B-Instruct"],
+  },
+  watsonx: {
+    env: ["WATSONX_API_KEY", "IBM_CLOUD_API_KEY"],
+    base: "https://api.us-south.watsonx.ai/v1/ml/v1",
+    models: ["meta-llama/llama-3-3-70b-instruct", "ibm/granite-3-8b-instruct"],
+  },
+  oci: {
+    env: ["OCI_API_KEY", "OCI_GENAI_API_KEY"],
+    base: "https://inference.generativeai.us-ashburn-1.oci.oraclecloud.com",
+    models: ["meta.llama-3.3-70b-instruct"],
+  },
+  qianfan: {
+    env: ["BAIDU_API_KEY", "QIANFAN_API_KEY"],
+    base: "https://qianfan.baidubce.com/v2",
+    models: ["ernie-4.5-turbo-128k", "ernie-speed-128k"],
+  },
+  tencent: {
+    env: ["TENCENT_API_KEY", "HUNYUAN_API_KEY"],
+    base: "https://api.hunyuan.cloud.tencent.com/v1",
+    models: ["hunyuan-turbos-latest", "hunyuan-large"],
+  },
+  pangu: {
+    env: ["HUAWEI_API_KEY", "PANGU_API_KEY"],
+    base: "https://api.modelarts-maas.com/v1",
+    models: ["DeepSeek-R1", "pangu-nlp"],
+  },
+  volcengine: {
+    env: ["ARK_API_KEY", "VOLCENGINE_API_KEY"],
+    base: "https://ark.cn-beijing.volces.com/api/v3",
+    models: ["doubao-pro-32k", "doubao-1.5-pro-32k"],
+  },
+  sensenova: {
+    env: ["SENSENOVA_API_KEY"],
+    base: "https://api.sensenova.cn/compatible-mode/v1",
+    models: ["SenseChat-5"],
+  },
+  ai21: {
+    env: ["AI21_API_KEY"],
+    base: "https://api.ai21.com/studio/v1",
+    models: ["jamba-large-1.7", "jamba-mini-1.7"],
+  },
+  alephalpha: {
+    env: ["ALEPH_ALPHA_API_KEY"],
+    base: "https://api.aleph-alpha.com",
+    models: ["pharia-1-7b-control"],
+  },
+  sakana: {
+    env: ["SAKANA_API_KEY"],
+    base: "https://api.sakana.ai/v1",
+    models: ["sakana-model"],
+  },
+  reka: {
+    env: ["REKA_API_KEY"],
+    base: "https://api.reka.ai/v1",
+    models: ["reka-core", "reka-flash", "reka-edge"],
+  },
+  lighton: {
+    env: ["LIGHTON_API_KEY"],
+    base: "https://api.lighton.ai/v1",
+    models: ["lighton-model"],
+  },
+  upstage: {
+    env: ["UPSTAGE_API_KEY"],
+    base: "https://api.upstage.ai/v1/solar",
+    models: ["solar-pro", "solar-mini"],
+  },
+  novita: {
+    env: ["NOVITA_API_KEY"],
+    base: "https://api.novita.ai/v3/openai",
+    models: ["deepseek/deepseek-v3", "meta-llama/llama-3.3-70b-instruct"],
+  },
+  monsterapi: {
+    env: ["MONSTERAPI_API_KEY"],
+    base: "https://api.monsterapi.ai/v1",
+    models: ["monster-model"],
+  },
+  predibase: {
+    env: ["PREDIBASE_API_KEY"],
+    base: "https://serving.app.predibase.com",
+    models: ["llama-3-8b-instruct"],
+  },
+  hyperbolic: {
+    env: ["HYPERBOLIC_API_KEY"],
+    base: "https://api.hyperbolic.xyz/v1",
+    models: ["meta-llama/Llama-3.3-70B-Instruct", "deepseek-ai/DeepSeek-V3"],
+  },
+  akash: {
+    env: ["AKASH_API_KEY"],
+    base: "https://api.akash.network/v1",
+    models: ["Meta-Llama-3-1-8B-Instruct-FP8"],
+  },
+  crusoe: {
+    env: ["CRUSOE_API_KEY"],
+    base: "https://api.crusoecloud.ai/v1",
+    models: ["meta-llama/Llama-3.3-70B-Instruct"],
+  },
+  rendernetwork: {
+    env: ["RENDER_API_KEY"],
+    base: "https://api.rendernetwork.com/v1",
+    models: ["render-model"],
+  },
+  linode: {
+    env: ["LINODE_API_KEY", "AKAMAI_API_KEY"],
+    base: "https://ai.linode.com/v1beta",
+    models: ["meta-llama/Llama-3.3-70B-Instruct"],
+  },
+  vultr: {
+    env: ["VULTR_API_KEY"],
+    base: "https://api.vultrinference.com/v1",
+    models: ["meta-llama-3-8b-instruct"],
+  },
+  scaleway: {
+    env: ["SCALEWAY_API_KEY"],
+    base: "https://api.scaleway.ai/v1",
+    models: ["qwen2.5-72b-instruct", "llama-3.1-8b-instruct"],
+  },
+  ovhcloud: {
+    env: ["OVHCLOUD_API_KEY", "OVH_API_KEY"],
+    base: "https://oai.endpoints.kepler.ai.cloud.ovh.net/v1",
+    models: ["Llama-3.3-70B-Instruct", "Qwen2.5-72B-Instruct"],
+  },
+  hetzner: {
+    env: ["HETZNER_API_KEY"],
+    base: "https://api.hetzner.cloud/v1",
+    models: ["meta-llama/Llama-3.3-70B-Instruct"],
+  },
+  genesis: {
+    env: ["GENESIS_API_KEY"],
+    base: "https://api.genesiscloud.com/v1",
+    models: ["meta-llama/Llama-3.3-70B-Instruct"],
+  },
+  civo: {
+    env: ["CIVO_API_KEY"],
+    base: "https://api.civo.com/v1",
+    models: ["meta-llama/Llama-3.3-70B-Instruct"],
+  },
+  nimblebox: {
+    env: ["NIMBLEBOX_API_KEY"],
+    base: "https://api.nimblebox.ai/v1",
+    models: ["meta-llama/Llama-3.3-70B-Instruct"],
+  },
+  gradient: {
+    env: ["GRADIENT_API_KEY"],
+    base: "https://api.gradient.ai/v1",
+    models: ["gradient-model"],
+  },
+  beam: {
+    env: ["BEAM_API_KEY"],
+    base: "https://api.beam.cloud/v1",
+    models: ["meta-llama/Llama-3.3-70B-Instruct"],
+  },
+  mystic: {
+    env: ["MYSTIC_API_KEY"],
+    base: "https://api.mystic.ai/v1",
+    models: ["mystic-model"],
+  },
+  fal: {
+    env: ["FAL_API_KEY", "FAL_KEY"],
+    base: "https://fal.run/v1",
+    models: ["fal-model"],
+  },
+  replicateengine: {
+    env: ["REPLICATE_ENGINE_API_KEY"],
+    base: "https://engine.replicate.com/v1",
+    models: ["meta/meta-llama-3.1-405b-instruct"],
+  },
+  segmind: {
+    env: ["SEGMIND_API_KEY"],
+    base: "https://api.segmind.com/v1",
+    models: ["segmind-model"],
+  },
+  runhouse: {
+    env: ["RUNHOUSE_API_KEY"],
+    base: "https://api.run.house/v1",
+    models: ["meta-llama/Llama-3.3-70B-Instruct"],
+  },
+  skypilot: {
+    env: ["SKYPILOT_API_KEY"],
+    base: "https://api.skypilot.co/v1",
+    models: ["meta-llama/Llama-3.3-70B-Instruct"],
+  },
+  foundry: {
+    env: ["FOUNDRY_API_KEY"],
+    base: "https://api.foundry.ai/v1",
+    models: ["foundry-model"],
+  },
+  brev: {
+    env: ["BREV_API_KEY"],
+    base: "https://api.brev.dev/v1",
+    models: ["meta-llama/Llama-3.3-70B-Instruct"],
+  },
+  tensordock: {
+    env: ["TENSORDOCK_API_KEY"],
+    base: "https://api.tensordock.com/v1",
+    models: ["meta-llama/Llama-3.3-70B-Instruct"],
+  },
+  oblivious: {
+    env: ["OBLIVIOUS_API_KEY"],
+    base: "https://api.oblivious.ai/v1",
+    models: ["oblivious-model"],
+  },
+  synthesia: {
+    env: ["SYNTHESIA_API_KEY"],
+    base: "https://api.synthesia.io/v1",
+    models: ["synthesia-model"],
+  },
+  elevenlabs: {
+    env: ["ELEVENLABS_API_KEY"],
+    base: "https://api.elevenlabs.io/v1",
+    models: ["eleven-multilingual-v2", "eleven-turbo-v2"],
+  },
+  openaimarketplace: {
+    env: ["OPENAI_MARKETPLACE_API_KEY"],
+    base: "https://api.openai.com/v1",
+    models: ["gpt-4o-mini"],
+  },
+  stability: {
+    env: ["STABILITY_API_KEY"],
+    base: "https://api.stability.ai/v1",
+    models: ["stable-image-core", "stable-image-ultra"],
+  },
+  midjourney: {
+    env: ["MIDJOURNEY_API_KEY"],
+    base: "https://api.midjourneyapi.xyz",
+    models: ["midjourney-model"],
+  },
+  leonardo: {
+    env: ["LEONARDO_API_KEY"],
+    base: "https://cloud.leonardo.ai/api/rest/v1",
+    models: ["leonardo-phoenix-1.0"],
+  },
+  runwayml: {
+    env: ["RUNWAY_API_KEY", "RUNWAYML_API_KEY"],
+    base: "https://api.dev.runwayml.com/v1",
+    models: ["gen4_turbo", "gen3a_turbo"],
+  },
+  pika: {
+    env: ["PIKA_API_KEY"],
+    base: "https://api.pika.art/v1",
+    models: ["pika-model"],
+  },
+  heygen: {
+    env: ["HEYGEN_API_KEY"],
+    base: "https://api.heygen.com/v1",
+    models: ["heygen-model"],
+  },
+  tavus: {
+    env: ["TAVUS_API_KEY"],
+    base: "https://tavusapi.com/v1",
+    models: ["tavus-model"],
+  },
+  hume: {
+    env: ["HUME_API_KEY"],
+    base: "https://api.hume.ai/v1",
+    models: ["hume-model"],
+  },
+  assemblyai: {
+    env: ["ASSEMBLYAI_API_KEY"],
+    base: "https://api.assemblyai.com/v2",
+    models: ["assemblyai-model"],
+  },
+  deepgram: {
+    env: ["DEEPGRAM_API_KEY"],
+    base: "https://api.deepgram.com/v1",
+    models: ["nova-2", "nova-3"],
+  },
+  speechify: {
+    env: ["SPEECHIFY_API_KEY"],
+    base: "https://api.speechify.com/v1",
+    models: ["speechify-model"],
+  },
+  coqui: {
+    env: ["COQUI_API_KEY"],
+    base: "https://api.coqui.ai/v1",
+    models: ["coqui-model"],
+  },
+  playht: {
+    env: ["PLAYHT_API_KEY", "PLAY_HT_API_KEY"],
+    base: "https://api.play.ht/api/v2",
+    models: ["playht-model"],
+  },
+  murf: {
+    env: ["MURF_API_KEY"],
+    base: "https://api.murf.ai/v1",
+    models: ["murf-model"],
+  },
+  pinecone: {
+    env: ["PINECONE_API_KEY"],
+    base: "https://api.pinecone.io",
+    models: ["pinecone-model"],
+  },
+  weaviate: {
+    env: ["WEAVIATE_API_KEY"],
+    base: "https://inference.weaviate.io",
+    models: ["weaviate-model"],
+  },
+  qdrant: {
+    env: ["QDRANT_API_KEY"],
+    base: "https://api.qdrant.tech",
+    models: ["qdrant-model"],
+  },
+  milvus: {
+    env: ["ZILLIZ_API_KEY", "MILVUS_API_KEY"],
+    base: "https://controller.api.zillizcloud.com/v1",
+    models: ["milvus-model"],
+  },
+  langchain: {
+    env: ["LANGSMITH_API_KEY", "LANGCHAIN_API_KEY"],
+    base: "https://api.smith.langchain.com/v1",
+    models: ["langchain-model"],
+  },
+  llamaindex: {
+    env: ["LLAMAINDEX_API_KEY", "LLAMA_CLOUD_API_KEY"],
+    base: "https://api.llamaindex.cloud/v1",
+    models: ["llamaindex-model"],
+  },
+  voyage: {
+    env: ["VOYAGE_API_KEY"],
+    base: "https://api.voyageai.com/v1",
+    models: ["voyage-3-large", "voyage-3", "voyage-3-lite"],
+  },
+  jina: {
+    env: ["JINA_API_KEY"],
+    base: "https://api.jina.ai/v1",
+    models: ["jina-embeddings-v3", "jina-reranker-v2"],
+  },
+  mixedbread: {
+    env: ["MIXEDBREAD_API_KEY"],
+    base: "https://api.mixedbread.com/v1",
+    models: ["mixedbread-embed-large-v1"],
+  },
+  nomic: {
+    env: ["NOMIC_API_KEY"],
+    base: "https://api.nomic.ai/v1",
+    models: ["nomic-embed-text-v1.5"],
+  },
+  coherererank: {
+    env: ["COHERE_RERANK_API_KEY", "COHERE_API_KEY"],
+    base: "https://api.cohere.com/v2",
+    models: ["rerank-v3.5"],
+  },
+  telnyx: {
+    env: ["TELNYX_API_KEY"],
+    base: "https://api.telnyx.com/v2/ai",
+    models: ["telnyx-model"],
+  },
+};
+
+const OPENAI_COMPAT_PROVIDERS = Object.fromEntries(
+  Object.entries(HOSTED_OPENAI_COMPAT).map(([vendor, entry]) => [vendor, {
+    protocol: "openai_compat",
+    requiresKey: true,
+    auth: "bearer",
+    env: entry.env,
+  }]),
+);
+
 const BASE_PROVIDERS = {
   openai: { protocol: "openai", requiresKey: true, auth: "bearer", env: ["OPENAI_API_KEY"] },
   anthropic: { protocol: "anthropic", requiresKey: true, auth: "x-api-key", env: ["ANTHROPIC_API_KEY"] },
@@ -277,8 +803,16 @@ const BASE_PROVIDERS = {
   xai: { protocol: "openai_compat", requiresKey: true, auth: "bearer", env: ["XAI_API_KEY"] },
   ollama: { protocol: "openai_compat", requiresKey: false, auth: "bearer", env: ["OLLAMA_API_KEY"] },
   lmstudio: { protocol: "openai_compat", requiresKey: false, auth: "bearer", env: ["LMSTUDIO_API_KEY"] },
+  ...OPENAI_COMPAT_PROVIDERS,
 };
 
+/**
+ * Where each provider starts. Only OpenAI carries a default model — it is the
+ * default provider, and a reader who never changes it should never have to pick
+ * one. Every other provider has an endpoint and nothing else: the model is
+ * cleared when the provider changes, and the choice is made from a real
+ * catalogue rather than from a default nobody picked.
+ */
 const BASE_PROVIDER_DEFAULTS = {
   openai: { baseUrl: "https://api.openai.com/v1", model: "gpt-4o-mini" },
   anthropic: { baseUrl: "https://api.anthropic.com/v1", model: "claude-3-5-sonnet-latest" },
@@ -290,6 +824,7 @@ const BASE_PROVIDER_DEFAULTS = {
   xai: { baseUrl: "https://api.x.ai/v1", model: "grok-2-latest" },
   ollama: { baseUrl: "http://localhost:11434/v1", model: "llama3.2" },
   lmstudio: { baseUrl: "http://localhost:1234/v1", model: "qwen2.5-7b-instruct" },
+  ...Object.fromEntries(Object.entries(HOSTED_OPENAI_COMPAT).map(([vendor, entry]) => [vendor, { baseUrl: entry.base }])),
 };
 
 const MAX_API_KEY_LENGTH = 512;
@@ -365,6 +900,7 @@ const STATIC_MODELS = {
   xai: ["grok-2-latest", "grok-2-mini", "grok-beta"],
   ollama: ["llama3.2", "llama3.1", "mistral", "qwen2.5"],
   lmstudio: ["qwen2.5-7b-instruct", "llama-3.2-3b-instruct", "gemma-2-2b-it"],
+  ...Object.fromEntries(Object.entries(HOSTED_OPENAI_COMPAT).map(([vendor, entry]) => [vendor, entry.models])),
 };
 
 function text(value, max) {

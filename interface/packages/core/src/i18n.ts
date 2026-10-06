@@ -72,6 +72,14 @@ const en = {
   providerMistralDescription: 'Mistral’s hosted open and code models over a chat API.',
   providerGroqDescription: 'Very fast hosted inference on open-weight models.',
   providerXaiDescription: 'Grok models from xAI through an OpenAI-compatible API.',
+  // The hosted providers beyond the quick picks. One sentence per family rather
+  // than one per provider, because a hundred providers would be a hundred lines
+  // saying nearly the same thing — the family's description is the honest one,
+  // and each definition carries the provider's own wording for the picker.
+  providerOpenaiCompatDescription: 'Hosted models through an OpenAI-compatible chat API; adjust the base URL for your account.',
+  providerCloudPlatformDescription: 'Enterprise cloud model service; point the endpoint at your region or project.',
+  providerMediaApiDescription: 'Speech, video or image API rather than a chat endpoint.',
+  providerDataApiDescription: 'Embedding, vector or rerank API rather than a chat endpoint.',
   apiKey: 'API key',
   apiKeyRequiredShort: 'Needs a key',
   apiKeyNoneShort: 'No key needed',
@@ -115,6 +123,10 @@ const en = {
   modelReady: 'Model ready',
   searchModels: 'Search models',
   noMatchingModels: 'No matching models',
+  searchProviders: 'Search providers',
+  moreProvidersShow: 'More providers ({count})',
+  moreProvidersHide: 'Fewer providers',
+  providerNoMatches: 'No provider matches “{query}”.',
   language: 'Language',
   theme: 'Theme',
   dark: 'Dark',
@@ -132,6 +144,8 @@ const en = {
   messageCount: '{count} messages',
   messageCountOne: '{count} message',
   peopleFilter: 'People',
+  channelBar: 'Conversations',
+  channelNobody: 'Nobody has written here yet.',
   channelVia: 'via {channel}',
   channelClosed: 'This channel is closed. It can be read here, but not written to.',
   footerShortcuts: 'Shift-Enter for a new line · Esc interrupts',
@@ -342,6 +356,8 @@ const en = {
   // a settings screen, a terminal, and no way at all to hand it one.
   doorSection: 'Messaging',
   doorSectionHint: 'The doors the agent can hear on, and be answered on. Every one of them is shut until it is opened here, and a door with an empty allowlist answers nobody.',
+  doorSectionShow: 'Show',
+  doorSectionHide: 'Hide',
   doorOpen: 'Open this door',
   doorSavedIn: 'Written to {file}',
   doorKeyOnFile: 'on file ({hint}) — leave the field empty to keep it',
@@ -490,6 +506,8 @@ const en = {
   cliChannelsClosedTitle: 'Closed',
   cliChannelsSwitch: 'Switch with /channel <name>.',
   cliChannelsSet: 'Open a door with phone channels set <door>.<field> <value>.',
+  cliDoorsTitle: 'Doors',
+  cliPeopleSwitch: 'Open a conversation with /channel <door:person>.',
   cliChannelPanel: 'channels',
   channelViaLabel: 'via {channel}',
 } as const;
@@ -550,6 +568,10 @@ const ja: TranslationTable = {
   providerMistralDescription: 'チャットAPIでMistralのホストモデルを利用します。',
   providerGroqDescription: 'オープンモデルを超高速でホスト推論します。',
   providerXaiDescription: 'OpenAI互換APIでxAIのGrokモデルを利用します。',
+  providerOpenaiCompatDescription: 'OpenAI互換APIでホストされたモデルを利用します。ベースURLをアカウントに合わせて調整してください。',
+  providerCloudPlatformDescription: 'エンタープライズクラウドのモデルサービス。リージョンやプロジェクトに合わせてエンドポイントを指定します。',
+  providerMediaApiDescription: 'チャットではなく音声・動画・画像のAPIです。',
+  providerDataApiDescription: 'チャットではなく埋め込み・ベクトル・リランクのAPIです。',
   apiKey: 'APIキー',
   apiKeyRequiredShort: 'キーが必要',
   apiKeyNoneShort: 'キー不要',
@@ -585,6 +607,10 @@ const ja: TranslationTable = {
   modelReady: 'モデルの準備完了',
   searchModels: 'モデルを検索',
   noMatchingModels: '一致するモデルがありません',
+  searchProviders: 'プロバイダーを検索',
+  moreProvidersShow: 'その他のプロバイダー（{count}）',
+  moreProvidersHide: '折りたたむ',
+  providerNoMatches: '「{query}」に一致するプロバイダーはありません。',
   language: '言語',
   theme: 'テーマ',
   dark: 'ダーク',
@@ -602,6 +628,8 @@ const ja: TranslationTable = {
   messageCount: '{count}件のメッセージ',
   messageCountOne: '{count}件のメッセージ',
   peopleFilter: '人',
+  channelBar: '会話',
+  channelNobody: 'まだ誰も書き込んでいません。',
   channelVia: '{channel}経由',
   channelClosed: 'このチャネルは閉じられています。読むことはできますが、書き込むことはできません。',
   footerShortcuts: 'Shift-Enterで改行 · Escで中断',
@@ -793,6 +821,8 @@ const ja: TranslationTable = {
   // プロセスだけが読む。トークンはここ以外には入りません。
   doorSection: 'メッセージング',
   doorSectionHint: 'エージェントが聞けて、返せる口です。どれもここで開けるまで閉じており、許可リストが空の口は誰にも返しません。',
+  doorSectionShow: '表示',
+  doorSectionHide: '非表示',
   doorOpen: 'この口を開く',
   doorSavedIn: '{file} に保存されます',
   doorKeyOnFile: '保存済み（{hint}）— 空欄のままならそのまま使われます',
@@ -935,6 +965,8 @@ const ja: TranslationTable = {
   cliChannelsClosedTitle: '閉鎖済み',
   cliChannelsSwitch: '/channel <name> で切り替えられます。',
   cliChannelsSet: 'phone channels set <door>.<field> <value> で口を開けます。',
+  cliDoorsTitle: 'ドア',
+  cliPeopleSwitch: '/channel <door:person> で会話を開けます。',
   cliChannelPanel: 'チャネル',
   channelViaLabel: '{channel}経由',
 };
@@ -992,6 +1024,10 @@ const zh: TranslationTable = {
   providerMistralDescription: '通过聊天 API 使用 Mistral 托管模型。',
   providerGroqDescription: '对开放权重模型进行超高速托管推理。',
   providerXaiDescription: '通过 OpenAI 兼容 API 使用 xAI 的 Grok 模型。',
+  providerOpenaiCompatDescription: '通过 OpenAI 兼容的聊天 API 使用托管模型；请根据账户调整基础 URL。',
+  providerCloudPlatformDescription: '企业云模型服务；请将端点指向您的区域或项目。',
+  providerMediaApiDescription: '语音、视频或图像 API，而非聊天端点。',
+  providerDataApiDescription: '嵌入、向量或重排序 API，而非聊天端点。',
   apiKey: 'API 密钥',
   apiKeyRequiredShort: '需要密钥',
   apiKeyNoneShort: '无需密钥',
@@ -1027,6 +1063,10 @@ const zh: TranslationTable = {
   modelReady: '模型已就绪',
   searchModels: '搜索模型',
   noMatchingModels: '没有匹配的模型',
+  searchProviders: '搜索提供商',
+  moreProvidersShow: '更多提供商（{count}）',
+  moreProvidersHide: '收起',
+  providerNoMatches: '没有匹配“{query}”的提供商。',
   language: '语言',
   theme: '主题',
   dark: '深色',
@@ -1044,6 +1084,8 @@ const zh: TranslationTable = {
   messageCount: '{count} 条消息',
   messageCountOne: '{count} 条消息',
   peopleFilter: '联系人',
+  channelBar: '会话',
+  channelNobody: '还没有人在这里留言。',
   channelVia: '经由 {channel}',
   channelClosed: '此渠道已关闭。可以在这里查看，但无法再写入。',
   footerShortcuts: 'Shift-Enter 换行 · Esc 打断',
@@ -1234,6 +1276,8 @@ const zh: TranslationTable = {
   // 各个“门”。唯一写入智能体 home 的设置，只有智能体自己的进程会读；令牌只存在这里。
   doorSection: '消息',
   doorSectionHint: '智能体能听见、也能回复的入口。每个入口都要在这里打开才开启，而允许列表为空的入口不会回复任何人。',
+  doorSectionShow: '展开',
+  doorSectionHide: '收起',
   doorOpen: '打开这个入口',
   doorSavedIn: '写入 {file}',
   doorKeyOnFile: '已保存（{hint}）—— 字段留空即保持不变',
@@ -1376,6 +1420,8 @@ const zh: TranslationTable = {
   cliChannelsClosedTitle: '已关闭',
   cliChannelsSwitch: '用 /channel <name> 切换。',
   cliChannelsSet: '用 phone channels set <door>.<field> <value> 打开入口。',
+  cliDoorsTitle: '入口',
+  cliPeopleSwitch: '用 /channel <door:person> 打开对话。',
   cliChannelPanel: '渠道',
   channelViaLabel: '经由 {channel}',
 };
@@ -1402,8 +1448,54 @@ export function createTranslator(language: Language) {
   return (key: TranslationKey, values?: Record<string, string | number>) => translate(language, key, values);
 }
 
+/** The providers the quick-pick grid shows before the folded list unfolds. */
+const CLOUD_PLATFORM_PROVIDERS: ProviderId[] = [
+  'bedrock',
+  'azure',
+  'vertex',
+  'watsonx',
+  'oci',
+  'qianfan',
+  'tencent',
+  'pangu',
+  'volcengine',
+  'sensenova',
+];
+
+const MEDIA_API_PROVIDERS: ProviderId[] = [
+  'synthesia',
+  'elevenlabs',
+  'midjourney',
+  'leonardo',
+  'runwayml',
+  'pika',
+  'heygen',
+  'tavus',
+  'hume',
+  'assemblyai',
+  'deepgram',
+  'speechify',
+  'coqui',
+  'playht',
+  'murf',
+  'stability',
+  'fal',
+];
+
+const DATA_API_PROVIDERS: ProviderId[] = [
+  'pinecone',
+  'weaviate',
+  'qdrant',
+  'milvus',
+  'voyage',
+  'jina',
+  'mixedbread',
+  'nomic',
+  'coherererank',
+];
+
 export function providerDescriptionKey(provider: ProviderId): TranslationKey {
-  const keys: Record<ProviderId, TranslationKey> = {
+  const keys: Partial<Record<ProviderId, TranslationKey>> = {
     openai: 'providerOpenaiDescription',
     anthropic: 'providerAnthropicDescription',
     gemini: 'providerGeminiDescription',
@@ -1415,7 +1507,15 @@ export function providerDescriptionKey(provider: ProviderId): TranslationKey {
     ollama: 'providerOllamaDescription',
     lmstudio: 'providerLmstudioDescription',
   };
-  return Object.prototype.hasOwnProperty.call(keys, provider) ? keys[provider] : 'providerDescription';
+  const specific = keys[provider];
+  if (specific) return specific;
+  // The hosted providers beyond the quick picks share one sentence per family:
+  // a hundred providers would otherwise be a hundred translations saying nearly
+  // the same thing, and the family is the honest description of what they are.
+  if (CLOUD_PLATFORM_PROVIDERS.includes(provider)) return 'providerCloudPlatformDescription';
+  if (MEDIA_API_PROVIDERS.includes(provider)) return 'providerMediaApiDescription';
+  if (DATA_API_PROVIDERS.includes(provider)) return 'providerDataApiDescription';
+  return 'providerOpenaiCompatDescription';
 }
 
 export function languageLabel(language: Language): string {
