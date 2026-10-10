@@ -1281,3 +1281,158 @@ async def test_the_change_the_plan_made_is_what_gets_checked(db, config, tmp_pat
         assert "goal_done" in outcomes, outcomes
     finally:
         await db.execute("DELETE FROM intentions WHERE id = $1", intention_id)
+
+
+class _RaisingGateway(ScriptedGateway):
+    """A gateway whose calls raise once its scripted answers run out.
+
+    `fail_after` calls succeed from the script; every call after that raises, the
+    way the real gateway does when the provider is down and the retry budget is
+    spent. Without this the overnight failure cannot be written at all: a gateway
+    that returns `{}` models an empty answer, which the loop already treats as a
+    failed step, not the exception that used to end the cycle.
+    """
+
+    def __init__(self, texts: list[str], fail_after: int, error: Exception):
+        super().__init__(texts)
+        self.fail_after = fail_after
+        self.error = error
+        self.calls = 0
+
+    async def complete(self, request):
+        self.calls += 1
+        if self.calls > self.fail_after:
+            raise self.error
+        return await super().complete(request)
+
+
+async def test_a_failed_step_model_call_is_a_failed_step_not_a_dead_cycle(
+    db, config, tmp_path,
+):
+    """The step's model call failing is a failed step, not a failed cycle.
+
+    On the night this reproduces, the provider answered every step call with a
+    504 until the retry budget was spent, the exception unwound the cycle, and
+    the task sat on a half-finished plan for twelve hours: no attempt counted, no
+    reflection, no strategy switch, no park, and no word to anyone. Asserted here
+    in that order: the outcome is a failed step carrying the error, the failure
+    is counted on the step, and the walk ends parked with a reason instead of
+    looping on the identical failing call.
+    """
+    from ethos.gateway.providers.base import ProviderError
+
+    marker = "zz-stepcallfail"
+    memory = await make_memory(db, config)
+    await db.execute("DELETE FROM intentions WHERE title LIKE $1", f"%{marker}%")
+    gateway = _RaisingGateway([
+        _json({"understanding": "write the file", "unknowns": [], "difficulty": 0.4,
+               "consequential": False, "questions": []}),
+        _json({"approaches": [{"id": "a1", "summary": "write directly",
+                               "expected_value": 0.9, "estimated_cost_usd": 0.02,
+                               "reversible": True}]}),
+        _json({"steps": [{"id": "s1", "description": "write the deliverable file",
+                          "tool_hints": ["fs.write"], "success_check": {},
+                          "reversible": True}]}),
+    ], fail_after=3,
+        error=ProviderError("openai_compat", 504, "HTTP 504: ", retryable=True),
+    )
+    config.gsl.plan_backoff_s = 0.0
+    config.gsl.plan_backoff_max_s = 0.0
+    gsl = _solver(db, config, tmp_path, gateway, memory)
+    intention_id = await memory.create_intention(
+        title=f"{marker} step call fails", desired_end_state="a file exists",
+        kind="commitment", origin="commission", commissioned_by="owner",
+        budget_usd=2.0,
+    )
+    try:
+        # One phase per call: understand, then devise+plan, then the step. Two
+        # calls install the plan; the third is the step call that fails.
+        for _ in range(2):
+            intention = await memory.get_intention(intention_id)
+            await gsl.advance(intention, ws=None)
+
+        first = await memory.get_intention(intention_id)
+        result = await gsl.advance(first, ws=None)
+        assert result.outcome.value == "step_failed", result.outcome
+        assert any("failed before returning" in t for t in result.thoughts), result.thoughts
+
+        after = await memory.get_intention(intention_id)
+        assert after.status == "in_progress", after.status
+        attempts = (after.resume_state or {}).get("step_attempts") or {}
+        assert attempts.get("s1") == 1, after.resume_state
+
+        outcomes = []
+        for _ in range(config.gsl.plan_attempts_before_park + 4):
+            intention = await memory.get_intention(intention_id)
+            if intention.status in ("parked", "done", "failed", "cancelled"):
+                break
+            result = await gsl.advance(intention, ws=None)
+            outcomes.append(result.outcome.value)
+
+        final = await memory.get_intention(intention_id)
+        assert final.status == "parked", f"outcomes={outcomes}"
+        reason = (final.resume_state or {}).get("parked_reason") or final.closed_reason or ""
+        assert reason.strip(), "a parked goal must say why"
+    finally:
+        await db.execute("DELETE FROM intentions WHERE id = $1", intention_id)
+
+
+async def test_a_failed_understanding_call_backs_off_instead_of_killing_the_cycle(
+    db, config, tmp_path,
+):
+    """The understand call failing counts like the planning failure it is.
+
+    Understand is the first phase on the way to a plan, so its failures go
+    through the same counter, backoff and park as every other planning failure.
+    Asserted on the state machine rather than on the exception: one failure is
+    counted and backed off (the next cycle does not spend another model call on
+    it), and the walk ends parked with a reason naming the stage.
+    """
+    from ethos.gateway.providers.base import ProviderError
+
+    marker = "zz-understandfail"
+    memory = await make_memory(db, config)
+    await db.execute("DELETE FROM intentions WHERE title LIKE $1", f"%{marker}%")
+    gateway = _RaisingGateway([], fail_after=0,
+                              error=ProviderError("openai_compat", 0,
+                                                  "HTTP 0: transport: down",
+                                                  retryable=True),
+                              )
+    config.gsl.plan_backoff_s = 0.0
+    config.gsl.plan_backoff_max_s = 0.0
+    gsl = _solver(db, config, tmp_path, gateway, memory)
+    intention_id = await memory.create_intention(
+        title=f"{marker} understand fails", desired_end_state="a file exists",
+        kind="commitment", origin="commission", commissioned_by="owner",
+        budget_usd=2.0,
+    )
+    try:
+        first = await memory.get_intention(intention_id)
+        result = await gsl.advance(first, ws=None)
+        assert result.outcome.value == "step_failed", result.outcome
+        resume = (await memory.get_intention(intention_id)).resume_state or {}
+        assert resume.get("plan_attempts") == 1, resume
+        assert resume.get("plan_last_failure", {}).get("stage") == "understand", resume
+
+        before = len(gateway.requests)
+        again = await gsl.advance(await memory.get_intention(intention_id), ws=None)
+        assert again.outcome.value == "step_failed", again.outcome
+        assert len(gateway.requests) == before, (
+            "the backoff is honoured before the call, not after it: "
+            f"{len(gateway.requests) - before} further model call(s)"
+        )
+
+        outcomes = []
+        for _ in range(config.gsl.plan_attempts_before_park + 4):
+            intention = await memory.get_intention(intention_id)
+            if intention.status in ("parked", "done", "failed", "cancelled"):
+                break
+            result = await gsl.advance(intention, ws=None)
+            outcomes.append(result.outcome.value)
+
+        final = await memory.get_intention(intention_id)
+        assert final.status == "parked", f"outcomes={outcomes}"
+        reason = (final.resume_state or {}).get("parked_reason") or final.closed_reason or ""
+        assert "understand" in reason, reason
+    finally:
+        await db.execute("DELETE FROM intentions WHERE id = $1", intention_id)

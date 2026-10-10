@@ -300,8 +300,34 @@ class GeneralSolverLoop:
                                 thoughts=[f"parked: budget exhausted for {intention.title}"])
 
         if "understanding" not in resume:
+            # The backoff is honoured here exactly as the plan branch honours it:
+            # a failed understand is a planning failure (this branch is the first
+            # thing on the way to a plan), so it counts, backs off, and parks
+            # through the same bounded state machine rather than unwinding the
+            # cycle and retrying invisibly on the next one.
+            waiting = self._planning_waiting(resume)
+            if waiting > 0:
+                return SolverResult(
+                    outcome=SolverOutcome.step_failed,
+                    thoughts=[
+                        f"understanding is backing off; the last attempt failed and the "
+                        f"next one is due in about {round(waiting)}s",
+                        f"last failure: {(resume.get(PLAN_LAST_FAILURE) or {}).get('reason', 'unknown')}",
+                    ],
+                    cost_usd=cost,
+                )
             memories = await self._recall(intention.title, k=10)
-            data, c = await self._call(understand, intention, memories)
+            try:
+                data, c = await self._call(understand, intention, memories)
+            except Exception as exc:
+                kind = "no_model" if _is_nothing_could_serve(exc) else "unusable"
+                failed = await self._planning_failed(
+                    intention, resume,
+                    PlanUnavailable(f"understanding request failed ({kind}): {exc}", kind=kind),
+                    stage="understand",
+                )
+                failed.cost_usd += cost
+                return failed
             cost += c
             resume.update(data)
             await self._save_resume(intention, resume)
@@ -669,7 +695,29 @@ class GeneralSolverLoop:
             ],
             max_tokens=self.config.gsl.step_tokens,
         )
-        data, cost, truncated = await self._complete_with_cost(request)
+        try:
+            data, cost, truncated = await self._complete_with_cost(request)
+        except Exception as exc:
+            # A tool that raises is recorded as a tool that failed (below); the
+            # model call this step is decided by raised the same way and took the
+            # whole cycle with it — out of `_execute_step`, `advance`, `act` and
+            # `_cycle`, so nothing was counted, nothing was reflected on, nothing
+            # was said, and the identical failing call was retried on every cycle
+            # after that for as long as the provider stayed down. Returned as a
+            # failed step instead: the error becomes the thought the next cycle
+            # reads, and the step's own failure machinery does what it does for
+            # any other unsuccessful action.
+            logger.exception("gsl.step_call_failed", step=step.id)
+            return SolverResult(
+                outcome=SolverOutcome.step_failed,
+                thoughts=[
+                    f"the model call for this step failed before returning: "
+                    f"{type(exc).__name__}: {exc}"[:300],
+                ],
+                actions=[],
+                plan=plan,
+                cost_usd=cost,
+            )
 
         if truncated:
             # Being cut off is the reason this step produced nothing, and it is
