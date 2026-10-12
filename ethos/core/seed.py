@@ -39,7 +39,7 @@ async def seed(config: EthosConfig, db: Database) -> dict[str, Any]:
             "VALUES (gen_random_uuid(), NULL, 'task', $1, $2, '[]'::jsonb, '{}'::jsonb, 'self', $3, 0.6, now(), now()) "
             "RETURNING id::text",
             "Bootstrap: verify my machine and introduce myself",
-            "All my services are healthy, my memory is reachable, and the owner knows I am awake.",
+            "All my services are healthy, my memory is reachable, and I know what machine I am on.",
             IntentionStatus.active.value,
         )
         created.append(first or "")

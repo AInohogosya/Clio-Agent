@@ -1,0 +1,22 @@
+# The base model: the one model this agent thinks with, and the one its
+# sub-agents inherit. The router pins this entry in front of the catalogue in
+# `models.yaml`, so every tier is served here first and the other providers
+# become failover capacity.
+#
+# This file is the deployment's own default. A model picked at runtime —
+# `~/.ethos/base_model.yaml`, written by the settings interface — always wins
+# over it.
+#
+# The credential is read from the environment variable named below, exactly as
+# a `models.yaml` entry names one.
+provider: openai_compat
+model: z-ai/glm-5.3
+base_url: "https://integrate.api.nvidia.com/v1"
+api_key_env: NVIDIA_API_KEY
+vendor: nvidia
+quality: 1.0
+latency_s: 5.0
+rpm: 60
+tpm: 400000
+supports_thinking: true
+supports_tools: true

@@ -52,6 +52,7 @@ class _Intention:
     id = "00000000-0000-0000-0000-0000000000aa"
     title = "add the function"
     commissioned_by = "owner"
+    origin = "commission"
     desired_end_state = "the function exists and the suite is green"
     budget_usd = None
     spent_usd = 0.0

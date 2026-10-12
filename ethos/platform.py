@@ -1,6 +1,6 @@
 """What this host can actually do, asked in one place so nothing has to guess.
 
-Ethos is written in a style that reads as platform-neutral, and for a long time
+Clio Agent 3 Beta is written in a style that reads as platform-neutral, and for a long time
 that was true only in appearance: a `pty` import at the top of a module, an
 `os.kill(pid, 0)`, a `start_new_session=True` that CPython accepts on Windows and
 then ignores. Each of those is a line that means something on macOS and Linux and

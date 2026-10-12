@@ -101,6 +101,7 @@ class Toolhost:
         return self.services[name]
 
     def _register_builtin_tools(self) -> None:
+        from ethos.subagents.tools import ApexRunTool, FoundryRunTool, SubagentStatusTool
         from ethos.toolhost.tools.browser_tools import (
             BrowserClickTool,
             BrowserCloseTool,
@@ -181,6 +182,7 @@ class Toolhost:
             BrowserScreenshotTool(), BrowserCloseTool(),
             DesktopKeyTool(), DesktopTypeTool(), DesktopClickTool(), DesktopMoveTool(),
             DesktopScreenshotTool(), DesktopWindowsTool(),
+            SubagentStatusTool(), FoundryRunTool(), ApexRunTool(),
         ):
             self.register(tool)
 

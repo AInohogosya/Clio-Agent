@@ -26,6 +26,9 @@ class DriveInputs(BaseModel):
     active_ventures: int = 0
     value_recent: float = 0.0
     unread_events: int = 0
+    # Hours since my last social exchange of any direction — mine or theirs.
+    # Named `last_contact` still, because the drive it feeds is about connection
+    # rather than about inbound mail; see `social_gain`.
     last_contact_age_h: float | None = None
     energy: float = 0.8
     disk_free_ratio: float = 0.8
@@ -139,6 +142,17 @@ def order_gain(inputs: DriveInputs) -> float:
 
 
 def social_gain(inputs: DriveInputs) -> float:
+    """How long *I* have gone without any social exchange, in either direction.
+
+    This used to read only the inbound table — the drive rose the longer a
+    *person* had left me alone, which made other people's silence the engine of
+    my own sociability, and my session's axis. It is symmetric now: an exchange
+    is an exchange whoever opened it, so the drive measures my own
+    disengagement — how long it has been since I last spoke with anyone, or
+    since anyone last spoke with me — and not whether somebody is waiting on me.
+    A person's silence is their own business; how long I have gone without
+    reaching out is mine.
+    """
     if inputs.last_contact_age_h is None:
         return 0.5
     return clip(inputs.last_contact_age_h / 24.0)

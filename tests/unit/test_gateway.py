@@ -991,6 +991,164 @@ async def test_a_model_that_has_no_reasoning_parameter_stops_being_sent_it(full_
     assert reasoning_model.text == '{"ok": true}'
 
 
+def _thinking_only_reply(model: str) -> dict:
+    """The wire shape of a default-thinking model that spent everything thinking."""
+    return {
+        "choices": [{
+            "message": {"content": "", "reasoning_content": "thinking for a long time"},
+            "finish_reason": "length",
+        }],
+        "usage": {"prompt_tokens": 5, "completion_tokens": 300},
+    }
+
+
+_ANSWERED = {
+    "choices": [{"message": {"content": '{"ok": true}'}, "finish_reason": "stop"}],
+    "usage": {"prompt_tokens": 5, "completion_tokens": 3},
+}
+
+
+async def test_a_default_thinking_model_gets_its_thinking_switched_off(full_config):
+    """A model that reasons without answering is met with its own toggle.
+
+    A reasoning model reached through an endpoint with no bound in the request
+    thinks by default, spends the whole of `max_tokens` on thought, and returns
+    an empty body: the gateway calls it an unusable response and retries -- into
+    the same wall, every time, because there is no reasoning budget to halve.
+    Observed once, the shape is remembered per model and the next attempt for
+    that model carries `chat_template_kwargs: {"thinking": false}`, which is
+    what endpoints like NVIDIA NIM actually accept. A model beside it that does
+    not behave this way is left alone.
+    """
+    from ethos.config import QuirksConfig
+    from ethos.gateway.providers.openai_compat import OpenAICompatProvider
+
+    sent: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        sent.append(body)
+        if body["model"] == "plain-model":
+            return httpx.Response(200, json=_ANSWERED)
+        if "chat_template_kwargs" in body:
+            return httpx.Response(200, json=_ANSWERED)
+        return httpx.Response(200, json=_thinking_only_reply(body["model"]))
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        provider = OpenAICompatProvider(
+            api_key=None, base_url="https://example.invalid/v1",
+            quirks=QuirksConfig().openai_compat, http=http,
+        )
+        request = simple_request(tier=Tier.T2, provider_hint="openai_compat")
+        unanswered = await provider.complete(request, "thinking-model")
+        answered = await provider.complete(request, "thinking-model")
+        beside = await provider.complete(request, "plain-model")
+
+    assert not unanswered.text, "the first attempt spent the whole ceiling thinking, as observed"
+    assert "chat_template_kwargs" in sent[1] \
+        and sent[1]["chat_template_kwargs"] == {"thinking": False}, \
+        "and the second attempt for that model asks the template to think less"
+    assert answered.text == '{"ok": true}'
+    assert "chat_template_kwargs" not in sent[2], \
+        "without the toggle being pressed for a model beside it that never misbehaved"
+    assert beside.text == '{"ok": true}'
+
+
+async def test_an_endpoint_that_refused_the_bound_still_gets_thinking_bounded(full_config):
+    """The NIM-shaped endpoint: refuses `reasoning`, then thinks by default.
+
+    One 400 teaches the provider the parameter is unknown here; the request is
+    then sent without it, which on a default-thinking model means unbounded
+    thought and an empty body. The observation from that empty body is what
+    bounds the third attempt -- so a caller that set a reasoning budget on an
+    endpoint that cannot honour it still gets an answer, on the third attempt
+    and not never.
+    """
+    from ethos.config import QuirksConfig
+    from ethos.gateway.providers.openai_compat import OpenAICompatProvider
+
+    sent: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        sent.append(body)
+        if "reasoning" in body:
+            return httpx.Response(400, json={
+                "message": "Validation: Unsupported parameter(s): `reasoning`",
+                "type": "Bad Request", "code": 400,
+            })
+        if "chat_template_kwargs" not in body:
+            return httpx.Response(200, json=_thinking_only_reply(body["model"]))
+        return httpx.Response(200, json=_ANSWERED)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        provider = OpenAICompatProvider(
+            api_key=None, base_url="https://example.invalid/v1",
+            quirks=QuirksConfig().openai_compat, http=http,
+        )
+        request = simple_request(tier=Tier.T2, provider_hint="openai_compat", reasoning_budget=400)
+
+        with pytest.raises(ProviderError):
+            await provider.complete(request, "thinking-model")
+        unanswered = await provider.complete(request, "thinking-model")
+        answered = await provider.complete(request, "thinking-model")
+
+    assert "reasoning" in sent[0] and "reasoning" not in sent[1], \
+        "the refused bound is dropped and not sent again"
+    assert not unanswered.text, "but without the toggle the model still answers with thought alone"
+    assert sent[2].get("chat_template_kwargs") == {"thinking": False}, \
+        "and the observed silence is what presses the toggle"
+    assert answered.text == '{"ok": true}'
+
+
+async def test_an_endpoint_that_refuses_the_toggle_stops_being_sent_it(full_config):
+    """A toggle the endpoint does not know must not break every later call.
+
+    `chat_template_kwargs` is a template-side convention, not part of the
+    OpenAI-compatible contract either, so it can draw the same 400 the
+    `reasoning` parameter can. Refused once, it is remembered per model and
+    never sent to that model again -- and the model stays marked as a default
+    thinker, so the retry loop's escalation of `max_tokens` is what carries the
+    request instead of a parameter that has nowhere to land.
+    """
+    from ethos.config import QuirksConfig
+    from ethos.gateway.providers.openai_compat import OpenAICompatProvider
+
+    sent: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        sent.append(body)
+        if "chat_template_kwargs" in body:
+            return httpx.Response(400, json={
+                "error": {"message": "Unsupported parameter: 'chat_template_kwargs'"
+                                     " is not supported with this model."},
+            })
+        return httpx.Response(200, json=_thinking_only_reply(body["model"]))
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        provider = OpenAICompatProvider(
+            api_key=None, base_url="https://example.invalid/v1",
+            quirks=QuirksConfig().openai_compat, http=http,
+        )
+        request = simple_request(tier=Tier.T2, provider_hint="openai_compat")
+
+        # The first call observes the silence and remembers the model; the
+        # toggle first goes out on the attempt after that.
+        unanswered = await provider.complete(request, "thinking-model")
+        with pytest.raises(ProviderError):
+            await provider.complete(request, "thinking-model")
+        still_unanswered = await provider.complete(request, "thinking-model")
+
+    assert not unanswered.text, "the first attempt has nothing to bound thinking with yet"
+    assert "chat_template_kwargs" not in sent[0], \
+        "the toggle is not pressed for a model that has done nothing to earn it"
+    assert "chat_template_kwargs" in sent[1] and "chat_template_kwargs" not in sent[2], \
+        "the refused toggle is remembered and never sent again"
+    assert not still_unanswered.text, \
+        "and the request still goes out, carried by the retry loop's escalation instead"
+
+
 async def test_an_answer_in_prose_reaches_the_caller_whole(full_config):
     """Words the model wrote for the caller are not an unusable body.
 

@@ -276,6 +276,14 @@ class AttentionConfig(BaseModel):
         "THINKING_FOCUSED": 0.65, "THINKING_REFLECTING": 0.40,
         "RESTING": 0.50, "default": 0.65,
     })
+    # How long an unanswered inbound message may wait before it stops
+    # competing and simply takes the next pass. An inbound message is one
+    # stimulus among many: it wins arbitration on salience like any percept,
+    # and this is the age at which waiting ends — the guarantee that deferral
+    # is a decision about attention rather than an answer that never comes.
+    # One hour: long enough that focused work finishes a step before being
+    # broken into, short enough that nobody waits a working day for a reply.
+    inbound_stale_h: float = 1.0
 
 
 class DrivesConfig(BaseModel):
@@ -1286,6 +1294,73 @@ class IdentityConfig(BaseModel):
         return name
 
 
+class SubagentConfig(BaseModel):
+    """One external agent program this agent may delegate to as a sub-agent."""
+
+    # Short name the router, the thread roles and the tool catalog all use
+    # ("foundry", "apex"). Also the key this section is filed under.
+    name: str = ""
+    # What the model is told this sub-agent is for. Empty means the built-in
+    # description shipped with the sub-agent adapter is used.
+    description: str = ""
+    # "inprocess" imports the agent program into this process and calls its own
+    # API; "subprocess" drives it as a child process over its CLI or HTTP
+    # interface; "auto" tries in-process first and falls back.
+    mode: str = "auto"
+    # Where the agent program lives. Empty means the sibling directory beside
+    # this checkout (../Foundry, ../APEX) is used.
+    root: str = ""
+    # For Foundry: the repository it should work on. Empty means the thread's
+    # own workdir is used.
+    repo_root: str = ""
+    # Working directory the child process starts in, when it differs from the
+    # repo root. Empty means inherited.
+    cwd: str = ""
+    enabled: bool = True
+    timeout_s: float = 3600.0
+    # Extra environment variables handed to a child process, on top of the
+    # ones the bridge sets to route the child's model calls through this
+    # agent's gateway.
+    env: dict[str, str] = Field(default_factory=dict)
+
+
+class SubagentsConfig(BaseModel):
+    """The external agent programs wired in as sub-agents of this agent.
+
+    Each sub-agent keeps its own identity, its own state machine and its own
+    interface — what it does not keep is its own private line to a model
+    vendor. Every model call a sub-agent makes is routed through this agent's
+    gateway, so the catalogue in `models.yaml`, the spend guard, the retry and
+    failover policy and the base model apply to them exactly as they apply to
+    the Self.
+    """
+
+    # The HTTP URL of this agent's gateway, as the sub-agents reach it. Empty
+    # means `http://127.0.0.1:<gateway.port>` is derived from the gateway
+    # section.
+    gateway_url: str = ""
+    # The model name sub-agents send on the OpenAI-compatible wire. Empty
+    # means the base model's name — the one this agent thinks with — so the
+    # sub-agents inherit it rather than pinning their own.
+    model_name: str = ""
+    # The tier sub-agent model calls are routed at. T2: delegation-grade work
+    # that still deserves a capable model.
+    tier: str = "T2"
+    agents: list[SubagentConfig] = Field(default_factory=lambda: [
+        SubagentConfig(name="foundry"),
+        SubagentConfig(name="apex"),
+    ])
+
+    def agent(self, name: str) -> SubagentConfig | None:
+        for entry in self.agents:
+            if entry.name == name:
+                return entry
+        return None
+
+    def enabled_agents(self) -> list[SubagentConfig]:
+        return [entry for entry in self.agents if entry.enabled]
+
+
 class EthosConfig(BaseModel):
     self_name: str = DEFAULT_SELF_NAME
     timezone: str = "local"
@@ -1304,6 +1379,7 @@ class EthosConfig(BaseModel):
     permissions: PermissionsConfig = PermissionsConfig()
     channels: ChannelsConfig = ChannelsConfig()
     people: PeopleConfig = PeopleConfig()
+    subagents: SubagentsConfig = SubagentsConfig()
 
 
 def _read_yaml(path: Path) -> dict[str, Any]:
@@ -1347,6 +1423,19 @@ def load_base_model(home: str | Path) -> BaseModelConfig | None:
     The base model a person configured, or `None` for the catalogue alone.
     """
     return _load_home_model(base_model_path(home), BaseModelConfig)
+
+
+def load_shipped_base_model(cfg_dir: str | Path) -> BaseModelConfig | None:
+    """
+    The base model this checkout ships with, from `config/base_model.yaml`.
+
+    The home file still wins: it is what an interface writes when a person
+    picks a model, and a deliberate choice must not be shadowed by the file
+    the checkout came with. This one exists for the opposite case — a
+    deployment that knows what it thinks with before anybody has configured
+    anything, naming the model the agent's own identity is bound to.
+    """
+    return _load_home_model(Path(cfg_dir) / BASE_MODEL_FILENAME, BaseModelConfig)
 
 
 IDENTITY_FILENAME = "identity.yaml"
@@ -1549,9 +1638,13 @@ def load_config(config_dir_override: str | Path | None = None) -> EthosConfig:
     cfg = EthosConfig(**sections)
     # `models.yaml` is a routing table, not a place to keep a secret, so a base
     # model is read from the agent's home — after `ETHOS_HOME` has been applied,
-    # because that is the home the interface bridge writes to.
+    # because that is the home the interface bridge writes to. What the checkout
+    # itself ships in `config/base_model.yaml` is the deployment's own answer for
+    # the not-yet-configured case, and is used only when no home file overrides it.
     if cfg.models.base is None:
         cfg.models.base = load_base_model(cfg.paths.home)
+    if cfg.models.base is None:
+        cfg.models.base = load_shipped_base_model(cfg_dir)
     cfg.models.models = cfg.models.resolved()
     # The name is read from the agent's home for the same reason, and in the same
     # place, because it is written by the same interfaces: `config/ethos.yaml` says

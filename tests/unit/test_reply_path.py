@@ -167,20 +167,16 @@ def test_a_digest_flush_sends_what_the_agent_wrote_and_adds_nothing() -> None:
     assert "•" not in delivered
 
 
-def test_one_reply_leaves_as_one_message() -> None:
-    """A turn is one message, and it used not to be.
+def test_reply_texts_leave_as_one_message_each() -> None:
+    """A reply written as several texts is sent as several messages.
 
-    A deliberation writes its reply as a list of short texts, and every entry was
-    handed to the outbound pipeline on its own. One question therefore went out as
-    two or three deliveries: two or three rows in the transcript, two or three
-    messages on the channel, for a reply the agent had chosen once. Nothing
-    downstream can fold them back together — a surface's wait matches the *first*
-    outbound message after the question — so the extra texts arrived as messages
-    answering nothing, and from the other end of the conversation the agent looked
-    like it was sending the same answer over and over.
-
-    So the texts are joined into the single message the turn decided on: the whole
-    reply, delivered once, naming the message it answers.
+    A deliberation writes its reply as a list of short texts, and every entry is
+    handed to the outbound pipeline on its own: an answer and the thought that
+    follows it arrive as the two messages they were written as, the way a person
+    sends them. What keeps this from being the old bug — extra texts arriving as
+    messages answering nothing — is the reference: every text is sent carrying
+    `in_reply_to`, so each one names the question it answers and no delivery is
+    an answer to nothing.
     """
     config = make_config(Path("/tmp/ethos-test-one-message"))
     config.paths.ensure()
@@ -215,12 +211,14 @@ def test_one_reply_leaves_as_one_message() -> None:
         "tier_used": "T2",
     }))
 
-    assert len(out.sent) == 1, "one turn is one message, however the reply was written"
-    reply = out.sent[0]
-    assert reply["text"] == (
-        "You were right about the tempo.\n\nI took the second pass tonight."
-    ), "nothing the agent chose to say is dropped on the way out"
-    assert reply["in_reply_to"] == message.id, "the message names the question it answers"
+    assert len(out.sent) == 2, "each text the agent wrote is its own message"
+    first, second = out.sent
+    assert first["text"] == "You were right about the tempo."
+    assert second["text"] == "I took the second pass tonight."
+    assert first["in_reply_to"] == message.id, "the first text names the question it answers"
+    assert second["in_reply_to"] == message.id, (
+        "the second text answers the same question, not nothing"
+    )
     assert social.handled, "the question is finished with"
     assert len(bus.of(EventKind.MESSAGE_HANDLED)) == 0, "a reply that was sent is not a decline"
 
@@ -228,11 +226,11 @@ def test_one_reply_leaves_as_one_message() -> None:
 def test_a_reply_of_nothing_but_whitespace_is_not_sent() -> None:
     """An empty answer is nothing, on this path as much as on the review's.
 
-    The reply texts are joined rather than sent one by one, and a list of blank
-    strings joins to an empty message. Sending that would resolve somebody's wait
-    with a message with nothing in it, which is the one thing this pipeline
-    refuses to do — so the reply is treated as the silence it is: nothing goes out,
-    and the question is declared.
+    The reply texts are sent one by one, and a list of blank strings is a list of
+    nothing to send. Sending that would resolve somebody's wait with a message
+    with nothing in it, which is the one thing this pipeline refuses to do — so
+    the reply is treated as the silence it is: nothing goes out, and the question
+    is declared.
     """
     config = make_config(Path("/tmp/ethos-test-blank-reply"))
     config.paths.ensure()

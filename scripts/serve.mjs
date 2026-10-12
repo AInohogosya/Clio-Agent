@@ -17,7 +17,8 @@
  *
  *   1. the Node side:  the bridge's dependencies, and the interface's build
  *   2. the virtualenv: created, and the agent installed, so `ethos` exists at all
- *   3. the last run:   a session already in existence is ended — the supervisor,
+ *   3. the last run:   every session already in existence is ended — the supervisor,
+ *                      then anything of this checkout still listening on any port,
  *                      then whatever holds the port — so that what follows is a
  *                      new session and not an old one reported as a new one
  *   4. the agent:      `ethos up` — Postgres, migrations, seeds, supervisor, wait
@@ -443,6 +444,69 @@ async function freePort(port, { keepServedPage = false } = {}) {
   }
 }
 
+/** Whether a pid is still alive, asked of the kernel rather than of a ps listing. */
+function alive(pid) {
+  return spawnSync("kill", ["-0", String(pid)]).status === 0;
+}
+
+/**
+ * A pid is ended: a graceful signal first, a wait for it to be gone, then a kill.
+ *
+ * The same grace-and-force shape `freePort` uses, lifted out for the sweep below:
+ * the grace is for a process that closes its sockets on the way out, and the kill
+ * is for the one that does not.
+ */
+async function endPid(pid, why) {
+  say(`-- stopping ${describePid(pid)}: ${why}`);
+  run(["kill", String(pid)], { optional: true });
+  for (let waited = 0; waited < 6000 && alive(pid); waited += 250) {
+    await sleep(250);
+  }
+  if (alive(pid)) {
+    run(["kill", "-9", String(pid)], { optional: true });
+    for (let waited = 0; waited < 4000 && alive(pid); waited += 250) {
+      await sleep(250);
+    }
+  }
+}
+
+/**
+ * Every process of this checkout still listening on any loopback port, or nothing.
+ *
+ * The port the bridge binds is one thing, but a session is more than it: a bridge
+ * left on another port by an earlier `ETHOS_WEB_PORT=8721 npm start`, or an agent
+ * started by hand, answers on a port this file never resolves and so would survive
+ * the port check untouched — two sessions where the person who typed `npm start`
+ * asked for one. Every listening pid is asked what it is, and the ones that are
+ * ours are the ones the sweep stops.
+ */
+function ourListeningPids() {
+  const found = spawnSync("lsof", ["-tiTCP", "-sTCP:LISTEN"], { encoding: "utf8" });
+  if (found.error) return [];
+  return (found.stdout ?? "")
+    .split("\n")
+    .map((line) => Number(line.trim()))
+    .filter((pid) => Number.isInteger(pid) && pid > 1 && isOurs(pid));
+}
+
+/**
+ * Every session of this checkout is ended before the new one is started.
+ *
+ * `stopRunningAgent` asks the supervisor first, because it knows its children and
+ * closes each of them cleanly. What it cannot reach is a session that is not
+ * *the* session — a bridge on a port chosen by an earlier environment, an agent
+ * started outside the supervisor — and those are found by listening socket and
+ * ended by hand. What remains is at most the holder of this run's own port,
+ * which `freePort` deals with as it always has.
+ */
+async function clearEverySession(port) {
+  stopRunningAgent();
+  for (const pid of ourListeningPids()) {
+    await endPid(pid, "it belongs to a session this run is replacing");
+  }
+  await freePort(port);
+}
+
 // --------------------------------------------------------- 4 & 5. agent, then page
 
 /** The bridge, in this terminal, for as long as it runs. */
@@ -467,15 +531,18 @@ preparePython();
 
 const port = resolvePort();
 
-// Step 3. A session already in existence is ended first, so that what steps 4 and 5
-// start is a new one. The agent is stopped only when this run is going to start an
-// agent: `--interface` asks for the page and nothing else, and taking somebody's
-// agent down for that would be a worse surprise than the stale page it replaces.
-// The port is emptied either way, because the page this run serves has to be this
-// run's — `--keep` excepts a page that is already there, and still clears a holder
-// that cannot serve one.
-if (!keep && !interfaceOnly) stopRunningAgent();
-await freePort(port, { keepServedPage: keep });
+// Step 3. Every session already in existence is ended first, so that what steps 4
+// and 5 start is a new one. The agent is stopped only when this run is going to
+// start an agent: `--interface` asks for the page and nothing else, and taking
+// somebody's agent down for that would be a worse surprise than the stale page it
+// replaces. The port is emptied either way, because the page this run serves has
+// to be this run's — `--keep` excepts a page that is already there, and still
+// clears a holder that cannot serve one.
+if (!keep && !interfaceOnly) {
+  await clearEverySession(port);
+} else {
+  await freePort(port, { keepServedPage: keep });
+}
 
 if (interfaceOnly) {
   // `--keep` together with a page already being served has nothing left to serve:

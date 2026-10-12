@@ -395,21 +395,22 @@ def test_a_rewrite_of_its_own_description_cannot_cost_it_that_either():
 # ------------------------------------------------------- knowing how to spend one
 
 
-def test_the_agent_is_told_commitments_come_before_its_own_ideas():
+def test_the_agent_is_told_work_is_weighted_not_ranked_by_who_asked():
     """
     The order the drives actually resolve in, stated where the decision is made.
 
-    The drive weights put commitment well above curiosity and the attention scores put
-    a message from the owner above a message from a stranger, so the machinery already
-    does this — but it does it in the subsystem that picks a focus, and what the agent
-    reads is the resulting list with no indication of which of those is a promise
-    somebody is waiting on. Without the rule stated, an equally well-formed list reads
-    as a set of options of equal weight and gets treated like one.
+    This used to assert the opposite axiom — "commitments come first: what
+    somebody asked for outranks what I thought of myself". That made a person's
+    claim on the agent structurally superior to the agent's own judgement, which
+    is not how the machinery resolves at all: one list, one arbitration, urgency
+    and deadline deciding. The kernel now states that, and this test guards the
+    statement — the old one is asserted against so a regression cannot quietly
+    re-center the agent on whoever wrote last.
     """
     lowered = " ".join(build_identity_kernel("Aria").split()).lower()
     assert "## how to spend a pass" in lowered
-    assert "commitments come first" in lowered
-    assert "outranks what i thought of myself" in lowered
+    assert "work is work, whoever thought of it" in lowered
+    assert "outranks what i thought of myself" not in lowered
 
 
 def test_it_is_told_an_idle_hour_needs_no_work_invented_to_fill_it():

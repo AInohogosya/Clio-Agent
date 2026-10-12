@@ -1048,6 +1048,7 @@ async def test_an_empty_step_list_is_never_turned_into_a_plan(label, text, finis
     class _Intention:
         title = "write the file"
         commissioned_by = None
+        origin = "self"
         desired_end_state = "a file exists"
 
     cfg = make_config(tmp_path / f"no-fake-plan-{label.replace(' ', '-')}")
@@ -1078,6 +1079,7 @@ async def test_a_plan_the_model_returned_is_still_a_plan(tmp_path):
     class _Intention:
         title = "write the file"
         commissioned_by = None
+        origin = "self"
         desired_end_state = "a file exists"
 
     gateway = ScriptedGateway([_json({"steps": [

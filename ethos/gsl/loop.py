@@ -23,10 +23,10 @@ from ethos.gsl.verification import VerificationLadder
 from ethos.observability.logger import get_logger
 from ethos.paths import user_home
 from ethos.prompts import (
-    COMMISSIONED_ALREADY,
     EDIT_EXISTING_FILES,
     REFLECT_PROMPT,
     STEP_PROMPT,
+    commissioned_note,
     dumps,
 )
 from ethos.schemas.context import TurnKind
@@ -578,7 +578,7 @@ class GeneralSolverLoop:
                 ModelMessage(role=Role.system, content=situation),
                 ModelMessage(role=Role.system, content=STEP_PROMPT.format(
                     name=self.config.self_name,
-                    commissioned=COMMISSIONED_ALREADY,
+                    commissioned=commissioned_note(intention.origin),
                     editing=EDIT_EXISTING_FILES,
                     title=intention.title,
                     step_id=step.id,

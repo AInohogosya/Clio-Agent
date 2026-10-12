@@ -826,8 +826,11 @@ class GatewayService:
 
 
 def create_gateway_app(service: GatewayService):
-    from fastapi import FastAPI, HTTPException
+    from fastapi import FastAPI, HTTPException, Request
+    from fastapi.responses import JSONResponse, StreamingResponse
     from prometheus_client import make_asgi_app
+
+    from ethos.gateway import compat
 
     app = FastAPI(title=f"{PRODUCT_NAME} gateway", version=__version__)
 
@@ -839,6 +842,57 @@ def create_gateway_app(service: GatewayService):
             raise HTTPException(status_code=402, detail=str(exc)) from exc
         except Exception as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    # ---- OpenAI-compatible wire shim -----------------------------------------
+    # The native `/v1/complete` shape is this agent's own. The routes below are
+    # the shape Foundry and APEX (and any OpenAI-speaking client) already speak,
+    # so a sub-agent's single configured endpoint is backed by this deployment's
+    # whole catalogue: routing, spend guard, retries, failover, base model.
+    known_models = frozenset(entry.model for entry in service.config.models.models)
+
+    async def chat_completions(request):
+        # The signature carries no annotation on purpose: this module imports
+        # under `from __future__ import annotations`, which resolves a
+        # signature's names in module globals — where a locally imported
+        # `Request` does not exist, and FastAPI would read the parameter as a
+        # query field. The real annotation is attached before registration.
+        body = await request.json()
+        requested_model = str(body.get("model") or "")
+        model_request = compat.openai_chat_to_model_request(
+            body, known_models=known_models, purpose="compat.chat",
+        )
+        wants_stream = bool(body.get("stream"))
+
+        async def run() -> NormalizedResponse:
+            try:
+                return await service.complete(model_request)
+            except BudgetExceededError as exc:
+                raise HTTPException(status_code=402, detail=str(exc)) from exc
+            except Exception as exc:
+                raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+        if not wants_stream:
+            resp = await run()
+            return JSONResponse(compat.normalized_to_chat_response(resp, requested_model))
+
+        # Streaming: the OpenAI SSE shape. The completion is computed in full
+        # first — the point of the stream for these clients is per-chunk
+        # liveness past read timeouts on long reasoning, not token pipelining.
+        resp = await run()
+        chunks = compat.sse_bytes(compat.chat_stream_chunks(resp, requested_model))
+
+        async def gen():
+            for line in chunks:
+                yield line
+
+        return StreamingResponse(gen(), media_type="text/event-stream")
+
+    chat_completions.__annotations__["request"] = Request
+    app.post("/v1/chat/completions")(chat_completions)
+
+    @app.get("/v1/models")
+    async def list_models() -> dict[str, Any]:
+        return compat.catalogue_to_models_payload(service.config.models.models)
 
     @app.post("/v1/embed")
     async def embed(body: dict[str, Any]) -> dict[str, Any]:

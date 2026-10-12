@@ -63,3 +63,35 @@ threads:
   max_depth: 2
   mode: inprocess
 
+# External agent programs wired in as sub-agents. Each one keeps its own
+# identity and interface; every model call they make is routed through this
+# agent's gateway, so `models.yaml`, the spend guard, retries and the base
+# model above apply to them exactly as they apply to the Self.
+subagents:
+  # The gateway URL sub-agents reach this agent's model routing on. Empty
+  # derives it from the `gateway` section above.
+  gateway_url: ""
+  # The model name sub-agents send on the OpenAI-compatible wire. Empty means
+  # the base model's name, so they inherit it.
+  model_name: ""
+  tier: T2
+  agents:
+    - name: foundry
+      # Deterministic, gate-verified software factory. Takes a product
+      # objective in plain text, designs and plans it through an LLM, then
+      # runs every task through a fixed state machine with sandboxed gates,
+      # merge trains and signed artifacts.
+      mode: auto
+      root: ""
+      # The repository Foundry works on. Empty means the thread's own
+      # isolated worktree.
+      repo_root: ""
+      timeout_s: 3600.0
+    - name: apex
+      # Revision-aware hybrid desktop controller. Takes a natural-language
+      # desktop goal, observes the real desktop, proposes one fenced step at
+      # a time, executes and machine-verifies it until the goal is done.
+      mode: auto
+      root: ""
+      timeout_s: 900.0
+

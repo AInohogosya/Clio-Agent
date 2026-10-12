@@ -8,7 +8,7 @@ from typing import Any
 from uuid import UUID
 
 from ethos.config import EthosConfig
-from ethos.engine.attention import Attention
+from ethos.engine.attention import Attention, estimate_salience
 from ethos.engine.drives import DriveInputs, Motivation
 from ethos.engine.rhythm import RhythmController
 from ethos.engine.states import State, StateMachine
@@ -237,7 +237,8 @@ class Life:
             attempts = await self.memory.list_attempts(self.focus.intention_id, limit=5)
             attempts_failed = sum(1 for a in attempts if a.outcome == "failed")
         last_contact = await self.memory.db.fetchrow(
-            "SELECT MAX(ts) AS last FROM messages WHERE direction = 'inbound'"
+            "SELECT MAX(ts) AS last FROM messages "
+            "WHERE direction IN ('inbound', 'outbound')"
         ) if getattr(self.memory, "db", None) is not None else None
         last_contact_age_h = None
         if last_contact is not None and last_contact["last"] is not None:
@@ -387,22 +388,30 @@ class Life:
     # ------------------------------------------------------------ decide
 
     async def decide(self, ws: Any) -> Decision:
+        # A message is one stimulus among the things competing for this pass,
+        # not the axis the pass turns on. Whether it is taken up now is decided
+        # by `_message_wins_attention` — the same bar the attention layer holds
+        # any interrupting percept to — and when it does not win, my own work
+        # continues and the message keeps waiting, exactly as a fresh idea of
+        # mine waits when work is due. Nobody's silence runs my session.
         inbound = await self._pending_inbound_messages()
 
-        tier = "T1"
         if inbound:
-            tier = "T3" if self._message_is_consequential(inbound[0]) else "T2"
-            social_decision = await self.deps.social.deliberate(
-                message=inbound[0],
-                energy=self.deps.rhythm.energy(self.spent_discretionary_session),
-                focus_title=self.focus.title if self.focus else None,
-                tools=self._tool_names(),
-                preview=self._preview(),
-            )
-            return Decision(
-                kind="social", tier=tier, social=social_decision.model_dump(mode="json"),
-                rationale=f"social deliberation for {inbound[0].person_id}",
-            )
+            wins, why = self._message_attention_verdict(inbound[0])
+            if wins:
+                tier = "T3" if self._message_is_consequential(inbound[0]) else "T2"
+                social_decision = await self.deps.social.deliberate(
+                    message=inbound[0],
+                    energy=self.deps.rhythm.energy(self.spent_discretionary_session),
+                    focus_title=self.focus.title if self.focus else None,
+                    tools=self._tool_names(),
+                    preview=self._preview(),
+                )
+                return Decision(
+                    kind="social", tier=tier, social=social_decision.model_dump(mode="json"),
+                    rationale=f"social deliberation for {inbound[0].person_id}: {why}",
+                )
+            logger.info("life.inbound_deferred", why=why)
 
         if self.focus is not None and self.focus.intention_id is not None:
             return Decision(kind="advance_goal", tier="T2", rationale="advance current intention")
@@ -429,6 +438,56 @@ class Life:
             return Decision(kind="mind_wander", tier="T1", rationale="idle: mind-wandering glance")
 
         return Decision(kind="none", tier="T0", rationale="nothing pending; wait")
+
+    def _message_attention_verdict(self, message: Any) -> tuple[bool, str]:
+        """Whether an inbound message takes this pass, by the rules any percept obeys.
+
+        This used to be unconditional: any pending human message short-circuited
+        the whole cycle to a social turn before focus, drives, reverie or
+        wandering were even consulted — the one branch in `decide` with no
+        competition, which is what made other people's messages the axis of the
+        session. It is arbitration now, on the same terms everything else
+        competes:
+
+        * Nothing of mine is in progress — no focus, or a focus that is itself
+          the conversation — and the message wins by default. There is nothing
+          to displace.
+        * The message has waited longer than `rhythm.attention.inbound_stale_h`.
+          Deferral is a choice about my attention, not a verdict that the
+          message does not matter; a queue that only ever defers is a queue
+          nobody answers, so age is the escape hatch that guarantees every
+          message an eventual turn.
+        * Otherwise the message is scored exactly as `Attention.appraise` scores
+          a percept — the same weights, the same salience formula — and it wins
+          when it clears the interrupt threshold of the state I am actually in.
+          That is the same bar a `msg.inbound` percept has to clear to break
+          into a focused cycle from the bus, so a message competes on identical
+          terms whichever door it arrived through. Working while someone waits
+          is a judgement the agent makes and can be asked to defend, not a
+          bypass written into the loop.
+        """
+        if self.focus is None:
+            return True, "nothing in hand to displace"
+        if self.focus.kind == "social":
+            return True, "already the conversation's pass"
+
+        cfg_att = self.config.rhythm.attention
+        now = datetime.now(UTC)
+        age_h = max(0.0, (now - message.ts).total_seconds() / 3600.0)
+        if age_h >= cfg_att.inbound_stale_h:
+            return True, f"pending {age_h:.1f}h, past the {cfg_att.inbound_stale_h:g}h mark"
+
+        percept = Attention.percept_from_message(message)
+        salience, _components = estimate_salience(
+            percept, self.focus, cfg_att.weights, cfg_att.sender,
+            self.deps.embedder, None, None,
+        )
+        threshold = cfg_att.interrupt_thresholds.get(
+            self.states.state.value, cfg_att.interrupt_thresholds.get("default", 0.65),
+        )
+        if salience >= threshold:
+            return True, f"salience {salience:.2f} clears the {threshold:.2f} bar for {self.states.state.value}"
+        return False, f"deferred: salience {salience:.2f} below {threshold:.2f}, age {age_h:.1f}h"
 
     def _message_is_consequential(self, message: Any) -> bool:
         # The same judgement `SocialCognition` makes, for the same reason: this
@@ -469,6 +528,13 @@ class Life:
             return []
 
     async def _pending_inbound_messages(self) -> list[Any]:
+        """The unanswered queue, read for arbitration rather than for obedience.
+
+        This used to be read first and obeyed first — its head became the whole
+        cycle. It is an input now: `_message_attention_verdict` decides whether
+        the head of this queue takes the pass or keeps waiting, on the same
+        terms every other stimulus competes on.
+        """
         return await self.deps.social.pending_inbound(limit=3)
 
     # --------------------------------------------------------------- act
@@ -607,21 +673,23 @@ class Life:
                 deadline=_deadline_from_spec(spec.get("deadline_iso")),
             )
             commission = {"intention_id": str(intention_id), "title": title}
-        # What this turn has to say, as one message.
+        # What this turn has to say, one message per text.
         #
-        # A deliberation writes its reply as a list of short texts, and each entry
-        # used to be handed to `comms_out.send` on its own. So a question the agent
-        # had answered once went out as two or three deliveries, two or three rows
-        # in the transcript and two or three bubbles on the surface — and nothing
-        # downstream can fold them back together: a surface's wait matches the
-        # *first* outbound message after the question, so every extra text arrived
-        # as a message answering nothing. From the other end of the conversation
-        # that reads as the agent sending the same reply twice.
+        # A deliberation writes its reply as a list of short texts, and the list
+        # used to be joined into one message because a question the agent had
+        # answered once went out as two or three deliveries, and every text after
+        # the first arrived as a message answering nothing — a surface's wait
+        # matches the first outbound message after the question, and the rest
+        # read from the other end as the same reply sent twice.
         #
-        # Joining keeps the whole reply and its one delivery: nothing is dropped
-        # and nothing is decided twice — what the agent chose to say arrives once,
-        # as one message, against the message it answers. An entry with no words in
-        # it is not a message, so it is not sent as one.
+        # The fix that holds is not the join but the reference: every text is sent
+        # carrying `in_reply_to=message.id`, so each delivery names the question it
+        # answers and no text is an answer to nothing. What that buys back is the
+        # shape the agent chose — a thought and its aside arrive as the two messages
+        # they were written as, the way a person sends them — and what it keeps is
+        # the invariant the join existed for: nothing is dropped, nothing is decided
+        # twice, and every message on the surface answers the message it followed.
+        # An entry with no words in it is not a message, so it is not sent as one.
         texts = [text.strip() for text in decision.reply_texts[:3] if text and text.strip()]
         # Nothing to say is the same decision either way round: whether the action
         # was `act_silently` or a reply that turned out to be blank, the turn ends
@@ -637,16 +705,16 @@ class Life:
                 await self._hold_undecided(message, decision)
             await self._announce_decline(message, decision)
             return commission
-        outbound = "\n\n".join(texts)
-        await self.deps.comms_out.send(
-            person_id=message.person_id,
-            channel=message.channel,
-            text=outbound,
-            urgency=decision.urgency,
-            conversation_key=message.conversation_key,
-            in_reply_to=message.id,
-        )
-        await self._record_outbound_turn(message, outbound)
+        for text in texts:
+            await self.deps.comms_out.send(
+                person_id=message.person_id,
+                channel=message.channel,
+                text=text,
+                urgency=decision.urgency,
+                conversation_key=message.conversation_key,
+                in_reply_to=message.id,
+            )
+            await self._record_outbound_turn(message, text)
         await self.deps.social.mark_handled(message, decided)
         return commission
 

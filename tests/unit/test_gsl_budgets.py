@@ -118,6 +118,7 @@ async def test_a_tool_that_raises_fails_the_step_and_not_the_cycle() -> None:
         id = "00000000-0000-0000-0000-000000000001"
         title = "write the file"
         commissioned_by = None
+        origin = "self"
         desired_end_state = "the file exists"
         budget_usd = None
         spent_usd = 0.0
@@ -157,6 +158,7 @@ async def test_a_tool_that_answers_is_unaffected() -> None:
         id = "00000000-0000-0000-0000-000000000001"
         title = "write the file"
         commissioned_by = None
+        origin = "self"
         desired_end_state = "the file exists"
         budget_usd = None
         spent_usd = 0.0

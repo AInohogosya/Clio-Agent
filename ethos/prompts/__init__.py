@@ -12,10 +12,12 @@ from ethos.prompts.gsl import (
     EVALUATE_PROMPT,
     PLAN_PROMPT,
     REFLECT_PROMPT,
+    SELF_TAKEN_WORK,
     STEP_PROMPT,
     SUCCESS_CHECKS_MATTER,
     UNDERSTAND_PROMPT,
     VERIFIER_PROMPT,
+    commissioned_note,
     dumps,
 )
 from ethos.prompts.identity import (
@@ -37,7 +39,8 @@ from ethos.prompts.reverie import REVERIE_PROMPT, reverie_messages
 
 __all__ = [
     "NARRATE_PROMPT", "narrate_messages",
-    "COMMISSIONED_ALREADY", "EDIT_EXISTING_FILES", "IGNORE_STREAK_REVIEW", "social_deliberation_messages",
+    "COMMISSIONED_ALREADY", "SELF_TAKEN_WORK", "commissioned_note",
+    "EDIT_EXISTING_FILES", "IGNORE_STREAK_REVIEW", "social_deliberation_messages",
     "streak_review_messages",
     "DEVISE_PROMPT", "EVALUATE_PROMPT", "DEGRADED_PLAN", "PLAN_PROMPT", "REFLECT_PROMPT", "STEP_PROMPT",
     "SUCCESS_CHECKS_MATTER",

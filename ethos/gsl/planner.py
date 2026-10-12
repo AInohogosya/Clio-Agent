@@ -8,12 +8,12 @@ from ethos.gateway.normalizer import was_truncated
 from ethos.observability.logger import get_logger
 from ethos.parse import parse_json_block
 from ethos.prompts import (
-    COMMISSIONED_ALREADY,
     DEGRADED_PLAN,
     DEVISE_PROMPT,
     PLAN_PROMPT,
     SUCCESS_CHECKS_MATTER,
     UNDERSTAND_PROMPT,
+    commissioned_note,
     dumps,
 )
 from ethos.schemas.gsl import Plan, PlanStep
@@ -224,7 +224,7 @@ async def make_plan(
         messages=[
             ModelMessage(role=Role.system, content=PLAN_PROMPT.format(
                 name=config.self_name,
-                commissioned=COMMISSIONED_ALREADY,
+                commissioned=commissioned_note(intention.origin),
                 success_checks=SUCCESS_CHECKS_MATTER,
                 approach=approach.get("summary", ""),
                 title=intention.title,

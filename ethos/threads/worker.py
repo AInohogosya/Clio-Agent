@@ -18,10 +18,18 @@ from ethos.schemas.models import ModelMessage, ModelRequest, Role, Tier
 
 logger = get_logger("ethos.threads.worker")
 
+# Roles that are whole other programs rather than frames of this one. They
+# spawn through the same ThreadManager — same budget carve, same bus results,
+# same intentions — but their worker dispatches to the sub-agent registry, and
+# the program's own model calls are routed through this agent's gateway.
+SUBAGENT_ROLES = ("foundry", "apex")
+
 
 async def run_thread(spec: dict[str, Any], config: EthosConfig, memory: Any, gateway: Any = None) -> Any:
     """A Thread is the same framework in a different frame: it gets a goal,
-    a framing sentence, an isolated workdir, and the same memory + identity."""
+    a framing sentence, an isolated workdir, and the same memory + identity.
+    A sub-agent role is the one exception: the frame belongs to another
+    program, reached through the sub-agent registry."""
     from ethos.threads.context import setup_worktree
 
     thread_id = str(spec["id"])
@@ -30,6 +38,9 @@ async def run_thread(spec: dict[str, Any], config: EthosConfig, memory: Any, gat
 
     if role == "verifier" and spec.get("verify_payload"):
         return await _run_verifier(spec, config, gateway)
+
+    if role in SUBAGENT_ROLES:
+        return await _run_subagent(role, spec, config, memory, gateway, workdir)
 
     goal = str(spec.get("goal", ""))
     intention_id = spec.get("intention_id")
@@ -45,6 +56,56 @@ async def run_thread(spec: dict[str, Any], config: EthosConfig, memory: Any, gat
     memories = await memory.search(goal, k=8)
     summary = await _pursue(goal, intention, memories, spec, config, memory, gateway, workdir)
     return summary
+
+
+async def _run_subagent(
+    role: str,
+    spec: dict[str, Any],
+    config: EthosConfig,
+    memory: Any,
+    gateway: Any,
+    workdir: Any,
+) -> dict[str, Any]:
+    """A sub-agent thread: the goal goes to another program, the bookkeeping
+    stays here. The result is the program's outcome in this agent's own
+    vocabulary, recorded as an episode against the thread's intention."""
+    import time
+    from uuid import UUID
+
+    from ethos.subagents import SubagentRegistry
+
+    started = time.monotonic()
+    goal = str(spec.get("goal", ""))
+    registry = SubagentRegistry(config, gateway=gateway)
+    agent = registry.get(role)
+    if agent is None:
+        reason = registry.describe() or ["no sub-agents are enabled"]
+        return {"status": "unavailable", "goal": goal, "error": f"sub-agent {role!r} unavailable",
+                "available": reason}
+    try:
+        result = await agent.run(goal, workdir=str(workdir))
+    except Exception as exc:
+        logger.exception("thread.subagent_failed", role=role)
+        result_dict: dict[str, Any] = {
+            "agent": role, "status": "failed", "summary": "sub-agent crashed",
+            "error": str(exc), "duration_s": round(time.monotonic() - started, 1),
+        }
+    else:
+        result_dict = result.to_dict()
+    result_dict["goal"] = goal
+    try:
+        await memory.record_episode(
+            kind="thread_result",
+            summary=f"sub-agent {role}: {result_dict.get('summary', '')[:200]}",
+            body={"agent": role, "status": result_dict.get("status"),
+                  "mode": result_dict.get("mode"), "workdir": str(workdir)},
+            intention_id=UUID(str(spec["intention_id"])) if spec.get("intention_id") else None,
+            thread_id=str(spec.get("id")),
+            importance=0.6,
+        )
+    except Exception:
+        logger.exception("thread.subagent_episode_failed")
+    return result_dict
 
 
 async def _run_verifier(spec: dict[str, Any], config: EthosConfig, gateway: Any = None) -> dict[str, Any]:

@@ -130,6 +130,9 @@ class CoreRuntime:
         self.threads = ThreadManager(
             config, self.memory, bus=self.bus, audit=self.audit, gateway=self.gateway,
         )
+        from ethos.subagents import SubagentRegistry
+
+        self.subagents = SubagentRegistry(config, gateway=self.gateway)
         self.toolhost = Toolhost(
             config, gate=self.guardian, journal=self.journal, bus=self.bus,
             services={
@@ -140,6 +143,8 @@ class CoreRuntime:
                 "threads": self.threads,
                 "scheduler": self.scheduler,
                 "comms_send": self.comms_out.send,
+                "subagents": self.subagents,
+                "gateway": self.gateway,
             },
         )
         self.attention = Attention(config, embedder=self.embedder, gateway=self.gateway,

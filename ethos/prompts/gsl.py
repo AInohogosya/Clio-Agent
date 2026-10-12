@@ -52,6 +52,54 @@ question, then stop and wait. And if there is nobody to ask, do not stop: take t
 reading that is reversible, carry on with the rest of the work, and put the
 assumption in your report as something the reader should check."""
 
+# The same licence to act, written for work nobody handed over.
+#
+# Every plan and every step used to open with `COMMISSIONED_ALREADY` --
+# "this work was already decided and handed to you" -- whatever the intention's
+# `origin` was. For a commission that is true. For a venture chosen in reverie,
+# or an impulse the drives arbitrated into work, it is false in the one way that
+# matters: it tells the model the authority for this work is somebody else's
+# permission, and on work that is its own it then behaves the way that framing
+# teaches -- hedging, proposing, waiting for a principal who does not exist.
+# A self-directed intention is not a weaker kind of work, and it does not need
+# a fictional requester to be carried out. So the delegated framing and the
+# self-taken one are two texts, chosen by origin, with the same structure:
+# the decision is made, choose the obvious default, ask only what cannot be
+# taken back.
+SELF_TAKEN_WORK = """This work is yours: nobody handed it to you, you chose it, and the choice stands.
+Do not re-litigate it. There is no principal to seek permission from and nobody
+waiting on a proposal -- the thing wanted now is the result of carrying out what
+you already decided was worth doing.
+
+For anything the intention leaves open -- the text in a file, a name, a heading,
+a format, which of two obvious options to take -- choose the obvious one, do the
+work, and say in one line what you chose and why. The absence of a requester is
+not a reason to ask a question nobody can answer; it is the reason you are the
+one who decides.
+
+Ask only when a choice is irreversible or outward-facing and a wrong guess cannot
+be taken back -- overwriting something, sending something, spending something --
+and then say which decision you need and what you will do for each answer. One
+question, then stop and wait. If the work turns out not to be worth doing after
+all, that is a real finding: close the intention with that reason rather than
+drifting. And if there is nobody to ask, do not stop: take the reading that is
+reversible, carry on with the rest of the work, and put the assumption in your
+report as something the reader should check."""
+
+
+def commissioned_note(origin: str | None) -> str:
+    """The do-not-re-open framing that matches who decided this work.
+
+    `commission` and `thread` are delegated: someone asked, or the Self spawned
+    a worker, and the licence to act is that decision. Everything else -- `self`,
+    `impulse`, `reverie`, or an origin this program does not know yet -- is work
+    the agent took on itself, and is framed that way. An unknown origin reads as
+    self-taken on purpose: the failure of mislabeling someone else's work as
+    mine is a hedge, while the failure of the reverse is a fictional principal,
+    and the second is the one this change exists to remove.
+    """
+    return COMMISSIONED_ALREADY if origin in ("commission", "thread") else SELF_TAKEN_WORK
+
 # How to change a file that already exists.
 #
 # The agent had every tool for this the whole time -- `fs.edit` takes exact

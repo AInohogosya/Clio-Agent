@@ -264,6 +264,10 @@ def test_the_environment_wins_over_the_file(tmp_path, monkeypatch):
 def test_a_base_model_written_while_running_is_picked_up(tmp_path, monkeypatch):
     """Otherwise the setting could not be changed from the page that found it wrong."""
     monkeypatch.setenv("ETHOS_HOME", str(tmp_path))
+    # The checkout ships a base model of its own (`config/base_model.yaml`);
+    # this test is about the home file's precedence, so the shipped one is
+    # taken back out for the same reason an operator's would be.
+    monkeypatch.setattr("ethos.config.load_shipped_base_model", lambda *_: None)
     service = GatewayService(load_config("config"), providers={})
     assert service.config.models.base is None
     catalogue = len(service.config.models.models)
