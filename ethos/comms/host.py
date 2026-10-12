@@ -63,6 +63,19 @@ def _channel_files_stamp(config: EthosConfig) -> tuple:
     return tuple(stamp)
 
 
+def _warn_no_allowlist(count: int, accept_from_anyone: bool, event: str, hint: str) -> None:
+    """Say out loud that a door will refuse everybody until an id is listed.
+
+    An empty allowlist admitting nobody is correct but silently looks broken: a
+    person who messages the bot and hears nothing cannot tell "no" from
+    "broken", so this is logged at the level that gets read, with the hint that
+    names the id to add and where to put it.
+    """
+    if count or accept_from_anyone:
+        return
+    logger.warning(event, hint=hint)
+
+
 @dataclass(frozen=True)
 class _Route:
     """One path on the shared receiver, as data rather than as a call.
@@ -239,14 +252,12 @@ class CommsHost:
                     on_inbound=self._handle_inbound,
                 ), ("telegram", token, tuple(telegram.allowed_chat_ids), telegram.allow_groups,
                     telegram.accept_from_anyone))
-                if not telegram.allowed_chat_ids and not telegram.accept_from_anyone:
-                    # Refusing everybody is correct but silently looks broken, so
-                    # it is said out loud at the level that gets read in a log.
-                    logger.warning(
-                        "comms.telegram_no_allowlist",
-                        hint="message the bot, send /id, add the id to "
-                             "channels.telegram.allowed_chat_ids",
-                    )
+                _warn_no_allowlist(
+                    len(telegram.allowed_chat_ids), telegram.accept_from_anyone,
+                    "comms.telegram_no_allowlist",
+                    "message the bot, send /id, add the id to "
+                    "channels.telegram.allowed_chat_ids",
+                )
             else:
                 logger.warning(
                     "comms.telegram_disabled_no_token", missing=channels.missing_credentials("telegram"),
@@ -331,12 +342,12 @@ class CommsHost:
                 "handler": lambda payload: adapter.handle_webhook(payload, self._handle_inbound),
             },
         ))
-        if not cfg.allowed_phone_numbers and not cfg.accept_from_anyone:
-            logger.warning(
-                "comms.whatsapp_no_allowlist",
-                hint="message the business number, read contacts[0].wa_id, add it to "
-                     "channels.whatsapp.allowed_phone_numbers",
-            )
+        _warn_no_allowlist(
+            len(cfg.allowed_phone_numbers), cfg.accept_from_anyone,
+            "comms.whatsapp_no_allowlist",
+            "message the business number, read contacts[0].wa_id, add it to "
+            "channels.whatsapp.allowed_phone_numbers",
+        )
 
     def _plan_slack(self, plan: _Plan, channels: ChannelsConfig,
                     creds: dict[str, str], add: Any) -> None:
@@ -383,12 +394,12 @@ class CommsHost:
                 "handler": lambda payload: adapter.handle_webhook(payload, self._handle_inbound),
             },
         ))
-        if not cfg.allowed_ids and not cfg.accept_from_anyone:
-            logger.warning(
-                "comms.slack_no_allowlist",
-                hint="message the bot, read event.user or event.channel, add it to "
-                     "channels.slack.allowed_ids",
-            )
+        _warn_no_allowlist(
+            len(cfg.allowed_ids), cfg.accept_from_anyone,
+            "comms.slack_no_allowlist",
+            "message the bot, read event.user or event.channel, add it to "
+            "channels.slack.allowed_ids",
+        )
 
     def _plan_discord(self, plan: _Plan, channels: ChannelsConfig,
                       creds: dict[str, str], add: Any) -> None:
@@ -419,11 +430,11 @@ class CommsHost:
             accept_from_anyone=cfg.accept_from_anyone,
             on_inbound=self._handle_inbound,
         ), ("discord", token, cfg.intents, tuple(cfg.allowed_ids), cfg.accept_from_anyone))
-        if not cfg.allowed_ids and not cfg.accept_from_anyone:
-            logger.warning(
-                "comms.discord_no_allowlist",
-                hint="message the bot, read author.id, add it to channels.discord.allowed_ids",
-            )
+        _warn_no_allowlist(
+            len(cfg.allowed_ids), cfg.accept_from_anyone,
+            "comms.discord_no_allowlist",
+            "message the bot, read author.id, add it to channels.discord.allowed_ids",
+        )
 
     def _receiver_wanted(self, channels: ChannelsConfig) -> bool:
         """Whether a push door has a listener to arrive on.

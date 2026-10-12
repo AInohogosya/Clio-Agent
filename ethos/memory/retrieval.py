@@ -60,13 +60,6 @@ def bm25_scores(query_terms: list[str], docs: list[list[str]]) -> list[float]:
     return scores
 
 
-def normalize_bm25(scores: list[float]) -> list[float]:
-    top = max(scores) if scores else 0.0
-    if top <= 0:
-        return [0.0] * len(scores)
-    return [s / top for s in scores]
-
-
 def recency_component(ts: datetime | None, now: datetime, half_life_h: float) -> float:
     if ts is None:
         return 0.0

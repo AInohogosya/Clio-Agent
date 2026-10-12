@@ -32,6 +32,30 @@ def _resolve(host: Toolhost, path: str) -> Path:
     return resolve(path)
 
 
+def _diff_preview(before: str, after: str, path: Path, *, labels: bool) -> str:
+    """A bounded unified diff of replacing one text with another.
+
+    `labels` is the write path's `(before)`/`(after)` tagging; the edit path
+    uses the bare path twice, which is what both callers assert under test.
+    """
+    if labels:
+        before_label, after_label = f"{path} (before)", f"{path} (after)"
+    else:
+        before_label = after_label = str(path)
+    return "\n".join(difflib.unified_diff(
+        before.splitlines(), after.splitlines(),
+        fromfile=before_label, tofile=after_label, lineterm="",
+    ))[:4000]
+
+
+def _existing(host: Toolhost, raw: str) -> Path:
+    """The path the agent means, and an error when it is not there."""
+    path = _resolve(host, raw)
+    if not path.exists():
+        raise FileNotFoundError(str(path))
+    return path
+
+
 def _preimage_backup(host: Toolhost, path: Path) -> str | None:
     if not path.exists() or not path.is_file():
         return None
@@ -59,9 +83,7 @@ class FsReadTool(Tool):
     }
 
     async def run(self, args: dict[str, Any], ctx: ToolContext, host: Toolhost) -> Any:
-        path = _resolve(host, str(args["path"]))
-        if not path.exists():
-            raise FileNotFoundError(str(path))
+        path = _existing(host, str(args["path"]))
         if path.is_dir():
             raise IsADirectoryError(str(path))
         if args.get("binary"):
@@ -150,11 +172,10 @@ class FsWriteTool(Tool):
                 path.write_text(content, encoding="utf-8")
         replaced = ""
         if existed and not args.get("append") and args.get("overwrite"):
-            replaced = "\n".join(difflib.unified_diff(
-                original.splitlines(), path.read_text(
-                    encoding="utf-8", errors="replace").splitlines(),
-                fromfile=f"{path} (before)", tofile=f"{path} (after)", lineterm="",
-            ))[:4000]
+            replaced = _diff_preview(
+                original, path.read_text(encoding="utf-8", errors="replace"),
+                path, labels=True,
+            )
         return {"path": str(path), "bytes": path.stat().st_size,
                 "created": not existed, "clobbered": bool(replaced),
                 "replaced_diff_preview": replaced,
@@ -205,9 +226,7 @@ class FsEditTool(Tool):
     }
 
     async def run(self, args: dict[str, Any], ctx: ToolContext, host: Toolhost) -> Any:
-        path = _resolve(host, str(args["path"]))
-        if not path.exists():
-            raise FileNotFoundError(str(path))
+        path = _existing(host, str(args["path"]))
         original = path.read_text(encoding="utf-8")
         backup = _preimage_backup(host, path)
         if args.get("diff"):
@@ -226,12 +245,8 @@ class FsEditTool(Tool):
         if new_text is None:
             raise ValueError("edit did not apply cleanly")
         path.write_text(new_text, encoding="utf-8")
-        diff = "\n".join(difflib.unified_diff(
-            original.splitlines(), new_text.splitlines(),
-            fromfile=str(path), tofile=str(path), lineterm="",
-        ))
         return {"path": str(path), "applied": True, "backup": backup,
-                "diff_preview": diff[:4000]}
+                "diff_preview": _diff_preview(original, new_text, path, labels=False)}
 
 def apply_search_replace(text: str, search: str, replace: str,
                          replace_all: bool = False) -> str:
@@ -320,10 +335,8 @@ class FsMoveTool(Tool):
     }
 
     async def run(self, args: dict[str, Any], ctx: ToolContext, host: Toolhost) -> Any:
-        source = _resolve(host, str(args["from_path"]))
+        source = _existing(host, str(args["from_path"]))
         target = _resolve(host, str(args["to_path"]))
-        if not source.exists():
-            raise FileNotFoundError(str(source))
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(source), str(target))
         return {"moved": [str(source), str(target)]}
@@ -343,9 +356,7 @@ class FsDeleteTool(Tool):
     }
 
     async def run(self, args: dict[str, Any], ctx: ToolContext, host: Toolhost) -> Any:
-        path = _resolve(host, str(args["path"]))
-        if not path.exists():
-            raise FileNotFoundError(str(path))
+        path = _existing(host, str(args["path"]))
         trash: Any = host.services.get("trash")
         if trash is None:
             raise RuntimeError("trash store unavailable; delete refused")

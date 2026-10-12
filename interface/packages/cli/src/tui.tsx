@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useRef, useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { Box, Text, useApp } from 'ink';
 import {
   createTranslator,
@@ -9,19 +9,28 @@ import {
 } from '@project-phone/core';
 import {
   createPalette,
-  displayWidth,
   lineToneHex,
   truncateWidth,
   type ColorDepth,
   type Palette,
   type Tone,
 } from './palette.js';
-import { Divider, Hint, Meta, Notice, Panel, Spinner, StatusPill } from './tui-kit.js';
+import { Divider, Meta, Panel, StatusPill } from './tui-kit.js';
 import { maxScroll, transcriptLines, windowLines } from './transcript.js';
 import { statusLabelKey, statusTone, wrapText } from './render.js';
 import { runCommand, useComposerInput, type ComposerActions, type ComposerState, type Overlay, type Screen, type Translator } from './tui-input.js';
-import { usePhoneSession, type Toast } from './tui-session.js';
+import { usePhoneSession } from './tui-session.js';
 import { SettingsWizard } from './wizard.js';
+import {
+  Composer,
+  DebugPanel,
+  EmptyState,
+  ErrorRow,
+  Footer,
+  HelpOverlay,
+  PendingRow,
+  useTranscriptScroll,
+} from './tui-shared.js';
 import { hasEnvironmentApiKey, type PhoneConfig } from './config.js';
 
 export type LaunchMode = 'chat' | 'setup';
@@ -55,32 +64,7 @@ export function Tui({ initialConfig, debug, mode, width, height, depth }: TuiPro
   const [overlay, setOverlay] = useState<Overlay>('none');
   const [input, setInput] = useState('');
   const [cursor, setCursor] = useState(0);
-  const [scroll, setScroll] = useState(0);
-  // The scroll position lives in a ref as well as in state, because the keymap
-  // needs the current value inside a callback whose identity must not change
-  // every keystroke — a handler rebuilt on each render is a handler that can
-  // miss the keystroke that arrived during the rebuild.
-  const scrollRef = useRef(0);
-  // Whether the reader chose to follow the conversation. Cleared when they
-  // scroll back, restored when they return to the newest line — so arriving
-  // tokens never move a view the reader has deliberately parked.
-  const following = useRef(true);
-
-  const follow = useCallback(() => {
-    following.current = true;
-    scrollRef.current = 0;
-    setScroll(0);
-  }, []);
-  const seek = useCallback((next: number | ((current: number) => number)) => {
-    const resolved = typeof next === 'function' ? next(scrollRef.current) : next;
-    scrollRef.current = resolved;
-    following.current = resolved === 0;
-    setScroll(resolved);
-  }, []);
-
-  const onSettled = useCallback(() => {
-    if (following.current) follow();
-  }, [follow]);
+  const { scroll, seek, follow, onSettled } = useTranscriptScroll();
 
   const session = usePhoneSession(initialConfig, debug, onSettled);
   const { client, snapshot, config, debugLines, toast, say } = session;
@@ -149,7 +133,16 @@ export function Tui({ initialConfig, debug, mode, width, height, depth }: TuiPro
   if (overlay === 'help') {
     return (
       <Box flexDirection="column" height={height} paddingX={1} width={width}>
-        <HelpOverlay palette={palette} t={t} width={width - 2} height={height - 2} />
+        <HelpOverlay
+          commands={HELP_COMMANDS}
+          height={height - 2}
+          keys={HELP_KEYS}
+          keyWidth={18}
+          noteKey="cliSyncNote"
+          palette={palette}
+          t={t}
+          width={width - 2}
+        />
       </Box>
     );
   }
@@ -187,7 +180,7 @@ export function Tui({ initialConfig, debug, mode, width, height, depth }: TuiPro
         <Box flexDirection="column" flexGrow={1} width={chatWidth}>
           <Box flexDirection="column" flexGrow={1}>
             {visible.length === 0 ? (
-              <EmptyState palette={palette} t={t} width={chatWidth - 2} />
+              <EmptyState bodyKey="welcomeBody" palette={palette} t={t} titleKey="welcomeTitle" width={chatWidth - 2} />
             ) : (
               visible.map((line, index) => (
                 <Text
@@ -202,7 +195,7 @@ export function Tui({ initialConfig, debug, mode, width, height, depth }: TuiPro
             {snapshot.streamingText ? (
               <StreamingReply palette={palette} text={snapshot.streamingText} t={t} width={chatWidth - 2} />
             ) : snapshot.pending ? (
-              <PendingRow palette={palette} t={t} />
+              <PendingRow labelKey="thinking" palette={palette} t={t} />
             ) : null}
           </Box>
           {snapshot.lastError ? (
@@ -221,7 +214,12 @@ export function Tui({ initialConfig, debug, mode, width, height, depth }: TuiPro
         t={t}
         width={width - 2}
       />
-      <Footer palette={palette} scrollable={limit > 0} t={t} width={width - 2} toast={toast} />
+      <Footer
+        hints={['/help', '/settings', '/clear', ...(limit > 0 ? [t('cliScrollHint')] : []), 'Ctrl-Q']}
+        palette={palette}
+        toast={toast}
+        width={width - 2}
+      />
     </Box>
   );
 }
@@ -252,42 +250,6 @@ const HELP_COMMANDS: Array<[string, string]> = [
   ['/quit', 'Leave the line.'],
 ];
 
-function HelpOverlay({ palette, t, width, height }: { palette: Palette; t: Translator; width: number; height: number }): React.ReactElement {
-  const keyWidth = 18;
-  const room = Math.max(20, width - keyWidth - 6);
-  return (
-    <Box borderColor={palette.accent} borderStyle="round" flexDirection="column" height={height} paddingX={2} width={width}>
-      <Box justifyContent="space-between">
-        <Text bold color={palette.accent}>{`⌘ ${t('cliHelpTitle')}`}</Text>
-        <Text color={palette.inkFaint}>{t('cliHelpClose')}</Text>
-      </Box>
-      <Box flexDirection="column" marginTop={1}>
-        {HELP_KEYS.map(([key, description]) => (
-          <Box key={key}>
-            <Box width={keyWidth}>
-              <Text bold color={palette.inkMuted}>{truncateWidth(key, keyWidth)}</Text>
-            </Box>
-            <Text color={palette.inkFaint}>{truncateWidth(description, room)}</Text>
-          </Box>
-        ))}
-      </Box>
-      <Divider palette={palette} width={Math.max(4, width - 2)} />
-      <Box flexDirection="column" marginTop={1}>
-        {HELP_COMMANDS.map(([key, description]) => (
-          <Box key={key}>
-            <Box width={keyWidth}>
-              <Text bold color={palette.accent}>{truncateWidth(key, keyWidth)}</Text>
-            </Box>
-            <Text color={palette.inkMuted}>{truncateWidth(description, room)}</Text>
-          </Box>
-        ))}
-      </Box>
-      <Box flexGrow={1} />
-      <Text color={palette.inkFaint}>{t('cliSyncNote')}</Text>
-    </Box>
-  );
-}
-
 function Header({
   palette,
   snapshot,
@@ -312,24 +274,6 @@ function Header({
         <Text color={palette.inkFaint}>{`rev ${state.revision}`}</Text>
         <StatusPill palette={palette} status={tone}>{t(statusLabelKey(snapshot.status))}</StatusPill>
       </Box>
-    </Box>
-  );
-}
-
-function EmptyState({ palette, t, width }: { palette: Palette; t: Translator; width: number }): React.ReactElement {
-  return (
-    <Box flexDirection="column" flexGrow={1} justifyContent="center" paddingX={1}>
-      <Text bold color={palette.accent}>{t('welcomeTitle')}</Text>
-      <Text color={palette.inkMuted}>{truncateWidth(t('welcomeBody'), width)}</Text>
-    </Box>
-  );
-}
-
-function PendingRow({ palette, t }: { palette: Palette; t: Translator }): React.ReactElement {
-  return (
-    <Box>
-      <Spinner palette={palette} />
-      <Text color={palette.accent}>{`  ${t('thinking')}…`}</Text>
     </Box>
   );
 }
@@ -377,26 +321,6 @@ function StreamingReply({
  * rather than as a shrug. Hiding it behind a generic sentence is what made a
  * misconfiguration look like a working program.
  */
-function ErrorRow({
-  palette,
-  text,
-  width,
-}: {
-  palette: Palette;
-  text: string;
-  width: number;
-}): React.ReactElement {
-  // Two lines, so the sentence the provider sent is not cut off at the first
-  // line's worth of characters — that cut is where the useful half usually is.
-  const rows = wrapText(text, Math.max(10, width - 2));
-  return (
-    <Box flexDirection="column">
-      {rows.slice(0, 2).map((row, index) => (
-        <Text color={palette.danger} key={index}>{index === 0 ? `✕ ${row}` : `  ${row}`}</Text>
-      ))}
-    </Box>
-  );
-}
 
 function Sidebar({
   palette,
@@ -446,126 +370,6 @@ function Sidebar({
           </Text>
         </Panel>
       </Box>
-    </Box>
-  );
-}
-
-function DebugPanel({
-  lines,
-  palette,
-  t,
-  width,
-}: {
-  lines: string[];
-  palette: Palette;
-  t: Translator;
-  width: number;
-}): React.ReactElement {
-  return (
-    <Box borderColor={palette.line} borderStyle="round" flexDirection="column" paddingX={1} width={width}>
-      <Text bold color={palette.accent}>{t('debug')}</Text>
-      {lines.length === 0
-        ? <Text color={palette.inkFaint}>{t('debugIdle')}</Text>
-        : lines.map((line, index) => (
-          <Text color={palette.inkFaint} key={`${index}-${line.slice(0, 10)}`}>
-            {truncateWidth(line, width - 4)}
-          </Text>
-        ))}
-    </Box>
-  );
-}
-
-function Composer({
-  cursor,
-  input,
-  limit,
-  palette,
-  scroll,
-  t,
-  width,
-}: {
-  cursor: number;
-  input: string;
-  limit: number;
-  palette: Palette;
-  scroll: number;
-  t: Translator;
-  width: number;
-}): React.ReactElement {
-  const position = Math.max(0, Math.min(cursor, input.length));
-  const before = input.slice(0, position);
-  const at = input.slice(position, position + 1);
-  const after = input.slice(position + 1);
-  // The row is the prompt (2 columns), the caret (1) and the text, so the
-  // text's budget is the box's inner width minus three: a budget that ignores
-  // them wraps the composer onto a second line on every keystroke past the
-  // right edge, and a composer that grows while you type is one that pushes
-  // the transcript away. The window scrolls to keep the caret in view, so
-  // typing past the edge moves the text instead of pushing the caret off.
-  const room = Math.max(4, width - 7);
-  const lead = Math.max(0, displayWidth(before) - room + 1);
-  const visibleBefore = lead > 0 ? `…${before.slice(lead)}` : before;
-  const shownBefore = truncateWidth(visibleBefore, room);
-  return (
-    <Box
-      borderColor={input ? palette.accent : palette.line}
-      borderStyle="round"
-      flexDirection="column"
-      paddingX={1}
-      width={width}
-    >
-      <Box>
-        <Text bold color={palette.accent}>{'❯ '}</Text>
-        {shownBefore ? <Text color={palette.ink}>{shownBefore}</Text> : null}
-        <Text inverse>{at || ' '}</Text>
-        {after ? <Text color={palette.ink}>{truncateWidth(after, Math.max(0, room - displayWidth(shownBefore)))}</Text> : null}
-      </Box>
-      <Box justifyContent="space-between">
-        {scroll > 0 ? (
-          <Text color={palette.accent}>{`▲ ${scroll}/${limit} ${t('cliScrollHint')}`}</Text>
-        ) : (
-          <Hint palette={palette}>{t('interruptHint')}</Hint>
-        )}
-        {/* The cap is enforced on code units, so the counter counts them too:
-            a counter that counts columns would read "over" while a wide-char
-            draft is still accepted, and the other way round for ASCII. */}
-        <Text color={palette.inkFaint}>{`${input.length}/${MAX_TERMINAL_TEXT_LENGTH}`}</Text>
-      </Box>
-    </Box>
-  );
-}
-
-function Footer({
-  palette,
-  scrollable,
-  t,
-  toast,
-  width,
-}: {
-  palette: Palette;
-  scrollable: boolean;
-  t: Translator;
-  toast: Toast | null;
-  width: number;
-}): React.ReactElement {
-  const hints = [
-    '/help',
-    '/settings',
-    '/clear',
-    ...(scrollable ? [t('cliScrollHint')] : []),
-    'Ctrl-Q',
-  ].join('  ·  ');
-  return (
-    <Box flexDirection="column" width={width}>
-      {toast ? (
-        <Box>
-          <Notice palette={palette} tone={toast.tone}>{truncateWidth(toast.text, width - 4)}</Notice>
-        </Box>
-      ) : (
-        <Box>
-          <Hint palette={palette}>{truncateWidth(hints, width)}</Hint>
-        </Box>
-      )}
     </Box>
   );
 }

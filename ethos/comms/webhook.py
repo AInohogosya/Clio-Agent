@@ -352,16 +352,21 @@ def _parse_query(query: str) -> dict[str, str]:
     return {key: values[0] for key, values in parse_qs(query, keep_blank_values=True).items()}
 
 
-async def _respond(writer: asyncio.StreamWriter, status: int, reason: str) -> None:
-    body = json.dumps({"status": reason}).encode("utf-8")
+async def _send(writer: asyncio.StreamWriter, status: int, reason: str,
+                content_type: str, payload: bytes) -> None:
     head = (
         f"HTTP/1.1 {status} {reason}\r\n"
-        f"content-type: application/json\r\n"
-        f"content-length: {len(body)}\r\n"
+        f"content-type: {content_type}\r\n"
+        f"content-length: {len(payload)}\r\n"
         "connection: close\r\n\r\n"
     ).encode("latin-1")
-    writer.write(head + body)
+    writer.write(head + payload)
     await writer.drain()
+
+
+async def _respond(writer: asyncio.StreamWriter, status: int, reason: str) -> None:
+    await _send(writer, status, reason, "application/json",
+                json.dumps({"status": reason}).encode("utf-8"))
 
 
 async def _respond_plain(writer: asyncio.StreamWriter, status: int, body: str) -> None:
@@ -371,12 +376,6 @@ async def _respond_plain(writer: asyncio.StreamWriter, status: int, body: str) -
     would answer `200` with a body that is not the challenge, which fails
     verification for a reason that looks like a wrong verify token.
     """
-    payload = body.encode("utf-8")
-    head = (
-        f"HTTP/1.1 {status} OK\r\n"
-        f"content-type: text/plain\r\n"
-        f"content-length: {len(payload)}\r\n"
-        "connection: close\r\n\r\n"
-    ).encode("latin-1")
-    writer.write(head + payload)
-    await writer.drain()
+    # The reason phrase stays `OK`: the handshake answer is the body, and the
+    # line this read as the reason is otherwise the challenge itself.
+    await _send(writer, status, "OK", "text/plain", body.encode("utf-8"))

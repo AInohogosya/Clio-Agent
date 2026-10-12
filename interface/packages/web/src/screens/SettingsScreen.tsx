@@ -22,9 +22,11 @@ import {
   MAX_PERSON_LENGTH,
   probeSignature,
   providerFor,
+  publicSettingsEqual,
   PROVIDER_DEFINITIONS,
   sanitizeDraftSettings,
   savedApiKey,
+  splitIds,
   setupProblem,
   shouldProbeCatalog,
   AgentRequestError,
@@ -794,10 +796,6 @@ function PreviewModeCard({
  * and a single entry of `819012345678, 819012345679` is an id no door recognises,
  * which is a door that admits nobody and says it is open.
  */
-function splitIds(value: string): string[] {
-  return value.split(/[\s,]+/).map((entry) => entry.trim()).filter(Boolean);
-}
-
 /**
  * Every setting, on one page.
  *
@@ -971,6 +969,25 @@ export function SettingsScreen({
   useEffect(() => () => abort.current?.abort(), []);
 
   /**
+   * A "still mounted" flag for the read-once effects below.
+   *
+   * Three of them load on the way in and never over an edit, and all three say
+   * "if (!live) return" before touching state — so the flag lives here while
+   * what to load, and what to do with it, stays in each effect.
+   */
+  const useLive = (): (() => boolean) => {
+    const live = useRef(true);
+    useEffect(() => {
+      live.current = true;
+      return () => {
+        live.current = false;
+      };
+    }, []);
+    return useCallback(() => live.current, []);
+  };
+  const alive = useLive();
+
+  /**
    * Which keys are already in the agent's environment.
    *
    * Read once, on the way in, because the environment of a running process does
@@ -980,16 +997,12 @@ export function SettingsScreen({
    */
   useEffect(() => {
     if (!readEnvApiKeys) return;
-    let live = true;
     void readEnvApiKeys()
       .then((found) => {
-        if (live) setEnvKeys(found);
+        if (alive()) setEnvKeys(found);
       })
       .catch(() => undefined);
-    return () => {
-      live = false;
-    };
-  }, [readEnvApiKeys]);
+  }, [alive, readEnvApiKeys]);
 
   // Ask the agent what it is using, and let that answer the form.
   //
@@ -1044,20 +1057,16 @@ export function SettingsScreen({
    */
   useEffect(() => {
     if (!agentMode || !readIdentity) return;
-    let live = true;
     void readIdentity()
       .then((found) => {
-        if (!live) return;
+        if (!alive()) return;
         setIdentity(found);
         if (nameSeeded) return;
         setNameSeeded(true);
         setName(found?.selfName ?? '');
       })
       .catch(() => undefined);
-    return () => {
-      live = false;
-    };
-  }, [agentMode, nameSeeded, readIdentity]);
+  }, [agentMode, alive, nameSeeded, readIdentity]);
 
   /**
    * Which doors the agent has, and what each one still needs.
@@ -1069,16 +1078,12 @@ export function SettingsScreen({
    */
   useEffect(() => {
     if (!agentMode || !readDoors) return;
-    let live = true;
     void readDoors()
       .then((found) => {
-        if (live) setDoors(found);
+        if (alive()) setDoors(found);
       })
       .catch(() => undefined);
-    return () => {
-      live = false;
-    };
-  }, [agentMode, readDoors]);
+  }, [agentMode, alive, readDoors]);
 
   /**
    * A name typed into the field.
@@ -1810,14 +1815,7 @@ export function SettingsScreen({
 }
 
 function sameSettings(left: Settings, right: Settings): boolean {
-  return left.interface === right.interface
-    && left.agentUrl === right.agentUrl
-    && left.agentPerson === right.agentPerson
-    && left.provider === right.provider
-    && left.apiKey === right.apiKey
-    && left.baseUrl === right.baseUrl
-    && left.model === right.model
-    && left.language === right.language
-    && left.theme === right.theme
-    && left.accent === right.accent;
+  // The shared comparison, plus the key: this screen must notice a key the
+  // reader typed, where the merge the shared one guards deliberately does not.
+  return publicSettingsEqual(left, right) && left.apiKey === right.apiKey;
 }

@@ -439,4 +439,3 @@ async def test_journal_write_ahead_and_idempotency(tmp_path: Path):
     await journal.end(action_id, status="ok", result_digest={"bytes": 1}, undo_ref=None)
     records = await journal.list(limit=10)
     assert records[0]["status"] == "ok"
-    assert await journal.reconcile_stale() == 0

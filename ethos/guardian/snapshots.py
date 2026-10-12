@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from ethos.config import EthosConfig
-from ethos.db import Database
+from ethos.db import Database, decode_env_attrs
 from ethos.observability.logger import get_logger
 
 logger = get_logger("ethos.guardian.snapshots")
@@ -74,11 +74,9 @@ class SnapshotManager:
         }
         if self.db is not None:
             try:
-                await self.db.execute(
-                    "INSERT INTO env_entities (id, kind, key, attrs, owner, last_verified_at, health) "
-                    "VALUES ($1, 'snapshot', $2, $3::jsonb, 'guardian', now(), 'ok')",
-                    uuid.uuid4(), name, json.dumps(record),
-                )
+                # No conflict clause on purpose: a snapshot name is created once,
+                # and a repeated one is a caller bug worth an error.
+                await self.db.upsert_env("snapshot", name, record, owner="guardian", on_conflict=False)
             except Exception:
                 logger.exception("snapshots.db_record_failed")
         logger.info("snapshots.created", name=name, backend=self.backend)
@@ -125,9 +123,7 @@ class SnapshotManager:
             await asyncio.to_thread(shutil.rmtree, self.snapshots_dir / victim["name"], True)
             if self.db is not None:
                 try:
-                    await self.db.execute(
-                        "DELETE FROM env_entities WHERE kind = 'snapshot' AND key = $1", victim["name"],
-                    )
+                    await self.db.delete_env("snapshot", victim["name"])
                 except Exception:
                     pass
 
@@ -139,7 +135,7 @@ class SnapshotManager:
                     "SELECT attrs::text AS attrs FROM env_entities WHERE kind = 'snapshot' LIMIT $1", limit,
                 )
                 for row in rows:
-                    data = json.loads(row["attrs"]) if isinstance(row["attrs"], str) else dict(row["attrs"])
+                    data = decode_env_attrs(row)
                     out.append(data)
                 if out:
                     return out
@@ -155,13 +151,3 @@ class SnapshotManager:
                     if len(out) >= limit:
                         break
         return out
-
-    async def restore(self, name: str) -> Path:
-        snapshot_dir = self.snapshots_dir / name
-        if not snapshot_dir.exists():
-            raise SnapshotError(f"snapshot {name} not found")
-        if self.backend == "btrfs":
-            raise SnapshotError("btrfs snapshot restore must be performed by the operator (L4)")
-        restored = self.config.paths.work / f"restored-{name}"
-        await asyncio.to_thread(shutil.copytree, snapshot_dir, restored, dirs_exist_ok=True)
-        return restored

@@ -136,21 +136,33 @@ async complete(
     },
 
     control(action: AgentControlAction): Promise<unknown> {
-      const agent = options.resolve();
-      if (!agent) return Promise.reject(new AgentRequestError('agent_offline', 'no_link'));
-      return agent.control(action);
+      return throughAgent(options, (agent) => agent.control(action));
     },
 
     undoAction(id: string): Promise<void> {
-      const agent = options.resolve();
-      if (!agent) return Promise.reject(new AgentRequestError('agent_offline', 'no_link'));
-      return agent.undoAction(id);
+      return throughAgent(options, (agent) => agent.undoAction(id));
     },
 
     closeIntention(id: string): Promise<void> {
-      const agent = options.resolve();
-      if (!agent) return Promise.reject(new AgentRequestError('agent_offline', 'no_link'));
-      return agent.closeIntention(id);
+      return throughAgent(options, (agent) => agent.closeIntention(id));
     },
   };
+}
+
+/**
+ * One control call through the link, or a rejection when there is no link.
+ *
+ * Three methods share the resolve-then-call shape, and the difference between
+ * them is the call — so only the call is a parameter. Offline is a rejection
+ * rather than a fallback here: a queued control has to mean the agent will see
+ * it, and a surface that reported "queued" with no link would be lying about
+ * the one thing an operator is checking.
+ */
+function throughAgent<T>(
+  options: { resolve: () => AgentClient | null },
+  call: (agent: AgentClient) => Promise<T>,
+): Promise<T> {
+  const agent = options.resolve();
+  if (!agent) return Promise.reject(new AgentRequestError('agent_offline', 'no_link'));
+  return call(agent);
 }

@@ -135,31 +135,23 @@ function failureCode(error: unknown): string {
 }
 
 /** Why one failure is not the next, in the words of the provider that refused. */
+const PROVIDER_ERROR_KEYS: Record<string, TranslationKey> = {
+  missing_credentials: 'providerNoKey',
+  invalid_endpoint: 'providerBadEndpoint',
+  missing_prompt: 'providerNoPrompt',
+  prompt_too_large: 'providerPromptTooLarge',
+  network_unavailable: 'providerUnavailable',
+  timeout: 'providerTimeout',
+  redirect_refused: 'providerRedirectRefused',
+  response_too_large: 'providerResponseTooLarge',
+  aborted: 'providerInterrupted',
+};
+
 function providerErrorKey(error: ProviderRequestError): TranslationKey {
-  switch (error.code) {
-    case 'missing_credentials':
-      return 'providerNoKey';
-    case 'invalid_endpoint':
-      return 'providerBadEndpoint';
-    case 'missing_prompt':
-      return 'providerNoPrompt';
-    case 'prompt_too_large':
-      return 'providerPromptTooLarge';
-    case 'network_unavailable':
-      return 'providerUnavailable';
-    case 'timeout':
-      return 'providerTimeout';
-    case 'redirect_refused':
-      return 'providerRedirectRefused';
-    case 'response_too_large':
-      return 'providerResponseTooLarge';
-    case 'no_text_in_response':
-      return error.detail ? 'providerNoText' : 'providerEmptyReply';
-    case 'aborted':
-      return 'providerInterrupted';
-    default:
-      return 'providerRefused';
+  if (error.code === 'no_text_in_response') {
+    return error.detail ? 'providerNoText' : 'providerEmptyReply';
   }
+  return PROVIDER_ERROR_KEYS[error.code] ?? 'providerRefused';
 }
 
 /**

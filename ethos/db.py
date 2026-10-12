@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections.abc import Callable
 from typing import Any
@@ -68,18 +69,8 @@ class Database:
         async with self.pool.acquire() as conn:
             return await conn.fetchval(stmt, *args)
 
-    async def execute_returning(self, stmt: str, *args: Any) -> list[asyncpg.Record]:
-        async with self.pool.acquire() as conn:
-            return await conn.fetch(stmt, *args)
-
     def acquire(self) -> asyncpg.pool.PoolAcquireContext:
         return self.pool.acquire()
-
-    def transaction(self) -> asyncpg.pool.PoolConnectionProxyMethods:
-        return self.pool.acquire()
-
-    async def notify(self, channel: str, payload: str) -> None:
-        await self.execute("SELECT pg_notify($1, $2)", channel, payload)
 
     async def new_listener_connection(self) -> asyncpg.Connection:
         return await asyncpg.connect(self.dsn, timeout=5.0)
@@ -92,10 +83,57 @@ class Database:
     ) -> None:
         await conn.add_listener(channel, callback)
 
-    async def run_in_tx(self, fn: Callable[[asyncpg.Connection], Any]) -> Any:
-        async def _tx(conn: asyncpg.Connection) -> Any:
-            async with conn.transaction():
-                return await fn(conn)
+    # ------------------------------------------------- the environment store
+    #
+    # `env_entities` is one table with one meaning — "a fact the running system
+    # holds about itself, keyed" — and every writer used to hand-write the same
+    # INSERT, with copies that had drifted: one updated `health` on conflict, one
+    # had no conflict clause at all, and the row id was spelled three ways. The
+    # id is left to the column's own server default; the three methods below are
+    # the whole write, read and forget surface.
 
-        async with self.pool.acquire() as conn:
-            return await _tx(conn)
+    async def upsert_env(
+        self,
+        kind: str,
+        key: str,
+        attrs: dict[str, Any],
+        *,
+        owner: str | None,
+        health: str = "ok",
+        update_health: bool = False,
+        on_conflict: bool = True,
+    ) -> None:
+        """One row of the environment store: `kind`+`key` naming what, `attrs` the fact.
+
+        `update_health` is for the one writer whose health is part of the fact
+        (the integrity report) rather than bookkeeping; `on_conflict=False` for
+        the one writer that wants a duplicate key to be an error rather than a
+        quiet overwrite (snapshot names).
+        """
+        health_sql = ", health = $5" if update_health else ""
+        conflict_sql = (
+            f"ON CONFLICT (key) DO UPDATE SET attrs = $3::jsonb, last_verified_at = now(){health_sql}"
+            if on_conflict else ""
+        )
+        await self.execute(
+            "INSERT INTO env_entities (kind, key, attrs, owner, last_verified_at, health) "
+            "VALUES ($1, $2, $3::jsonb, $4, now(), $5) " + conflict_sql,
+            kind, key, json.dumps(attrs), owner, health,
+        )
+
+    async def delete_env(self, kind: str, key: str) -> None:
+        await self.execute(
+            "DELETE FROM env_entities WHERE kind = $1 AND key = $2", kind, key,
+        )
+
+
+def decode_json_value(value: Any, default: Any = None) -> Any:
+    """A jsonb column as Python, whether the driver handed back text or a mapping."""
+    if isinstance(value, str):
+        value = json.loads(value)
+    return value if value is not None else default
+
+
+def decode_env_attrs(row: Any) -> dict[str, Any]:
+    """The `attrs` column as a dict, whether the driver handed back jsonb or text."""
+    return dict(decode_json_value(row["attrs"], {}) or {})

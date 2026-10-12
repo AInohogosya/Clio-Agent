@@ -1,4 +1,4 @@
-import type { AgentChannelSetup, AgentDoorSetup, AgentDoorWrite } from '@project-phone/core';
+import { splitIds, type AgentChannelSetup, type AgentDoorSetup, type AgentDoorWrite } from '@project-phone/core';
 import { CliError } from './args.js';
 
 /**
@@ -149,16 +149,4 @@ export function doorValue(setup: AgentChannelSetup, target: string): string {
   if (field === 'acceptFromAnyone') return String(door.acceptFromAnyone);
   if (field === 'allowed') return door.allowed.join(' ');
   return door.address;
-}
-
-/**
- * Ids as a person types them, as the list a door admits.
- *
- * Split on whitespace and commas, because a list pasted out of a chat is
- * separated by whichever of those whatever it was copied from used — and one
- * entry of `819012345678, 819012345679` is an id no door recognises, which is a
- * door that is open and admits nobody.
- */
-function splitIds(value: string): string[] {
-  return value.split(/[\s,]+/).map((entry) => entry.trim()).filter(Boolean);
 }

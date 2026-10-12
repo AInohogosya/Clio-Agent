@@ -5,7 +5,7 @@ import hmac
 import time
 from typing import Any
 
-from ethos.comms.adapters.base import ChannelAdapter
+from ethos.comms.adapters.base import ChannelAdapter, emit_inbound, http_error_detail, offer_seen
 from ethos.observability.logger import get_logger
 from ethos.schemas.messages import Message
 
@@ -164,10 +164,7 @@ class SlackAdapter(ChannelAdapter):
         self._names: dict[str, str | None] = {}
 
     async def start(self) -> None:
-        if self.http is None:
-            import httpx
-
-            self.http = httpx.AsyncClient(timeout=20.0)
+        await self._ensure_http()
         if self.self_user_id is None:
             self.self_user_id = await self._whoami()
         logger.info("comms.slack.started", allowed=len(self.allowed), user=self.self_user_id,
@@ -183,9 +180,7 @@ class SlackAdapter(ChannelAdapter):
         """
 
     async def stop(self) -> None:
-        if self._owns_http and self.http is not None:
-            await self.http.aclose()
-        self.http = None
+        await self._close_http()
 
     async def _whoami(self) -> str | None:
         """The bot's own user id, or `None` when the API will not say.
@@ -214,29 +209,11 @@ class SlackAdapter(ChannelAdapter):
     def accepts(self, user: str | None, channel: str | None) -> bool:
         """Whether this author, in this conversation, is somebody to answer.
 
-        An empty allowlist admits nobody, which is the same choice Telegram and
-        WhatsApp make and for the same reason: a bot token is not a secret to the
-        workspace's members, and an agent with a shell answering whoever found its
-        name is a published endpoint.
-
-        Either id may be on the list. A person is identified by their user id but
-        reached by a channel, and an operator who has only ever seen one of the two
-        should not have to work out which half this is.
-
-        `accept_from_anyone` answers yes to a workspace nobody listed, which is
-        what an agent installed to be talked to by anybody in it needs — and which
-        is a decision somebody has to make deliberately, so it is its own flag
-        rather than an empty list quietly meaning the opposite of what it means
-        on every other channel.
+        Either id may be on the list, and the reason lives with the rule this
+        delegates to (`ChannelAdapter._accepts_id`): a person is identified by
+        their user id but reached by a channel.
         """
-        if self.accept_from_anyone:
-            return True
-        if not self.allowed:
-            return False
-        return bool(
-            (user and str(user).strip() in self.allowed)
-            or (channel and str(channel).strip() in self.allowed)
-        )
+        return self._accepts_id(user, channel)
 
     async def user_name(self, user_id: str | None) -> str | None:
         """What Slack calls this user, or `None` when it will not say.
@@ -299,15 +276,7 @@ class SlackAdapter(ChannelAdapter):
 
     def mark_seen(self, event_id: str | None) -> bool:
         """True the first time an id is offered, False for every redelivery."""
-        if not event_id:
-            return True
-        if event_id in self._seen_event_ids:
-            return False
-        self._seen_event_ids.add(event_id)
-        if len(self._seen_event_ids) > 2048:
-            for stale in list(self._seen_event_ids)[:512]:
-                self._seen_event_ids.discard(stale)
-        return True
+        return offer_seen(self._seen_event_ids, event_id, limit=2048, drop=512)
 
     def parse(self, payload: dict[str, Any]) -> list[tuple[str, str, str, str, str]]:
         """
@@ -375,8 +344,9 @@ class SlackAdapter(ChannelAdapter):
                 continue
             if not self.mark_seen(event_id):
                 continue
-            try:
-                await on_inbound(Message(
+            if await emit_inbound(
+                on_inbound,
+                Message(
                     channel=self.name,
                     person_id=slack_address(channel),
                     text=text,
@@ -388,21 +358,18 @@ class SlackAdapter(ChannelAdapter):
                     # `person_id` and one reply going to both. So the author stays
                     # in `attachments` where it always was, and is now also named.
                     sender_name=await self.user_name(user),
-                ))
+                ),
+                log_event="comms.slack.inbound_failed", logger=logger,
+            ):
                 accepted += 1
-            except Exception:
-                logger.exception("comms.slack.inbound_failed", channel=channel)
         return accepted
 
     async def send(self, *, person_id: str | None, text: str, urgency: str = "normal",
                    conversation_key: str | None = None, in_reply_to: Any = None) -> dict[str, Any]:
-        if self.http is None:
-            return {"status": "failed", "error": "slack adapter not started"}
-        if not person_id or not person_id.startswith("slack:"):
-            return {"status": "failed", "error": "slack adapter requires slack: person_id"}
-        channel = person_id.split(":", 1)[1].strip()
-        if not channel:
-            return {"status": "failed", "error": "no destination channel"}
+        destination = self._destination(person_id, "slack")
+        if isinstance(destination, dict):
+            return destination
+        channel = destination
         body: dict[str, Any] = {"channel": channel, "text": text[:39_000]}
         # A reply that is a reply, when the caller said which message it answers.
         # Slack's `thread_ts` is a channel-local timestamp rather than an id, so
@@ -461,12 +428,4 @@ def _thread_stamp(in_reply_to: Any) -> str:
 
 
 def _error_detail(response: Any) -> str:
-    try:
-        payload = response.json()
-    except Exception:
-        return f"http_{response.status_code}"
-    if isinstance(payload, dict):
-        error = payload.get("error")
-        if error:
-            return str(error)[:300]
-    return f"http_{response.status_code}"
+    return http_error_detail(response, lambda payload: payload.get("error"))

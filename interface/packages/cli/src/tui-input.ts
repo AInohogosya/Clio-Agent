@@ -18,10 +18,6 @@ export type Screen = 'chat' | 'settings' | 'presence' | 'intentions' | 'actions'
 /** Every screen that is not the conversation, and so is left by the same key. */
 export const PANEL_SCREENS: readonly Screen[] = ['presence', 'intentions', 'actions', 'budget', 'guardian', 'channels'];
 
-export function isPanelScreen(screen: Screen): boolean {
-  return PANEL_SCREENS.includes(screen);
-}
-
 export type Overlay = 'none' | 'help';
 
 /** Matches a control chord whether the input layer reports the letter or the code. */

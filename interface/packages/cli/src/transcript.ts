@@ -1,6 +1,6 @@
-import { channelLabel, type ChatMessage, type Language } from '@project-phone/core';
+import { channelLabel, formatTime, type ChatMessage, type Language } from '@project-phone/core';
 import { displayWidth, type LineTone } from './palette.js';
-import { formatTime, messageVoice, wrapText } from './render.js';
+import { messageVoice, wrapText } from './render.js';
 
 export interface TranscriptLine {
   text: string;

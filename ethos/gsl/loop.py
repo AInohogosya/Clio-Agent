@@ -9,18 +9,24 @@ from ethos.engine.rhythm import backoff_seconds
 from ethos.gateway.normalizer import was_truncated
 from ethos.gsl.acceptance import changed_paths
 from ethos.gsl.evaluator import ObjectiveChecker
-from ethos.gsl.planner import PlanUnavailable, parse_json_block, pick_approach, understand
+from ethos.gsl.planner import (
+    PlanUnavailable,
+    budget_bucket_for,
+    devise,
+    is_nothing_could_serve,
+    make_plan,
+    parse_json_block,
+    pick_approach,
+    understand,
+)
 from ethos.gsl.verification import VerificationLadder
 from ethos.observability.logger import get_logger
 from ethos.paths import user_home
 from ethos.prompts import (
     COMMISSIONED_ALREADY,
-    DEGRADED_PLAN,
     EDIT_EXISTING_FILES,
-    PLAN_PROMPT,
     REFLECT_PROMPT,
     STEP_PROMPT,
-    SUCCESS_CHECKS_MATTER,
     dumps,
 )
 from ethos.schemas.context import TurnKind
@@ -163,11 +169,8 @@ class GeneralSolverLoop:
     def _plan_backoff_s(self, attempts: int) -> float:
         """The wait after `attempts` consecutive failures, from the shared curve."""
         cfg = self.config.gsl
-        if self.rhythm is not None:
-            return float(self.rhythm.backoff_seconds(
-                attempts, base_s=cfg.plan_backoff_s, max_s=cfg.plan_backoff_max_s,
-                jitter=cfg.plan_backoff_jitter,
-            ))
+        # `rhythm.backoff_seconds` is a pass-through to the same module function,
+        # so the question "is there a controller wired?" has one answer either way.
         return backoff_seconds(
             attempts, base_s=cfg.plan_backoff_s, max_s=cfg.plan_backoff_max_s,
             jitter=cfg.plan_backoff_jitter,
@@ -254,6 +257,44 @@ class GeneralSolverLoop:
             outcome=SolverOutcome.step_failed, plan=plan, thoughts=thoughts,
         )
 
+    def _backing_off(self, resume: dict[str, Any], what: str) -> SolverResult | None:
+        """The shared answer to "a planning backoff is still running".
+
+        Two branches of the state machine — understanding and planning — can be
+        asked to proceed while a previous failure's backoff has not elapsed, and
+        both give the same reply, so the wording lives here: what is backing
+        off, when it asks again, and what failed last time. The outcome is
+        always `step_failed`; a wait is not an accomplishment.
+        """
+        waiting = self._planning_waiting(resume)
+        if waiting <= 0:
+            return None
+        return SolverResult(
+            outcome=SolverOutcome.step_failed,
+            thoughts=[
+                f"{what} is backing off; the last attempt failed and the next "
+                f"one is due in about {round(waiting)}s",
+                f"last failure: {(resume.get(PLAN_LAST_FAILURE) or {}).get('reason', 'unknown')}",
+            ],
+            cost_usd=0.0,
+        )
+
+    async def _install_plan(self, intention: IntentionRecord, resume: dict[str, Any],
+                            plan: Plan, *, strategy_number: int) -> None:
+        """Put a plan into the resume blob and clear the failure state it answers.
+
+        The count is about consecutive failures, and there is a plan again —
+        so the attempts, the retry deadline and the recorded failure all go at
+        once, in the same write that installs the plan.
+        """
+        resume["plan"] = plan.model_dump(mode="json")
+        resume["step_attempts"] = {}
+        resume["strategy_number"] = strategy_number
+        resume[PLAN_ATTEMPTS] = 0
+        resume[PLAN_RETRY_AFTER] = None
+        resume.pop(PLAN_LAST_FAILURE, None)
+        await self._save_resume(intention, resume)
+
     async def advance(self, intention: IntentionRecord, ws: Any) -> SolverResult:
         started = time.monotonic()
         cost = 0.0
@@ -305,22 +346,14 @@ class GeneralSolverLoop:
             # thing on the way to a plan), so it counts, backs off, and parks
             # through the same bounded state machine rather than unwinding the
             # cycle and retrying invisibly on the next one.
-            waiting = self._planning_waiting(resume)
-            if waiting > 0:
-                return SolverResult(
-                    outcome=SolverOutcome.step_failed,
-                    thoughts=[
-                        f"understanding is backing off; the last attempt failed and the "
-                        f"next one is due in about {round(waiting)}s",
-                        f"last failure: {(resume.get(PLAN_LAST_FAILURE) or {}).get('reason', 'unknown')}",
-                    ],
-                    cost_usd=cost,
-                )
+            waiting = self._backing_off(resume, "understanding")
+            if waiting is not None:
+                return waiting
             memories = await self._recall(intention.title, k=10)
             try:
                 data, c = await self._call(understand, intention, memories)
             except Exception as exc:
-                kind = "no_model" if _is_nothing_could_serve(exc) else "unusable"
+                kind = "no_model" if is_nothing_could_serve(exc) else "unusable"
                 failed = await self._planning_failed(
                     intention, resume,
                     PlanUnavailable(f"understanding request failed ({kind}): {exc}", kind=kind),
@@ -344,17 +377,9 @@ class GeneralSolverLoop:
             # plan has failed three times has earned an interval, and spending a
             # model call to find out that the interval has not elapsed is the
             # exact behaviour the interval exists to stop.
-            waiting = self._planning_waiting(resume)
-            if waiting > 0:
-                return SolverResult(
-                    outcome=SolverOutcome.step_failed,
-                    thoughts=[
-                        f"planning is backing off; the last attempt failed and the next one "
-                        f"is due in about {round(waiting)}s",
-                        f"last failure: {(resume.get(PLAN_LAST_FAILURE) or {}).get('reason', 'unknown')}",
-                    ],
-                    cost_usd=cost,
-                )
+            waiting = self._backing_off(resume, "planning")
+            if waiting is not None:
+                return waiting
             try:
                 plan, c = await self._strategy(
                     intention, resume,
@@ -372,14 +397,8 @@ class GeneralSolverLoop:
                 failed.cost_usd += cost
                 return failed
             cost += c
-            resume["plan"] = plan.model_dump(mode="json")
-            resume["step_attempts"] = {}
-            resume["strategy_number"] = int(plan.strategy_number)
-            # The count is about consecutive failures, and there is a plan again.
-            resume[PLAN_ATTEMPTS] = 0
-            resume[PLAN_RETRY_AFTER] = None
-            resume.pop(PLAN_LAST_FAILURE, None)
-            await self._save_resume(intention, resume)
+            await self._install_plan(intention, resume, plan,
+                                     strategy_number=int(plan.strategy_number))
             await self.memory.update_intention(intention.id, status=IntentionStatus.in_progress.value)
             return SolverResult(
                 outcome=SolverOutcome.step_done,
@@ -423,13 +442,7 @@ class GeneralSolverLoop:
                 failed.cost_usd += cost
                 return failed
             cost += c
-            resume["plan"] = new_plan.model_dump(mode="json")
-            resume["step_attempts"] = {}
-            resume["strategy_number"] = strategy_number
-            resume[PLAN_ATTEMPTS] = 0
-            resume[PLAN_RETRY_AFTER] = None
-            resume.pop(PLAN_LAST_FAILURE, None)
-            await self._save_resume(intention, resume)
+            await self._install_plan(intention, resume, new_plan, strategy_number=strategy_number)
             return SolverResult(
                 outcome=SolverOutcome.strategy_switch, plan=new_plan, cost_usd=cost,
                 thoughts=[f"strategy switch #{strategy_number} after repeated failures"],
@@ -508,153 +521,36 @@ class GeneralSolverLoop:
 
     async def _devise_with_cost(self, intention: Any, resume: dict[str, Any],
                                 knowhow: list[MemoryHit], lessons: list[str]) -> tuple[list[dict[str, Any]], float]:
-        response = None
+        spy = _CostSpy(self.gateway)
         try:
-            from ethos.prompts import DEVISE_PROMPT
-
-            request = ModelRequest(
+            approaches = await devise(
+                spy, self.config, intention, resume.get("understanding", "-"),
+                knowhow, lessons,
                 tier=Tier.T3 if resume.get("consequential") else Tier.T2,
-                purpose="gsl.devise",
-                budget_bucket="commitment" if intention.commissioned_by else "discretionary",
-                messages=[
-                    ModelMessage(role=Role.system, content=DEVISE_PROMPT.format(
-                        name=self.config.self_name,
-                        title=intention.title,
-                        desired_end_state=intention.desired_end_state or "-",
-                        understanding=resume.get("understanding", "-"),
-                        knowhow="\n".join(f"- [{h.kind}] {h.summary}" for h in knowhow[:10]) or "(none)",
-                        lessons="\n".join(f"- {lesson}" for lesson in lessons) or "(none)",
-                    )),
-                    ModelMessage(role=Role.user, content="Devise 3 approaches."),
-                ],
-                max_tokens=self.config.gsl.devise_tokens,
+                knowhow_limit=10,
             )
-            response = await self.gateway.complete(request)
-            data = parse_json_block(response.text or "")
-            approaches = [
-                {
-                    "id": str(a.get("id", f"a{i+1}")),
-                    "summary": str(a.get("summary", ""))[:500],
-                    "expected_value": max(0.0, min(1.0, float(a.get("expected_value", 0.5)))),
-                    "estimated_cost_usd": max(0.0, float(a.get("estimated_cost_usd", 0.05))),
-                    "reversible": bool(a.get("reversible", True)),
-                }
-                for i, a in enumerate(data.get("approaches", [])[:3])
-                if isinstance(a, dict)
-            ]
-            return approaches[:3], response.cost_usd
+            return approaches, spy.cost_usd
         except Exception:
             logger.exception("gsl.devise_failed")
-            return [], getattr(response, "cost_usd", 0.0)
+            return [], spy.cost_usd
 
     async def _plan_with_cost(self, intention: Any, approach: dict[str, Any],
                               strategy_number: int, plan_attempts: int = 0) -> tuple[Plan, float]:
         """A plan, or `PlanUnavailable`. The two are never the same thing.
 
-        After `plan_attempts_before_degrade` consecutive failures the request is
-        *changed* rather than repeated. Three levers, all of which attack the ways
-        this call actually fails rather than the failure in general:
-
-        * thinking is bounded by `reasoning_budget`. On the endpoints that bill
-          reasoning inside `max_tokens`, a plan call is a bet on how long the
-          model thinks first, and the shape that bet loses is the one seen here
-          most often: `finish_reason: length`, thousands of characters of
-          reasoning, no plan. Bounding it does not make the model reason less
-          well; it stops the reasoning from eating the room the answer was for.
-        * the tier is dropped to T1. The plan call asks for a list of steps, which
-          is not the hardest thing this system asks a model for, and T1 is served
-          by a wider set of entries than T2. A request that could not be placed at
-          all cannot be made better by any change to its wording.
-        * the schema ask is relaxed. `DEGRADED_PLAN` asks for the shortest honest
-          plan and says plainly that a success check is optional. Every step that
-          carries one is a step the model has to think a check out for before it
-          can write the step down, and those are the tokens that do not fit.
-
-        None of this weakens the no-padding invariant below, which is the thing
-        that turns a failed call into work that looks real. A relaxed plan is
-        still only the steps the model actually returned.
+        The request itself, its degradation levers, and the no-padding invariant
+        live in `planner.make_plan`, which is the one implementation of "ask for
+        a plan" this system has -- the loop only accounts for what the call cost
+        and lets `PlanUnavailable` carry the diagnosis upward. After
+        `plan_attempts_before_degrade` consecutive failures the request is
+        *changed* rather than repeated (thinking bounded, tier dropped, schema
+        ask relaxed), because re-sending an identical payload with a longer
+        sleep is the failure being fixed with more of it.
         """
-        degraded = plan_attempts >= max(1, self.config.gsl.plan_attempts_before_degrade)
-        try:
-            request = ModelRequest(
-                tier=Tier.T1 if degraded else Tier.T2,
-                purpose="gsl.plan",
-                budget_bucket="commitment" if intention.commissioned_by else "discretionary",
-                reasoning_budget=self.config.gsl.degraded_reasoning_budget if degraded else None,
-                messages=[
-                    ModelMessage(role=Role.system, content=(
-                        PLAN_PROMPT.format(
-                            name=self.config.self_name,
-                            commissioned=COMMISSIONED_ALREADY,
-                            success_checks=SUCCESS_CHECKS_MATTER,
-                            approach=approach.get("summary", ""),
-                            title=intention.title,
-                            desired_end_state=intention.desired_end_state or "-",
-                        ) + (DEGRADED_PLAN if degraded else "")
-                    )),
-                    ModelMessage(role=Role.user, content="Produce the plan JSON."),
-                ],
-                max_tokens=self.config.gsl.plan_tokens,
-            )
-            response = await self.gateway.complete(request)
-            if was_truncated(response.finish_reason):
-                raise PlanUnavailable(
-                    "plan response was cut off at "
-                    f"{self.config.gsl.plan_tokens} tokens"
-                )
-            data = parse_json_block(response.text or "")
-            steps = []
-            for i, s in enumerate(data.get("steps", [])[:7]):
-                if not isinstance(s, dict):
-                    continue
-                description = str(s.get("description", "")).strip()
-                if not description:
-                    continue
-                steps.append({
-                    "id": str(s.get("id", f"s{i+1}")),
-                    "description": description[:1000],
-                    "tool_hints": [str(t) for t in s.get("tool_hints", [])][:5],
-                    "success_check": s.get("success_check") or {},
-                    "reversible": bool(s.get("reversible", True)),
-                    "status": "pending",
-                    "attempts": 0,
-                    "result": None,
-                })
-            # No padding. What the model returned is the plan; a short one is
-            # short, and inventing the remainder from the approach summary is how
-            # a goal ended up with three identical steps naming no tool and
-            # carrying no success check -- a plan that looked real and could not
-            # be worked. Failing here is recoverable: the step is retried under a
-            # bounded, backing-off, eventually-parked state machine, and a
-            # truncated call fails loudly instead of becoming a fake plan.
-            if len(steps) < self.config.gsl.min_real_plan_steps:
-                raise PlanUnavailable(
-                    f"model returned {len(steps)} usable plan step(s); "
-                    f"at least {self.config.gsl.min_real_plan_steps} required"
-                )
-            plan = Plan(
-                approach_id=str(approach.get("id", f"approach-{strategy_number}")),
-                approach=str(approach.get("summary", "")),
-                steps=[_step_from(s) for s in steps[:7]],
-                strategy_number=strategy_number,
-            )
-            return plan, response.cost_usd
-        except PlanUnavailable:
-            raise
-        except Exception as exc:
-            logger.exception("gsl.plan_failed")
-            # "Nothing could serve this request" and "the answer was not a plan"
-            # are different problems, and the state machine above treats them
-            # differently: relaxing a request that no model could serve cannot
-            # help, so the reason has to say which happened. It is not special
-            # treatment for a dead key -- it is the reason a caller can tell a
-            # deployment that needs its key fixed from a model being awkward.
-            kind = "no_model" if _is_nothing_could_serve(exc) else "unusable"
-            raise PlanUnavailable(
-                f"plan request failed ({kind}): {exc}" if kind != "unusable" else
-                "plan request failed; no plan to execute",
-                kind=kind,
-            ) from None
+        spy = _CostSpy(self.gateway)
+        plan = await make_plan(spy, self.config, intention, approach,
+                               strategy_number, plan_attempts)
+        return plan, spy.cost_usd
 
     async def _execute_step(self, intention: IntentionRecord, resume: dict[str, Any],
                            plan: Plan, step: Any, ws: Any) -> SolverResult:
@@ -675,7 +571,7 @@ class GeneralSolverLoop:
         request = ModelRequest(
             tier=Tier.T3 if resume.get("consequential") else Tier.T2,
             purpose="gsl.step",
-            budget_bucket="commitment" if intention.commissioned_by else "discretionary",
+            budget_bucket=budget_bucket_for(intention),
             cache_prefix_blocks=3,
             messages=[
                 ModelMessage(role=Role.system, content=ws.stable_prefix_text() if ws is not None else ""),
@@ -1008,13 +904,7 @@ class GeneralSolverLoop:
             failed.verification = verification
             return failed, cost
         cost += c
-        resume["plan"] = new_plan.model_dump(mode="json")
-        resume["strategy_number"] = strategy_number
-        resume["step_attempts"] = {}
-        resume[PLAN_ATTEMPTS] = 0
-        resume[PLAN_RETRY_AFTER] = None
-        resume.pop(PLAN_LAST_FAILURE, None)
-        await self._save_resume(intention, resume)
+        await self._install_plan(intention, resume, new_plan, strategy_number=strategy_number)
         return SolverResult(
             outcome=SolverOutcome.strategy_switch, plan=new_plan, verification=verification,
             thoughts=[f"verification failed; switching to strategy #{strategy_number}"],
@@ -1110,7 +1000,7 @@ class GeneralSolverLoop:
             request = ModelRequest(
                 tier=Tier.T2,
                 purpose="gsl.reflect",
-                budget_bucket="commitment" if intention.commissioned_by else "discretionary",
+                budget_bucket=budget_bucket_for(intention),
                 messages=[
                     ModelMessage(role=Role.system, content=REFLECT_PROMPT.format(
                         name=self.config.self_name,
@@ -1171,31 +1061,24 @@ class GeneralSolverLoop:
         await self.memory.update_intention(intention.id, resume_state=resume)
 
 
-def _is_nothing_could_serve(exc: BaseException) -> bool:
-    """Whether the failure was the deployment rather than the request.
+class _CostSpy:
+    """A gateway that remembers what its calls cost, so the loop can account.
 
-    One question with a narrow answer, asked so that the planner's failure can be
-    named rather than lumped together. The gateway raises `NoModelAvailable` when
-    nothing in the catalogue could serve the request -- every candidate excluded,
-    every provider key rejected, every quota spent -- and it has already waited
-    out the cooldown and spent the retry budget by the time it does. A different
-    wording of the same request cannot produce a different answer, so reporting
-    this as "the model returned an unusable plan" would send the state machine
-    down the degradation path for a problem that has no lever.
-
-    Checked by class rather than by message because the message is a string in a
-    module that does not own it.
+    The planner functions answer with data and raise on failure; the loop is the
+    part that reports spend, and it wraps the gateway rather than asking the
+    planner to return a second value nobody else wants. What a call cost is on
+    the response, so this is arithmetic at one boundary instead of a cost
+    parameter threaded through every planner signature.
     """
-    from ethos.gateway.router import NoModelAvailable
 
-    if isinstance(exc, NoModelAvailable):
-        return True
-    # `BudgetExceededError` is a spend guard rather than a routing fact, and it
-    # does not clear by asking a different question, so it belongs on this side of
-    # the line too: no plan is available and the reason is not the plan.
-    from ethos.gateway.cost import BudgetExceededError
+    def __init__(self, gateway: Any):
+        self._gateway = gateway
+        self.cost_usd = 0.0
 
-    return isinstance(exc, BudgetExceededError)
+    async def complete(self, request: ModelRequest) -> Any:
+        response = await self._gateway.complete(request)
+        self.cost_usd += getattr(response, "cost_usd", 0.0)
+        return response
 
 
 def _step_from(data: dict[str, Any]) -> Any:

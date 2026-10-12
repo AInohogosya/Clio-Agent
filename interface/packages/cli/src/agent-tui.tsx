@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Box, Text, useApp } from 'ink';
 import {
   controlSummary,
@@ -14,20 +14,17 @@ import {
   type AgentLinkStatus,
   type AgentView,
   type ClientSnapshot,
-  type Language,
   type Settings,
 } from '@project-phone/core';
 import {
   createPalette,
-  displayWidth,
   lineToneHex,
-  truncateWidth,
   type ColorDepth,
   type Palette,
 } from './palette.js';
-import { Divider, Hint, Notice, Spinner, StatusPill } from './tui-kit.js';
+import { Divider, StatusPill } from './tui-kit.js';
 import { maxScroll, transcriptLines, windowLines } from './transcript.js';
-import { statusLabelKey, statusTone, wrapText } from './render.js';
+import { statusLabelKey, statusTone } from './render.js';
 import {
   PANEL_SCREENS,
   runCommand,
@@ -38,8 +35,18 @@ import {
   type Screen,
   type Translator,
 } from './tui-input.js';
-import { useAgentSession, type AgentSession, type AgentToast } from './agent-session.js';
+import { useAgentSession } from './agent-session.js';
 import { channelBadge } from './channels.js';
+import {
+  Composer,
+  DebugPanel,
+  EmptyState,
+  ErrorRow,
+  Footer,
+  HelpOverlay,
+  PendingRow,
+  useTranscriptScroll,
+} from './tui-shared.js';
 import {
   ActionsPanel,
   AgentSettingsPanel,
@@ -120,26 +127,7 @@ export function AgentTui({ initialConfig, debug, width, height, depth }: AgentTu
   const [overlay, setOverlay] = useState<Overlay>('none');
   const [input, setInput] = useState('');
   const [cursor, setCursor] = useState(0);
-  const [scroll, setScroll] = useState(0);
-  const scrollRef = useRef(0);
-  // Whether the reader chose to follow the conversation. Cleared when they scroll
-  // back, restored when they return to the newest line.
-  const following = useRef(true);
-
-  const follow = useCallback(() => {
-    following.current = true;
-    scrollRef.current = 0;
-    setScroll(0);
-  }, []);
-  const seek = useCallback((next: number | ((current: number) => number)) => {
-    const resolved = typeof next === 'function' ? next(scrollRef.current) : next;
-    scrollRef.current = resolved;
-    following.current = resolved === 0;
-    setScroll(resolved);
-  }, []);
-  const onSettled = useCallback(() => {
-    if (following.current) follow();
-  }, [follow]);
+  const { scroll, seek, follow, onSettled } = useTranscriptScroll();
 
   const session = useAgentSession(initialConfig, debug, onSettled);
   const { client, snapshot, view, link, streaming, config, debugLines, toast, say } = session;
@@ -280,7 +268,16 @@ export function AgentTui({ initialConfig, debug, width, height, depth }: AgentTu
   if (overlay === 'help') {
     return (
       <Box flexDirection="column" height={height} paddingX={1} width={width}>
-        <HelpOverlay height={height - 2} palette={palette} t={t} width={width - 2} />
+        <HelpOverlay
+          commands={HELP_COMMANDS}
+          height={height - 2}
+          keys={HELP_KEYS}
+          keyWidth={26}
+          noteKey="agentSendHint"
+          palette={palette}
+          t={t}
+          width={width - 2}
+        />
       </Box>
     );
   }
@@ -321,7 +318,7 @@ export function AgentTui({ initialConfig, debug, width, height, depth }: AgentTu
           {panel ?? (
             <Box flexDirection="column" flexGrow={1}>
               {visible.length === 0 ? (
-                <EmptyState palette={palette} t={t} width={chatWidth - 2} />
+                <EmptyState bodyKey="agentSendHint" palette={palette} t={t} titleKey="agentTitle" width={chatWidth - 2} />
               ) : (
                 visible.map((line, index) => (
                   <Text bold={line.bold} color={lineToneHex(palette, line.tone)} key={`${index}-${line.text.slice(0, 12)}`}>
@@ -329,7 +326,7 @@ export function AgentTui({ initialConfig, debug, width, height, depth }: AgentTu
                   </Text>
                 ))
               )}
-              {snapshot.pending ? <PendingRow palette={palette} t={t} /> : null}
+              {snapshot.pending ? <PendingRow labelKey="agentAwaiting" palette={palette} t={t} /> : null}
             </Box>
           )}
           {snapshot.lastError ? (
@@ -352,7 +349,7 @@ export function AgentTui({ initialConfig, debug, width, height, depth }: AgentTu
       {debug ? <DebugPanel lines={debugLines} palette={palette} t={t} width={width - 2} /> : null}
       {screen === 'chat' ? (
         <Composer
-          channel={channel}
+          badge={channel === 'web' || channel === 'cli' ? undefined : channelBadge(channel)}
           cursor={cursor}
           input={input}
           limit={limit}
@@ -363,10 +360,8 @@ export function AgentTui({ initialConfig, debug, width, height, depth }: AgentTu
         />
       ) : null}
       <Footer
+        hints={['/help', screen === 'chat' ? '/presence' : 'Tab', ...((limit > 0 && screen === 'chat') ? [t('cliScrollHint')] : []), 'Ctrl-Q']}
         palette={palette}
-        screen={screen}
-        scrollable={limit > 0 && screen === 'chat'}
-        t={t}
         toast={toast}
         width={width - 2}
       />
@@ -516,186 +511,3 @@ function AgentSidebar({
     </Box>
   );
 }
-
-function EmptyState({ palette, t, width }: { palette: Palette; t: Translator; width: number }) {
-  return (
-    <Box flexDirection="column" flexGrow={1} justifyContent="center" paddingX={1}>
-      <Text bold color={palette.accent}>{t('agentTitle')}</Text>
-      <Text color={palette.inkMuted}>{truncateWidth(t('agentSendHint'), width)}</Text>
-    </Box>
-  );
-}
-
-function PendingRow({ palette, t }: { palette: Palette; t: Translator }) {
-  return (
-    <Box>
-      <Spinner palette={palette} />
-      <Text color={palette.accent}>{`  ${t('agentAwaiting')}…`}</Text>
-    </Box>
-  );
-}
-
-function ErrorRow({ palette, text, width }: { palette: Palette; text: string; width: number }) {
-  // Two lines, so the sentence the agent said is not cut off at the first line's
-  // worth of characters — that cut is where the useful half usually is.
-  const rows = wrapText(text, Math.max(10, width - 2));
-  return (
-    <Box flexDirection="column">
-      {rows.slice(0, 2).map((row, index) => (
-        <Text color={palette.danger} key={index}>{index === 0 ? `✕ ${row}` : `  ${row}`}</Text>
-      ))}
-    </Box>
-  );
-}
-
-function DebugPanel({
-  lines, palette, t, width,
-}: { lines: string[]; palette: Palette; t: Translator; width: number }) {
-  return (
-    <Box borderColor={palette.line} borderStyle="round" flexDirection="column" paddingX={1} width={width}>
-      <Text bold color={palette.accent}>{t('debug')}</Text>
-      {lines.length === 0
-        ? <Text color={palette.inkFaint}>{t('debugIdle')}</Text>
-        : lines.map((line, index) => (
-          <Text color={palette.inkFaint} key={`${index}-${line.slice(0, 10)}`}>
-            {truncateWidth(line, width - 4)}
-          </Text>
-        ))}
-    </Box>
-  );
-}
-
-function Composer({
-  channel, cursor, input, limit, palette, scroll, t, width,
-}: {
-  channel: string;
-  cursor: number;
-  input: string;
-  limit: number;
-  palette: Palette;
-  scroll: number;
-  t: Translator;
-  width: number;
-}) {
-  const position = Math.max(0, Math.min(cursor, input.length));
-  const before = input.slice(0, position);
-  const at = input.slice(position, position + 1);
-  const after = input.slice(position + 1);
-  // The row is the prompt (2 columns), the caret (1) and the text, so the
-  // text's budget is the box's inner width minus three: a budget that ignores
-  // them wraps the composer onto a second line on every keystroke past the
-  // right edge, and a composer that grows while you type is one that pushes
-  // the transcript away. The window scrolls to keep the caret in view, so
-  // typing past the edge moves the text instead of pushing the caret off.
-  //
-  // The door badge comes out of that budget when it is shown, and the text budget
-  // shrinks to match — the badge is never allowed to push the draft off the row,
-  // and the draft is what the reader is in the middle of. The local doors need no
-  // badge: they deliver to whoever is reading, and the default is the terminal's
-  // own line.
-  const badge = channel === 'web' || channel === 'cli' ? '' : channelBadge(channel);
-  const room = Math.max(4, width - 7 - (badge ? displayWidth(badge) + 1 : 0));
-  const lead = Math.max(0, displayWidth(before) - room + 1);
-  const visibleBefore = lead > 0 ? `…${before.slice(lead)}` : before;
-  const shownBefore = truncateWidth(visibleBefore, room);
-  return (
-    <Box
-      borderColor={input ? palette.accent : palette.line}
-      borderStyle="round"
-      flexDirection="column"
-      paddingX={1}
-      width={width}
-    >
-      <Box>
-        {badge ? <Text bold color={palette.accent}>{`${badge} `}</Text> : null}
-        <Text bold color={palette.accent}>{'❯ '}</Text>
-        {shownBefore ? <Text color={palette.ink}>{shownBefore}</Text> : null}
-        <Text inverse>{at || ' '}</Text>
-        {after ? <Text color={palette.ink}>{truncateWidth(after, Math.max(0, room - displayWidth(shownBefore)))}</Text> : null}
-      </Box>
-      <Box justifyContent="space-between">
-        {scroll > 0 ? (
-          <Text color={palette.accent}>{`▲ ${scroll}/${limit} ${t('cliScrollHint')}`}</Text>
-        ) : (
-          <Hint palette={palette}>{t('interruptHint')}</Hint>
-        )}
-        {/* The cap is enforced on code units, so the counter counts them too:
-            a counter that counts columns would read "over" while a wide-char
-            draft is still accepted, and the other way round for ASCII. */}
-        <Text color={palette.inkFaint}>{`${input.length}/${MAX_TERMINAL_TEXT_LENGTH}`}</Text>
-      </Box>
-    </Box>
-  );
-}
-
-function Footer({
-  palette, scrollable, t, toast, screen, width,
-}: {
-  palette: Palette;
-  scrollable: boolean;
-  t: Translator;
-  toast: AgentToast | null;
-  screen: Screen;
-  width: number;
-}) {
-  const hints = [
-    '/help',
-    // Panels are cycled with Tab, and the chat is one stop on that cycle, so
-    // the second hint names the key that leaves a panel — repeating `/help`
-    // here showed the same word twice on every panel screen.
-    screen === 'chat' ? '/presence' : 'Tab',
-    ...(scrollable ? [t('cliScrollHint')] : []),
-    'Ctrl-Q',
-  ].join('  ·  ');
-  return (
-    <Box flexDirection="column" width={width}>
-      {toast ? (
-        <Box>
-          <Notice palette={palette} tone={toast.tone}>{truncateWidth(toast.text, width - 4)}</Notice>
-        </Box>
-      ) : (
-        <Box>
-          <Hint palette={palette}>{truncateWidth(hints, width)}</Hint>
-        </Box>
-      )}
-    </Box>
-  );
-}
-
-function HelpOverlay({ palette, t, width, height }: { palette: Palette; t: Translator; width: number; height: number }): React.ReactElement {
-  const keyWidth = 26;
-  const room = Math.max(20, width - keyWidth - 6);
-  return (
-    <Box borderColor={palette.accent} borderStyle="round" flexDirection="column" height={height} paddingX={2} width={width}>
-      <Box justifyContent="space-between">
-        <Text bold color={palette.accent}>{`⌘ ${t('cliHelpTitle')}`}</Text>
-        <Text color={palette.inkFaint}>{t('cliHelpClose')}</Text>
-      </Box>
-      <Box flexDirection="column" marginTop={1}>
-        {HELP_KEYS.map(([key, description]) => (
-          <Box key={key}>
-            <Box width={keyWidth}>
-              <Text bold color={palette.inkMuted}>{truncateWidth(key, keyWidth)}</Text>
-            </Box>
-            <Text color={palette.inkFaint}>{truncateWidth(description, room)}</Text>
-          </Box>
-        ))}
-      </Box>
-      <Divider palette={palette} width={Math.max(4, width - 2)} />
-      <Box flexDirection="column" marginTop={1}>
-        {HELP_COMMANDS.map(([key, description]) => (
-          <Box key={key}>
-            <Box width={keyWidth}>
-              <Text bold color={palette.accent}>{truncateWidth(key, keyWidth)}</Text>
-            </Box>
-            <Text color={palette.inkMuted}>{truncateWidth(description, room)}</Text>
-          </Box>
-        ))}
-      </Box>
-      <Box flexGrow={1} />
-      <Text color={palette.inkFaint}>{t('agentSendHint')}</Text>
-    </Box>
-  );
-}
-
-export type { AgentSession, Language };

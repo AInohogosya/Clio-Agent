@@ -1,5 +1,6 @@
 import {
   createTranslator,
+  formatTime,
   sanitizeTerminalText,
   type ChatMessage,
   type ConnectionStatus,
@@ -166,26 +167,6 @@ export function statusLabelKey(status: ConnectionStatus): 'connected' | 'thinkin
   if (status === 'online') return 'connected';
   if (status === 'thinking' || status === 'connecting') return 'thinking';
   return 'offline';
-}
-
-export function formatTime(timestamp: number, language: Language): string {
-  try {
-    return new Intl.DateTimeFormat(language, { hour: '2-digit', minute: '2-digit' }).format(
-      Number.isFinite(timestamp) ? timestamp : Date.now(),
-    );
-  } catch {
-    return '--:--';
-  }
-}
-
-export function formatDateTime(timestamp: number, language: Language): string {
-  try {
-    return new Intl.DateTimeFormat(language, {
-      year: 'numeric', month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit',
-    }).format(Number.isFinite(timestamp) ? timestamp : Date.now());
-  } catch {
-    return '-';
-  }
 }
 
 export interface MessageVoice {

@@ -14,6 +14,8 @@ import {
   createTranslator,
   discoverProviderModels,
   DuplexClient,
+  findIntention,
+  flattenIntentions,
   MAX_PROMPT_LENGTH,
   sanitizeTerminalText,
   toChatMessages,
@@ -23,7 +25,7 @@ import {
   type Settings,
   type TranslationKey,
 } from '@project-phone/core';
-import { CliError, parseArguments, type CliOptions, type ConfigField } from './args.js';
+import { CliError, parseArguments, type AgentAction, type CliOptions, type ConfigField } from './args.js';
 import { doorClear, doorValue, doorWrite } from './door-fields.js';
 import { describeError, isKnownErrorCode } from './errors.js';
 import {
@@ -101,6 +103,60 @@ function buildRuntime(options: CliOptions): Runtime {
 
 function out(text: string): void {
   process.stdout.write(text);
+}
+
+/**
+ * One command's answer in both of its shapes.
+ *
+ * `--json` is the machine's form and the rendered lines are the person's, and
+ * every command that answers in both was writing the branch itself — fifteen
+ * copies of one conditional, one of them inverted and one of them dropped. The
+ * conditional lives here so a command says its answer once, in both shapes.
+ */
+function emit(options: CliOptions, data: unknown, lines: string): void {
+  if (options.json) out(`${JSON.stringify(data, null, 2)}\n`);
+  else out(lines);
+}
+
+/**
+ * What one answered turn looks like, in both of its shapes.
+ *
+ * The one-shot send and the piped session report a turn the same way: the
+ * machine's JSON on `--json`, the rendered lines for a reader, and the
+ * failure on stderr when the answer never arrived. What differs between the
+ * two — which JSON object, which lines — is the caller's, because one names
+ * the door and the other names only the turn.
+ */
+function reportTurn(
+  options: CliOptions,
+  data: unknown,
+  lines: string,
+  reply: { text: string } | null | undefined,
+  failure: string | null,
+): void {
+  emit(options, data, lines);
+  if (!reply && failure) {
+    process.stderr.write(`${sanitizeTerminalText(failure)}\n`);
+  }
+}
+
+/**
+ * An agent link that is always closed, for the commands that borrow one.
+ *
+ * Five commands each built an `AgentClient` and disposed it in a `finally`, so
+ * the seam that must not leak had five spellings. The link is made here and
+ * closed here; what the command does with it is the callback's.
+ */
+async function withAgentClient<T>(
+  settings: Settings,
+  run: (agent: AgentClient) => Promise<T>,
+): Promise<T> {
+  const agent = new AgentClient({ url: settings.agentUrl, personId: settings.agentPerson });
+  try {
+    return await run(agent);
+  } finally {
+    agent.dispose();
+  }
 }
 
 /**
@@ -189,14 +245,11 @@ async function resolveDestination(options: CliOptions): Promise<DoorChoice> {
   if (options.channel === undefined && options.to === undefined) return fallback;
   const settings = createSettings(readConfig().settings);
   if (settings.interface !== 'agent') return fallback;
-  const agent = new AgentClient({ url: settings.agentUrl, personId: settings.agentPerson });
-  try {
+  return withAgentClient(settings, async (agent) => {
     const choice = resolveDoor(await agent.doors(), settings.agentPerson, options.channel, options.to);
     if (!choice.ok) throw doorRefusalError(choice);
     return choice;
-  } finally {
-    agent.dispose();
-  }
+  });
 }
 
 /**
@@ -211,13 +264,11 @@ async function runChannels(runtime: Runtime): Promise<number> {
   const settings = createSettings(config.settings);
   if (settings.interface !== 'agent') {
     const problem = createTranslator(render.language)('interfaceDirectHint');
-    if (options.json) out(`${JSON.stringify({ error: problem }, null, 2)}\n`);
-    else out(renderLines([`  ${problem}`]));
+    emit(options, { error: problem }, renderLines([`  ${problem}`]));
     return 1;
   }
   if (options.doorAction !== 'list') return runDoor(runtime, settings);
-  const agent = new AgentClient({ url: settings.agentUrl, personId: settings.agentPerson });
-  try {
+  return withAgentClient(settings, async (agent) => {
     const loaded = await agent.refresh().catch(() => false);
     const doors = await agent.doors();
     // The transcript is the agent's own, and it is the only place a door that has
@@ -227,7 +278,7 @@ async function runChannels(runtime: Runtime): Promise<number> {
     const { offered, closed } = doorSummary(doors, messages);
     const current = options.channel?.trim() || agent.getChannel();
     if (options.json) {
-      out(`${JSON.stringify(channelsJson(doors, current, closed), null, 2)}\n`);
+      emit(options, channelsJson(doors, current, closed), '');
       return 0;
     }
     if (!loaded) {
@@ -239,9 +290,7 @@ async function runChannels(runtime: Runtime): Promise<number> {
     }
     out(renderLines(channelsScreen(offered, current, render, closed)));
     return 0;
-  } finally {
-    agent.dispose();
-  }
+  });
 }
 
 /**
@@ -261,24 +310,22 @@ async function runChannels(runtime: Runtime): Promise<number> {
 async function runDoor(runtime: Runtime, settings: Settings): Promise<number> {
   const { options, render } = runtime;
   const t = createTranslator(render.language);
-  const agent = new AgentClient({ url: settings.agentUrl, personId: settings.agentPerson });
   // Declared out here so a refusal thrown before the answer is read still has a
   // door to name — the prefix is the one thing that makes an address refusal
   // actionable.
   let setup: Awaited<ReturnType<AgentClient['channelSetup']>> = null;
   const target = options.field ?? '';
-  try {
-    setup = await agent.channelSetup();
+  return withAgentClient(settings, async (agent) => {
+    try {
+      setup = await agent.channelSetup();
     if (setup === null) {
       const problem = t('doorUnreachable');
-      if (options.json) out(`${JSON.stringify({ error: problem }, null, 2)}\n`);
-      else out(renderLines([`  ${problem}`, '']));
+      emit(options, { error: problem }, renderLines([`  ${problem}`, '']));
       return 1;
     }
     if (options.doorAction === 'get') {
       const value = doorValue(setup, target);
-      if (options.json) out(`${JSON.stringify({ field: target, value }, null, 2)}\n`);
-      else out(`${value}\n`);
+      emit(options, { field: target, value }, `${value}\n`);
       return 0;
     }
     const write = options.doorAction === 'set'
@@ -286,7 +333,7 @@ async function runDoor(runtime: Runtime, settings: Settings): Promise<number> {
       : doorClear(setup, target);
     const written = await agent.saveDoor(write);
     if (options.json) {
-      out(`${JSON.stringify({ field: target, value: doorValue(written, target), setup: written }, null, 2)}\n`);
+      emit(options, { field: target, value: doorValue(written, target), setup: written }, '');
       return 0;
     }
     // What the agent says it now has, rather than what was typed — the same line
@@ -306,14 +353,12 @@ async function runDoor(runtime: Runtime, settings: Settings): Promise<number> {
       // out what an address looks like on the door they named.
       const prefix = setup?.doors.find((door) => door.id === String(target).split('.')[0]?.trim())?.prefix ?? '';
       const sentence = t(channelFailureKey(error), { prefix });
-      if (options.json) out(`${JSON.stringify({ error: sentence }, null, 2)}\n`);
-      else out(renderLines([`  ${sentence}`, '']));
+      emit(options, { error: sentence }, renderLines([`  ${sentence}`, '']));
       return 1;
     }
     throw error;
-  } finally {
-    agent.dispose();
-  }
+    }
+  });
 }
 
 /**
@@ -334,11 +379,7 @@ async function runSend(runtime: Runtime): Promise<number> {
   try {
     const blocked = await sessionProblem(session, render.language);
     if (blocked) {
-      if (options.json) {
-        out(`${JSON.stringify({ error: blocked }, null, 2)}\n`);
-      } else {
-        out(`${renderLines([`  ${blocked}`])}\n`);
-      }
+      emit(options, { error: blocked }, `${renderLines([`  ${blocked}`])}\n`);
       return 1;
     }
     if (!options.json) {
@@ -360,20 +401,19 @@ async function runSend(runtime: Runtime): Promise<number> {
     }
     const reply = await client.sendMessage(message);
     const failure = client.getSnapshot().lastError;
-    if (options.json) {
-      out(`${JSON.stringify({
+    reportTurn(
+      options,
+      {
         message: { role: 'user', text: message },
         reply: reply ? { role: 'assistant', text: reply.text } : null,
         channel: destination.channel,
         ...(destination.address ? { address: destination.address } : {}),
         error: failure,
-      }, null, 2)}\n`);
-    } else {
-      out(renderLines(replyScreen(reply, render)));
-      if (!reply && failure) {
-        process.stderr.write(`${sanitizeTerminalText(failure)}\n`);
-      }
-    }
+      },
+      renderLines(replyScreen(reply, render)),
+      reply,
+      failure,
+    );
     const snapshot = client.getSnapshot();
     // In agent mode the agent's store is the record of this conversation, so the
     // shared file keeps only what the terminal owns: the settings. Writing the
@@ -390,6 +430,23 @@ async function runSend(runtime: Runtime): Promise<number> {
     client.dispose();
   }
 }
+
+/**
+ * The verb a lifecycle verb means on the wire, or `undefined` for the reads.
+ *
+ * The same mapping the terminal's keymap keeps (`LIFECYCLE_WORDS` names the
+ * slash-command words; these are the `phone agent` verbs), restated here
+ * because the two are parsed from different places — one from a line, one from
+ * argv — and a word that meant two things in two parsers is how an agent gets
+ * stopped by a reader who meant to pause it.
+ */
+const LIFECYCLE_VERBS: Partial<Record<AgentAction, AgentControlAction>> = {
+  'pause-actions': 'pause_actions',
+  pause: 'pause_all',
+  resume: 'resume',
+  stop: 'stop',
+  emergency: 'emergency_stop',
+};
 
 /**
  * `phone agent` — ask the agent how it is, or move it.
@@ -413,49 +470,32 @@ async function runAgent(runtime: Runtime): Promise<number> {
     return 1;
   }
 
-  const agent = new AgentClient({ url: settings.agentUrl, personId: settings.agentPerson });
-  const transport = createAgentTransport({ resolve: () => agent });
   const verb = options.agentAction;
   const t = createTranslator(render.language);
 
-  try {
-    if (verb === 'show') {
+  return withAgentClient(settings, async (agent) => {
+    const transport = createAgentTransport({ resolve: () => agent });
+    try {
+      if (verb === 'show') {
       const loaded = await agent.refresh();
       if (!loaded) {
         const reason = t('cliAgentUnreachable');
-        if (options.json) out(`${JSON.stringify({ error: reason, url: settings.agentUrl }, null, 2)}\n`);
-        else out(renderLines([`  ${reason}`, `  ${settings.agentUrl}`, '']));
+        emit(options, { error: reason, url: settings.agentUrl }, renderLines([`  ${reason}`, `  ${settings.agentUrl}`, '']));
         return 1;
       }
-      if (options.json) {
-        out(`${JSON.stringify({ endpoint: settings.agentUrl, ...agentViewJson(agent.getView()) }, null, 2)}\n`);
-      } else {
-        out(renderLines(agentScreen(agent.getView(), render)));
-      }
+      emit(options, { endpoint: settings.agentUrl, ...agentViewJson(agent.getView()) }, renderLines(agentScreen(agent.getView(), render)));
       return 0;
     }
 
-    if (verb === 'pause-actions' || verb === 'pause' || verb === 'resume' || verb === 'stop' || verb === 'emergency') {
-      const action: AgentControlAction = verb === 'pause-actions'
-        ? 'pause_actions'
-        : verb === 'pause'
-          ? 'pause_all'
-          : verb === 'resume'
-            ? 'resume'
-            : verb === 'stop'
-              ? 'stop'
-              : 'emergency_stop';
+    const action = LIFECYCLE_VERBS[verb];
+    if (action) {
       const control = await transport.control(action);
-      if (options.json) {
-        out(`${JSON.stringify({ queued: action, control }, null, 2)}\n`);
-      } else {
-        out(renderLines([
-          '',
-          `  ${render.palette.accentText('✓')} ${t('cliAgentQueued', { action: controlLabel(action, t) })}`,
-          `  ${render.palette.faint(agent.getView().presence.state)}`,
-          '',
-        ]));
-      }
+      emit(options, { queued: action, control }, renderLines([
+        '',
+        `  ${render.palette.accentText('✓')} ${t('cliAgentQueued', { action: controlLabel(action, t) })}`,
+        `  ${render.palette.faint(agent.getView().presence.state)}`,
+        '',
+      ]));
       return 0;
     }
 
@@ -464,35 +504,23 @@ async function runAgent(runtime: Runtime): Promise<number> {
       await transport.undoAction(target);
       const action = agent.getView().actions.find((entry) => entry.id === target);
       const text = t('cliAgentUndoQueued', { tool: action?.tool ?? target });
-      if (options.json) out(`${JSON.stringify({ queued: 'undo', action_id: target }, null, 2)}\n`);
-      else out(renderLines(['', `  ${render.palette.accentText('✓')} ${text}`, '']));
+      emit(options, { queued: 'undo', action_id: target }, renderLines(['', `  ${render.palette.accentText('✓')} ${text}`, '']));
       return 0;
     }
 
     await transport.closeIntention(target);
-    const title = findIntention(agent.getView(), target)?.title ?? target;
-    if (options.json) out(`${JSON.stringify({ queued: 'cancel', intention_id: target }, null, 2)}\n`);
-    else out(renderLines(['', `  ${render.palette.accentText('✓')} ${t('cliAgentCloseQueued', { title })}`, '']));
-    return 0;
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (options.json) out(`${JSON.stringify({ error: message }, null, 2)}\n`);
-    else out(renderLines([`  ${message}`, '']));
-    return 1;
-  } finally {
-    agent.dispose();
-  }
+    const title = findIntention(agent.getView().intentions, target)?.title ?? target;
+    emit(options, { queued: 'cancel', intention_id: target }, renderLines(['', `  ${render.palette.accentText('✓')} ${t('cliAgentCloseQueued', { title })}`, '']));
+      return 0;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      emit(options, { error: message }, renderLines([`  ${message}`, '']));
+      return 1;
+    }
+  });
 }
 
-function findIntention(view: AgentView, id: string): { title: string } | undefined {
-  const stack = [...view.intentions];
-  while (stack.length) {
-    const node = stack.shift()!;
-    if (node.id === id || node.title === id) return node;
-    stack.push(...node.children);
-  }
-  return undefined;
-}
+
 
 /** The agent's own state as plain data, for `--json`. */
 function agentViewJson(view: AgentView): Record<string, unknown> {
@@ -517,15 +545,7 @@ function agentViewJson(view: AgentView): Record<string, unknown> {
 }
 
 function flattenIntentionTree(view: AgentView): unknown[] {
-  const out: unknown[] = [];
-  const walk = (nodes: AgentView['intentions']): void => {
-    for (const node of nodes) {
-      out.push({ ...node, children: undefined });
-      walk(node.children);
-    }
-  };
-  walk(view.intentions);
-  return out;
+  return flattenIntentions(view.intentions).map((node) => ({ ...node, children: undefined }));
 }
 
 async function runModels(runtime: Runtime): Promise<void> {
@@ -614,21 +634,20 @@ async function pushBaseModel(
   settings: Settings,
   clearKey: boolean,
 ): Promise<{ ok: true } | { ok: false; key: TranslationKey }> {
-  const agent = new AgentClient({ url: settings.agentUrl, personId: settings.agentPerson });
-  try {
-    await agent.saveBaseModel({
-      provider: settings.provider,
-      model: settings.model,
-      baseUrl: settings.baseUrl,
-      apiKey: settings.apiKey,
-      clearKey,
-    });
-    return { ok: true };
-  } catch (error) {
-    return { ok: false, key: baseModelFailureKey(error) };
-  } finally {
-    agent.dispose();
-  }
+  return withAgentClient(settings, async (agent) => {
+    try {
+      await agent.saveBaseModel({
+        provider: settings.provider,
+        model: settings.model,
+        baseUrl: settings.baseUrl,
+        apiKey: settings.apiKey,
+        clearKey,
+      });
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, key: baseModelFailureKey(error) };
+    }
+  });
 }
 
 function runHistory(runtime: Runtime): void {
@@ -753,11 +772,7 @@ async function runSession(runtime: Runtime): Promise<void> {
   try {
     const blocked = await sessionProblem(session, render.language);
     if (blocked) {
-      if (options.json) {
-        out(`${JSON.stringify({ error: blocked }, null, 2)}\n`);
-      } else {
-        out(`${renderLines([`  ${blocked}`])}\n`);
-      }
+      emit(options, { error: blocked }, `${renderLines([`  ${blocked}`])}\n`);
       process.exitCode = 1;
       return;
     }
@@ -765,16 +780,14 @@ async function runSession(runtime: Runtime): Promise<void> {
       const message = cleanMessage(line);
       const reply = await client.sendMessage(message);
       const failure = client.getSnapshot().lastError;
-      if (options.json) {
-        out(`${JSON.stringify({ role: 'user', text: message, reply: reply?.text ?? null, error: failure })}\n`);
-      } else {
-        out(renderLines(outgoingScreen(message, render)));
-        out(renderLines(replyScreen(reply, render)));
-        if (!reply && failure) {
-          process.stderr.write(`${sanitizeTerminalText(failure)}\n`);
-          process.exitCode = 1;
-        }
-      }
+      reportTurn(
+        options,
+        { role: 'user', text: message, reply: reply?.text ?? null, error: failure },
+        `${renderLines(outgoingScreen(message, render))}${renderLines(replyScreen(reply, render))}`,
+        reply,
+        failure,
+      );
+      if (!reply && failure) process.exitCode = 1;
     }
     const snapshot = client.getSnapshot();
     saveConfig(

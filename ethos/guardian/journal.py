@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import time
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -171,29 +170,3 @@ class ActionJournal:
         if status:
             records = [r for r in records if r.get("status") == status]
         return records[-limit:]
-
-    async def reconcile_stale(self, max_age_s: float = 3600) -> int:
-        now = time.time()
-        fixed = 0
-        if self.db is not None:
-            rows = await self.db.fetch(
-                "SELECT id FROM action_journal WHERE status = 'running' AND ts_end IS NULL",
-            )
-            for row in rows:
-                await self.db.execute(
-                    "UPDATE action_journal SET ts_end = now(), status = 'interrupted' WHERE id = $1",
-                    row["id"],
-                )
-                fixed += 1
-            return fixed
-        for record in await self._file_all():
-            if record.get("status") == "running":
-                ts = record.get("ts_start")
-                try:
-                    age = now - datetime.fromisoformat(ts).timestamp()
-                except (ValueError, TypeError):
-                    age = max_age_s + 1
-                if age > max_age_s or True:
-                    await self._file_update(record["id"], {"status": "interrupted"})
-                    fixed += 1
-        return fixed

@@ -10,6 +10,7 @@ from ethos.config import EthosConfig
 from ethos.memory.self_model import SelfModel
 from ethos.memory.store import MemoryStore
 from ethos.observability.logger import get_logger
+from ethos.parse import parse_json_block
 from ethos.schemas.events import EventKind
 from ethos.schemas.models import ModelMessage, ModelRequest, Role, Tier
 
@@ -200,17 +201,20 @@ class ConsolidationDAG:
             ],
             max_tokens=2048,
         )
-        response = await self.gateway.complete(request)
-        text = response.text or ""
-        try:
-            start = text.find("{")
-            end = text.rfind("}")
-            if start >= 0 and end > start:
-                return json.loads(text[start:end + 1])
-            return {}
-        except json.JSONDecodeError:
+        text = (await self.gateway.complete(request)).text or ""
+        data = parse_json_block(text)
+        if text and "{" in text and not data:
             logger.warning("consolidation.bad_json", purpose=purpose)
-            return {}
+        return data
+
+    async def _self_name(self) -> str:
+        """What the agent is called, for the prompts that speak as it.
+
+        Asked before every consolidation call rather than once per night,
+        because a renamed agent should hear its new name in the next prompt
+        rather than in tomorrow's.
+        """
+        return await self.self_model.get("name", self.config.self_name)
 
     async def run_nightly(self, now: datetime | None = None) -> dict[str, Any]:
         now = now or datetime.now(UTC)
@@ -263,7 +267,7 @@ class ConsolidationDAG:
         episodes_text = "\n".join(
             f"- [{m['kind']}] {m['summary']}" for m in members[:40]
         )
-        name = await self.self_model.get("name", self.config.self_name)
+        name = await self._self_name()
         data = await self._complete_json(
             DISTILL_PROMPT.format(name=name), episodes_text, Tier.T2, "consolidation.distill",
         )
@@ -284,7 +288,7 @@ class ConsolidationDAG:
                     a, b = facts[i], facts[j]
                     if a["statement"] == b["statement"]:
                         continue
-                    name = await self.self_model.get("name", self.config.self_name)
+                    name = await self._self_name()
                     data = await self._complete_json(
                         CONTRADICTION_PROMPT.format(name=name, subject=subject,
                                                     fact_a=a["statement"], fact_b=b["statement"]),
@@ -353,7 +357,7 @@ class ConsolidationDAG:
         return created
 
     async def _autobiography(self, episodes: list[dict[str, Any]]) -> bool:
-        name = await self.self_model.get("name", self.config.self_name)
+        name = await self._self_name()
         traits = await self.self_model.get("traits", {}) or {}
         recent_facts = await self.memory.db.fetch(
             "SELECT subject, statement FROM facts WHERE superseded_by IS NULL ORDER BY updated_at DESC LIMIT 30"
@@ -389,7 +393,7 @@ class ConsolidationDAG:
         return False
 
     async def _plan_next_day(self, now: datetime) -> bool:
-        name = await self.self_model.get("name", self.config.self_name)
+        name = await self._self_name()
         intentions = await self.memory.list_intentions(limit=30)
         questions = await self.memory.open_questions(limit=10)
         if not intentions and not questions:

@@ -31,7 +31,7 @@ import {
   saveConfig,
   watchConfig,
 } from '@project-phone/core/store';
-import { BRIDGE_PREFIX, bridgePath, TOKEN_HEADER, TOKEN_QUERY_KEY } from './src/bridge-protocol';
+import { BRIDGE_PREFIX, bridgePath, sameIds, TOKEN_HEADER, TOKEN_QUERY_KEY } from './src/bridge-protocol';
 
 /**
  * The local bridge: the only thing that lets a page in a browser reach the same
@@ -313,11 +313,6 @@ export function mergeIncoming(current: SharedState, incoming: unknown): MergeOut
     && current.settings.apiKey.trim() === merged.settings.apiKey.trim()
     && sameIds(current.messages, merged.messages);
   return { ok: true, state: merged, changed: !unchanged };
-}
-
-function sameIds(left: ChatMessage[], right: ChatMessage[]): boolean {
-  if (left.length !== right.length) return false;
-  return left.every((item, index) => item.id === right[index]?.id);
 }
 
 function readHistory(record: Record<string, unknown>): CompletionMessage[] {

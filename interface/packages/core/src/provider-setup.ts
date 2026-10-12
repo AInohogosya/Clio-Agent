@@ -327,6 +327,16 @@ export function shouldProbeCatalog(
 }
 
 /** Case-insensitive substring search over a discovered catalogue. */
+/** One id per entry, split on commas and whitespace alike.
+
+An allowlist is pasted from wherever it was copied from, and entries arrive
+separated by whichever of those — so the split is on both, and a single entry
+of two ids is an id no door recognises rather than two it does.
+*/
+export function splitIds(value: string): string[] {
+  return value.split(/[\s,]+/).map((entry) => entry.trim()).filter(Boolean);
+}
+
 export function filterModels(models: readonly string[], query: string): string[] {
   const needle = query.trim().toLowerCase();
   if (!needle) return [...models];

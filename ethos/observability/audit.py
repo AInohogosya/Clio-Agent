@@ -200,7 +200,3 @@ class AuditLog:
         if last is None:
             return {"seq": 0, "hash": GENESIS_HASH.hex(), "ts": None}
         return {"seq": last.seq, "hash": last.hash.hex(), "ts": last.ts.isoformat()}
-
-    @property
-    def head(self) -> bytes:
-        return self._head

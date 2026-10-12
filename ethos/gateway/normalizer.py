@@ -118,10 +118,24 @@ def _truncate_tools(tools: list[ToolSpec], limit: int) -> list[ToolSpec]:
 # is for, and because a caller that recognises only its own provider's word
 # reads every other provider's truncation as a complete answer.
 TRUNCATION_REASONS = frozenset({"length", "max_tokens", "incomplete"})
+_EMPTY_SCHEMA = {"type": "object", "properties": {}}
 
 
 def was_truncated(finish_reason: str | None) -> bool:
     return bool(finish_reason) and finish_reason.strip().lower() in TRUNCATION_REASONS
+
+
+def _quirk(quirks: Any, key: str, default: Any) -> Any:
+    """One provider quirk, dumped once: `model_dump()` re-runs per call."""
+    return quirks.model_dump().get(key, default)
+
+
+def _wire_tool(tool: Any, schema_key: str) -> dict[str, Any]:
+    return {
+        "name": sanitize_tool_name(tool.name),
+        "description": tool.description,
+        schema_key: tool.input_schema or _EMPTY_SCHEMA,
+    }
 
 
 # ---------------------------------------------------------------- Anthropic
@@ -129,12 +143,12 @@ def was_truncated(finish_reason: str | None) -> bool:
 def messages_to_anthropic(request: ModelRequest, entry_model: str, quirks: ProviderQuirks) -> dict[str, Any]:
     system_texts, rest = _stable_system_text(request)
     rest = _collapse_messages(rest)
-    tools = _truncate_tools(request.tools, int(quirks.model_dump().get("max_tools", 64)))
+    tools = _truncate_tools(request.tools, int(_quirk(quirks, "max_tools", 64)))
 
     system_blocks: list[dict[str, Any]] = []
     for i, text in enumerate(system_texts):
         block: dict[str, Any] = {"type": "text", "text": text}
-        if quirks.model_dump().get("cache_control", True) and request.cache_prefix_blocks > 0 and i == request.cache_prefix_blocks - 1:
+        if _quirk(quirks, "cache_control", True) and request.cache_prefix_blocks > 0 and i == request.cache_prefix_blocks - 1:
             block["cache_control"] = {"type": "ephemeral"}
         system_blocks.append(block)
 
@@ -189,17 +203,10 @@ def messages_to_anthropic(request: ModelRequest, entry_model: str, quirks: Provi
         payload["system"] = system_blocks
     if request.temperature is not None:
         payload["temperature"] = request.temperature
-    tools_wire = [
-        {
-            "name": sanitize_tool_name(t.name),
-            "description": t.description,
-            "input_schema": t.input_schema or {"type": "object", "properties": {}},
-        }
-        for t in tools
-    ]
+    tools_wire = [_wire_tool(t, "input_schema") for t in tools]
     if tools_wire:
         payload["tools"] = tools_wire
-    if request.thinking_budget and int(quirks.model_dump().get("thinking", True)):
+    if request.thinking_budget and int(_quirk(quirks, "thinking", True)):
         payload["thinking"] = {"type": "enabled", "budget_tokens": int(request.thinking_budget)}
         payload.pop("temperature", None)
     return payload
@@ -301,14 +308,12 @@ def messages_to_openai_responses(request: ModelRequest, entry_model: str, quirks
         payload["instructions"] = "\n\n".join(t for t in system_texts if t)
     if request.temperature is not None:
         payload["temperature"] = request.temperature
-    tools = _truncate_tools(request.tools, int(quirks.model_dump().get("max_tools", 128)))
+    tools = _truncate_tools(request.tools, int(_quirk(quirks, "max_tools", 128)))
     if tools:
         payload["tools"] = [
             {
                 "type": "function",
-                "name": sanitize_tool_name(t.name),
-                "description": t.description,
-                "parameters": t.input_schema or {"type": "object", "properties": {}},
+                **_wire_tool(t, "parameters"),
                 "strict": False,
             }
             for t in tools
@@ -394,13 +399,9 @@ def sanitize_declarations_for_google(
     unsupported = set(quirks_data.get("unsupported_schema_keys", []))
     out: list[dict[str, Any]] = []
     for t in tools:
-        out.append({
-            "name": sanitize_tool_name(t.name),
-            "description": t.description,
-            "parameters": _sanitize_schema_for_google(
-                t.input_schema or {"type": "object", "properties": {}}, unsupported
-            ),
-        })
+        wire = _wire_tool(t, "parameters")
+        wire["parameters"] = _sanitize_schema_for_google(wire["parameters"], unsupported)
+        out.append(wire)
     return out
 
 
@@ -449,7 +450,7 @@ def messages_to_google(request: ModelRequest, entry_model: str, quirks: Provider
     }
     if system_texts:
         payload["systemInstruction"] = {"parts": [{"text": "\n\n".join(system_texts)}]}
-    tools = _truncate_tools(request.tools, int(quirks.model_dump().get("max_declarations", 32)))
+    tools = _truncate_tools(request.tools, int(_quirk(quirks, "max_declarations", 32)))
     if tools:
         payload["tools"] = [{"functionDeclarations": sanitize_declarations_for_google(tools, quirks)}]
     generation: dict[str, Any] = {"maxOutputTokens": request.max_tokens}
@@ -582,16 +583,12 @@ def messages_to_openai_compat(request: ModelRequest, entry_model: str, quirks: P
         # it after a rejection rather than letting an endpoint's ignorance break
         # the request.
         payload["reasoning"] = {"max_tokens": int(request.reasoning_budget)}
-    tools = _truncate_tools(request.tools, int(quirks.model_dump().get("max_tools", 128)))
+    tools = _truncate_tools(request.tools, int(_quirk(quirks, "max_tools", 128)))
     if tools:
         payload["tools"] = [
             {
                 "type": "function",
-                "function": {
-                    "name": sanitize_tool_name(t.name),
-                    "description": t.description,
-                    "parameters": t.input_schema or {"type": "object", "properties": {}},
-                },
+                "function": _wire_tool(t, "parameters"),
             }
             for t in tools
         ]

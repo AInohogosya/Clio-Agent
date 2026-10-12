@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 from datetime import UTC, datetime
 from typing import Any
 
-from ethos.db import Database
+from ethos.db import Database, decode_env_attrs
 from ethos.observability.logger import get_logger
 
 logger = get_logger("ethos.core.control")
@@ -81,7 +80,7 @@ class ControlPlane:
                 CONTROL_KIND, CONTROL_KEY,
             )
             if row is not None:
-                attrs = json.loads(row["attrs"]) if isinstance(row["attrs"], str) else dict(row["attrs"])
+                attrs = decode_env_attrs(row)
                 self.paused = bool(attrs.get("paused", False))
                 self.pause_actions = bool(attrs.get("pause_actions", False))
                 self.emergency = bool(attrs.get("emergency", False))
@@ -148,12 +147,7 @@ class ControlPlane:
             "preview": self.preview,
             "updated_at": datetime.now(UTC).isoformat(),
         }
-        await self.db.execute(
-            "INSERT INTO env_entities (id, kind, key, attrs, owner, last_verified_at, health) "
-            "VALUES (gen_random_uuid(), $1, $2, $3::jsonb, 'control', now(), 'ok') "
-            "ON CONFLICT (key) DO UPDATE SET attrs = $3::jsonb, last_verified_at = now()",
-            CONTROL_KIND, CONTROL_KEY, json.dumps(attrs),
-        )
+        await self.db.upsert_env(CONTROL_KIND, CONTROL_KEY, attrs, owner="control")
 
     async def apply_command(self, action: str, by: str = "system") -> dict[str, Any]:
         if action == "pause_all":

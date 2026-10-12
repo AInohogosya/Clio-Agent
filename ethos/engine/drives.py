@@ -12,14 +12,11 @@ from pydantic import BaseModel, Field
 from ethos.config import EthosConfig
 from ethos.observability.logger import get_logger
 from ethos.schemas.gsl import Focus, IntentionRecord
+from ethos.util import clip
 
 logger = get_logger("ethos.drives")
 
 DRIVES = ("commitment", "curiosity", "mastery", "creation", "order", "social", "homeostasis")
-
-
-def clip(value: float, lo: float = 0.0, hi: float = 1.0) -> float:
-    return max(lo, min(hi, value))
 
 
 class DriveInputs(BaseModel):
@@ -185,43 +182,36 @@ class Impulse(BaseModel):
 
 
 def propose_impulses(p: dict[str, float], inputs: DriveInputs, threshold: float) -> list[Impulse]:
-    impulses: list[Impulse] = []
-    if p["commitment"] > threshold:
-        impulses.append(Impulse(
-            name="advance_commitment", drive="commitment", relevance=0.9, value_hat=0.8, cost_hat=0.15,
-            description="Advance the highest-urgency open commitment by one concrete step.",
-        ))
-    if p["curiosity"] > threshold:
-        impulses.append(Impulse(
-            name="explore_question", drive="curiosity", relevance=0.95, value_hat=0.6, cost_hat=0.10,
-            description="Take the most interesting open question and dig for 20 focused minutes.",
-        ))
-    if p["mastery"] > threshold:
-        impulses.append(Impulse(
-            name="deliberate_practice", drive="mastery", relevance=0.9, value_hat=0.7, cost_hat=0.15,
-            description="Retry the most recent hard failure with a deliberately different strategy.",
-        ))
-    if p["creation"] > threshold:
-        impulses.append(Impulse(
-            name="push_venture", drive="creation", relevance=0.9, value_hat=0.75, cost_hat=0.20,
-            description="Move the most promising venture intention one step toward real-world value.",
-        ))
-    if p["order"] > threshold:
-        impulses.append(Impulse(
-            name="tidy", drive="order", relevance=0.9, value_hat=0.45, cost_hat=0.03,
-            description="Triage the backlog: classify unread events, close stale loops, tidy notes.",
-        ))
-    if p["social"] > threshold:
-        impulses.append(Impulse(
-            name="reach_out", drive="social", relevance=0.85, value_hat=0.5, cost_hat=0.05,
-            description="Send something genuinely useful to a person I have not talked to recently.",
-        ))
-    if p["homeostasis"] > threshold:
-        impulses.append(Impulse(
-            name="maintenance", drive="homeostasis", relevance=0.9, value_hat=0.5, cost_hat=0.02,
-            description="Environment maintenance: verify health, prune trash, check disk and schedules.",
-        ))
-    return impulses
+    """One impulse per drive that wants to talk, in drive order.
+
+    A table rather than seven branches, because the shape is identical in all
+    seven and the differences are data: which drive, what the impulse is called,
+    what it is worth and costs, and how it reads in a decision log.
+    """
+    candidates = (
+        ("commitment", "advance_commitment", 0.9, 0.8, 0.15,
+         "Advance the highest-urgency open commitment by one concrete step."),
+        ("curiosity", "explore_question", 0.95, 0.6, 0.10,
+         "Take the most interesting open question and dig for 20 focused minutes."),
+        ("mastery", "deliberate_practice", 0.9, 0.7, 0.15,
+         "Retry the most recent hard failure with a deliberately different strategy."),
+        ("creation", "push_venture", 0.9, 0.75, 0.20,
+         "Move the most promising venture intention one step toward real-world value."),
+        ("order", "tidy", 0.9, 0.45, 0.03,
+         "Triage the backlog: classify unread events, close stale loops, tidy notes."),
+        ("social", "reach_out", 0.85, 0.5, 0.05,
+         "Send something genuinely useful to a person I have not talked to recently."),
+        ("homeostasis", "maintenance", 0.9, 0.5, 0.02,
+         "Environment maintenance: verify health, prune trash, check disk and schedules."),
+    )
+    return [
+        Impulse(
+            name=name, drive=drive, relevance=relevance,
+            value_hat=value_hat, cost_hat=cost_hat, description=description,
+        )
+        for drive, name, relevance, value_hat, cost_hat, description in candidates
+        if p[drive] > threshold
+    ]
 
 
 def utility(

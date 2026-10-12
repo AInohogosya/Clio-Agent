@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { createTranslator, type Language } from '@project-phone/core';
+import { createTranslator, formatClock, type Language } from '@project-phone/core';
 import { providerFor } from '@project-phone/core';
 import { Icon, type IconName } from '../components/Icon';
 import { classNames } from '../components/Primitives';
@@ -23,15 +23,6 @@ const TONE_STYLES: Record<PairingTone, { dot: string; text: string; labelKey: 's
   local: { dot: 'bg-[var(--warn-dot)]', text: 'text-[var(--warn)]', labelKey: 'syncBridgeLocal' },
   blocked: { dot: 'bg-[var(--danger-dot)]', text: 'text-[var(--danger)]', labelKey: 'syncBridgeLocal' },
 };
-
-function formatSync(timestamp: number | null, language: Language): string {
-  if (!timestamp) return '—';
-  try {
-    return new Intl.DateTimeFormat(language, { hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(timestamp);
-  } catch {
-    return '—';
-  }
-}
 
 /**
  * Makes the pairing between this page and the terminal visible: which store is
@@ -77,7 +68,7 @@ export function PairingPanel({
           <Row label={t('cliProvider')} value={providerFor(provider as never).label} />
           <Row label={t('cliModel')} value={model || '—'} mono />
           <Row label={t('cliConfigFile')} value={configFile || '—'} mono />
-          <Row label={t('cliUpdatedAt')} value={formatSync(lastSyncedAt, language)} />
+          <Row label={t('cliUpdatedAt')} value={formatClock(lastSyncedAt, language, '—')} />
         </dl>
       </div>
       <div className="mt-4 space-y-2 text-[0.68rem]">

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from datetime import UTC, datetime
 from typing import Any
 
@@ -57,11 +56,9 @@ class IntegrityScanner:
         )
         if self.db is not None:
             try:
-                await self.db.execute(
-                    "INSERT INTO env_entities (id, kind, key, attrs, owner, last_verified_at, health) "
-                    "VALUES (gen_random_uuid(), 'integrity', 'report', $1::jsonb, 'guardian', now(), $2) "
-                    "ON CONFLICT (key) DO UPDATE SET attrs = $1::jsonb, last_verified_at = now(), health = $2",
-                    json.dumps(report), "ok" if report["ok"] else "alert",
+                await self.db.upsert_env(
+                    "integrity", "report", report, owner="guardian",
+                    health="ok" if report["ok"] else "alert", update_health=True,
                 )
             except Exception:
                 logger.exception("integrity.db_record_failed")

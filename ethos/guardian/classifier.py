@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from pathlib import Path
 
 import bashlex
 
@@ -375,11 +374,7 @@ def extract_paths(command: str) -> list[str]:
         target = match.group(1)
         if target and not _DESCRIPTOR_RE.match(target):
             paths.append(target)
-    unique: list[str] = []
-    for p in paths:
-        if p not in unique:
-            unique.append(p)
-    return unique
+    return _unique(paths)
 
 
 def _walk(node: object):
@@ -543,10 +538,3 @@ def _unique(items: list[str]) -> list[str]:
         if item not in seen:
             seen.append(item)
     return seen
-
-
-def resolve_path(base_dir: str | Path, target: str) -> Path:
-    target_path = Path(target).expanduser()
-    if not target_path.is_absolute():
-        target_path = (Path(base_dir) / target_path).resolve()
-    return target_path

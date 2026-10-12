@@ -8,7 +8,7 @@ from email.header import decode_header, make_header
 from email.utils import parseaddr
 from typing import Any
 
-from ethos.comms.adapters.base import ChannelAdapter
+from ethos.comms.adapters.base import ChannelAdapter, await_cancelled, offer_seen
 from ethos.observability.logger import get_logger
 from ethos.schemas.messages import Message
 
@@ -59,13 +59,8 @@ class EmailAdapter(ChannelAdapter):
         is the right end to forget, since anything above the window has already
         been delivered and will not be offered again.
         """
-        if uid in self._seen_uids:
-            return False
-        self._seen_uids.add(uid)
-        if len(self._seen_uids) > SEEN_UID_LIMIT:
-            for stale in sorted(self._seen_uids)[:SEEN_UID_DROP]:
-                self._seen_uids.discard(stale)
-        return True
+        return offer_seen(self._seen_uids, uid, limit=SEEN_UID_LIMIT, drop=SEEN_UID_DROP,
+                          numeric=True, guard_empty=False)
 
     async def start(self) -> None:
         # Nothing: sending is SMTP and `send` opens its own connection, so this
@@ -85,13 +80,10 @@ class EmailAdapter(ChannelAdapter):
 
     async def stop(self) -> None:
         self._running = False
-        if self._task is not None:
-            self._task.cancel()
-            try:
-                await self._task
-            except (asyncio.CancelledError, Exception):
-                pass
-            self._task = None
+        task, self._task = self._task, None
+        if task is not None:
+            task.cancel()
+            await await_cancelled(task)
 
     async def _poll_loop(self) -> None:
         while self._running:

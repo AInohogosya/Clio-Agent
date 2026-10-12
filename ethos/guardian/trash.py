@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import os
 import shutil
@@ -10,7 +9,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from ethos.db import Database
+from ethos.db import Database, decode_env_attrs
+from ethos.guardian.registry import fingerprint_file
 from ethos.observability.logger import get_logger
 
 logger = get_logger("ethos.guardian.trash")
@@ -51,14 +51,7 @@ class TrashEntry:
 
 
 def _fingerprint_file(path: Path) -> str | None:
-    try:
-        digest = hashlib.sha256()
-        with open(path, "rb") as fh:
-            for chunk in iter(lambda: fh.read(65536), b""):
-                digest.update(chunk)
-        return digest.hexdigest()
-    except OSError:
-        return None
+    return fingerprint_file(path)
 
 
 class TrashStore:
@@ -127,12 +120,7 @@ class TrashStore:
         )
         if self.db is not None:
             try:
-                await self.db.execute(
-                    "INSERT INTO env_entities (id, kind, key, attrs, owner, last_verified_at, health) "
-                    "VALUES ($1, 'trash', $2, $3::jsonb, 'guardian', now(), 'ok') "
-                    "ON CONFLICT (key) DO UPDATE SET attrs = $3::jsonb, last_verified_at = now()",
-                    uuid.uuid4(), entry_id, json.dumps(entry.to_dict()),
-                )
+                await self.db.upsert_env("trash", entry_id, entry.to_dict(), owner="guardian")
             except Exception:
                 logger.exception("trash.db_record_failed")
         del thread_id
@@ -158,7 +146,7 @@ class TrashStore:
             pass
         if self.db is not None:
             try:
-                await self.db.execute("DELETE FROM env_entities WHERE kind = 'trash' AND key = $1", entry_id)
+                await self.db.delete_env("trash", entry_id)
             except Exception:
                 logger.exception("trash.db_delete_failed")
         logger.info("trash.restored", entry=entry_id, target=str(final))
@@ -170,7 +158,7 @@ class TrashStore:
                 "SELECT attrs::text AS attrs FROM env_entities WHERE kind = 'trash' AND key = $1", entry_id,
             )
             if row is not None:
-                data = json.loads(row["attrs"]) if isinstance(row["attrs"], str) else dict(row["attrs"])
+                data = decode_env_attrs(row)
                 data["trashed_at"] = datetime.fromisoformat(data["trashed_at"])
                 data["retention_until"] = datetime.fromisoformat(data["retention_until"])
                 return TrashEntry(data)
@@ -191,7 +179,7 @@ class TrashStore:
                     limit,
                 )
                 for row in rows:
-                    data = json.loads(row["attrs"]) if isinstance(row["attrs"], str) else dict(row["attrs"])
+                    data = decode_env_attrs(row)
                     data["trashed_at"] = datetime.fromisoformat(data["trashed_at"])
                     data["retention_until"] = datetime.fromisoformat(data["retention_until"])
                     entries.append(TrashEntry(data))
@@ -219,9 +207,7 @@ class TrashStore:
                 await asyncio.to_thread(shutil.rmtree, entry.path.parent, True)
                 if self.db is not None:
                     try:
-                        await self.db.execute(
-                            "DELETE FROM env_entities WHERE kind = 'trash' AND key = $1", entry.id,
-                        )
+                        await self.db.delete_env("trash", entry.id)
                     except Exception:
                         pass
                 purged += 1

@@ -15,27 +15,68 @@ from ethos.schemas.models import ModelRequest, NormalizedResponse
 logger = get_logger("ethos.gateway.client")
 
 
+def backoff_delay(
+    attempt: int, *, base_s: float, jitter: float, cap_s: float,
+    retry_after_s: float | None = None,
+) -> float:
+    """One wait on the shared retry curve: exponential, the cap applied last.
+
+    The same curve `GatewayService._delay_before_retry` uses, with the same
+    ordering — jitter widens the wait and the ceiling still holds it, and a
+    provider's `Retry-After` lengthens the wait without ever exceeding the cap.
+    """
+    delay = base_s * (2**attempt)
+    if jitter > 0:
+        delay *= 1.0 + random.random() * jitter
+    delay = min(delay, cap_s)
+    if retry_after_s is not None:
+        delay = max(delay, min(retry_after_s, cap_s))
+    return delay
+
+
+def open_endpoint_client(
+    socket_path: str | None, host: str, port: int, *, timeout_s: float,
+    sync: bool = False, virtual_host: str = "gateway.local",
+) -> tuple[Any, str]:
+    """An httpx client for a local service, over its unix socket or loopback TCP.
+
+    The one place that asks the question `gateway/client` used to ask three
+    times: `SUPPORTS_UNIX_SOCKETS` first — httpx's `uds=` transport is an
+    `AF_UNIX` socket that does not exist on Windows, so a stray file at the
+    path must not send a Windows client down the branch it cannot take — and
+    only then whether the file is there. The virtual base URL never resolves;
+    it is the name the transport dials by, because the socket has no port.
+    """
+    import httpx
+
+    use_socket = bool(socket_path) and SUPPORTS_UNIX_SOCKETS and os.path.exists(str(socket_path))
+    if use_socket:
+        transport = (
+            httpx.HTTPTransport(uds=str(socket_path))
+            if sync else httpx.AsyncHTTPTransport(uds=str(socket_path))
+        )
+        client = (
+            httpx.Client(transport=transport, base_url=f"http://{virtual_host}", timeout=timeout_s)
+            if sync else httpx.AsyncClient(transport=transport, base_url=f"http://{virtual_host}",
+                                           timeout=timeout_s)
+        )
+        return client, f"http://{virtual_host}"
+    base = f"http://{host}:{port}"
+    client = httpx.Client(base_url=base, timeout=timeout_s) if sync else httpx.AsyncClient(
+        base_url=base, timeout=timeout_s,
+    )
+    return client, base
+
+
 class GatewayClient:
     """HTTP client for ethos-gateway over its unix socket (or TCP fallback)."""
 
     def __init__(self, config: EthosConfig, timeout_s: float = 180.0):
         self.config = config
-        socket_path = config.gateway.socket_path
-        # `SUPPORTS_UNIX_SOCKETS`, not just `os.path.exists`. httpx's `uds=`
-        # transport is built on an `AF_UNIX` socket, which does not exist on
-        # Windows, and a socket file that happens to exist at that path on a
-        # Windows machine — a checkout of the repo, a stray file, a directory —
-        # would otherwise send the client down the branch it cannot take. So the
-        # question asked is whether the transport is *possible*, and only then
-        # whether the file is there.
-        use_socket = SUPPORTS_UNIX_SOCKETS and os.path.exists(socket_path)
-        if use_socket:
-            transport = httpx.AsyncHTTPTransport(uds=socket_path)
-            self._base = "http://gateway.local"
-            self._http = httpx.AsyncClient(transport=transport, base_url=self._base, timeout=timeout_s)
-        else:
-            self._base = f"http://{config.gateway.host}:{config.gateway.port}"
-            self._http = httpx.AsyncClient(base_url=self._base, timeout=timeout_s)
+        self._http, self._base = open_endpoint_client(
+            config.gateway.socket_path, config.gateway.host, config.gateway.port,
+            timeout_s=timeout_s,
+        )
 
     async def complete(self, request: ModelRequest) -> NormalizedResponse:
         """
@@ -60,10 +101,9 @@ class GatewayClient:
             except (httpx.TransportError, httpx.HTTPError) as exc:
                 if attempt == attempts - 1:
                     raise RuntimeError(f"gateway unreachable: {exc}") from exc
-                delay = min(
-                    retry.backoff_s * (2**attempt)
-                    * (1.0 + random.random() * retry.jitter if retry.jitter > 0 else 1.0),
-                    retry.max_backoff_s,
+                delay = backoff_delay(
+                    attempt, base_s=retry.backoff_s, jitter=retry.jitter,
+                    cap_s=retry.max_backoff_s,
                 )
                 logger.warning("gateway.unreachable_retry", attempt=attempt + 1,
                                of=attempts, retry_in_s=round(delay, 2), error=str(exc)[:200])

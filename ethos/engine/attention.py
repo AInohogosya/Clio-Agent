@@ -9,10 +9,12 @@ from typing import Any
 from ethos.config import EthosConfig
 from ethos.gateway.embeddings import EmbeddingProvider
 from ethos.observability.logger import get_logger
+from ethos.parse import parse_json_block
 from ethos.schemas.events import Appraisal, Percept, ScoredPercept
 from ethos.schemas.gsl import Focus
 from ethos.schemas.messages import Message, sender_label
 from ethos.schemas.models import ModelMessage, ModelRequest, Role, Tier
+from ethos.util import clip
 
 logger = get_logger("ethos.attention")
 
@@ -21,10 +23,6 @@ _TOKEN_RE = re.compile(r"[a-z0-9]+")
 INTERRUPTIBLE_KINDS = {
     "msg.inbound", "timer.fired", "control.update", "guardian.undo", "thread.result",
 }
-
-
-def clip(value: float, lo: float = 0.0, hi: float = 1.0) -> float:
-    return max(lo, min(hi, value))
 
 
 def jaccard(a: Sequence[str], b: Sequence[str]) -> float:
@@ -115,13 +113,9 @@ class Attention:
         )
         try:
             response = await self.gateway.complete(request)
-            text = response.text or ""
-            start, end = text.find("{"), text.rfind("}")
-            if start < 0 or end <= start:
+            data = parse_json_block(response.text or "")
+            if not data:
                 return None
-            import json
-
-            data = json.loads(text[start:end + 1])
             w = self.config.rhythm.attention.weights
             sender = self.config.rhythm.attention.sender
             src = sender.get(percept.sender_class, sender.get("unknown", 0.3))

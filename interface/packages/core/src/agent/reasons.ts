@@ -95,13 +95,31 @@ const WRITE_OUTCOMES: Record<string, TranslationKey> = {
  * ended up describing a save that had in fact been attempted and refused. The
  * caller says which half failed; this says what the write was told.
  */
-export function baseModelFailureKey(error: unknown): TranslationKey {
+/**
+ * The key a write failure reads as, whatever route wrote it.
+ *
+ * One function for the three routes because the agent puts its refusal in
+ * `detail` on all of them: a failure reads `agent_refused: <code>` and reports
+ * `agent_unreachable` for everything else, and reading the wrong field would
+ * report every refusal as "could not reach the agent" — advice to start
+ * something already running, sent to somebody whose only problem is a chat id
+ * or a name that is not a name.
+ */
+function writeFailureKey<T extends string>(
+  error: unknown,
+  isRefusal: (detail: unknown) => detail is T,
+  refusalKeys: Record<T, TranslationKey>,
+): TranslationKey {
   const detail = error instanceof AgentRequestError
     ? error.detail
     : (typeof error === 'string' ? error : '');
-  if (isBaseModelRefusal(detail)) return BASE_MODEL_REFUSAL_KEYS[detail];
+  if (isRefusal(detail)) return refusalKeys[detail];
   if (Object.prototype.hasOwnProperty.call(WRITE_OUTCOMES, detail)) return WRITE_OUTCOMES[detail];
   return 'agentBaseModelWriteUnanswered';
+}
+
+export function baseModelFailureKey(error: unknown): TranslationKey {
+  return writeFailureKey(error, isBaseModelRefusal, BASE_MODEL_REFUSAL_KEYS);
 }
 
 /**
@@ -117,12 +135,7 @@ export function baseModelFailureKey(error: unknown): TranslationKey {
  * that it failed and none of the reason.
  */
 export function identityFailureKey(error: unknown): TranslationKey {
-  const detail = error instanceof AgentRequestError
-    ? error.detail
-    : (typeof error === 'string' ? error : '');
-  if (isIdentityRefusal(detail)) return IDENTITY_REFUSAL_KEYS[detail];
-  if (Object.prototype.hasOwnProperty.call(WRITE_OUTCOMES, detail)) return WRITE_OUTCOMES[detail];
-  return 'agentBaseModelWriteUnanswered';
+  return writeFailureKey(error, isIdentityRefusal, IDENTITY_REFUSAL_KEYS);
 }
 
 /**
@@ -152,10 +165,5 @@ const CHANNEL_REFUSAL_KEYS: Record<ChannelRefusal, TranslationKey> = {
  * already running, sent to somebody whose only problem is a chat id.
  */
 export function channelFailureKey(error: unknown): TranslationKey {
-  const detail = error instanceof AgentRequestError
-    ? error.detail
-    : (typeof error === 'string' ? error : '');
-  if (isChannelRefusal(detail)) return CHANNEL_REFUSAL_KEYS[detail];
-  if (Object.prototype.hasOwnProperty.call(WRITE_OUTCOMES, detail)) return WRITE_OUTCOMES[detail];
-  return 'agentBaseModelWriteUnanswered';
+  return writeFailureKey(error, isChannelRefusal, CHANNEL_REFUSAL_KEYS);
 }

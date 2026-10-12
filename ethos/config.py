@@ -259,10 +259,6 @@ class ThreadsConfig(BaseModel):
     retention: int = 64
 
 
-class JournalConfig(BaseModel):
-    backend: str = "db"
-
-
 class AttentionWeights(BaseModel):
     src: float = 0.35
     urg: float = 0.30
@@ -1075,18 +1071,20 @@ class SlackChannelConfig(BaseModel):
 # disagree: the comms host, which skips a door whose credentials are missing and
 # names them; `ethos doctor`, which answers "why is my bot silent"; and anyone
 # reading a configuration and trying to work out what a door is still missing.
-DOOR_CREDENTIALS: dict[str, tuple[str, ...]] = {
-    "telegram": ("telegram.token",),
-    "whatsapp": (
-        "whatsapp.phone_number_id",
-        "whatsapp.access_token",
-        "whatsapp.app_secret",
-        "whatsapp.verify_token",
-    ),
-    "slack": ("slack.bot_token", "slack.signing_secret"),
-    "discord": ("discord.token",),
-    "email": ("email.address", "email.password", "email.imap_host", "email.smtp_host"),
-}
+#
+# Derived, not written out: every credential pair on a channel model is a
+# `*_env` field (the variable's name) beside a plain field of the same stem (the
+# value), so the list of what a door needs is read off the model itself and a
+# credential added to a channel is automatically part of its door.
+_DOORS_WITH_CREDENTIALS = ("telegram", "whatsapp", "slack", "discord", "email")
+_DOORS_WITH_ANY_CREDENTIAL = ("web", *_DOORS_WITH_CREDENTIALS)
+
+
+def _door_credentials(model: Any) -> tuple[str, ...]:
+    return tuple(
+        field[:-4] for field in model.model_fields if field.endswith("_env")
+    )
+
 
 # The allowlist each door admits by, or the fact that it has none. The key is the
 # field on the channel's own config; there is no name to keep in step here, which
@@ -1153,25 +1151,20 @@ class ChannelsConfig(BaseModel):
         credential this deployment has not got, which is what the warnings in
         `comms/host.py` are about — and naming them here means those warnings can
         name the credential rather than only the variable that would have held it.
+
+        The pairs are read off the channel models (`_door_credentials`), so the
+        keys here are the same dotted names `DOOR_CREDENTIALS` lists and the two
+        cannot disagree about what a door needs.
         """
-        wanted = {
-            "web.auth_token": (self.web.auth_token_env, self.web.auth_token),
-            "telegram.token": (self.telegram.token_env, self.telegram.token),
-            "whatsapp.phone_number_id": (
-                self.whatsapp.phone_number_id_env, self.whatsapp.phone_number_id,
-            ),
-            "whatsapp.access_token": (self.whatsapp.access_token_env, self.whatsapp.access_token),
-            "whatsapp.app_secret": (self.whatsapp.app_secret_env, self.whatsapp.app_secret),
-            "whatsapp.verify_token": (self.whatsapp.verify_token_env, self.whatsapp.verify_token),
-            "slack.bot_token": (self.slack.bot_token_env, self.slack.bot_token),
-            "slack.signing_secret": (self.slack.signing_secret_env, self.slack.signing_secret),
-            "discord.token": (self.discord.token_env, self.discord.token),
-            "email.address": (self.email.address_env, self.email.address),
-            "email.password": (self.email.password_env, self.email.password),
-            "email.imap_host": (self.email.imap_host_env, self.email.imap_host),
-            "email.smtp_host": (self.email.smtp_host_env, self.email.smtp_host),
-        }
-        return {name: value for name, (env, literal) in wanted.items() if (value := self.credential(env, literal))}
+        have: dict[str, str] = {}
+        for door in _DOORS_WITH_ANY_CREDENTIAL:
+            cfg = getattr(self, door)
+            for field in _door_credentials(type(cfg)):
+                env = getattr(cfg, f"{field}_env")
+                literal = getattr(cfg, field)
+                if value := self.credential(env, literal):
+                    have[f"{door}.{field}"] = value
+        return have
 
     def missing_credentials(self, door: str) -> list[str]:
         """
@@ -1232,6 +1225,17 @@ class ChannelsConfig(BaseModel):
         return lines
 
 
+# What each door needs, derived from the channel models themselves (see
+# `_door_credentials`). `web` is absent on purpose: the doctor reports the
+# doors a person messages the agent through, and the web token is not one.
+DOOR_CREDENTIALS: dict[str, tuple[str, ...]] = {
+    door: tuple(
+        f"{door}.{field}" for field in _door_credentials(type(getattr(ChannelsConfig(), door)))
+    )
+    for door in _DOORS_WITH_CREDENTIALS
+}
+
+
 class PersonSeed(BaseModel):
     id: str
     display_name: str
@@ -1290,7 +1294,6 @@ class EthosConfig(BaseModel):
     gateway: GatewayConfig = GatewayConfig()
     workers: WorkersConfig = WorkersConfig()
     threads: ThreadsConfig = ThreadsConfig()
-    journal: JournalConfig = JournalConfig()
     gsl: GslConfig = GslConfig()
     rhythm: RhythmConfig = RhythmConfig()
     social: SocialConfig = SocialConfig()
@@ -1318,26 +1321,32 @@ def base_model_path(home: str | Path) -> Path:
     return Path(home).expanduser() / BASE_MODEL_FILENAME
 
 
-def load_base_model(home: str | Path) -> BaseModelConfig | None:
-    """
-    The base model a person configured, or `None` for the catalogue alone.
+def _load_home_model(path: Path, model: type[Any]) -> Any | None:
+    """A model built from a file in the agent's own home, or `None` for nothing usable.
 
-    Forgiving on purpose. This file is written by the interface at the moment
+    Forgiving on purpose. These files are written by the interface at the moment
     somebody presses save, so a half-written or hand-edited one is a normal thing
-    to find, and answering it by refusing to start would take out the reflex tier
-    and the whole life loop over a typo in a file nobody is watching. Refusing to
-    read it and falling back is a visible, recoverable state; not starting is not.
+    to find, and answering it by refusing to start would take out whatever the
+    file configures over a typo nobody is watching. Falling back is a visible,
+    recoverable state; not starting is not.
     """
     try:
-        data = _read_yaml(base_model_path(home))
+        data = _read_yaml(path)
     except yaml.YAMLError:
         return None
     if not isinstance(data, dict) or not data:
         return None
     try:
-        return BaseModelConfig(**data)
+        return model(**data)
     except (ValidationError, TypeError):
         return None
+
+
+def load_base_model(home: str | Path) -> BaseModelConfig | None:
+    """
+    The base model a person configured, or `None` for the catalogue alone.
+    """
+    return _load_home_model(base_model_path(home), BaseModelConfig)
 
 
 IDENTITY_FILENAME = "identity.yaml"
@@ -1465,23 +1474,8 @@ def _merge_people(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, An
 def load_identity(home: str | Path) -> IdentityConfig | None:
     """
     The name a person gave the agent, or `None` when they have not given one.
-
-    Forgiving for the same reason as `load_base_model`: this file is written by an
-    interface at the moment somebody presses save, so a half-written or hand-edited
-    one is a normal thing to find. Falling back to the default name is a visible,
-    recoverable state — a settings screen that can see there is no name offers to
-    write one — whereas refusing to start the agent over it is not recoverable at all.
     """
-    try:
-        data = _read_yaml(identity_path(home))
-    except yaml.YAMLError:
-        return None
-    if not isinstance(data, dict) or not data:
-        return None
-    try:
-        return IdentityConfig(**data)
-    except (ValidationError, TypeError):
-        return None
+    return _load_home_model(identity_path(home), IdentityConfig)
 
 
 def config_dir(config_dir: str | Path | None = None) -> Path:
@@ -1498,6 +1492,16 @@ def config_dir(config_dir: str | Path | None = None) -> Path:
         return cfg_dir
     cwd_cfg = Path.cwd() / cfg_dir
     return cwd_cfg if cwd_cfg.exists() else Path(__file__).parent.parent / cfg_dir.name
+
+
+def effective_dsn(config: EthosConfig) -> str:
+    """The database this deployment is on: an explicit `ETHOS_DSN` wins over the file.
+
+    One place for a rule asked in five: the environment is the deliberate
+    override and the file is the default, and a reader of any one call site
+    should not have to re-derive which won.
+    """
+    return os.environ.get("ETHOS_DSN") or config.database.dsn
 
 
 def load_config(config_dir_override: str | Path | None = None) -> EthosConfig:

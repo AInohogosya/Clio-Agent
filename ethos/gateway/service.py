@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import random
 import time
 from collections.abc import Iterable
 from typing import Any
@@ -12,6 +11,7 @@ import httpx
 from ethos import PRODUCT_NAME, __version__
 from ethos.config import EthosConfig, base_model_path, load_base_model
 from ethos.db import Database
+from ethos.gateway.client import backoff_delay
 from ethos.gateway.cost import BudgetExceededError, CostCalculator, SpendGuard
 from ethos.gateway.embeddings import EmbeddingProvider, build_role_embedder
 from ethos.gateway.normalizer import estimate_tokens, was_truncated
@@ -346,13 +346,10 @@ class GatewayService:
         ever be rather than the longest it is before jitter.
         """
         retry = self.config.gateway.retry
-        delay = retry.backoff_s * (2**attempt)
-        if retry.jitter > 0:
-            delay *= 1.0 + random.random() * retry.jitter
-        delay = min(delay, retry.max_backoff_s)
-        if retry_after_s is not None:
-            delay = max(delay, min(retry_after_s, retry.max_backoff_s))
-        return delay
+        return backoff_delay(
+            attempt, base_s=retry.backoff_s, jitter=retry.jitter,
+            cap_s=retry.max_backoff_s, retry_after_s=retry_after_s,
+        )
 
     def _next_entry(
         self, request: ModelRequest, failed: Any, tried: set[str], *, model_scoped: bool,
@@ -588,7 +585,7 @@ class GatewayService:
             provider = self._provider_for(entry)
         except Exception as exc:
             report["status"] = "misconfigured"
-            report["reason"] = f"{type(exc).__name__}: {exc}"[:200]
+            report["reason"] = exc_brief(exc)
             return report
         request = ModelRequest(
             tier=Tier.T1,
@@ -614,7 +611,7 @@ class GatewayService:
             return report
         except Exception as exc:
             report["status"] = "unreachable"
-            report["reason"] = f"{type(exc).__name__}: {exc}"[:200]
+            report["reason"] = exc_brief(exc)
             return report
         # A reply that says nothing is still a reply: this call is asking whether
         # the credential works and the provider is willing to serve it, and
@@ -865,6 +862,11 @@ def create_gateway_app(service: GatewayService):
 
     app.mount("/metrics", make_asgi_app())
     return app
+
+
+def exc_brief(exc: BaseException, limit: int = 200) -> str:
+    """An exception as one clipped line: its kind, then what it said."""
+    return f"{type(exc).__name__}: {exc}"[:limit]
 
 
 async def serve(config: EthosConfig, db: Database | None = None) -> None:

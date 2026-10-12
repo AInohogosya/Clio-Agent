@@ -80,6 +80,19 @@ export function label(value: string): string {
   return value.toUpperCase();
 }
 
+/** One mark per tone, so every surface reads the same colour. */
+const TONE_MARKS: Partial<Record<Tone, string>> = {
+  accent: '◆',
+  success: '●',
+  warning: '▲',
+  danger: '■',
+  muted: '·',
+};
+
+export function toneMark(tone: Tone): string {
+  return TONE_MARKS[tone] ?? TONE_MARKS.muted ?? '·';
+}
+
 export function StatusPill({
   palette,
   status,

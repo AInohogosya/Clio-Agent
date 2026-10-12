@@ -1,9 +1,9 @@
 import {
   MAX_ADDRESS_LENGTH,
-  MAX_CHANNEL_LENGTH,
   MAX_PROMPT_LENGTH,
   sanitizeStoredText,
 } from '../security.js';
+import { safeChannel } from '../normalize.js';
 import type { ModelDiscoveryResult } from '../types.js';
 import {
   createSocketChannel,
@@ -24,12 +24,10 @@ import {
   isIdentityRefusal,
   readAgentBaseModel,
   readAgentChannelSetup,
-  readAgentDoorWrite,
   readAgentDoors,
   readAgentMessage,
   readAgentView,
   readBaseModelReply,
-  readControl,
   readEnvApiKeys,
   readIdentityReply,
   readPresence,
@@ -90,12 +88,6 @@ const DECLINE_MEMORY = 32;
  * an identifier — the value reaches a request body that decides where the agent's
  * own reply gets delivered.
  */
-function sanitizeChannel(value: unknown): string | undefined {
-  if (typeof value !== 'string') return undefined;
-  const clean = value.trim().slice(0, MAX_CHANNEL_LENGTH);
-  return /^[\w:.-]+$/.test(clean) ? clean : undefined;
-}
-
 /**
  * A destination address, or `null`.
  *
@@ -273,7 +265,7 @@ export class AgentClient {
     // reaches the bridge, which answers on the channel a message arrives on, so
     // an unbounded value from a shared-state file would be a way to name
     // something that is not a channel at all.
-    this.sendChannel = sanitizeChannel(options.sendChannel) ?? 'web';
+    this.sendChannel = safeChannel(options.sendChannel) ?? 'web';
     this.sendAddress = sanitizeAddress(options.sendAddress);
     this.replyStallMs = options.replyStallMs ?? REPLY_STALL_MS;
     this.pollIntervalMs = options.pollIntervalMs ?? POLL_INTERVAL_MS;
@@ -315,7 +307,7 @@ export class AgentClient {
    * make the agent look like it had stopped talking to somebody.
    */
   setChannel(channel: string): void {
-    this.sendChannel = sanitizeChannel(channel) ?? 'web';
+    this.sendChannel = safeChannel(channel) ?? 'web';
   }
 
   /**
@@ -474,7 +466,7 @@ export class AgentClient {
     const content = sanitizeStoredText(text, MAX_PROMPT_LENGTH).trim();
     if (!content) throw new AgentRequestError('agent_refused', 'empty');
     const endpoints = this.requireEndpoints();
-    const channel = sanitizeChannel(options.channel) ?? this.sendChannel;
+    const channel = safeChannel(options.channel) ?? this.sendChannel;
     const body: Record<string, unknown> = {
       text: content,
       person_id: this.personId,
@@ -546,18 +538,72 @@ export class AgentClient {
    * the status would report a healthy agent with no base model — a false all-clear
    * on exactly the question somebody opened the screen to ask.
    */
-  async readBaseModel(): Promise<AgentBaseModel | null> {
+  /**
+   * One GET that never rejects, for the reads this client does.
+   *
+   * The five readers below share one contract with five different answers: no
+   * link, a non-2xx, a body that is not JSON, or a categorically failed fetch
+   * all resolve to the `fallback` the caller named — "not asked" rather than
+   * "asked and refused". Each caller keeps its own reader and its own fallback,
+   * because `null`, `[]` and a defaulted setup are three different sentences.
+   */
+  private async getOr<T>(
+    path: string,
+    fallback: T,
+    read: (payload: unknown) => T,
+    options?: { query?: string },
+  ): Promise<T> {
     const endpoints = this.endpoints;
-    if (!endpoints) return null;
+    if (!endpoints) return fallback;
     try {
-      const response = await this.fetcher(`${endpoints.http}/api/model`, {
+      const response = await this.fetcher(`${endpoints.http}${path}${options?.query ?? ''}`, {
+        method: 'GET',
         headers: { accept: 'application/json' },
       });
-      if (!response.ok) return null;
-      return readBaseModelReply(await response.json());
+      if (!response.ok) return fallback;
+      return read(await response.json().catch(() => null));
     } catch {
-      return null;
+      return fallback;
     }
+  }
+
+  /**
+   * One POST that reads the refusal instead of throwing past it.
+   *
+   * The three writes below share one two-outcome shape: 2xx resolves the
+   * payload, a refusal code in the body resolves the refusal, and anything else
+   * throws — so a person is told which of the things they typed was wrong.
+   */
+  private async postWithRefusal(
+    path: string,
+    body: Record<string, unknown>,
+    isRefusal: (error: unknown) => error is string,
+  ): Promise<{ ok: true; payload: unknown } | { ok: false; refusal: string }> {
+    const endpoints = this.requireEndpoints();
+    const controller = new AbortController();
+    let response: Response;
+    try {
+      response = await this.fetcher(`${endpoints.http}${path}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', accept: 'application/json' },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+    } catch (error) {
+      this.noteUnreachable(error);
+      throw new AgentRequestError('agent_unreachable', 'network');
+    }
+    const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>;
+    if (response.ok) return { ok: true, payload };
+    if (isRefusal(payload.error)) return { ok: false, refusal: payload.error };
+    throw new AgentRequestError(
+      response.status >= 500 ? 'agent_unreachable' : 'agent_refused',
+      `http_${response.status}`,
+    );
+  }
+
+  async readBaseModel(): Promise<AgentBaseModel | null> {
+    return this.getOr('/api/model', null, readBaseModelReply);
   }
 
   /**
@@ -612,18 +658,8 @@ export class AgentClient {
    * open needs nothing configured.
    */
   async doors(): Promise<AgentDoor[]> {
-    const endpoints = this.endpoints;
-    if (!endpoints) return readAgentDoors(null);
-    try {
-      const response = await this.fetcher(`${endpoints.http}/api/channels`, {
-        method: 'GET',
-        headers: { accept: 'application/json' },
-      });
-      if (!response.ok) return readAgentDoors(null);
-      return readAgentDoors(await response.json().catch(() => null));
-    } catch {
-      return readAgentDoors(null);
-    }
+    const fallback = readAgentDoors(null);
+    return this.getOr('/api/channels', fallback, readAgentDoors);
   }
 
   /**
@@ -639,18 +675,9 @@ export class AgentClient {
    * has never reached is a promise its save button cannot keep.
    */
   async channelSetup(): Promise<AgentChannelSetup | null> {
-    const endpoints = this.endpoints;
-    if (!endpoints) return null;
-    try {
-      const response = await this.fetcher(
-        `${endpoints.http}/api/channels?person=${encodeURIComponent(this.personId)}`,
-        { method: 'GET', headers: { accept: 'application/json' } },
-      );
-      if (!response.ok) return null;
-      return readAgentChannelSetup(await response.json().catch(() => null));
-    } catch {
-      return null;
-    }
+    return this.getOr('/api/channels', null, readAgentChannelSetup, {
+      query: `?person=${encodeURIComponent(this.personId)}`,
+    });
   }
 
   /**
@@ -668,7 +695,7 @@ export class AgentClient {
     if (write.credentials) {
       const credentials: Record<string, string | null> = {};
       for (const [key, value] of Object.entries(write.credentials)) {
-        const name = sanitizeChannel(key) ?? '';
+        const name = safeChannel(key) ?? '';
         if (!name) continue;
         credentials[name] = value === null ? null : value.trim();
       }
@@ -683,7 +710,7 @@ export class AgentClient {
     if (write.address !== undefined) body.address = write.address === null ? null : write.address.trim();
     const result = await this.postChannel(body);
     if (!result.ok) throw new AgentRequestError('agent_refused', result.refusal);
-    return readAgentDoorWrite(result.payload);
+    return readAgentChannelSetup(result.payload);
   }
 
   /**
@@ -760,17 +787,7 @@ export class AgentClient {
    * not a report of anything.
    */
   async readEnvApiKeys(): Promise<EnvApiKey[]> {
-    const endpoints = this.endpoints;
-    if (!endpoints) return [];
-    try {
-      const response = await this.fetcher(`${endpoints.http}/api/env-keys`, {
-        headers: { accept: 'application/json' },
-      });
-      if (!response.ok) return [];
-      return readEnvApiKeys(await response.json());
-    } catch {
-      return [];
-    }
+    return this.getOr('/api/env-keys', [], readEnvApiKeys);
   }
 
   /**
@@ -782,17 +799,7 @@ export class AgentClient {
    * would offer to write a name into a machine it had not reached.
    */
   async readIdentity(): Promise<AgentIdentity | null> {
-    const endpoints = this.endpoints;
-    if (!endpoints) return null;
-    try {
-      const response = await this.fetcher(`${endpoints.http}/api/identity`, {
-        headers: { accept: 'application/json' },
-      });
-      if (!response.ok) return null;
-      return readIdentityReply(await response.json());
-    } catch {
-      return null;
-    }
+    return this.getOr('/api/identity', null, readIdentityReply);
   }
 
   /**
@@ -820,106 +827,25 @@ export class AgentClient {
     return readIdentityReply(result.payload) ?? emptyAgentIdentity();
   }
 
-  /**
-   * Posts a name, reading the refusal instead of throwing past it.
-   *
-   * The same two-outcome shape as `postBaseModel`, and for the same reason: these
-   * routes answer 400 with a body naming which thing was wrong, and throwing that away
-   * would leave a person with "the agent refused" and nothing to act on.
-   */
+  /** Posts a name, reading the refusal instead of throwing past it. */
   private async postIdentity(
     body: Record<string, unknown>,
   ): Promise<{ ok: true; payload: unknown } | { ok: false; refusal: string }> {
-    const endpoints = this.requireEndpoints();
-    const controller = new AbortController();
-    let response: Response;
-    try {
-      response = await this.fetcher(`${endpoints.http}/api/identity`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', accept: 'application/json' },
-        body: JSON.stringify(body),
-        signal: controller.signal,
-      });
-    } catch (error) {
-      this.noteUnreachable(error);
-      throw new AgentRequestError('agent_unreachable', 'network');
-    }
-    const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>;
-    if (response.ok) return { ok: true, payload };
-    if (isIdentityRefusal(payload.error)) return { ok: false, refusal: payload.error };
-    throw new AgentRequestError(
-      response.status >= 500 ? 'agent_unreachable' : 'agent_refused',
-      `http_${response.status}`,
-    );
+    return this.postWithRefusal('/api/identity', body, isIdentityRefusal);
   }
 
-  /**
-   * Posts a base model, reading the refusal instead of throwing past it.
-   *
-   * `post` treats any non-2xx as a failure, which is right for the agent's other
-   * routes: they answer with a reason in the status, and there is nothing finer
-   * to say. These answer 400 with a body naming *which* of four things was
-   * wrong, and throwing that away would leave a person with "the agent refused"
-   * and nothing to act on.
-   */
+  /** Posts a base model, reading the refusal instead of throwing past it. */
   private async postBaseModel(
     body: Record<string, unknown>,
   ): Promise<{ ok: true; payload: unknown } | { ok: false; refusal: string }> {
-    const endpoints = this.requireEndpoints();
-    const controller = new AbortController();
-    let response: Response;
-    try {
-      response = await this.fetcher(`${endpoints.http}/api/model`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', accept: 'application/json' },
-        body: JSON.stringify(body),
-        signal: controller.signal,
-      });
-    } catch (error) {
-      this.noteUnreachable(error);
-      throw new AgentRequestError('agent_unreachable', 'network');
-    }
-    const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>;
-    if (response.ok) return { ok: true, payload };
-    if (isBaseModelRefusal(payload.error)) return { ok: false, refusal: payload.error };
-    throw new AgentRequestError(
-      response.status >= 500 ? 'agent_unreachable' : 'agent_refused',
-      `http_${response.status}`,
-    );
+    return this.postWithRefusal('/api/model', body, isBaseModelRefusal);
   }
 
-  /**
-   * Posts a door write, reading the refusal instead of throwing past it.
-   *
-   * The same two-outcome shape as `postBaseModel` and for the same reason: this
-   * route answers 400 with a body naming which of seven things was wrong, and
-   * discarding that would leave a person with "the agent refused" and a chat id
-   * they cannot tell was the problem.
-   */
+  /** Posts a door write, reading the refusal instead of throwing past it. */
   private async postChannel(
     body: Record<string, unknown>,
   ): Promise<{ ok: true; payload: unknown } | { ok: false; refusal: string }> {
-    const endpoints = this.requireEndpoints();
-    const controller = new AbortController();
-    let response: Response;
-    try {
-      response = await this.fetcher(`${endpoints.http}/api/channels`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', accept: 'application/json' },
-        body: JSON.stringify(body),
-        signal: controller.signal,
-      });
-    } catch (error) {
-      this.noteUnreachable(error);
-      throw new AgentRequestError('agent_unreachable', 'network');
-    }
-    const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>;
-    if (response.ok) return { ok: true, payload };
-    if (isChannelRefusal(payload.error)) return { ok: false, refusal: payload.error };
-    throw new AgentRequestError(
-      response.status >= 500 ? 'agent_unreachable' : 'agent_refused',
-      `http_${response.status}`,
-    );
+    return this.postWithRefusal('/api/channels', body, isChannelRefusal);
   }
 
   private async post(url: string, body: unknown): Promise<Response> {
@@ -1350,9 +1276,6 @@ export class AgentClient {
     for (const listener of [...this.listeners]) listener(event);
   }
 }
-
-/** The control flags a surface shows before anything has been read. */
-export const IDLE_CONTROL: AgentControl = readControl(null);
 
 /**
  * Lets a timer be dropped from Node's event loop.

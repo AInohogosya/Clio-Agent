@@ -1297,11 +1297,6 @@ export function readAgentChannelSetup(value: unknown): AgentChannelSetup {
   };
 }
 
-/** The setups a door write left behind, read out of the write's own answer. */
-export function readAgentDoorWrite(value: unknown): AgentChannelSetup {
-  return readAgentChannelSetup(value);
-}
-
 /**
  * The doors the agent has open, as the bridge reports them.
  *

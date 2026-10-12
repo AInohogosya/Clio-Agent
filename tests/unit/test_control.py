@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from typing import Any
 
 from ethos.core.control import ControlPlane
@@ -12,14 +11,14 @@ class _FakeDB:
     """Records control writes and answers load() with the last of them."""
 
     def __init__(self) -> None:
-        self.rows: dict[str, str] = {}
+        self.rows: dict[str, dict[str, Any]] = {}
 
     async def fetchrow(self, query: str, *args: Any) -> dict[str, Any] | None:
         attrs = self.rows.get("lifecycle")
         return {"attrs": attrs} if attrs is not None else None
 
-    async def execute(self, query: str, *args: Any) -> None:
-        self.rows["lifecycle"] = json.dumps(json.loads(args[2]))
+    async def upsert_env(self, kind: str, key: str, attrs: dict[str, Any], **_: Any) -> None:
+        self.rows[key] = dict(attrs)
 
 
 def _plane(db: _FakeDB, tmp_path: Any) -> ControlPlane:
@@ -145,7 +144,7 @@ def test_preview_survives_a_restart_because_it_is_a_mode_not_an_ending(tmp_path:
     fresh = _plane(db, tmp_path)
     asyncio.run(fresh.load())
     assert fresh.preview, "preview mode must outlive the process that was in it"
-    assert json.loads(db.rows["lifecycle"])["preview"] is True
+    assert db.rows["lifecycle"]["preview"] is True
 
 
 def test_resume_does_not_hand_an_agent_its_tools_back(tmp_path: Any) -> None:
@@ -195,7 +194,7 @@ def test_preview_off_is_the_only_thing_that_clears_it(tmp_path: Any) -> None:
     result = asyncio.run(plane.apply_command("preview_off", "web"))
     assert result["ok"]
     assert not plane.preview
-    assert json.loads(db.rows["lifecycle"])["preview"] is False, \
+    assert db.rows["lifecycle"]["preview"] is False, \
         "the row every surface reads has to say the same thing"
 
 
@@ -211,7 +210,7 @@ def test_the_row_every_surface_reads_carries_the_flag(tmp_path: Any) -> None:
     db = _FakeDB()
     plane = _plane(db, tmp_path)
     asyncio.run(plane.apply_command("preview_on", "web"))
-    assert json.loads(db.rows["lifecycle"])["preview"] is True
+    assert db.rows["lifecycle"]["preview"] is True
     assert plane.snapshot()["preview"] is True
 
 
@@ -340,13 +339,13 @@ def test_a_process_that_only_obeys_the_lifecycle_does_not_re_write_it(tmp_path: 
     db = _FakeDB()
     core = _plane(db, tmp_path)
     asyncio.run(core.apply_command("stop", "web"))
-    assert json.loads(db.rows["lifecycle"])["stopped"] is True
+    assert db.rows["lifecycle"]["stopped"] is True
 
     # A second process starts, reads the row, and inherits the posture.
     reader = ControlPlane(db, str(make_config(tmp_path).paths.run_dir), owns_row=False)
     asyncio.run(reader.load())
     assert not reader.stopped, "it is not the process that was stopped"
-    assert json.loads(db.rows["lifecycle"])["stopped"] is True, \
+    assert db.rows["lifecycle"]["stopped"] is True, \
         "and the row other readers trust must still say the agent is stopped"
 
 
@@ -389,5 +388,5 @@ def test_starting_the_agent_re_writes_the_row_it_reads(tmp_path: Any) -> None:
     started = _plane(db, tmp_path)
     asyncio.run(started.load())
     assert not started.stopped, "the new process is not stopped"
-    assert json.loads(db.rows["lifecycle"])["stopped"] is False, \
+    assert db.rows["lifecycle"]["stopped"] is False, \
         "and the row every reader trusts now says the same thing"

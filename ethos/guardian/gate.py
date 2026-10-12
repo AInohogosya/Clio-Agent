@@ -6,11 +6,13 @@ from typing import Any, Protocol
 
 from ethos import DEFAULT_SELF_NAME
 from ethos.config import EthosConfig
+from ethos.gateway.secrets import redact
 from ethos.guardian.classifier import (
     SideEffects,
     classify_tool,
 )
 from ethos.observability.logger import get_logger
+from ethos.parse import parse_json_block
 
 logger = get_logger("ethos.guardian.gate")
 
@@ -65,10 +67,8 @@ class ModelDueProcessVerifier:
         )
         try:
             response = await self.gateway.complete(request)
-            text = response.text or ""
-            start, end = text.find("{"), text.rfind("}")
-            if start >= 0 and end > start:
-                data = json.loads(text[start:end + 1])
+            data = parse_json_block(response.text or "")
+            if data:
                 return {
                     "supported": bool(data.get("supported", False)),
                     "why": str(data.get("why", ""))[:500],
@@ -131,7 +131,6 @@ class GuardianGate:
         audit: AuditProtocol,
         verifier: DueProcessVerifier,
         control: Any = None,
-        spend_guard: Any = None,
     ):
         self.config = config
         self.registry = registry
@@ -140,7 +139,6 @@ class GuardianGate:
         self.audit = audit
         self.verifier = verifier
         self.control = control
-        self.spend_guard = spend_guard
 
     async def review(
         self,
@@ -378,8 +376,6 @@ class RegistryLike(Protocol):
 
 
 def _redacted(args: dict[str, Any]) -> dict[str, Any]:
-    from ethos.gateway.secrets import redact
-
     return redact(dict(args))
 
 

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { createTranslator, formatClock, type ClientSnapshot } from '@project-phone/core';
 import { Composer } from '../components/Composer';
+import { MessageRow, PendingIndicator } from '../components/MessageRow.js';
 import { ConversationFeed, useConversationFeed } from '../components/ConversationFeed';
 import { Icon } from '../components/Icon';
 import { PairingPanel, type PairingTone } from '../components/PairingPanel';
@@ -133,32 +134,13 @@ export function ChatScreen({ snapshot, coordination, onSend, onInterrupt, onClea
                   const isUser = message.role === 'user';
                   const isSystem = message.role === 'system';
                   return (
-                    <div key={message.id} className={classNames('flex gap-3', isUser ? 'justify-end' : 'justify-start')}>
-                      {!isUser ? (
-                        <div className={classNames('mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-[var(--line)] bg-[var(--canvas-raised)]', isSystem ? 'text-[var(--ink-faint)]' : 'text-[var(--ink-muted)]')}>
-                          <Icon name={isSystem ? 'spark' : 'cpu'} size={15} />
-                        </div>
-                      ) : null}
-                      <div className={classNames('max-w-[min(86%,680px)]', isUser ? 'items-end' : 'items-start')}>
-                        <div className={classNames('mb-1 flex items-center gap-2 text-[0.65rem] text-[var(--ink-faint)]', isUser ? 'justify-end' : 'justify-start')}>
-                          <span>{isSystem ? t('system') : isUser ? (message.author ?? t('you')) : t('assistant')}</span>
-                          <span>{formatClock(message.createdAt, snapshot.settings.language)}</span>
-                        </div>
-                        <div className={classNames(
-                          'whitespace-pre-wrap rounded-2xl px-4 py-3 text-sm leading-6',
-                          isUser
-                            ? 'rounded-tr-md border border-[var(--accent-line)] bg-[var(--accent-soft)] text-[var(--ink)]'
-                            : 'rounded-tl-md border border-[var(--line)] bg-[var(--canvas-well)] text-[var(--ink)]',
-                        )}>
-                          {message.text}
-                        </div>
-                      </div>
-                      {isUser ? (
-                        <div className="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-[var(--line)] bg-[var(--canvas-raised)] text-[var(--ink-muted)]">
-                          <Icon name="home" size={15} />
-                        </div>
-                      ) : null}
-                    </div>
+                    <MessageRow
+                      clock={formatClock(message.createdAt, snapshot.settings.language)}
+                      key={message.id}
+                      message={message}
+                      sender={isSystem ? t('system') : isUser ? (message.author ?? t('you')) : t('assistant')}
+                      system={isSystem}
+                    />
                   );
                 })
               )}
@@ -172,14 +154,7 @@ export function ChatScreen({ snapshot, coordination, onSend, onInterrupt, onClea
                   </div>
                 </div>
               ) : snapshot.pending ? (
-                <div className="flex items-center gap-3 text-xs text-[var(--ink-faint)]">
-                  <div className="flex gap-1 rounded-lg border border-[var(--line)] bg-[var(--canvas-well)] px-3 py-2.5">
-                    <span className="signal-pulse h-1.5 w-1.5 rounded-full bg-[var(--accent)]" />
-                    <span className="signal-pulse h-1.5 w-1.5 rounded-full bg-[var(--accent)] [animation-delay:180ms]" />
-                    <span className="signal-pulse h-1.5 w-1.5 rounded-full bg-[var(--accent)] [animation-delay:360ms]" />
-                  </div>
-                  <span>{t('thinking')}</span>
-                </div>
+                <PendingIndicator label={t('thinking')} />
               ) : null}
             </ConversationFeed>
 

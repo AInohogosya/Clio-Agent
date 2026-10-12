@@ -4,7 +4,7 @@ import asyncio
 import json
 from typing import Any
 
-from ethos.comms.adapters.base import ChannelAdapter
+from ethos.comms.adapters.base import ChannelAdapter, await_cancelled, emit_inbound, http_error_detail
 from ethos.observability.logger import get_logger
 from ethos.schemas.messages import Message
 
@@ -168,14 +168,10 @@ class DiscordAdapter(ChannelAdapter):
         and never polls it, exactly as it does for Telegram, and the identity is
         fetched here because it is what `send` needs to attribute nothing to.
         """
-        if self.http is None:
-            import httpx
-
-            self.http = httpx.AsyncClient(timeout=20.0)
+        await self._ensure_http()
         self.application_id = await self._whoami()
         logger.info("comms.discord.ready_to_send", allowed=len(self.allowed),
                     application_id=self.application_id, open_to_all=self.accept_from_anyone)
-
     async def listen(self) -> None:
         if self._task is not None and not self._task.done():
             return
@@ -187,18 +183,11 @@ class DiscordAdapter(ChannelAdapter):
         for task in (self._heartbeat, self._task):
             if task is not None and not task.done():
                 task.cancel()
-        for task in (self._heartbeat, self._task):
-            if task is not None:
-                try:
-                    await task
-                except (asyncio.CancelledError, Exception):
-                    pass
+        await await_cancelled(self._heartbeat, self._task)
         self._heartbeat = None
         self._task = None
         self.connected = False
-        if self._owns_http and self.http is not None:
-            await self.http.aclose()
-        self.http = None
+        await self._close_http()
 
     async def _whoami(self) -> str | None:
         """The application id behind the token, or `None` when the API will not say.
@@ -327,17 +316,18 @@ class DiscordAdapter(ChannelAdapter):
         if not self.accepts(user, channel):
             logger.info("comms.discord.sender_not_allowed", user=user, channel=channel)
             return
-        try:
-            await self.on_inbound(Message(
+        await emit_inbound(
+            self.on_inbound,
+            Message(
                 channel=self.name,
                 person_id=discord_address(channel),
                 text=text,
                 conversation_key=f"discord:{channel}",
                 attachments=[{"user": user, "message_id": provider_id}],
                 sender_name=name,
-            ))
-        except Exception:
-            logger.exception("comms.discord.inbound_failed", channel=channel)
+            ),
+            log_event="comms.discord.inbound_failed", logger=logger,
+        )
 
     def _start_heartbeat(self, interval: float) -> None:
         # Cancelled, not awaited-and-then-cancelled: the old task holds a reference
@@ -354,12 +344,7 @@ class DiscordAdapter(ChannelAdapter):
     async def _stop_heartbeat(self) -> None:
         task = self._heartbeat
         self._cancel_heartbeat()
-        if task is None:
-            return
-        try:
-            await task
-        except (asyncio.CancelledError, Exception):
-            pass
+        await await_cancelled(task)
 
     async def _beat(self, interval: float) -> None:
         """A heartbeat for as long as the socket lives.
@@ -392,26 +377,14 @@ class DiscordAdapter(ChannelAdapter):
     def accepts(self, user: str | None, channel: str | None) -> bool:
         """Whether this author, in this conversation, is somebody to answer.
 
-        An empty allowlist admits nobody, for the reason it does on every other
-        channel here: a bot token is public to anybody who can see the bot, and an
-        agent holding a shell answering whoever found its name is a published
-        endpoint.
-
-        `accept_from_anyone` is the deliberate way to say yes to a server nobody
-        listed. Discord is the channel where that matters most and is most
-        dangerous: a bot that is on one server with `MESSAGE_CONTENT` sees every
-        message in every channel it is in, and a per-user allowlist is the only
-        thing between that and an agent answering a room it was added to. So it
-        is a separate, named switch — never what an empty list happens to mean.
+        Delegated to the shared rule (`ChannelAdapter._accepts_id`), which names
+        the one danger specific to this channel: a bot on a server with
+        `MESSAGE_CONTENT` hears every channel it is in, so the per-user
+        allowlist is the only thing between that and answering a room it was
+        added to. `accept_from_anyone` is therefore a deliberate switch here
+        more than anywhere.
         """
-        if self.accept_from_anyone:
-            return True
-        if not self.allowed:
-            return False
-        return bool(
-            (user and str(user).strip() in self.allowed)
-            or (channel and str(channel).strip() in self.allowed)
-        )
+        return self._accepts_id(user, channel)
 
     def parse(self, message: dict[str, Any]) -> tuple[str, str, str, str, str | None] | None:
         """One dispatched message as `(user, channel, message_id, text, name)`.
@@ -451,13 +424,10 @@ class DiscordAdapter(ChannelAdapter):
 
     async def send(self, *, person_id: str | None, text: str, urgency: str = "normal",
                    conversation_key: str | None = None, in_reply_to: Any = None) -> dict[str, Any]:
-        if self.http is None:
-            return {"status": "failed", "error": "discord adapter not started"}
-        if not person_id or not person_id.startswith("dc:"):
-            return {"status": "failed", "error": "discord adapter requires dc: person_id"}
-        channel = person_id.split(":", 1)[1].strip()
-        if not channel:
-            return {"status": "failed", "error": "no destination channel"}
+        destination = self._destination(person_id, "dc")
+        if isinstance(destination, dict):
+            return destination
+        channel = destination
         chunks = _split_message(text)
         sent: list[str] = []
         for chunk in chunks:
@@ -571,20 +541,15 @@ def _split_message(text: str, limit: int = MAX_MESSAGE_CHARS) -> list[str]:
 
 
 def _error_detail(response: Any) -> str:
-    try:
-        payload = response.json()
-    except Exception:
-        return f"http_{response.status_code}"
-    if isinstance(payload, dict):
+    def pick(payload: dict[str, Any]) -> Any:
         # Discord's errors carry a `message` meant for a developer and a `code`.
         # The message is the one that names what is missing, so it is preferred.
         error = payload.get("message")
         if isinstance(error, str) and error:
-            return error[:300]
-        code = payload.get("code")
-        if code:
-            return f"discord_error_{code}"
-    return f"http_{response.status_code}"
+            return error
+        return f"discord_error_{payload['code']}" if payload.get("code") else None
+
+    return http_error_detail(response, pick)
 
 
 async def _aclose(socket: Any) -> None:

@@ -63,5 +63,3 @@ threads:
   max_depth: 2
   mode: inprocess
 
-journal:
-  backend: db

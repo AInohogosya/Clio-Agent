@@ -9,13 +9,13 @@ import {
   type Settings,
   type SharedState,
   type TranslationKey,
+  formatDateTime,
 } from '@project-phone/core';
 import { padWidth, truncateWidth, type Palette } from './palette.js';
 import {
   banner,
   bulletList,
   clampWidth,
-  formatDateTime,
   helpColumn,
   keyValue,
   meter,

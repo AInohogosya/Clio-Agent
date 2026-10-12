@@ -26,6 +26,13 @@ import {
 } from '@project-phone/core';
 import { doorRefusalText, doorSummary, findConversation, resolveDoor } from './channels.js';
 import { saveConfig, watchConfig, type PhoneConfig } from './config.js';
+import {
+  appendDebug,
+  DEBUG_LINE_LENGTH,
+  PERSIST_DEBOUNCE_MS,
+  useToast,
+  type SessionToast as AgentToast,
+} from './session-shared.js';
 import { controlLabel } from './agent-screen.js';
 import type { Tone } from './palette.js';
 
@@ -45,15 +52,7 @@ import type { Tone } from './palette.js';
  *     of a record it is only reading.
  */
 
-const PERSIST_DEBOUNCE_MS = 220;
-const DEBUG_LINE_LIMIT = 6;
-const DEBUG_LINE_LENGTH = 90;
-
-export interface AgentToast {
-  text: string;
-  tone: Tone;
-  token: number;
-}
+export type { SessionToast as AgentToast } from './session-shared.js';
 
 export interface AgentSession {
   client: DuplexClient;
@@ -120,16 +119,6 @@ export interface AgentSession {
   reconnect: () => void;
 }
 
-/** Two histories are the same when the newest entry of each is the same entry. */
-export function sameHistory(a: ChatMessage[], b: ChatMessage[]): boolean {
-  if (a.length !== b.length) return false;
-  return a.at(-1)?.id === b.at(-1)?.id;
-}
-
-function appendDebug(lines: string[], line: string): string[] {
-  return [...lines.slice(-(DEBUG_LINE_LIMIT - 1)), line];
-}
-
 /**
  * The live settings, taken off the client rather than off a prop.
  *
@@ -189,7 +178,7 @@ export function useAgentSession(
   const [streaming, setStreaming] = useState<boolean>(() => agent.isStreaming());
   const [config, setConfig] = useState<PhoneConfig>(initialConfig);
   const [debugLines, setDebugLines] = useState<string[]>([]);
-  const [toast, setToast] = useState<AgentToast | null>(null);
+  const { toast, say, dismiss } = useToast();
   /**
    * The doors, and the one this terminal talks through.
    *
@@ -217,15 +206,9 @@ export function useAgentSession(
 
   const configRef = useRef<PhoneConfig>(initialConfig);
   const lastWriteRef = useRef<number>(-1);
-  const toastToken = useRef(0);
   const mounted = useRef(true);
 
   const t = useMemo(() => createTranslator(snapshot.settings.language), [snapshot.settings.language]);
-
-  const say = useCallback((text: string, tone: Tone = 'accent') => {
-    toastToken.current += 1;
-    setToast({ text, tone, token: toastToken.current });
-  }, []);
 
   useEffect(() => {
     mounted.current = true;
@@ -233,14 +216,6 @@ export function useAgentSession(
       mounted.current = false;
     };
   }, []);
-
-  useEffect(() => {
-    if (!toast) return;
-    const timer = setTimeout(() => {
-      if (mounted.current) setToast(null);
-    }, 3_200);
-    return () => clearTimeout(timer);
-  }, [toast]);
 
   useEffect(() => {
     const unsubscribe = client.subscribe((event) => {
@@ -605,7 +580,7 @@ export function useAgentSession(
       .catch((error: unknown) => say(t(identityFailureKey(error)), 'warning'));
   }, [agent, t]);
 
-  const dismissToast = useCallback(() => setToast(null), []);
+  const dismissToast = useCallback(() => dismiss(), [dismiss]);
 
   // The doors the transcript holds that the deployment no longer has. Derived
   // rather than stored, because it is a fact about two things that both change on

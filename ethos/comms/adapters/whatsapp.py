@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ethos.comms.adapters.base import ChannelAdapter
+from ethos.comms.adapters.base import ChannelAdapter, emit_inbound, http_error_detail, offer_seen
 from ethos.observability.logger import get_logger
 from ethos.schemas.messages import Message
 
@@ -68,10 +68,7 @@ class WhatsappAdapter(ChannelAdapter):
         self._seen_message_ids: set[str] = set()
 
     async def start(self) -> None:
-        if self.http is None:
-            import httpx
-
-            self.http = httpx.AsyncClient(timeout=20.0)
+        await self._ensure_http()
         logger.info("comms.whatsapp.started", phone_number_id=self.phone_number_id,
                     allowed=len(self.allowed), open_to_all=self.accept_from_anyone)
 
@@ -85,39 +82,20 @@ class WhatsappAdapter(ChannelAdapter):
         """
 
     async def stop(self) -> None:
-        if self._owns_http and self.http is not None:
-            await self.http.aclose()
-        self.http = None
+        await self._close_http()
 
     def accepts(self, phone: str) -> bool:
         """Whether this number is a person the agent will answer.
 
-        An empty allowlist admits nobody. That is the same choice the Telegram
-        adapter makes, and for the same reason: the alternative is a business
-        number that replies to every stranger who finds it.
-
-        `accept_from_anyone` overrides it, explicitly and only when it is set: a
-        deployment whose agent is meant to answer the public has no list to write
-        down, because there is no list of everybody who might write. It is a
-        separate flag rather than "an empty list means yes" because the two
-        states mean opposite things and a reader of this file cannot tell which
-        one it is in.
+        The shared allowlist rule (`ChannelAdapter._accepts_id`) over the
+        normalized number, so the same person arrives as one person no matter
+        how their phone was punctuated when somebody listed them.
         """
-        return self.accept_from_anyone or normalize_phone(phone) in self.allowed
+        return self._accepts_id(normalize_phone(phone), None)
 
     def mark_seen(self, message_id: str) -> bool:
         """True the first time an id is offered, False for every redelivery."""
-        if not message_id:
-            return True
-        if message_id in self._seen_message_ids:
-            return False
-        self._seen_message_ids.add(message_id)
-        if len(self._seen_message_ids) > 2048:
-            # Dropped oldest-first by insertion order, which for a delivery
-            # stream is the order they arrived in — the right end to forget.
-            for stale in list(self._seen_message_ids)[:512]:
-                self._seen_message_ids.discard(stale)
-        return True
+        return offer_seen(self._seen_message_ids, message_id, limit=2048, drop=512)
 
     def parse(self, payload: dict[str, Any]) -> list[tuple[str, str, str, str | None]]:
         """
@@ -181,26 +159,26 @@ class WhatsappAdapter(ChannelAdapter):
             if not self.mark_seen(provider_id):
                 continue
             number = normalize_phone(sender)
-            try:
-                await on_inbound(Message(
+            if await emit_inbound(
+                on_inbound,
+                Message(
                     channel=self.name,
                     person_id=f"wa:{number}",
                     text=text,
                     conversation_key=f"whatsapp:{number}",
                     sender_name=name,
-                ))
+                ),
+                log_event="comms.whatsapp.inbound_failed", logger=logger,
+            ):
                 accepted += 1
-            except Exception:
-                logger.exception("comms.whatsapp.inbound_failed", sender=sender)
         return accepted
 
     async def send(self, *, person_id: str | None, text: str, urgency: str = "normal",
                    conversation_key: str | None = None, in_reply_to: Any = None) -> dict[str, Any]:
-        if self.http is None:
-            return {"status": "failed", "error": "whatsapp adapter not started"}
-        if not person_id or not person_id.startswith("wa:"):
-            return {"status": "failed", "error": "whatsapp adapter requires wa: person_id"}
-        to = normalize_phone(person_id.split(":", 1)[1])
+        to = self._destination(person_id, "wa")
+        if isinstance(to, dict):
+            return to
+        to = normalize_phone(to)
         if not to:
             return {"status": "failed", "error": "no destination number"}
         body = {
@@ -269,16 +247,13 @@ def _contact_names(payload: dict[str, Any]) -> dict[str, str]:
 
 
 def _error_detail(response: Any) -> str:
-    try:
-        payload = response.json()
-    except Exception:
-        return f"http_{response.status_code}"
-    error = payload.get("error") if isinstance(payload, dict) else None
-    if isinstance(error, dict):
-        detail = error.get("error_user_msg") or error.get("message") or error.get("code")
-        if detail:
-            return str(detail)[:300]
-    return f"http_{response.status_code}"
+    def pick(payload: dict[str, Any]) -> Any:
+        error = payload.get("error")
+        if isinstance(error, dict):
+            return error.get("error_user_msg") or error.get("message") or error.get("code")
+        return None
+
+    return http_error_detail(response, pick)
 
 
 def _sent_message_id(response: Any) -> str:

@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 
 from ethos import PRODUCT_NAME, __version__
 from ethos.config import EthosConfig
+from ethos.gateway.secrets import redact
 from ethos.guardian.classifier import classify_tool
 from ethos.guardian.gate import GateDecision, GuardianGate
 from ethos.guardian.journal import ActionJournal, DuplicateAction
@@ -341,8 +342,6 @@ def _digest(content: Any) -> Any:
 
 
 def _redacted_args(name: str, args: dict[str, Any]) -> dict[str, Any]:
-    from ethos.gateway.secrets import redact
-
     return redact(dict(args))
 
 

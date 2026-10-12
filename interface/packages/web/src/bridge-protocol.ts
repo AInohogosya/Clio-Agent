@@ -32,3 +32,18 @@ export function bridgePath(route: BridgeRoute): string {
 /** The token travels in a header on every request except the event stream. */
 export const TOKEN_HEADER = 'x-phone-token';
 export const TOKEN_QUERY_KEY = 'token';
+
+/**
+ * Two message lists are the same when every entry matches by id.
+ *
+ * The bridge plugin and the page both compare a list they hold against one
+ * that arrived, and the comparison is one function so the two agree on what
+ * "unchanged" means.
+ */
+export function sameIds(
+  left: ReadonlyArray<{ id: string }>,
+  right: ReadonlyArray<{ id: string }>,
+): boolean {
+  if (left.length !== right.length) return false;
+  return left.every((item, index) => item.id === right[index]?.id);
+}

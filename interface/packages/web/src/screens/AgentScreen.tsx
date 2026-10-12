@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import {
   conversationKey,
   createTranslator,
+  flattenIntentions,
   type AgentControlAction,
   type AgentConversation,
   type AgentDoor,
@@ -11,6 +12,7 @@ import {
   type TranslationKey,
 } from '@project-phone/core';
 import { Composer } from '../components/Composer';
+import { MessageRow, PendingIndicator } from '../components/MessageRow.js';
 import { ConversationFeed, useConversationFeed } from '../components/ConversationFeed';
 import { Icon } from '../components/Icon';
 import { Button, Divider, IconButton, SectionLabel, StatusPill, classNames } from '../components/Primitives';
@@ -261,7 +263,7 @@ function NoticeLine({ notice, t, view }: { notice: string; t: AgentT; view: Agen
   }
   if (notice.startsWith('close:')) {
     const id = notice.slice('close:'.length);
-    const title = flattenTitles(view).find((node) => node.id === id)?.title;
+    const title = flattenIntentions(view.intentions).find((node) => node.id === id)?.title;
     body = title ? t('intentionCloseQueued', { title }) : t('controlQueued', { action: id });
   }
   return (
@@ -272,17 +274,7 @@ function NoticeLine({ notice, t, view }: { notice: string; t: AgentT; view: Agen
   );
 }
 
-function flattenTitles(view: AgentView): AgentView['intentions'] {
-  const out: AgentView['intentions'] = [];
-  const walk = (nodes: AgentView['intentions']): void => {
-    for (const node of nodes) {
-      out.push(node);
-      walk(node.children);
-    }
-  };
-  walk(view.intentions);
-  return out;
-}
+
 
 function PresenceSummary({ view, t }: { view: AgentView; t: AgentT }) {
   const tone = stateTone(view.presence.state);
@@ -542,44 +534,18 @@ function TimelinePane({
              */
             const sender = isUser ? (message.author ?? conversation?.label ?? t('you')) : t('assistant');
             return (
-              <div className={classNames('flex gap-3', isUser ? 'justify-end' : 'justify-start')} key={message.id}>
-                {!isUser ? (
-                  <div className="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-[var(--line)] bg-[var(--canvas-raised)] text-[var(--ink-muted)]">
-                    <Icon name="cpu" size={15} />
-                  </div>
-                ) : null}
-                <div className="max-w-[min(86%,680px)]">
-                  <div className={classNames('mb-1 flex items-center gap-2 text-[0.65rem] text-[var(--ink-faint)]', isUser ? 'justify-end' : 'justify-start')}>
-                    <span className={classNames('truncate', isUser && 'max-w-[16rem]')}>{sender}</span>
-                    <span>{formatClock(message.createdAt, language)}</span>
-                  </div>
-                  <div className={classNames(
-                    'whitespace-pre-wrap rounded-2xl px-4 py-3 text-sm leading-6',
-                    isUser
-                      ? 'rounded-tr-md border border-[var(--accent-line)] bg-[var(--accent-soft)] text-[var(--ink)]'
-                      : 'rounded-tl-md border border-[var(--line)] bg-[var(--canvas-well)] text-[var(--ink)]',
-                  )}>
-                    {message.text}
-                  </div>
-                </div>
-                {isUser ? (
-                  <div className="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-[var(--line)] bg-[var(--canvas-raised)] text-[var(--ink-muted)]">
-                    <Icon name="home" size={15} />
-                  </div>
-                ) : null}
-              </div>
+              <MessageRow
+                clock={formatClock(message.createdAt, language)}
+                key={message.id}
+                message={message}
+                sender={sender}
+                truncateSender
+              />
             );
           })
         )}
         {snapshot.pending ? (
-          <div className="flex items-center gap-3 text-xs text-[var(--ink-faint)]">
-            <div className="flex gap-1 rounded-lg border border-[var(--line)] bg-[var(--canvas-well)] px-3 py-2.5">
-              <span className="signal-pulse h-1.5 w-1.5 rounded-full bg-[var(--accent)]" />
-              <span className="signal-pulse h-1.5 w-1.5 rounded-full bg-[var(--accent)] [animation-delay:180ms]" />
-              <span className="signal-pulse h-1.5 w-1.5 rounded-full bg-[var(--accent)] [animation-delay:360ms]" />
-            </div>
-            <span>{t('agentAwaiting')}…</span>
-          </div>
+          <PendingIndicator label={`${t('agentAwaiting')}…`} />
         ) : null}
       </ConversationFeed>
 

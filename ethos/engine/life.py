@@ -8,7 +8,7 @@ from typing import Any
 from uuid import UUID
 
 from ethos.config import EthosConfig
-from ethos.engine.attention import Attention, centroid_of
+from ethos.engine.attention import Attention
 from ethos.engine.drives import DriveInputs, Motivation
 from ethos.engine.rhythm import RhythmController
 from ethos.engine.states import State, StateMachine
@@ -297,12 +297,7 @@ class Life:
         identity_doc = await self.deps.self_model.identity_document(
             hard_limits=[], self_name_hint=self.config.self_name,
         )
-        tools = []
-        if self.deps.toolhost is not None:
-            try:
-                tools = self.deps.toolhost.catalog()
-            except Exception:
-                tools = []
+        tools = self._catalog_or_empty()
         budget = "unknown"
         try:
             state = await self.deps.gateway.budget()
@@ -454,6 +449,17 @@ class Life:
         the agent telling its owner it cannot do something it can -- see
         `ethos.prompts.deliberation.tool_names_line`.
         """
+        return self._catalog_or_empty()
+
+    def _catalog_or_empty(self) -> list[Any]:
+        """The tool catalog, or nothing when it cannot be had.
+
+        Asked of the toolhost rather than hardcoded, so the names the agent is
+        told it has are the names it has. A list written into the prompt is a
+        second thing that can be wrong, and the failure of getting it wrong is
+        the agent telling its owner it cannot do something it can -- see
+        `ethos.prompts.deliberation.tool_names_line`.
+        """
         toolhost = self.deps.toolhost
         if toolhost is None:
             return []
@@ -489,17 +495,12 @@ class Life:
             outcome.results.append(result.model_dump(mode="json"))
             outcome.cost_usd += result.cost_usd
             self.spent_discretionary_session += result.cost_usd
-        if decision.thoughts:
-            self._thoughts.extend(decision.thoughts)
-            for thought in decision.thoughts:
-                await self.memory.record_episode(
-                    kind="thought", summary=thought, importance=0.3, half_life_h=12,
-                )
-                await self._append_turn(
-                    TurnKind.thought.value, thought,
-                    intention_id=self.focus.intention_id if self.focus else None,
-                    focus=self.focus.title if self.focus else None,
-                )
+        for thought in decision.thoughts:
+            await self._record_thought(
+                thought, importance=0.3, half_life_h=12,
+                intention_id=self.focus.intention_id if self.focus else None,
+                focus=self.focus.title if self.focus else None,
+            )
         outcome.duration_ms = int((time.monotonic() - started) * 1000)
         return outcome
 
@@ -739,6 +740,23 @@ class Life:
             "decided": False,
         })
 
+    async def _record_thought(self, thought: str, *, importance: float, half_life_h: float,
+                                thought_turn: bool = True, **turn_kwargs: Any) -> None:
+        """A thought everywhere it is kept: the process list, the episode log, the turn history.
+
+        Three paths think something worth keeping — acting, reverie, wandering —
+        and all three keep it in the same three places. The weight is the
+        caller's, because a considered-but-declined subject is worth less than
+        one taken on; whether it also becomes a turn is too, because a reverie
+        that committed nothing has nothing to continue.
+        """
+        self._thoughts.append(thought)
+        await self.memory.record_episode(
+            kind="thought", summary=thought, importance=importance, half_life_h=half_life_h,
+        )
+        if thought_turn:
+            await self._append_turn(TurnKind.thought.value, thought, **turn_kwargs)
+
     async def _append_turn(self, kind: str, summary: str, **kwargs: Any) -> None:
         try:
             await self.context.append(kind, summary, **kwargs)
@@ -841,23 +859,20 @@ class Life:
             energy=self.deps.rhythm.energy(self.spent_discretionary_session),
         )
         if result.thought:
-            self._thoughts.append(result.thought)
             # Kept as an episode whether or not anything was taken on: "I
             # considered this and did not want it" is a real observation about
             # what the agent is drawn to, and at a low half-life it costs
             # nothing to keep a running record of.
-            await self.memory.record_episode(
-                kind="thought", summary=result.thought,
+            await self._record_thought(
+                result.thought,
                 importance=0.3 if result.committed_id else 0.2,
                 half_life_h=12 if result.committed_id else 6,
+                thought_turn=result.committed_id is not None,
+                focus=result.subject.subject,
             )
         if result.committed_id is None:
             return result
 
-        await self._append_turn(
-            TurnKind.thought.value, result.thought,
-            focus=result.subject.subject,
-        )
         if result.committed_kind != "venture":
             # A question has no steps to take; it raises the curiosity pressure
             # that brings the agent back to it on its own.
@@ -879,11 +894,7 @@ class Life:
         fragments += [f"open question: {q['text']}" for q in questions]
         glance = " ; ".join(fragments)[:500]
         thought = f"mind-wander: {glance}"
-        self._thoughts.append(thought)
-        await self._append_turn(TurnKind.thought.value, thought)
-        await self.memory.record_episode(
-            kind="thought", summary=thought, importance=0.3, half_life_h=12,
-        )
+        await self._record_thought(thought, importance=0.3, half_life_h=12)
 
     # ------------------------------------------------------------ record
 
@@ -1115,10 +1126,12 @@ class Life:
         """
         await self._pace()
         percepts = await self.perceive()
-        recent_thought_vecs = []
         appraisal = await self.deps.attention.appraise(
             percepts, self.focus,
-            recent_centroid=centroid_of(recent_thought_vecs) or None,
+            # No novelty centroid yet: nothing fills a recent-thought vector
+            # list on this path, so the salience math runs on the focus
+            # comparison alone until one does.
+            recent_centroid=None,
             thresholds_by_state=self.config.rhythm.attention.interrupt_thresholds,
             state_name=self.states.state.value,
         )

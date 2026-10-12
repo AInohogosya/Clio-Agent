@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import os
 from pathlib import Path
@@ -31,40 +32,54 @@ class ObjectiveChecker:
         self.cwd = cwd
 
     async def check(self, check: dict[str, Any], artifact: Any = None) -> dict[str, Any]:
+        """Run the check `type` asks for, or say honestly that there is none.
+
+        A table of handlers rather than a branch per type: the difference
+        between dispatchable checks and the built-ins below is that the
+        built-ins (`none`, the unknown-type passthrough) are policy about what
+        an absent check *means* rather than work a check does.
+        """
         ctype = str(check.get("type", "none"))
-        if ctype == "command":
-            return await self._check_command(check)
-        if ctype == "syntax":
-            return await self._check_syntax(check)
-        if ctype == "file_exists":
-            path = resolve(str(check.get("path", "")))
-            return {"passed": path.exists(), "observed": True,
-                    "evidence": {"path": str(path), "exists": path.exists()}}
-        if ctype == "file_contains":
-            return self._check_contains(check)
-        if ctype == "json_field":
-            return self._check_json_field(check, artifact)
         if ctype == "metric_gte":
-            try:
-                value = float(check.get("value", 0))
-                target = float(check.get("target", 0))
-            except (TypeError, ValueError):
-                return {"passed": False, "observed": False,
-                        "evidence": {"error": "non-numeric metric"}}
-            return {"passed": value >= target, "observed": True,
-                    "evidence": {"value": value, "target": target}}
-        if ctype == "http_status":
-            return await self._check_http(check)
+            return self._check_metric(check)
         if ctype in ("none", "human", ""):
             return {"passed": True, "observed": False,
                     "evidence": {"note": "no objective check defined"}}
-        # An unknown check type passes, because refusing to pass it would fail
-        # the work for a reason nobody can act on -- but it observes nothing,
-        # and `observed: False` is what stops it counting as evidence.
-        return {"passed": True, "observed": False,
-                "evidence": {"note": f"unknown check type {ctype}; skipped"}}
+        handler = {
+            "command": self._check_command,
+            "syntax": self._check_syntax,
+            "file_exists": self._check_exists,
+            "file_contains": self._check_contains,
+            "json_field": self._check_json_field,
+            "http_status": self._check_http,
+        }.get(ctype)
+        if handler is None:
+            # An unknown check type passes, because refusing to pass it would fail
+            # the work for a reason nobody can act on -- but it observes nothing,
+            # and `observed: False` is what stops it counting as evidence.
+            return {"passed": True, "observed": False,
+                    "evidence": {"note": f"unknown check type {ctype}; skipped"}}
+        result = handler(check, artifact)
+        return await result if inspect.isawaitable(result) else result
 
-    async def _check_command(self, check: dict[str, Any]) -> dict[str, Any]:
+    @staticmethod
+    def _check_exists(check: dict[str, Any], artifact: Any = None) -> dict[str, Any]:
+        path = resolve(str(check.get("path", "")))
+        return {"passed": path.exists(), "observed": True,
+                "evidence": {"path": str(path), "exists": path.exists()}}
+
+    @staticmethod
+    def _check_metric(check: dict[str, Any], artifact: Any = None) -> dict[str, Any]:
+        try:
+            value = float(check.get("value", 0))
+            target = float(check.get("target", 0))
+        except (TypeError, ValueError):
+            return {"passed": False, "observed": False,
+                    "evidence": {"error": "non-numeric metric"}}
+        return {"passed": value >= target, "observed": True,
+                "evidence": {"value": value, "target": target}}
+
+    async def _check_command(self, check: dict[str, Any], artifact: Any = None) -> dict[str, Any]:
         command = str(check.get("command", ""))
         if not command:
             return {"passed": False, "observed": False, "evidence": {"error": "empty command"}}
@@ -120,7 +135,7 @@ class ObjectiveChecker:
             },
         }
 
-    async def _check_syntax(self, check: dict[str, Any]) -> dict[str, Any]:
+    async def _check_syntax(self, check: dict[str, Any], artifact: Any = None) -> dict[str, Any]:
         """Does every one of these files parse?
 
         The cheapest check there is and the one that catches the most. A
@@ -169,7 +184,7 @@ class ObjectiveChecker:
         }
 
     @staticmethod
-    def _check_contains(check: dict[str, Any]) -> dict[str, Any]:
+    def _check_contains(check: dict[str, Any], artifact: Any = None) -> dict[str, Any]:
         path = resolve(str(check.get("path", "")))
         needle = str(check.get("text", ""))
         if not path.exists():
@@ -180,7 +195,7 @@ class ObjectiveChecker:
                 "evidence": {"path": str(path), "contains": needle in content}}
 
     @staticmethod
-    def _check_json_field(check: dict[str, Any], artifact: Any) -> dict[str, Any]:
+    def _check_json_field(check: dict[str, Any], artifact: Any = None) -> dict[str, Any]:
         try:
             data = artifact if isinstance(artifact, dict) else json.loads(str(artifact))
             keys = str(check.get("key", "")).split(".")
@@ -198,7 +213,7 @@ class ObjectiveChecker:
                     "evidence": {"error": "invalid JSON artifact"}}
 
     @staticmethod
-    async def _check_http(check: dict[str, Any]) -> dict[str, Any]:
+    async def _check_http(check: dict[str, Any], artifact: Any = None) -> dict[str, Any]:
         import httpx
 
         url = str(check.get("url", ""))
@@ -312,12 +327,3 @@ async def evaluate_objective(
         passed=passed_all, evidence=evidence, difficulty=difficulty, notes=notes,
         checks_run=ran, verified=passed_all and ran > 0,
     )
-
-
-def difficulty_from_criteria(criteria: list[dict[str, Any]], objective: EvaluationResult) -> float:
-    base = objective.difficulty
-    if any(c.get("type") == "human" for c in criteria):
-        base = max(base, 0.7)
-    if any(c.get("type") == "metric_gte" for c in criteria):
-        base = max(base, 0.5)
-    return min(1.0, base)

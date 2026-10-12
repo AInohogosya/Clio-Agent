@@ -6,6 +6,7 @@ from typing import Any
 from ethos.observability.logger import get_logger
 from ethos.prompts.identity import cross_talk_note
 from ethos.schemas.context import ConversationExchange, ConversationState
+from ethos.util import clip_text, one_line
 
 logger = get_logger("ethos.social.conversation")
 
@@ -86,7 +87,7 @@ async def open_conversations(
     for row in rows:
         tail.setdefault(row["conversation_key"], []).append(ConversationExchange(
             ts=row["ts"], direction=row["direction"], person_id=row["person_id"],
-            text=_clip(row["text"] or "", detail_chars), channel=row["channel"] or "",
+            text=clip_text(row["text"] or "", detail_chars), channel=row["channel"] or "",
         ))
 
     states: list[ConversationState] = []
@@ -99,7 +100,7 @@ async def open_conversations(
             channel=row["channel"] or "",
             last_ts=row["ts"],
             last_direction=row["direction"] or "",
-            last_text=_clip(row["text"] or "", detail_chars),
+            last_text=clip_text(row["text"] or "", detail_chars),
             exchanges=exchanges,
         ))
     states.sort(key=lambda state: state.last_ts, reverse=True)
@@ -131,7 +132,7 @@ def render_conversations(states: list[ConversationState], *, now: datetime | Non
         )
         for exchange in state.exchanges:
             who = "me" if exchange.direction == "outbound" else (exchange.person_id or "them")
-            lines.append(f"  {who}: {_one_line(exchange.text)}")
+            lines.append(f"  {who}: {one_line(exchange.text)}")
     transcript = "\n".join(lines)
     closing = (
         "The person on each of these has the whole transcript, including every line "
@@ -221,12 +222,3 @@ def _ago(hours: float) -> str:
     return f"{int(hours // 24)}d"
 
 
-def _one_line(text: str) -> str:
-    return " ".join(str(text).split())
-
-
-def _clip(text: str, limit: int) -> str:
-    text = str(text)
-    if limit <= 0 or len(text) <= limit:
-        return text
-    return text[: max(0, limit - 1)].rstrip() + "…"

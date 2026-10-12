@@ -189,9 +189,7 @@ class RemoteEmbedder:
         retries: int = 3,
         retry_delay_s: float = 0.5,
     ):
-        import httpx
-
-        from ethos.platform import SUPPORTS_UNIX_SOCKETS
+        from ethos.gateway.client import open_endpoint_client
 
         self.dim = dim
         self._retries = max(0, retries)
@@ -199,16 +197,9 @@ class RemoteEmbedder:
         # Asked once, here, rather than per call: the supervisor starts the
         # gateway before anything that would ask it for a vector, so the socket is
         # either there or the deployment has a problem worth reporting once.
-        self._use_socket = bool(socket_path) and SUPPORTS_UNIX_SOCKETS and os.path.exists(str(socket_path))
-        if self._use_socket:
-            self._base = "http://gateway.local"
-            self._http = httpx.Client(
-                transport=httpx.HTTPTransport(uds=str(socket_path)),
-                base_url=self._base, timeout=timeout_s,
-            )
-        else:
-            self._base = f"http://{host}:{port}"
-            self._http = httpx.Client(base_url=self._base, timeout=timeout_s)
+        self._http, self._base = open_endpoint_client(
+            socket_path, host, port, timeout_s=timeout_s, sync=True,
+        )
         self._closed = False
         logger.info("embedder.remote", via=self._base, dim=dim)
 

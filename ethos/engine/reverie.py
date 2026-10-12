@@ -7,23 +7,13 @@ from ethos.config import EthosConfig
 from ethos.engine.attention import jaccard
 from ethos.memory.retrieval import tokenize
 from ethos.observability.logger import get_logger
+from ethos.parse import parse_json_block
 from ethos.prompts.reverie import reverie_messages
 from ethos.schemas.models import ModelMessage, ModelRequest, Role, Tier
 from ethos.schemas.reverie import ReverieKind, ReverieResult, ReverieSubject
+from ethos.util import clip_value
 
 logger = get_logger("ethos.reverie")
-
-
-def _parse_json(text: str) -> dict[str, Any]:
-    import json
-
-    start, end = text.find("{"), text.rfind("}")
-    if start < 0 or end <= start:
-        return {}
-    try:
-        return json.loads(text[start:end + 1])
-    except json.JSONDecodeError:
-        return {}
 
 
 class Reverie:
@@ -144,7 +134,7 @@ class Reverie:
         answer that cannot be read is treated exactly like an answer of "none":
         an idle mind that said nothing intelligible has not found a subject.
         """
-        data = _parse_json(text)
+        data = parse_json_block(text)
         if not data:
             return ReverieSubject()
         try:
@@ -161,7 +151,7 @@ class Reverie:
             subject=subject[:200],
             why=str(data.get("why", "") or "").strip()[:400],
             first_step=str(data.get("first_step", "") or "").strip()[:400],
-            interest=_clip(data.get("interest")),
+            interest=clip_value(data.get("interest")),
             raw=data,
         )
 
@@ -265,10 +255,3 @@ class Reverie:
         except Exception:
             logger.warning("reverie.questions_unavailable")
             return []
-
-
-def _clip(value: Any) -> float:
-    try:
-        return max(0.0, min(1.0, float(value)))
-    except (TypeError, ValueError):
-        return 0.0

@@ -10,8 +10,9 @@ import {
   type AgentControlAction,
   type AgentView,
 } from '@project-phone/core';
-import { truncateWidth, type Palette, type Tone } from './palette.js';
-import { keyValue, meter, note, panel, rule, sectionLabel, type RenderOptions } from './render.js';
+import { truncateWidth } from './palette.js';
+import { toneMark } from './tui-kit.js';
+import { keyValue, meter, panel, sectionLabel, type RenderOptions } from './render.js';
 
 /**
  * The one-shot agent report.
@@ -21,18 +22,7 @@ import { keyValue, meter, note, panel, rule, sectionLabel, type RenderOptions } 
  * and watch, and a script that has to parse a live TUI is not a script.
  */
 
-/** One mark per tone, so the terminal and the browser read the same colour. */
-const MARK: Partial<Record<Tone, string>> = {
-  accent: '◆',
-  success: '●',
-  warning: '▲',
-  danger: '■',
-  muted: '·',
-};
 
-function mark(tone: Tone): string {
-  return MARK[tone] ?? MARK.muted ?? '·';
-}
 
 const CONTROL_LABELS: Record<AgentControlAction, Parameters<ReturnType<typeof createTranslator>>[0]> = {
   pause_actions: 'controlPauseActions',
@@ -88,7 +78,7 @@ function presenceRows(view: AgentView, options: RenderOptions): string[] {
   const tone = stateTone(view.presence.state);
   const summary = controlSummary(view.control, t);
   const body: string[] = [];
-  body.push(keyValue(t('presenceState'), `${mark(tone)} ${humanizeState(view.presence.state)}`, palette, width - 4, 16));
+  body.push(keyValue(t('presenceState'), `${toneMark(tone)} ${humanizeState(view.presence.state)}`, palette, width - 4, 16));
   body.push(keyValue(t('presenceFocus'), truncateWidth(view.presence.focus?.title ?? t('presenceIdle'), width - 22), palette, width - 4, 16));
   body.push(keyValue(t('presenceUpdated'), view.presence.ts ? formatClock(view.presence.ts, language) : t('presenceNever'), palette, width - 4, 16));
   body.push(`  ${palette.style(summary.tone, `${summary.tone === 'success' ? '✓' : '!'} ${summary.text}`)}`);
@@ -100,7 +90,7 @@ function presenceRows(view: AgentView, options: RenderOptions): string[] {
     // styled text lands mid-sequence and paints the rest of the row wrong.
     const available = Math.max(4, width - 22);
     const marks = view.presence.recentCycles.slice(0, 24).reverse().slice(0, available)
-      .map((cycle) => palette.style(stateTone(cycle.state), mark(stateTone(cycle.state))))
+      .map((cycle) => palette.style(stateTone(cycle.state), toneMark(stateTone(cycle.state))))
       .join('');
     body.push('');
     body.push(palette.faint(`  ${t('presenceCycles')}`));
@@ -204,14 +194,4 @@ function guardianRows(view: AgentView, options: RenderOptions): string[] {
     ));
   }
   return [...panel({ width, title: t('panelGuardian'), body }, palette), ''];
-}
-
-/** The line printed when a command was queued rather than performed. */
-export function queuedNote(action: AgentControlAction, options: RenderOptions): string {
-  const t = createTranslator(options.language);
-  return `${note(t('cliAgentQueued', { action: controlLabel(action, t) }), options.palette, 'success')}`;
-}
-
-export function ruleLine(width: number, palette: Palette): string {
-  return rule(Math.max(4, width), palette);
 }

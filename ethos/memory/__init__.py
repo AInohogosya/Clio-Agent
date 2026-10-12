@@ -6,7 +6,6 @@ from ethos.memory.retrieval import (
     bm25_scores,
     cosine,
     mmr_select,
-    normalize_bm25,
     parse_pgvector,
     recency_component,
     score_memory,
@@ -19,6 +18,6 @@ from ethos.memory.store import MemoryStore
 __all__ = [
     "ConsolidationDAG", "hdbscan_like_cluster", "ContinuityManager", "ContextLayer",
     "HybridRetriever",
-    "bm25_scores", "cosine", "mmr_select", "normalize_bm25", "parse_pgvector",
+    "bm25_scores", "cosine", "mmr_select", "parse_pgvector",
     "recency_component", "score_memory", "to_pgvector", "tokenize", "SelfModel", "MemoryStore",
 ]

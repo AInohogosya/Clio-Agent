@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from ethos.comms.adapters.base import ChannelAdapter
+from ethos.comms.adapters.base import ChannelAdapter, offer_seen
 from ethos.observability.logger import get_logger
 from ethos.schemas.messages import Message
 
@@ -110,15 +110,9 @@ class TelegramAdapter(ChannelAdapter):
         self._seen_updates: set[int] = set()
 
     def mark_seen_update(self, update_id: int | None) -> bool:
-        if not update_id:
-            return True
-        if update_id in self._seen_updates:
+        if not offer_seen(self._seen_updates, update_id, limit=4096, drop=1024, numeric=True):
             logger.info("comms.telegram.duplicate_update", update_id=update_id)
             return False
-        self._seen_updates.add(update_id)
-        if len(self._seen_updates) > 4096:
-            for stale in sorted(self._seen_updates)[:1024]:
-                self._seen_updates.discard(stale)
         return True
 
     async def start(self) -> None:

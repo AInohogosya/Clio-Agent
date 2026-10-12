@@ -1,13 +1,10 @@
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Any
 
-import httpx
-
 from ethos.config import EthosConfig
-from ethos.platform import SUPPORTS_UNIX_SOCKETS
+from ethos.gateway.client import open_endpoint_client
 from ethos.schemas.tools import ToolResult
 from ethos.toolhost.server import ToolContext
 
@@ -41,18 +38,12 @@ class RemoteToolhostClient:
         if socket_path is None:
             socket_path = str(Path.home() / ".ethos" / "run" / "toolhost.sock")
 
-        # See `ethos.gateway.client`: httpx's `uds=` transport is POSIX-only, so
-        # the socket is only worth looking for where one could be served at all.
         # On Windows this is always the TCP branch, and the port is the one the
         # toolhost was told to bind — which is why `toolhost_port` is configured
         # rather than left as a default in two modules that could disagree.
-        if SUPPORTS_UNIX_SOCKETS and os.path.exists(socket_path):
-            transport = httpx.AsyncHTTPTransport(uds=socket_path)
-            self._http = httpx.AsyncClient(
-                transport=transport, base_url="http://toolhost.local", timeout=timeout_s,
-            )
-        else:
-            self._http = httpx.AsyncClient(base_url=f"http://{host}:{port}", timeout=timeout_s)
+        self._http, self._base = open_endpoint_client(
+            socket_path, host, port, timeout_s=timeout_s, virtual_host="toolhost.local",
+        )
 
     async def execute(self, name: str, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         response = await self._http.post(

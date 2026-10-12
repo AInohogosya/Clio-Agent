@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import Any
-
 from prometheus_client import Counter, Gauge, Histogram, start_http_server
 
 from ethos.observability.logger import get_logger
@@ -149,8 +147,3 @@ def observe_action(tool: str, status: str) -> None:
 def observe_cycle(thread_id: str, state: str, duration_s: float) -> None:
     CYCLES.labels(thread_id=thread_id, state=state).inc()
     CYCLE_DURATION.observe(duration_s)
-
-
-def set_presence(state: str, energy: float, salience: float, **_extra: Any) -> None:
-    ENERGY.set(energy)
-    SALIENCE_MAX.set(salience)

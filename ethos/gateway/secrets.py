@@ -122,17 +122,10 @@ class SecretVault:
 
         return SECRET_HANDLE_RE.sub(_repl, text)
 
-    def redact_handles(self, text: str) -> str:
-        return SECRET_HANDLE_RE.sub("{{secret:REDACTED}}", text)
-
     def ensure_store_permissions(self) -> None:
         for path in (self.store_path, self.keyfile):
             if path.exists():
                 os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
-
-
-def secret_uses(text: str) -> list[str]:
-    return SECRET_HANDLE_RE.findall(text or "")
 
 
 def redact(obj: Any) -> Any:

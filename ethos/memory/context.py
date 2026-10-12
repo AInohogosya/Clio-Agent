@@ -5,6 +5,7 @@ from typing import Any
 
 from ethos.config import EthosConfig
 from ethos.observability.logger import get_logger
+from ethos.parse import parse_json_block
 from ethos.prompts.context import narrate_messages
 from ethos.schemas.context import (
     ContextSnapshot,
@@ -13,6 +14,7 @@ from ethos.schemas.context import (
     TurnKind,
 )
 from ethos.schemas.models import ModelMessage, ModelRequest, Role, Tier
+from ethos.util import clip_text, one_line
 
 logger = get_logger("ethos.memory.context")
 
@@ -160,11 +162,11 @@ class ContextLayer:
             tool = str(action["tool"])
             ok = bool(action.get("ok"))
             result = action.get("result")
-            text = _clip(_stringify(result), self.cfg.detail_chars)
+            text = clip_text(_stringify(result), self.cfg.detail_chars)
             if ok:
                 turn = await self.append(
                     TurnKind.result.value,
-                    f"{tool} -> {_clip(_stringify(result), 120)}",
+                    f"{tool} -> {clip_text(_stringify(result), 120)}",
                     detail={"tool": tool, "args": action.get("args") or {}, "result": result},
                     intention_id=intention_id,
                 )
@@ -175,7 +177,7 @@ class ContextLayer:
             else:
                 await self.append(
                     TurnKind.failure.value,
-                    f"{tool} failed: {_clip(_stringify(result), 120)}",
+                    f"{tool} failed: {clip_text(_stringify(result), 120)}",
                     detail={"tool": tool, "args": action.get("args") or {}, "error": result},
                     intention_id=intention_id,
                 )
@@ -252,7 +254,7 @@ class ContextLayer:
             logger.warning("context.narrate_call_failed")
             return None
         self.cost_usd += float(response.cost_usd or 0.0)
-        data = _parse_json(response.text or "")
+        data = parse_json_block(response.text or "")
         text = str(data.get("line") or "").strip()
         if not text:
             return None
@@ -380,7 +382,7 @@ class ContextLayer:
                 text = turn.detail.get("text")
                 if text:
                     detail_blocks.append(
-                        f"  <{label}>\n  {_clip(str(text), self.cfg.detail_chars)}\n  </{label}>"
+                        f"  <{label}>\n  {clip_text(str(text), self.cfg.detail_chars)}\n  </{label}>"
                     )
 
         for line in summary_lines:
@@ -406,8 +408,6 @@ class ContextLayer:
                 "the thread above is what they added up to)"
             )
         return "".join(sections).rstrip()
-
-        return "\n".join(sections).rstrip()
 
     # ---------------------------------------------------------- durability
 
@@ -439,7 +439,7 @@ class ContextLayer:
 
 def _render_for_narration(turn: ContextTurn) -> str:
     if turn.kind in _DETAIL_KINDS and turn.detail.get("text"):
-        return f"[{turn.kind}] {turn.summary} :: {_one_line(str(turn.detail['text']))}"
+        return f"[{turn.kind}] {turn.summary} :: {one_line(str(turn.detail['text']))}"
     return f"[{turn.kind}] {turn.summary}"
 
 
@@ -454,23 +454,5 @@ def _stringify(value: Any) -> str:
         return str(value)
 
 
-def _one_line(text: str) -> str:
-    return " ".join(str(text).split())
 
 
-def _clip(text: str, limit: int) -> str:
-    text = str(text)
-    if limit <= 0 or len(text) <= limit:
-        return text
-    return text[: max(0, limit - 1)].rstrip() + "…"
-
-
-def _parse_json(text: str) -> dict[str, Any]:
-    start, end = text.find("{"), text.rfind("}")
-    if start < 0 or end <= start:
-        return {}
-    try:
-        data = json.loads(text[start:end + 1])
-    except json.JSONDecodeError:
-        return {}
-    return data if isinstance(data, dict) else {}

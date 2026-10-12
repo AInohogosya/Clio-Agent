@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import time
 import uuid
 from datetime import UTC, datetime
 from typing import Any
 
 from ethos.config import EthosConfig
-from ethos.db import Database
+from ethos.db import Database, decode_env_attrs
 from ethos.observability.logger import get_logger
 from ethos.schemas.events import EventKind
 
@@ -34,25 +33,18 @@ class Scheduler:
             "SELECT key, attrs::text AS attrs FROM env_entities WHERE kind = 'schedule'"
         )
         for row in rows:
-            attrs = json.loads(row["attrs"]) if isinstance(row["attrs"], str) else dict(row["attrs"])
+            attrs = decode_env_attrs(row)
             self.timers[row["key"]] = attrs
         logger.info("scheduler.loaded", count=len(self.timers))
 
     async def _persist(self, timer_id: str, attrs: dict[str, Any]) -> None:
         if self.db is None:
             return
-        await self.db.execute(
-            "INSERT INTO env_entities (id, kind, key, attrs, owner, last_verified_at, health) "
-            "VALUES ($1, 'schedule', $2, $3::jsonb, 'scheduler', now(), 'ok') "
-            "ON CONFLICT (key) DO UPDATE SET attrs = $3::jsonb, last_verified_at = now()",
-            uuid.uuid4(), timer_id, json.dumps(attrs),
-        )
+        await self.db.upsert_env("schedule", timer_id, attrs, owner="scheduler")
 
     async def _remove(self, timer_id: str) -> None:
         if self.db is not None:
-            await self.db.execute(
-                "DELETE FROM env_entities WHERE kind = 'schedule' AND key = $1", timer_id,
-            )
+            await self.db.delete_env("schedule", timer_id)
 
     async def schedule_at(self, name: str, at: str, payload: dict[str, Any]) -> str:
         timer_id = f"timer-{uuid.uuid4().hex[:12]}"

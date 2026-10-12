@@ -10,7 +10,7 @@ from typing import Any
 import typer
 
 from ethos import PRODUCT_NAME, RELEASE_DATE, RELEASE_TIMEZONE
-from ethos.config import EthosConfig, load_config
+from ethos.config import EthosConfig, effective_dsn, load_config
 from ethos.platform import IS_WINDOWS, SUPPORTS_UNIX_SOCKETS, hard_kill_pid, install_fast_loop
 
 app = typer.Typer(
@@ -476,14 +476,25 @@ def supervisor() -> None:
     asyncio.run(run_supervisor())
 
 
+def _alembic_config():
+    """Alembic's own configuration for this checkout's migrations, in one place.
+
+    Both readers of `migrations/alembic.ini` — the upgrade that applies it and
+    the doctor that compares against it — resolve the same file, so a renamed
+    directory breaks both loudly rather than one of them quietly.
+    """
+    from alembic.config import Config as AlembicConfig
+
+    root = Path(__file__).resolve().parent.parent
+    return AlembicConfig(str(root / "migrations" / "alembic.ini"))
+
+
 @db_app.command("upgrade")
 def db_upgrade() -> None:
     """Apply all Alembic migrations."""
     from alembic import command
-    from alembic.config import Config as AlembicConfig
 
-    root = Path(__file__).resolve().parent.parent
-    alembic_cfg = AlembicConfig(str(root / "migrations" / "alembic.ini"))
+    alembic_cfg = _alembic_config()
     dsn = os.environ.get("ETHOS_DSN")
     if dsn:
         alembic_cfg.set_main_option("sqlalchemy.url", _asyncpg_dsn_to_sqlalchemy(dsn))
@@ -498,7 +509,7 @@ def db_seed() -> None:
     from ethos.core.seed import seed
 
     config = load_config()
-    dsn = os.environ.get("ETHOS_DSN") or config.database.dsn
+    dsn = effective_dsn(config)
     os.environ["ETHOS_DSN"] = dsn
 
     async def _run() -> None:
@@ -616,6 +627,31 @@ def await_agent(seconds: float = typer.Argument(120.0, help="how long to wait, i
         time.sleep(2.0)
 
 
+def _await_pid_gone(
+    supervisor: Any, pid: int, time: Any, *, deadline_s: float,
+    gone: str, gone_exit: int, timeout: str = "", timeout_exit: int | None = 1,
+) -> None:
+    """Poll the pid file until the pid is gone, then say so and exit.
+
+    The wait is on the pid file rather than on the process, because the pid file
+    is the fact `up` and `status` read: when it no longer names this pid, every
+    later command will agree the supervisor is stopped.
+
+    `timeout_exit=None` returns instead of exiting, for the caller whose answer
+    to a missed deadline is to escalate rather than to report.
+    """
+    deadline = time.monotonic() + deadline_s
+    while time.monotonic() < deadline:
+        if supervisor.read_pid() != pid:
+            typer.echo(gone)
+            raise typer.Exit(gone_exit)
+        time.sleep(0.2)
+    if timeout_exit is None:
+        return
+    typer.echo(timeout)
+    raise typer.Exit(timeout_exit)
+
+
 @app.command()
 def stop() -> None:
     """Ask the running supervisor to shut the agent down, and wait for it to go.
@@ -652,16 +688,12 @@ def stop() -> None:
         # that worked as a failure.
         typer.echo(f"the supervisor (pid {pid}) had already stopped")
         raise typer.Exit(0) from None
-    deadline = time.monotonic() + 20.0
-    while time.monotonic() < deadline:
-        if supervisor.read_pid() != pid:
-            typer.echo(f"stopped the supervisor (pid {pid})")
-            raise typer.Exit(0)
-        time.sleep(0.2)
-    typer.echo(
-        f"the supervisor (pid {pid}) did not stop within 20s — its children may still be running"
+    _await_pid_gone(
+        supervisor, pid, time, deadline_s=20.0,
+        gone=f"stopped the supervisor (pid {pid})", gone_exit=0,
+        timeout=f"the supervisor (pid {pid}) did not stop within 20s — its children may still be running",
+        timeout_exit=1,
     )
-    raise typer.Exit(1)
 
 
 def _stop_windows(supervisor, pid: int, time) -> None:
@@ -691,12 +723,10 @@ def _stop_windows(supervisor, pid: int, time) -> None:
             f"({supervisor.stop_file.parent}) is not writable"
         )
         raise typer.Exit(1)
-    deadline = time.monotonic() + 20.0
-    while time.monotonic() < deadline:
-        if supervisor.read_pid() != pid:
-            typer.echo(f"stopped the supervisor (pid {pid})")
-            raise typer.Exit(0)
-        time.sleep(0.2)
+    _await_pid_gone(
+        supervisor, pid, time, deadline_s=20.0,
+        gone=f"stopped the supervisor (pid {pid})", gone_exit=0, timeout_exit=None,
+    )
     # Escalate, and say what happened. `taskkill /T /F` rather than
     # `TerminateProcess` on the supervisor alone, so the children go with it: they
     # are its descendants, and a supervisor that is gone leaves them running
@@ -706,14 +736,11 @@ def _stop_windows(supervisor, pid: int, time) -> None:
         f"children forcibly, so nothing gets the chance to close cleanly"
     )
     hard_kill_pid(pid)
-    deadline = time.monotonic() + 10.0
-    while time.monotonic() < deadline:
-        if supervisor.read_pid() != pid:
-            typer.echo(f"the supervisor (pid {pid}) is gone; it did not shut down cleanly")
-            raise typer.Exit(1)
-        time.sleep(0.2)
-    typer.echo(f"the supervisor (pid {pid}) could not be stopped at all")
-    raise typer.Exit(1)
+    _await_pid_gone(
+        supervisor, pid, time, deadline_s=10.0,
+        gone=f"the supervisor (pid {pid}) is gone; it did not shut down cleanly", gone_exit=1,
+        timeout=f"the supervisor (pid {pid}) could not be stopped at all", timeout_exit=1,
+    )
 
 
 @app.command()
@@ -735,19 +762,15 @@ def doctor(
     typer.echo(f"{PRODUCT_NAME} doctor")
     config.paths.ensure()
     typer.echo("  config dir: OK")
-    dsn = os.environ.get("ETHOS_DSN") or config.database.dsn
+    dsn = effective_dsn(config)
 
     # The migration head this checkout carries, read with Alembic's own
     # directory walker so the comparison below is like for like.
     head: str | None = None
     try:
-        from alembic.config import Config as AlembicConfig
         from alembic.script import ScriptDirectory
 
-        root = Path(__file__).resolve().parent.parent
-        head = ScriptDirectory.from_config(
-            AlembicConfig(str(root / "migrations" / "alembic.ini")),
-        ).get_current_head()
+        head = ScriptDirectory.from_config(_alembic_config()).get_current_head()
     except Exception:
         head = None
 

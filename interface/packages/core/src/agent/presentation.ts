@@ -86,13 +86,39 @@ export function humanizeState(state: string): string {
   return state.replace(/_/g, ' ').toLowerCase();
 }
 
-export function formatClock(timestamp: number | string | null, language: Language): string {
+export function formatClock(
+  timestamp: number | string | null,
+  language: Language,
+  fallback = '--:--',
+): string {
   const value = typeof timestamp === 'number' ? timestamp : timestamp ? Date.parse(timestamp) : Number.NaN;
-  if (!Number.isFinite(value)) return '--:--';
+  if (!Number.isFinite(value)) return fallback;
   try {
     return new Intl.DateTimeFormat(language, { hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(value);
   } catch {
+    return fallback;
+  }
+}
+
+/** The clock as the terminal prints it: hour and minute, or the fallback. */
+export function formatTime(timestamp: number, language: Language): string {
+  try {
+    return new Intl.DateTimeFormat(language, { hour: '2-digit', minute: '2-digit' }).format(
+      Number.isFinite(timestamp) ? timestamp : Date.now(),
+    );
+  } catch {
     return '--:--';
+  }
+}
+
+/** The clock as the status screens print it: date and time, or the fallback. */
+export function formatDateTime(timestamp: number, language: Language): string {
+  try {
+    return new Intl.DateTimeFormat(language, {
+      year: 'numeric', month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit',
+    }).format(Number.isFinite(timestamp) ? timestamp : Date.now());
+  } catch {
+    return '-';
   }
 }
 
@@ -172,6 +198,28 @@ export function controlSummary(
  * missing `children` must read as "no children" rather than throw halfway through
  * drawing a panel.
  */
+/**
+ * One intention by id, or by the title somebody typed in its place.
+ *
+ * The CLI accepts a title as the target of `/cancel`, because an id is a
+ * string nobody can type from memory and the title is what the tree shows.
+ */
+export function findIntention(
+  nodes: readonly AgentIntention[] | null | undefined,
+  id: string,
+): AgentIntention | undefined {
+  // Breadth-first, so a title shared by a parent and its own descendant
+  // resolves to the shallower one — the one the tree shows first.
+  const queue: AgentIntention[] = [...(nodes ?? [])];
+  while (queue.length > 0) {
+    const node = queue.shift();
+    if (!node) continue;
+    if (node.id === id || node.title === id) return node;
+    queue.push(...(node.children ?? []));
+  }
+  return undefined;
+}
+
 export function flattenIntentions(nodes: readonly AgentIntention[] | null | undefined): AgentIntention[] {
   const out: AgentIntention[] = [];
   const seen = new Set<AgentIntention>();

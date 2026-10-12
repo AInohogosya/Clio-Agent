@@ -14,7 +14,6 @@ from ethos.memory.retrieval import (
     bm25_scores,
     cosine,
     mmr_select,
-    normalize_bm25,
     recency_component,
     score_memory,
     tokenize,
@@ -43,8 +42,6 @@ def test_bm25_ranks_relevant_doc_higher():
             tokenize("the quick brown fox jumps over the lazy dog")]
     scores = bm25_scores(query, docs)
     assert scores[0] > scores[1]
-    normalized = normalize_bm25(scores)
-    assert normalized[0] == pytest.approx(1.0)
 
 
 def test_recency_component_half_life(memory_config):

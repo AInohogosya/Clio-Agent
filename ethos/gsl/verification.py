@@ -8,11 +8,74 @@ from ethos.config import EthosConfig
 from ethos.gsl.acceptance import derive_checks, is_code, uncovered_paths
 from ethos.gsl.evaluator import evaluate_objective
 from ethos.observability.logger import get_logger
+from ethos.parse import parse_json_block
 from ethos.prompts import VERIFIER_PROMPT, dumps
 from ethos.schemas.gsl import EvaluationResult, VerificationResult
 from ethos.schemas.models import ModelMessage, ModelRequest, Role, Tier
 
 logger = get_logger("ethos.gsl.verification")
+
+
+def diverse_provider_hint(config: EthosConfig, producer_family: str | None) -> str | None:
+    """A provider from a different diversity family than the producer's, or None.
+
+    The anti-echo rule for rung 2: the judge should not share a model family
+    with the model that produced the work, or a family's shared blind spots
+    become the verification's blind spots too. Answering `None` keeps the
+    request routable anywhere.
+    """
+    if not producer_family:
+        return None
+    for entry in config.models.models:
+        if entry.diversity_family != producer_family and "T3" in entry.tiers:
+            return entry.provider
+    return None
+
+
+async def run_model_verifier(
+    gateway: Any,
+    config: EthosConfig,
+    *,
+    goal: str,
+    criteria: list[dict[str, Any]],
+    artifact_text: str,
+    producer_family: str | None,
+    purpose: str,
+    thread_id: str | None = None,
+) -> dict[str, Any]:
+    """The rung-2 judge, as one model call shared by every path that reaches it.
+
+    The gateway fallback and the verifier thread were two copies of this call,
+    and they had already drifted — the thread read its diversity hint under a
+    key the ladder was not sending, so on the thread path the judge silently
+    lost the "different model family" instruction and echoed the producer's
+    family. One implementation is the fix for that class of drift: same prompt,
+    same tier, same parse, and the same refusal to guess — a verifier that
+    cannot be asked answers `needs_human`, never a verdict it did not hear.
+    """
+    request = ModelRequest(
+        tier=Tier.T3,
+        purpose=purpose,
+        thread_id=thread_id,
+        provider_hint=diverse_provider_hint(config, producer_family),
+        messages=[
+            ModelMessage(role=Role.system, content=VERIFIER_PROMPT.format(
+                goal=goal,
+                criteria=dumps(criteria),
+                artifact=artifact_text,
+            )),
+            ModelMessage(role=Role.user, content="Judge the artifact."),
+        ],
+        max_tokens=600,
+    )
+    try:
+        response = await gateway.complete(request)
+        data = parse_json_block(response.text or "")
+        if data:
+            return data
+    except Exception:
+        logger.exception("verification.verifier_call_failed")
+    return {"verdict": "needs_human", "issues": ["verifier call failed"], "confidence": 0.0}
 
 
 class VerificationLadder:
@@ -292,36 +355,14 @@ class VerificationLadder:
                     return result
             except Exception:
                 logger.exception("verification.thread_failed")
-        request = ModelRequest(
-            tier=Tier.T3,
+        return await run_model_verifier(
+            self.gateway, self.config,
+            goal=intention.desired_end_state or intention.title,
+            criteria=criteria,
+            artifact_text=_artifact_text(artifact),
+            producer_family=producer_family,
             purpose="gsl.verify",
-            provider_hint=self._diverse_provider_hint(producer_family),
-            messages=[
-                ModelMessage(role=Role.system, content=VERIFIER_PROMPT.format(
-                    goal=intention.desired_end_state or intention.title,
-                    criteria=dumps(criteria),
-                    artifact=_artifact_text(artifact),
-                )),
-                ModelMessage(role=Role.user, content="Judge the artifact."),
-            ],
-            max_tokens=600,
         )
-        try:
-            response = await self.gateway.complete(request)
-            data = _parse_json(response.text or "")
-            if data:
-                return data
-        except Exception:
-            logger.exception("verification.gateway_failed")
-        return {"verdict": "needs_human", "issues": ["verifier unavailable"], "confidence": 0.0}
-
-    def _diverse_provider_hint(self, producer_family: str | None) -> str | None:
-        if not producer_family:
-            return None
-        for entry in self.config.models.models:
-            if entry.diversity_family != producer_family and "T3" in entry.tiers:
-                return entry.provider
-        return None
 
     async def _record_human_review_pending(
         self, intention: Any, criteria: list[dict[str, Any]], artifact: Any,
@@ -372,13 +413,3 @@ def _artifact_text(artifact: Any) -> str:
         return json.dumps(artifact, default=str)[:8000]
     except (TypeError, ValueError):
         return str(artifact)[:8000]
-
-
-def _parse_json(text: str) -> dict[str, Any]:
-    start, end = text.find("{"), text.rfind("}")
-    if start < 0 or end <= start:
-        return {}
-    try:
-        return json.loads(text[start:end + 1])
-    except json.JSONDecodeError:
-        return {}

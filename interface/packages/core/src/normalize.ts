@@ -36,7 +36,7 @@ function hasOwn(value: object, key: string): boolean {
  * out of a view the person is looking at. Anything unprintable becomes nothing,
  * which reads as the local line.
  */
-function safeChannel(value: unknown): string | undefined {
+export function safeChannel(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;
   const clean = value.trim().slice(0, MAX_CHANNEL_LENGTH);
   if (!/^[\w:.-]+$/.test(clean)) return undefined;

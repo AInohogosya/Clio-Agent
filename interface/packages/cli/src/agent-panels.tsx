@@ -23,7 +23,7 @@ import {
   type Settings,
 } from '@project-phone/core';
 import { doorStateNote } from './channels.js';
-import { Divider, Meta, Panel } from './tui-kit.js';
+import { Divider, label, Meta, Panel, toneMark } from './tui-kit.js';
 import { toneHex, truncateWidth, type Palette, type Tone } from './palette.js';
 import { meter } from './render.js';
 
@@ -36,14 +36,6 @@ export type T = ReturnType<typeof createTranslator>;
  * the kernel, so a reader who moves between this and the browser is not learning
  * a second vocabulary for the same agent.
  */
-
-const MARK: Record<string, string> = {
-  accent: '◆',
-  success: '●',
-  warning: '▲',
-  danger: '■',
-  muted: '·',
-};
 
 /** The link's own health, which is not the agent's state. */
 export function linkLabel(link: AgentLinkStatus, streaming: boolean, t: T): string {
@@ -80,7 +72,7 @@ export function PresencePanel({
     >
       <Box flexDirection="column">
         <Meta label={t('presenceState')} palette={palette}>
-          <Text color={toneHex(palette, tone)}>{`${MARK[tone] ?? MARK.muted} ${humanizeState(view.presence.state)}`}</Text>
+          <Text color={toneHex(palette, tone)}>{`${toneMark(tone)} ${humanizeState(view.presence.state)}`}</Text>
         </Meta>
         <Meta label={t('presenceFocus')} palette={palette}>
           {view.presence.focus?.title ?? (view.loaded ? t('presenceIdle') : t('presenceNeverRun'))}
@@ -119,7 +111,7 @@ export function CycleStrip({ view, palette, t, width }: { view: AgentView; palet
           const tone = stateTone(cycle.state);
           return (
             <Text color={toneHex(palette, tone)} key={`${cycle.ts ?? 'x'}-${index}`}>
-              {MARK[tone] ?? MARK.muted}
+              {toneMark(tone)}
             </Text>
           );
         })}
@@ -468,10 +460,6 @@ function BaseModelRows({
       </Meta>
     </>
   );
-}
-
-function label(value: string): string {
-  return value.toUpperCase();
 }
 
 /**

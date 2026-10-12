@@ -7,6 +7,7 @@ import {
   publicSettingsEqual,
   type AgentBaseModel,
   type AgentBaseModelInput,
+  type AgentClient,
   type AgentChannelSetup,
   type AgentDoorWrite,
   type AgentIdentity,
@@ -18,6 +19,7 @@ import {
   type Settings,
 } from '@project-phone/core';
 import { createBridge, type Bridge, type BridgeSnapshot, type BridgeStatus } from '../bridge';
+import { sameIds } from '../bridge-protocol.js';
 import { useAgentLink, type AgentLinkController } from './useAgentLink';
 
 /** `local` is memory for this tab, not a store: nothing of it is written down. */
@@ -101,10 +103,7 @@ export interface DuplexController extends AgentLinkController {
   saveDoor: (write: AgentDoorWrite) => Promise<AgentChannelSetup>;
 }
 
-function sameEntries<T extends { id: string }>(left: readonly T[], right: readonly T[]): boolean {
-  if (left.length !== right.length) return false;
-  return left.every((item, index) => item.id === right[index]?.id);
-}
+
 
 const PUSH_DEBOUNCE_MS = 300;
 
@@ -265,7 +264,7 @@ export function useDuplex(): DuplexController {
         agentPerson: snapshot.settings.agentPerson,
       }));
     }
-    if (!agentMode && !sameEntries(snapshot.messages, remote.messages)) {
+    if (!agentMode && !sameIds(snapshot.messages, remote.messages)) {
       client.adoptHistory(remote.messages);
     }
   }, [agentMode, client, remote, snapshot.messages, snapshot.settings]);
@@ -348,38 +347,55 @@ export function useDuplex(): DuplexController {
   // that does nothing.
   const agent = agentLink.agent;
 
-  const readBaseModel = useCallback(
-    () => (agent ? agent.readBaseModel() : Promise.resolve(null)),
+  /**
+   * One call through the link, or the offline answer when there is no link.
+   *
+   * The wrappers below share two shapes — a read resolving a fallback, a write
+   * throwing `agent_offline` — so the branch is written once. The fallback
+   * stays the caller's, because "no answer" and "unreachable" are different
+   * sentences and which one a field needs depends on the field.
+   */
+  const withAgent = useCallback(
+    <T>(fallback: T, call: (agent: AgentClient) => Promise<T>): Promise<T> => {
+      if (!agent) return Promise.resolve(fallback);
+      return call(agent);
+    },
     [agent],
+  );
+
+  const writeThrough = useCallback(
+    <T>(call: (agent: AgentClient) => Promise<T>): Promise<T> => {
+      if (!agent) throw new AgentRequestError('agent_offline', 'not_configured');
+      return call(agent);
+    },
+    [agent],
+  );
+
+  const readBaseModel = useCallback(
+    () => withAgent(null, (linked) => linked.readBaseModel()),
+    [withAgent],
   );
 
   const saveBaseModel = useCallback(
-    async (input: AgentBaseModelInput): Promise<AgentBaseModel> => {
-      if (!agent) throw new AgentRequestError('agent_offline', 'not_configured');
-      return agent.saveBaseModel(input);
-    },
-    [agent],
+    (input: AgentBaseModelInput): Promise<AgentBaseModel> =>
+      writeThrough((linked) => linked.saveBaseModel(input)),
+    [writeThrough],
   );
 
   const readIdentity = useCallback(
-    () => (agent ? agent.readIdentity() : Promise.resolve(null)),
-    [agent],
+    () => withAgent(null, (linked) => linked.readIdentity()),
+    [withAgent],
   );
 
   const saveIdentity = useCallback(
-    async (selfName: string): Promise<AgentIdentity> => {
-      if (!agent) throw new AgentRequestError('agent_offline', 'not_configured');
-      return agent.saveIdentity(selfName);
-    },
-    [agent],
+    (selfName: string): Promise<AgentIdentity> =>
+      writeThrough((linked) => linked.saveIdentity(selfName)),
+    [writeThrough],
   );
 
   const clearIdentity = useCallback(
-    async (): Promise<AgentIdentity> => {
-      if (!agent) throw new AgentRequestError('agent_offline', 'not_configured');
-      return agent.clearIdentity();
-    },
-    [agent],
+    (): Promise<AgentIdentity> => writeThrough((linked) => linked.clearIdentity()),
+    [writeThrough],
   );
 
   // The doors, over the same link. A credential is never held here: the page
@@ -387,8 +403,8 @@ export function useDuplex(): DuplexController {
   // only arrangement in which a form can offer a field for a secret it does not
   // keep.
   const readDoors = useCallback(
-    () => (agent ? agent.channelSetup() : Promise.resolve(null)),
-    [agent],
+    () => withAgent(null, (linked) => linked.channelSetup()),
+    [withAgent],
   );
 
   const saveDoor = useCallback(

@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import os
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any
 
 from ethos.bus import EventBus
@@ -28,9 +27,6 @@ class ContinuityManager:
         self.bus = bus
         self.snapshot_path = config.paths.data_dir / "continuity.json"
         config.paths.data_dir.mkdir(parents=True, exist_ok=True)
-
-    def snapshot_path_for(self) -> Path:
-        return self.snapshot_path
 
     async def save(self, state: dict[str, Any]) -> None:
         payload = {

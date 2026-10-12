@@ -135,42 +135,40 @@ class RhythmController:
         self.focus_session_started = self.wall_clock()
         return self.config.rhythm.focus.micro_break_min
 
-    def mind_wander_due(self) -> bool:
+    def _gap_due(self, last: datetime | None, gap_min: float, draw) -> tuple[bool, datetime, float]:
+        """Whether a self-paced interval has elapsed, and the next one, drawn fresh.
+
+        Shared by the two idle-clock checks. The first call after a process
+        starts answers False on purpose — a freshly woken agent gets its idle
+        thoughts on the same clock as any other, not as a startup flourish —
+        and the gap is drawn rather than fixed, because the interval at which a
+        person is inclined to turn their attention to something is not a
+        constant and a fixed one would read as a metronome.
+        """
         now = self.wall_clock()
-        if self.last_mind_wander is None:
-            self.last_mind_wander = now
-            self.next_mind_wander_gap_min = self._draw_wander_gap_min()
-            return False
-        minutes = (now - self.last_mind_wander).total_seconds() / 60.0
-        if minutes >= self.next_mind_wander_gap_min:
-            self.last_mind_wander = now
-            self.next_mind_wander_gap_min = self._draw_wander_gap_min()
-            return True
-        return False
+        if last is None:
+            gap = draw()
+            return False, now, gap
+        minutes = (now - last).total_seconds() / 60.0
+        due = minutes >= gap_min
+        return due, (now if due else last), (draw() if due else gap_min)
+
+    def mind_wander_due(self) -> bool:
+        due, last, gap = self._gap_due(
+            self.last_mind_wander, self.next_mind_wander_gap_min, self._draw_wander_gap_min,
+        )
+        self.last_mind_wander, self.next_mind_wander_gap_min = last, gap
+        return due
 
     def reverie_due(self) -> bool:
-        """Whether an idle mind is due to pick something up on its own.
-
-        The same shape as `mind_wander_due`, and for the same reason: the gap is
-        drawn rather than fixed, because the interval at which a person is
-        inclined to turn their attention to something is not a constant and a
-        fixed one would read as a metronome. The first call after a process
-        starts answers False on purpose — a freshly woken agent gets its idle
-        thoughts on the same clock as any other, not as a startup flourish.
-        """
+        """Whether an idle mind is due to pick something up on its own."""
         if not self.config.rhythm.reverie.enabled:
             return False
-        now = self.wall_clock()
-        if self.last_reverie is None:
-            self.last_reverie = now
-            self.next_reverie_gap_min = self._draw_reverie_gap_min()
-            return False
-        minutes = (now - self.last_reverie).total_seconds() / 60.0
-        if minutes >= self.next_reverie_gap_min:
-            self.last_reverie = now
-            self.next_reverie_gap_min = self._draw_reverie_gap_min()
-            return True
-        return False
+        due, last, gap = self._gap_due(
+            self.last_reverie, self.next_reverie_gap_min, self._draw_reverie_gap_min,
+        )
+        self.last_reverie, self.next_reverie_gap_min = last, gap
+        return due
 
     async def after_cycle(self, outcome: dict | None = None) -> None:
         self.mark_awake()

@@ -3,6 +3,7 @@ import {
   channelLabel,
   createTranslator,
   findDoor,
+  reconcileDoors,
   sanitizeTerminalText,
   type AgentConversation,
   type AgentDoor,
@@ -12,7 +13,7 @@ import {
 } from '@project-phone/core';
 import { CliError, type ErrorCode } from './args.js';
 import { describeError } from './errors.js';
-import { padWidth, truncateWidth, type Palette } from './palette.js';
+import { truncateWidth, type Palette } from './palette.js';
 import { keyValue, note, sectionLabel, type RenderOptions } from './render.js';
 
 /**
@@ -155,17 +156,15 @@ export function doorSummary(doors: readonly AgentDoor[], messages: readonly Chat
   offered: AgentDoor[];
   closed: string[];
 } {
-  const spoken = new Set<string>();
+  // The browser's own computation, over the channels this transcript holds:
+  // one implementation owns the offered/closed split and the sort, so the two
+  // surfaces cannot agree today and disagree after the next edit.
+  const spoken: string[] = [];
   for (const message of messages) {
     const channel = typeof message.channel === 'string' ? message.channel.trim() : '';
-    if (channel) spoken.add(channel);
+    if (channel) spoken.push(channel);
   }
-  const offered = doors.filter((door) => door.enabled && door.admits);
-  const open = new Set(offered.map((door) => door.id));
-  return {
-    offered: [...offered].sort((a, b) => a.id.localeCompare(b.id)),
-    closed: [...spoken].filter((channel) => !open.has(channel)).sort(),
-  };
+  return reconcileDoors(doors, spoken);
 }
 
 const LABEL_WIDTH = 14;
@@ -249,25 +248,6 @@ export function channelsScreen(
   return lines;
 }
 
-/**
- * One door, as a single line.
- *
- * The TUI panel has a fixed width and no room for a table, so this is the whole
- * of what fits: which door, and whether it is the one replies are going out of.
- * The contacts and the refusals live in the composer's own line and in `phone
- * channels`, where there is space for them.
- */
-export function doorLine(
-  door: AgentDoor,
-  current: boolean,
-  palette: Palette,
-  width: number,
-): string {
-  const mark = current ? palette.accentText('●') : door.admits ? palette.good('●') : palette.warn('○');
-  const label = current ? palette.accentText(channelLabel(door.id)) : channelLabel(door.id);
-  return `  ${mark} ${truncateWidth(label, Math.max(4, width - 6))}`;
-}
-
 /** One door and its state, for the TUI, where the reason has to fit on one line. */
 export function doorStateNote(
   door: AgentDoor,
@@ -316,9 +296,4 @@ export function channelsJson(
 /** The door's name, as the composer shows it. Sanitised like every other word. */
 export function channelBadge(channel: string): string {
   return sanitizeTerminalText(channelLabel(channel), 24);
-}
-
-/** Pads a door name to a column, for callers that lay several out themselves. */
-export function padDoorLabel(value: string, width: number): string {
-  return padWidth(truncateWidth(value, width), width);
 }

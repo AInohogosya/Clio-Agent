@@ -1,11 +1,18 @@
 from __future__ import annotations
 
-import json
 from typing import Any
 
 from ethos.config import EthosConfig
+from ethos.gsl.verification import run_model_verifier
 from ethos.observability.logger import get_logger
-from ethos.prompts import VERIFIER_PROMPT, dumps
+from ethos.prompts import (
+    COMMISSIONED_ALREADY,
+    DEVISE_PROMPT,
+    EDIT_EXISTING_FILES,
+    PLAN_PROMPT,
+    STEP_PROMPT,
+    dumps,
+)
 from ethos.schemas.memory import MemoryHit
 from ethos.schemas.models import ModelMessage, ModelRequest, Role, Tier
 
@@ -22,7 +29,7 @@ async def run_thread(spec: dict[str, Any], config: EthosConfig, memory: Any, gat
     role = str(spec.get("role", "delegate"))
 
     if role == "verifier" and spec.get("verify_payload"):
-        return await _run_verifier(spec, gateway)
+        return await _run_verifier(spec, config, gateway)
 
     goal = str(spec.get("goal", ""))
     intention_id = spec.get("intention_id")
@@ -40,35 +47,28 @@ async def run_thread(spec: dict[str, Any], config: EthosConfig, memory: Any, gat
     return summary
 
 
-async def _run_verifier(spec: dict[str, Any], gateway: Any = None) -> dict[str, Any]:
-    """Verifier threads see goal + artifact only — never producer reasoning."""
+async def _run_verifier(spec: dict[str, Any], config: EthosConfig, gateway: Any = None) -> dict[str, Any]:
+    """Verifier threads see goal + artifact only — never producer reasoning.
+
+    The model call itself is the ladder's (`gsl.verification.run_model_verifier`),
+    which is where the diversity hint, the prompt and the refusal-to-guess
+    default are decided once.
+    """
     payload = spec.get("verify_payload") or {}
     if gateway is None:
         return {"verdict": "needs_human", "issues": ["no gateway available in verifier thread"],
                 "confidence": 0.0}
-    request = ModelRequest(
-        tier=Tier.T3,
+    return await run_model_verifier(
+        gateway, config,
+        goal=str(payload.get("goal", "")),
+        criteria=list(payload.get("criteria", [])),
+        # The ladder already sliced the artifact once; this second bound is what
+        # keeps a hand-built payload from carrying more than a judge can read.
+        artifact_text=str(payload.get("artifact", ""))[:6000],
+        producer_family=payload.get("producer_family"),
         purpose="thread.verify",
-        provider_hint=payload.get("provider_hint"),
-        messages=[
-            ModelMessage(role=Role.system, content=VERIFIER_PROMPT.format(
-                goal=str(payload.get("goal", "")),
-                criteria=dumps(payload.get("criteria", [])),
-                artifact=str(payload.get("artifact", ""))[:6000],
-            )),
-            ModelMessage(role=Role.user, content="Judge the artifact."),
-        ],
-        max_tokens=600,
+        thread_id=str(spec.get("id")),
     )
-    try:
-        response = await gateway.complete(request)
-        text = response.text or ""
-        start, end = text.find("{"), text.rfind("}")
-        if start >= 0 and end > start:
-            return json.loads(text[start:end + 1])
-    except Exception:
-        logger.exception("verifier.thread_failed")
-    return {"verdict": "needs_human", "issues": ["verifier call failed"], "confidence": 0.0}
 
 
 async def _pursue(
@@ -89,13 +89,6 @@ async def _pursue(
     if gateway is None:
         return {"status": "no-gateway", "goal": goal, "thoughts": ["gateway unavailable"]}
     from ethos.gsl.planner import parse_json_block, pick_approach
-    from ethos.prompts import (
-        COMMISSIONED_ALREADY,
-        DEVISE_PROMPT,
-        EDIT_EXISTING_FILES,
-        PLAN_PROMPT,
-        STEP_PROMPT,
-    )
 
     knowhow_text = "\n".join(f"- [{m.kind}] {m.summary}" for m in memories[:10]) or "(none)"
     try:

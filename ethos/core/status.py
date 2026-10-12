@@ -7,7 +7,7 @@ import urllib.error
 import urllib.request
 from datetime import UTC, datetime
 
-from ethos.config import EthosConfig
+from ethos.config import EthosConfig, effective_dsn
 from ethos.db import Database
 
 # The kind the life loop publishes on, on every cycle and after every failed one.
@@ -49,7 +49,7 @@ def agent_liveness(
     worked, where presence inside the window only proves the agent was there at
     some point in the last quarter of an hour.
     """
-    dsn = os.environ.get("ETHOS_DSN") or config.database.dsn
+    dsn = effective_dsn(config)
     try:
         seen, now = asyncio.run(_observation(dsn))
     except Exception as exc:  # a status command reports, it does not raise
@@ -142,7 +142,7 @@ async def _observation(dsn: str) -> tuple[datetime | None, datetime]:
 
 def database_now(config: EthosConfig) -> datetime:
     """The database's clock, so a wait can be measured in the same clock as the evidence."""
-    dsn = os.environ.get("ETHOS_DSN") or config.database.dsn
+    dsn = effective_dsn(config)
     try:
         return asyncio.run(_observation(dsn))[1]
     except Exception:

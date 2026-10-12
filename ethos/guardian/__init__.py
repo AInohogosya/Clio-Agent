@@ -4,7 +4,6 @@ from ethos.guardian.classifier import (
     classify_shell,
     classify_tool,
     extract_paths,
-    resolve_path,
 )
 from ethos.guardian.gate import (
     DueProcessVerifier,
@@ -21,7 +20,6 @@ from ethos.guardian.trash import TrashEntry, TrashError, TrashStore
 
 __all__ = [
     "DANGEROUS_PATTERNS", "SideEffects", "classify_shell", "classify_tool", "extract_paths",
-    "resolve_path",
     "DueProcessVerifier", "GateDecision", "GatePath", "GuardianGate", "ModelDueProcessVerifier",
     "Verdict",
     "IntegrityScanner",

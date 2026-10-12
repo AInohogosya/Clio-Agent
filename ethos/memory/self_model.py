@@ -6,7 +6,7 @@ from typing import Any
 from ethos import DEFAULT_SELF_NAME
 from ethos.bus import EventBus
 from ethos.config import is_valid_agent_name
-from ethos.db import Database
+from ethos.db import Database, decode_json_value
 from ethos.prompts.identity import DEFAULT_VALUES, build_identity_kernel
 from ethos.schemas.events import EventKind
 
@@ -100,9 +100,7 @@ class SelfModel:
         )
         if row is None:
             return
-        current = row["value"]
-        if isinstance(current, str):
-            current = json.loads(current)
+        current = decode_json_value(row["value"])
         if current == self_name or row["changed_by"] != SEED_AUTHOR:
             return
         await self.set("name", self_name, PERSON_AUTHOR, "named in the interface")
@@ -116,9 +114,7 @@ class SelfModel:
         )
         if row is None:
             return default
-        value = row["value"]
-        if isinstance(value, str):
-            value = json.loads(value)
+        value = decode_json_value(row["value"])
         self._cache[key] = (row["version"], value)
         return value
 
@@ -128,10 +124,7 @@ class SelfModel:
         )
         out: dict[str, Any] = {}
         for row in rows:
-            value = row["value"]
-            if isinstance(value, str):
-                value = json.loads(value)
-            out[row["key"]] = value
+            out[row["key"]] = decode_json_value(row["value"])
         return out
 
     async def set(self, key: str, value: Any, changed_by: str, reason: str) -> int:
@@ -159,24 +152,12 @@ class SelfModel:
         )
         out = []
         for row in rows:
-            value = row["value"]
-            if isinstance(value, str):
-                value = json.loads(value)
             out.append({
-                "version": row["version"], "value": value, "changed_by": row["changed_by"],
+                "version": row["version"], "value": decode_json_value(row["value"]),
+                "changed_by": row["changed_by"],
                 "reason": row["reason"], "ts": row["ts"].isoformat(),
             })
         return out
-
-    async def record_calibration(self, domain: str, brier: float) -> None:
-        calibration = await self.get("calibration", {}) or {}
-        scores: dict[str, Any] = dict(calibration.get("brier_scores", {}))
-        history: list[float] = list(scores.get(domain, []))
-        history.append(round(float(brier), 4))
-        history = history[-50:]
-        scores[domain] = history
-        calibration["brier_scores"] = scores
-        await self.set("calibration", calibration, "self", f"calibration update for {domain}")
 
     async def identity_document(
         self, hard_limits: list[str], self_name_hint: str = DEFAULT_SELF_NAME

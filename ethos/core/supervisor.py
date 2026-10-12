@@ -10,6 +10,7 @@ import time
 from pathlib import Path
 
 from ethos.config import EthosConfig, load_config
+from ethos.engine.rhythm import backoff_seconds
 from ethos.observability.logger import configure_logging, get_logger
 from ethos.platform import IS_WINDOWS, process_is_alive
 
@@ -290,7 +291,10 @@ class Supervisor:
                 self._retire(spec, rc)
                 continue
             spec.restart_count += 1
-            delay = self.BACKOFF_S * (2 ** min(spec.restart_count, 4))
+            delay = backoff_seconds(
+                spec.restart_count, base_s=self.BACKOFF_S, max_s=self.BACKOFF_S * 16,
+                jitter=0.0,
+            )
             logger.warning(
                 "supervisor.restarting", process=spec.name, rc=rc, delay=round(delay, 1),
             )

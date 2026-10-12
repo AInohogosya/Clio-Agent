@@ -8,7 +8,7 @@ from uuid import UUID, uuid4
 
 from ethos.bus import EventBus
 from ethos.config import EthosConfig
-from ethos.db import Database
+from ethos.db import Database, decode_env_attrs, decode_json_value
 from ethos.gateway.embeddings import EmbeddingProvider
 from ethos.memory.retrieval import HybridRetriever, parse_pgvector, to_pgvector
 from ethos.observability.logger import get_logger
@@ -23,6 +23,23 @@ from ethos.schemas.gsl import (
 from ethos.schemas.memory import MemoryHit
 
 logger = get_logger("ethos.memory")
+
+
+# Statuses that count as "still open work" everywhere this store looks.
+_OPEN_INTENTION_STATUSES = (
+    IntentionStatus.proposed.value, IntentionStatus.active.value,
+    IntentionStatus.in_progress.value, IntentionStatus.waiting.value,
+    IntentionStatus.awaiting_review.value,
+)
+
+
+def _env_entity_dict(row: Any) -> dict[str, Any]:
+    return {
+        "id": str(row["id"]), "kind": row["kind"], "key": row["key"],
+        "attrs": decode_env_attrs(row), "owner": row["owner"],
+        "last_verified_at": row["last_verified_at"].isoformat() if row["last_verified_at"] else None,
+        "health": row["health"],
+    }
 
 
 def _new_id() -> UUID:
@@ -112,22 +129,6 @@ class MemoryStore:
         )
         return [HybridRetriever._row_to_hit(r) for r in rows]
 
-    async def recent_thoughts(self, n: int, thread_id: str | None = None) -> list[MemoryHit]:
-        if thread_id:
-            rows = await self.db.fetch(
-                "SELECT id::text AS id, kind, summary, body::text AS body, ts, importance, strength, "
-                "NULL::text AS emb, 'episode' AS source FROM episodes "
-                "WHERE kind = 'thought' AND ($1::text IS NULL OR thread_id = $1) "
-                "ORDER BY ts DESC LIMIT $2", thread_id, n,
-            )
-        else:
-            rows = await self.db.fetch(
-                "SELECT id::text AS id, kind, summary, body::text AS body, ts, importance, strength, "
-                "NULL::text AS emb, 'episode' AS source FROM episodes "
-                "WHERE kind = 'thought' ORDER BY ts DESC LIMIT $1", n,
-            )
-        return [HybridRetriever._row_to_hit(r) for r in rows]
-
     async def episodes_since(self, since: datetime, limit: int = 400) -> list[dict[str, Any]]:
         rows = await self.db.fetch(
             "SELECT id, ts, kind, summary, body::text AS body, importance, strength, "
@@ -189,10 +190,6 @@ class MemoryStore:
             subject, limit,
         )
         return [dict(r) for r in rows]
-
-    async def search_facts(self, query: str, k: int = 10) -> list[MemoryHit]:
-        hits = await self.retriever.retrieve(query, k=k, kinds={"fact"})
-        return hits
 
     # ------------------------------------------------------------ knowhow
 
@@ -260,8 +257,6 @@ class MemoryStore:
         rows = await self.db.fetch(
             "SELECT id FROM episodes WHERE status = 'active'"
         )
-        demoted = 0
-        refreshed = 0
         sigma_floor = self.config.memory.decay.demote_strength
         iota_floor = self.config.memory.decay.demote_importance
         await self.db.execute(
@@ -369,18 +364,10 @@ class MemoryStore:
 
     @staticmethod
     def _row_to_intention(row: Any) -> IntentionRecord:
-        criteria = row["success_criteria"]
-        if isinstance(criteria, str):
-            criteria = json.loads(criteria)
-        constraints = row["constraints"]
-        if isinstance(constraints, str):
-            constraints = json.loads(constraints)
-        resume = row["resume_state"]
-        if isinstance(resume, str):
-            resume = json.loads(resume)
-        hypothesis = row["hypothesis"]
-        if isinstance(hypothesis, str):
-            hypothesis = json.loads(hypothesis)
+        criteria = decode_json_value(row["success_criteria"])
+        constraints = decode_json_value(row["constraints"])
+        resume = decode_json_value(row["resume_state"])
+        hypothesis = decode_json_value(row["hypothesis"])
         return IntentionRecord(
             id=row["id"], parent_id=row["parent_id"], kind=row["kind"], title=row["title"],
             desired_end_state=row["desired_end_state"] or "", success_criteria=list(criteria or []),
@@ -401,11 +388,7 @@ class MemoryStore:
         commissioned_only: bool = False,
         limit: int = 200,
     ) -> list[IntentionRecord]:
-        open_statuses = statuses or [
-            IntentionStatus.proposed.value, IntentionStatus.active.value,
-            IntentionStatus.in_progress.value, IntentionStatus.waiting.value,
-            IntentionStatus.awaiting_review.value,
-        ]
+        open_statuses = statuses or list(_OPEN_INTENTION_STATUSES)
         rows = await self.db.fetch(
             "SELECT * FROM intentions WHERE status = ANY($1::text[]) "
             "AND ($2::uuid IS NULL OR parent_id = $2) "
@@ -438,11 +421,7 @@ class MemoryStore:
         having no deadline, which is a statement about it rather than about the
         ranking.
         """
-        open_statuses = [
-            IntentionStatus.proposed.value, IntentionStatus.active.value,
-            IntentionStatus.in_progress.value, IntentionStatus.waiting.value,
-            IntentionStatus.awaiting_review.value,
-        ]
+        open_statuses = list(_OPEN_INTENTION_STATUSES)
         rows = await self.db.fetch(
             "SELECT DISTINCT ON (id) * FROM intentions "
             "WHERE status = ANY($1::text[]) "
@@ -537,9 +516,7 @@ class MemoryStore:
         )
         out: list[AttemptRecord] = []
         for r in rows:
-            evaluation = r["evaluation"]
-            if isinstance(evaluation, str):
-                evaluation = json.loads(evaluation)
+            evaluation = decode_json_value(r["evaluation"])
             out.append(AttemptRecord(
                 id=r["id"], intention_id=r["intention_id"], approach=r["approach"],
                 started_at=r["started_at"], ended_at=r["ended_at"], outcome=r["outcome"],
@@ -548,77 +525,18 @@ class MemoryStore:
             ))
         return out
 
-    # ------------------------------------------------------- experiments
-
-    async def record_experiment(
-        self, intention_id: UUID, hypothesis: dict[str, Any],
-    ) -> UUID:
-        exp_id = _new_id()
-        await self.db.execute(
-            "INSERT INTO experiments (id, intention_id, hypothesis, started_at, status) "
-            "VALUES ($1, $2, $3::jsonb, now(), 'running')",
-            exp_id, intention_id, json.dumps(hypothesis),
-        )
-        return exp_id
-
-    async def end_experiment(
-        self, experiment_id: UUID, status: str, observations: dict[str, Any],
-        conclusion: str, lessons: list[str],
-    ) -> None:
-        await self.db.execute(
-            "UPDATE experiments SET ended_at = now(), status = $1, observations = $2::jsonb, "
-            "conclusion = $3, lessons = $4 WHERE id = $5",
-            status, json.dumps(observations), conclusion, lessons, experiment_id,
-        )
-
-    async def record_value(
-        self, metric: str, value: float, unit: str, source: str,
-        intention_id: UUID | None = None, experiment_id: UUID | None = None,
-        evidence: dict[str, Any] | None = None,
-    ) -> None:
-        await self.db.execute(
-            "INSERT INTO value_ledger (ts, intention_id, experiment_id, metric, value, unit, source, evidence) "
-            "VALUES (now(), $1, $2, $3, $4, $5, $6, $7::jsonb)",
-            intention_id, experiment_id, metric, float(value), unit, source,
-            json.dumps(evidence or {}),
-        )
-
-    async def value_totals(self, metric: str | None = None) -> dict[str, float]:
-        if metric:
-            row = await self.db.fetchrow(
-                "SELECT COALESCE(SUM(value), 0) AS total FROM value_ledger WHERE metric = $1", metric,
-            )
-            return {metric: float(row["total"]) if row else 0.0}
-        rows = await self.db.fetch(
-            "SELECT metric, COALESCE(SUM(value), 0) AS total FROM value_ledger GROUP BY metric"
-        )
-        return {r["metric"]: float(r["total"]) for r in rows}
-
     # -------------------------------------------------------- env entities
 
     async def upsert_env_entity(
         self, kind: str, key: str, attrs: dict[str, Any], owner: str | None = None,
     ) -> None:
-        await self.db.execute(
-            "INSERT INTO env_entities (id, kind, key, attrs, owner, last_verified_at, health) "
-            "VALUES ($1, $2, $3, $4::jsonb, $5, now(), 'ok') "
-            "ON CONFLICT (key) DO UPDATE SET attrs = $4::jsonb, last_verified_at = now(), health = 'ok'",
-            _new_id(), kind, key, json.dumps(attrs), owner,
-        )
+        await self.db.upsert_env(kind, key, attrs, owner=owner, update_health=True)
 
     async def get_env_entity(self, key: str) -> dict[str, Any] | None:
         row = await self.db.fetchrow("SELECT * FROM env_entities WHERE key = $1", key)
         if row is None:
             return None
-        attrs = row["attrs"]
-        if isinstance(attrs, str):
-            attrs = json.loads(attrs)
-        return {
-            "id": str(row["id"]), "kind": row["kind"], "key": row["key"],
-            "attrs": dict(attrs or {}), "owner": row["owner"],
-            "last_verified_at": row["last_verified_at"].isoformat() if row["last_verified_at"] else None,
-            "health": row["health"],
-        }
+        return _env_entity_dict(row)
 
     async def list_env_entities(self, kind: str | None = None) -> list[dict[str, Any]]:
         if kind:
@@ -627,18 +545,5 @@ class MemoryStore:
             )
         else:
             rows = await self.db.fetch("SELECT * FROM env_entities ORDER BY key")
-        out = []
-        for row in rows:
-            attrs = row["attrs"]
-            if isinstance(attrs, str):
-                attrs = json.loads(attrs)
-            out.append({
-                "id": str(row["id"]), "kind": row["kind"], "key": row["key"],
-                "attrs": dict(attrs or {}), "owner": row["owner"],
-                "last_verified_at": row["last_verified_at"].isoformat() if row["last_verified_at"] else None,
-                "health": row["health"],
-            })
-        return out
+        return [_env_entity_dict(row) for row in rows]
 
-    async def delete_env_entity(self, key: str) -> None:
-        await self.db.execute("DELETE FROM env_entities WHERE key = $1", key)

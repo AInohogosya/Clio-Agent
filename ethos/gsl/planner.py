@@ -6,6 +6,7 @@ from typing import Any
 from ethos.config import EthosConfig
 from ethos.gateway.normalizer import was_truncated
 from ethos.observability.logger import get_logger
+from ethos.parse import parse_json_block
 from ethos.prompts import (
     COMMISSIONED_ALREADY,
     DEGRADED_PLAN,
@@ -18,6 +19,7 @@ from ethos.prompts import (
 from ethos.schemas.gsl import Plan, PlanStep
 from ethos.schemas.memory import MemoryHit
 from ethos.schemas.models import ModelMessage, ModelRequest, Role, Tier
+from ethos.util import clip
 
 logger = get_logger("ethos.gsl.planner")
 
@@ -54,27 +56,46 @@ class PlanUnavailable(RuntimeError):
         self.kind = kind
 
 
-def parse_json_block(text: str) -> dict[str, Any]:
-    if not text:
-        return {}
-    start = text.find("{")
-    end = text.rfind("}")
-    if start < 0 or end <= start:
-        return {}
-    try:
-        return json.loads(text[start:end + 1])
-    except json.JSONDecodeError:
-        try:
-            import re
+def budget_bucket_for(intention: Any) -> str:
+    """Which spend bucket an intention's model calls bill to, in one place.
 
-            fixed = re.sub(r",\s*([}\]])", r"\1", text[start:end + 1])
-            return json.loads(fixed)
-        except json.JSONDecodeError:
-            return {}
+    A commissioned goal spends the commitment's money; anything the agent took
+    on for itself spends the discretionary budget. The rule is asked seven
+    times across the planner and the loop, and every one of them has to agree
+    or the spend lands in the wrong account.
+    """
+    return "commitment" if intention.commissioned_by else "discretionary"
 
 
-def _memories_text(hits: list[MemoryHit]) -> str:
-    return "\n".join(f"- [{h.kind}] {h.summary}" for h in hits[:15]) or "(none)"
+def _memories_text(hits: list[MemoryHit], limit: int = 15) -> str:
+    return "\n".join(f"- [{h.kind}] {h.summary}" for h in hits[:limit]) or "(none)"
+
+
+def is_nothing_could_serve(exc: BaseException) -> bool:
+    """Whether the failure was the deployment rather than the request.
+
+    One question with a narrow answer, asked so that a planner's failure can be
+    named rather than lumped together. The gateway raises `NoModelAvailable` when
+    nothing in the catalogue could serve the request -- every candidate excluded,
+    every provider key rejected, every quota spent -- and it has already waited
+    out the cooldown and spent the retry budget by the time it does. A different
+    wording of the same request cannot produce a different answer, so reporting
+    this as "the model returned an unusable plan" would send the state machine
+    down the degradation path for a problem that has no lever.
+
+    Checked by class rather than by message because the message is a string in a
+    module that does not own it.
+    """
+    from ethos.gateway.router import NoModelAvailable
+
+    if isinstance(exc, NoModelAvailable):
+        return True
+    # `BudgetExceededError` is a spend guard rather than a routing fact, and it
+    # does not clear by asking a different question, so it belongs on this side of
+    # the line too: no plan is available and the reason is not the plan.
+    from ethos.gateway.cost import BudgetExceededError
+
+    return isinstance(exc, BudgetExceededError)
 
 
 async def _complete_json(gateway: Any, request: ModelRequest) -> dict[str, Any]:
@@ -97,7 +118,7 @@ async def understand(
     data = await _complete_json(gateway, ModelRequest(
         tier=tier,
         purpose="gsl.understand",
-        budget_bucket="commitment" if intention.commissioned_by else "discretionary",
+        budget_bucket=budget_bucket_for(intention),
         consequence_class="consequential" if consequential_hint else "routine",
         messages=[
             ModelMessage(role=Role.system, content=UNDERSTAND_PROMPT.format(
@@ -113,7 +134,7 @@ async def understand(
         ],
         max_tokens=config.gsl.understand_tokens,
     ))
-    difficulty = _clip(float(data.get("difficulty", 0.5)), 0.0, 1.0)
+    difficulty = clip(float(data.get("difficulty", 0.5)), 0.0, 1.0)
     consequential = bool(data.get("consequential", consequential_hint)) or consequential_hint
     return {
         "understanding": str(data.get("understanding", ""))[:2000],
@@ -127,19 +148,25 @@ async def understand(
 async def devise(
     gateway: Any, config: EthosConfig, intention: Any, understanding: str,
     knowhow: list[MemoryHit], lessons: list[str],
+    *, tier: Tier = Tier.T2, knowhow_limit: int = 15,
 ) -> list[dict[str, Any]]:
-    """Phase 2: exactly 3 candidate approaches [6.1]."""
+    """Phase 2: exactly 3 candidate approaches [6.1].
+
+    `tier` and `knowhow_limit` are the caller's levers: the solver loop escalates
+    a consequential goal's devise call to T3 and shows it fewer, closer memories,
+    and the defaults here are what a call with no reason to escalate wants.
+    """
     data = await _complete_json(gateway, ModelRequest(
-        tier=Tier.T2,
+        tier=tier,
         purpose="gsl.devise",
-        budget_bucket="commitment" if intention.commissioned_by else "discretionary",
+        budget_bucket=budget_bucket_for(intention),
         messages=[
             ModelMessage(role=Role.system, content=DEVISE_PROMPT.format(
                 name=config.self_name,
                 title=intention.title,
                 desired_end_state=intention.desired_end_state or "-",
                 understanding=understanding or "-",
-                knowhow=_memories_text(knowhow),
+                knowhow=_memories_text(knowhow, knowhow_limit),
                 lessons="\n".join(f"- {lesson}" for lesson in lessons) or "(none)",
             )),
             ModelMessage(role=Role.user, content="Devise 3 approaches."),
@@ -150,7 +177,7 @@ async def devise(
         {
             "id": str(a.get("id", f"a{i+1}")),
             "summary": str(a.get("summary", ""))[:500],
-            "expected_value": _clip(float(a.get("expected_value", 0.5)), 0.0, 1.0),
+            "expected_value": clip(float(a.get("expected_value", 0.5)), 0.0, 1.0),
             "estimated_cost_usd": max(0.0, float(a.get("estimated_cost_usd", 0.05))),
             "reversible": bool(a.get("reversible", True)),
         }
@@ -183,16 +210,16 @@ async def make_plan(
     from a plan that could actually be worked.
 
     After `plan_attempts_before_degrade` failures the request is made under
-    reduced demands, exactly as `GeneralSolverLoop._plan_with_cost` does it: the
-    tier drops, thinking is bounded, and the schema ask is relaxed. What it never
-    does is lower the bar for what counts as steps, so a degraded request that
-    returns nothing still fails.
+    reduced demands, exactly as `GeneralSolverLoop` asks for it: the tier drops,
+    thinking is bounded, and the schema ask is relaxed. What it never does is
+    lower the bar for what counts as steps, so a degraded request that returns
+    nothing still fails.
     """
     degraded = plan_attempts >= max(1, config.gsl.plan_attempts_before_degrade)
     request = ModelRequest(
         tier=Tier.T1 if degraded else Tier.T2,
         purpose="gsl.plan",
-        budget_bucket="commitment" if intention.commissioned_by else "discretionary",
+        budget_bucket=budget_bucket_for(intention),
         reasoning_budget=config.gsl.degraded_reasoning_budget if degraded else None,
         messages=[
             ModelMessage(role=Role.system, content=PLAN_PROMPT.format(
@@ -207,7 +234,22 @@ async def make_plan(
         ],
         max_tokens=config.gsl.plan_tokens,
     )
-    response = await gateway.complete(request)
+    try:
+        response = await gateway.complete(request)
+    except Exception as exc:
+        logger.exception("gsl.plan_failed")
+        # "Nothing could serve this request" and "the answer was not a plan"
+        # are different problems, and the loop's state machine treats them
+        # differently: relaxing a request that no model could serve cannot
+        # help, so the reason has to say which happened. It is not special
+        # treatment for a dead key -- it is the reason a caller can tell a
+        # deployment that needs its key fixed from a model being awkward.
+        kind = "no_model" if is_nothing_could_serve(exc) else "unusable"
+        raise PlanUnavailable(
+            f"plan request failed ({kind}): {exc}" if kind != "unusable" else
+            "plan request failed; no plan to execute",
+            kind=kind,
+        ) from None
     if was_truncated(response.finish_reason):
         raise PlanUnavailable(
             f"plan response was cut off at {config.gsl.plan_tokens} tokens"
@@ -234,12 +276,9 @@ async def make_plan(
             f"at least {config.gsl.min_real_plan_steps} required"
         )
     return Plan(
-        approach_id=str(approach.get("id", "approach-1")),
+        approach_id=str(approach.get("id", f"approach-{strategy_number}")),
         approach=str(approach.get("summary", "")),
         steps=steps[:7],
         strategy_number=strategy_number,
     )
 
-
-def _clip(value: float, lo: float, hi: float) -> float:
-    return max(lo, min(hi, value))
