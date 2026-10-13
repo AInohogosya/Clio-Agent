@@ -96,6 +96,23 @@ _ASK_AGAIN = (
 # asked three times before this count moves at all.
 MAX_DELIBERATION_ATTEMPTS = 3
 
+# Transient outages (429/503/timeout) clear on their own, so they are retried
+# quietly in the background for longer instead of surfacing as errors. Only
+# failures the user must fix (401/403 key or limit problems) stop early and
+# surface prominently.
+MAX_TRANSIENT_ATTEMPTS = 12
+
+_USER_ACTIONABLE_RE = re.compile(
+    r"401|403|invalid_api_key|invalid api key|incorrect api key|unauthorized"
+    r"|key limit exceeded|limit exceeded|quota|forbidden",
+    re.IGNORECASE,
+)
+
+
+def needs_user_action(error_text: str) -> bool:
+    """Whether a model failure needs the user to fix something (key/limit)."""
+    return bool(error_text and _USER_ACTIONABLE_RE.search(error_text))
+
 
 CONSEQUENTIAL_MARKERS = ("money", "$", "pay", "buy", "sell", "trade", "wire", "contract",
                          "sign", "delete", "deploy", "credentials", "password", "urgent", "asap")
@@ -315,9 +332,15 @@ class SocialCognition:
             execution_state=state.block(name),
             preview=preview,
         )
-        data, cut_off, ceiling, failure = await self._ask(prompt_messages, tier, consequential)
+        data, cut_off, ceiling, failure, user_action = await self._ask(prompt_messages, tier, consequential)
         if failure is not None:
-            logger.warning("social.deliberate_failed", reason=failure)
+            if user_action:
+                logger.warning("social.deliberate_failed", reason=failure, needs_user_action=True)
+            else:
+                # Transient outage: retried quietly in the background, not
+                # surfaced as an error. The message stays pending and the
+                # person gets the answer once a model recovers.
+                logger.info("social.deliberate_retrying", reason=failure)
             return _undecided(failure, tier_used=str(tier.value))
         if cut_off:
             # Said out loud because the two failures look identical from outside

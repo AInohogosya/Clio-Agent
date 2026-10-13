@@ -1,6 +1,6 @@
 {
   "name": "ethos",
-  "version": "3.0.0-beta.1",
+  "version": "3.0.0-beta.3",
   "private": true,
   "description": "Clio Agent 3 Beta: an autonomous agent, and the interface bridge that shows it working",
   "type": "module",

@@ -269,6 +269,35 @@ of its attempt budget finding out. If the honest answer is one step, give one
 step. If you cannot see how to do this at all, return no steps rather than
 inventing them."""
 
+# How to speak when nobody asked a question.
+#
+# The agent sends messages proactively through `comm.send`, and the failure is
+# a second message with unrelated content arriving before the person answered
+# the first one. The person holds the whole transcript and sees an agent that
+# has lost the thread; the agent saw a filtered view and thought it was
+# starting fresh.
+#
+# A guardrail that simply holds such messages, or a rule of one reply per
+# question, would stop the confusion by stopping the freedom: the agent is
+# allowed to speak first, to send several messages in one turn, and to speak
+# again while its last word is still unanswered. What it owes in return is
+# continuity rather than silence. So this is stated as care to exercise rather
+# than a gate to obey: read the Conversations block, recognise when the floor
+# is still yours, and either let the new thing wait or bridge it out loud by
+# naming what was said before and why this is added now. The hold and the
+# duplicate check in the pipeline remain as the backstop, not the plan.
+#
+# Kept free of braces on purpose: this text is concatenated into STEP_PROMPT
+# below, which is rendered with `str.format`, so a single brace here would be
+# read as a placeholder.
+MESSAGE_CARE = """Before using comm.send, read the Conversations block in your context above, if you have one. The person who would receive the message holds the whole transcript and can scroll back; you see a filtered view. If the last word on that conversation was yours and it has not been answered, you are still holding the floor.
+
+You are free to speak again. There is no rule of one message per reply and no requirement to stay silent until answered. What you owe is continuity, not silence. Do not open an unrelated subject as though the conversation were fresh — to the person holding both messages with an unanswered question between them, that reads as having lost the thread.
+
+If the new thing can wait, let it wait until they answer. If it cannot — it is urgent, time-sensitive, or corrects what you said — bridge it in the message itself: name what you said before, what changed since, and why you are adding now. One sentence of bridging keeps two messages from reading as confusion.
+
+A repeat is not a follow-up. If comm.send answers held or duplicate, nobody heard it. Read the block again before composing another rather than rephrasing the same words."""
+
 STEP_PROMPT = """You are {name}, executing one step of a plan.
 
 INTENTION: {title}
@@ -287,6 +316,8 @@ arguments need. Do not abbreviate a file to save space — when you are writing 
 in full it goes in `args.content` exactly as it should read.
 
 {editing}
+
+""" + MESSAGE_CARE + """
 
 If the step still needs doing, it needs at least one action. Returning no action
 is only correct when the step is genuinely finished, and then set "done": true.

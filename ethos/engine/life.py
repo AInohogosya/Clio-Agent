@@ -8,7 +8,7 @@ from typing import Any
 from uuid import UUID
 
 from ethos.config import EthosConfig
-from ethos.engine.attention import Attention, estimate_salience
+from ethos.engine.attention import Attention
 from ethos.engine.drives import DriveInputs, Motivation
 from ethos.engine.rhythm import RhythmController
 from ethos.engine.states import State, StateMachine
@@ -135,6 +135,7 @@ class Life:
                 thread_id=deps.thread_id,
             )
         self.focus: Focus | None = None
+        self._suspended_focus: Focus | None = None
         self.spent_discretionary_session = 0.0
         self.cycles = 0
         self._percept_queue: Any = None
@@ -388,30 +389,35 @@ class Life:
     # ------------------------------------------------------------ decide
 
     async def decide(self, ws: Any) -> Decision:
-        # A message is one stimulus among the things competing for this pass,
-        # not the axis the pass turns on. Whether it is taken up now is decided
-        # by `_message_wins_attention` — the same bar the attention layer holds
-        # any interrupting percept to — and when it does not win, my own work
-        # continues and the message keeps waiting, exactly as a fresh idea of
-        # mine waits when work is due. Nobody's silence runs my session.
+        # Inbound messages take this pass immediately. The salience gate that
+        # used to defer them here is removed: a short check-in ("Are you OK?")
+        # scored 0.38 against a 0.65 focused threshold and waited ~1h, which
+        # reads as the agent ignoring its owner. Focus is preserved instead by
+        # suspending it across the social turn and restoring it in `next_focus`
+        # when the reply commissions no new work.
         inbound = await self._pending_inbound_messages()
 
         if inbound:
-            wins, why = self._message_attention_verdict(inbound[0])
-            if wins:
-                tier = "T3" if self._message_is_consequential(inbound[0]) else "T2"
-                social_decision = await self.deps.social.deliberate(
-                    message=inbound[0],
-                    energy=self.deps.rhythm.energy(self.spent_discretionary_session),
-                    focus_title=self.focus.title if self.focus else None,
-                    tools=self._tool_names(),
-                    preview=self._preview(),
-                )
-                return Decision(
-                    kind="social", tier=tier, social=social_decision.model_dump(mode="json"),
-                    rationale=f"social deliberation for {inbound[0].person_id}: {why}",
-                )
-            logger.info("life.inbound_deferred", why=why)
+            if (
+                self.focus is not None
+                and self.focus.kind != "social"
+                and self.focus.intention_id is not None
+                and self._suspended_focus is None
+            ):
+                await self.bookmark(self.focus)
+                self._suspended_focus = self.focus
+            tier = "T3" if self._message_is_consequential(inbound[0]) else "T2"
+            social_decision = await self.deps.social.deliberate(
+                message=inbound[0],
+                energy=self.deps.rhythm.energy(self.spent_discretionary_session),
+                focus_title=self.focus.title if self.focus else None,
+                tools=self._tool_names(),
+                preview=self._preview(),
+            )
+            return Decision(
+                kind="social", tier=tier, social=social_decision.model_dump(mode="json"),
+                rationale=f"social deliberation for {inbound[0].person_id}: immediate (attention gate removed)",
+            )
 
         if self.focus is not None and self.focus.intention_id is not None:
             return Decision(kind="advance_goal", tier="T2", rationale="advance current intention")
@@ -438,56 +444,6 @@ class Life:
             return Decision(kind="mind_wander", tier="T1", rationale="idle: mind-wandering glance")
 
         return Decision(kind="none", tier="T0", rationale="nothing pending; wait")
-
-    def _message_attention_verdict(self, message: Any) -> tuple[bool, str]:
-        """Whether an inbound message takes this pass, by the rules any percept obeys.
-
-        This used to be unconditional: any pending human message short-circuited
-        the whole cycle to a social turn before focus, drives, reverie or
-        wandering were even consulted — the one branch in `decide` with no
-        competition, which is what made other people's messages the axis of the
-        session. It is arbitration now, on the same terms everything else
-        competes:
-
-        * Nothing of mine is in progress — no focus, or a focus that is itself
-          the conversation — and the message wins by default. There is nothing
-          to displace.
-        * The message has waited longer than `rhythm.attention.inbound_stale_h`.
-          Deferral is a choice about my attention, not a verdict that the
-          message does not matter; a queue that only ever defers is a queue
-          nobody answers, so age is the escape hatch that guarantees every
-          message an eventual turn.
-        * Otherwise the message is scored exactly as `Attention.appraise` scores
-          a percept — the same weights, the same salience formula — and it wins
-          when it clears the interrupt threshold of the state I am actually in.
-          That is the same bar a `msg.inbound` percept has to clear to break
-          into a focused cycle from the bus, so a message competes on identical
-          terms whichever door it arrived through. Working while someone waits
-          is a judgement the agent makes and can be asked to defend, not a
-          bypass written into the loop.
-        """
-        if self.focus is None:
-            return True, "nothing in hand to displace"
-        if self.focus.kind == "social":
-            return True, "already the conversation's pass"
-
-        cfg_att = self.config.rhythm.attention
-        now = datetime.now(UTC)
-        age_h = max(0.0, (now - message.ts).total_seconds() / 3600.0)
-        if age_h >= cfg_att.inbound_stale_h:
-            return True, f"pending {age_h:.1f}h, past the {cfg_att.inbound_stale_h:g}h mark"
-
-        percept = Attention.percept_from_message(message)
-        salience, _components = estimate_salience(
-            percept, self.focus, cfg_att.weights, cfg_att.sender,
-            self.deps.embedder, None, None,
-        )
-        threshold = cfg_att.interrupt_thresholds.get(
-            self.states.state.value, cfg_att.interrupt_thresholds.get("default", 0.65),
-        )
-        if salience >= threshold:
-            return True, f"salience {salience:.2f} clears the {threshold:.2f} bar for {self.states.state.value}"
-        return False, f"deferred: salience {salience:.2f} below {threshold:.2f}, age {age_h:.1f}h"
 
     def _message_is_consequential(self, message: Any) -> bool:
         # The same judgement `SocialCognition` makes, for the same reason: this
@@ -528,12 +484,11 @@ class Life:
             return []
 
     async def _pending_inbound_messages(self) -> list[Any]:
-        """The unanswered queue, read for arbitration rather than for obedience.
+        """The unanswered queue, answered immediately.
 
-        This used to be read first and obeyed first — its head became the whole
-        cycle. It is an input now: `_message_attention_verdict` decides whether
-        the head of this queue takes the pass or keeps waiting, on the same
-        terms every other stimulus competes on.
+        The attention gate that used to arbitrate here is removed, so the head
+        of this queue always takes the pass. Focus is not lost because `decide`
+        suspends it beforehand and `next_focus` restores it afterwards.
         """
         return await self.deps.social.pending_inbound(limit=3)
 
@@ -1049,6 +1004,17 @@ class Life:
             # kept. So the commission is carried straight into the next cycle's
             # focus, and the work the reply announced starts on the following tick.
             focus = _commission_focus(outcome.commission)
+            if focus is not None:
+                self._suspended_focus = None
+                return focus
+            # No new work was commissioned: resume what the social turn
+            # interrupted, so immediate replies do not dissolve the focus.
+            # The suspension was bookmarked in `decide`, so resuming here only
+            # continues it; a vanished intention degrades in `_advance_goal`.
+            if self._suspended_focus is not None:
+                resumed = self._suspended_focus
+                self._suspended_focus = None
+                return resumed
             return focus
         return self.focus
 
