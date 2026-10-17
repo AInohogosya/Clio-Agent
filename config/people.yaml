@@ -12,14 +12,21 @@
 #
 # A Slack or Discord address is a channel rather than a user because a reply has
 # to go back to the conversation it was asked in, and a person with two
-# conversations has no single one to pick.
+# conversations has no single one to pick. The same is true of Microsoft Teams
+# and Google Chat, and for a harder reason on both: the Bot Framework and the
+# Chat API will not deliver to a *person*, only to a conversation. A Teams
+# address is the conversation id (`conversation.id`) and a Google Chat one is the
+# space (`spaces/…`), which for a direct message with the app is the space's own
+# id rather than anything the person chose.
 #
-# `web` and `cli` need no entry: those deliver to whoever is reading the
-# transcript, so the person is the address.
+# LINE is the one door here that *does* address a person: a `line:` address is
+# the user id from `events[].source.userId`.
 #
 # To fill these in: message the bot and read the id it reports (`/id` on
 # Telegram, `contacts[0].wa_id` in a WhatsApp webhook body, `event.channel` in a
-# Slack event, `channel_id` in a Discord `MESSAGE_CREATE`).
+# Slack event, `channel_id` in a Discord `MESSAGE_CREATE`, `source.userId` in a
+# LINE event, `from.id` in a Teams Activity, `message.sender.name` in a Google
+# Chat event).
 people:
   - id: owner
     display_name: Owner
@@ -31,4 +38,7 @@ people:
       # whatsapp: "wa:819012345678"
       # slack: "slack:C0E2E"
       # discord: "dc:9999"
+      # line: "line:U4af4980629..."
+      # teams: "teams:19:abc123@thread.tacv2;deviceid=..."
+      # googlechat: "gchat:spaces/AAAA1111BBBB"
     preferences: {}

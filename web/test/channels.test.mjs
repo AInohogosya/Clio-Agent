@@ -305,7 +305,7 @@ test('every door is offered for setting up, and no credential is in the answer',
   const setup = await setupOf();
   assert.deepEqual(
     setup.doors.map((door) => door.id),
-    ['telegram', 'whatsapp', 'slack', 'discord', 'email', 'webhook'],
+    ['telegram', 'whatsapp', 'slack', 'discord', 'line', 'teams', 'googlechat', 'email', 'webhook'],
   );
   assert.deepEqual(doorOf(setup, 'telegram').credentials.map((entry) => entry.key), ['token']);
   assert.deepEqual(doorOf(setup, 'whatsapp').credentials.map((entry) => entry.key), [
@@ -313,10 +313,12 @@ test('every door is offered for setting up, and no credential is in the answer',
   ]);
   assert.equal(doorOf(setup, 'slack').credentials.length, 2);
   assert.equal(doorOf(setup, 'discord').credentials.length, 1);
-  // The two push doors and only those two need somewhere for a POST to land.
+  // Every door that can only be pushed to needs somewhere for a POST to land.
+  // Telegram, Discord and email need no listener: one polls, one holds a socket,
+  // one fetches over IMAP.
   assert.deepEqual(
     setup.doors.filter((door) => door.needs_webhook).map((door) => door.id),
-    ['whatsapp', 'slack'],
+    ['whatsapp', 'slack', 'line', 'teams', 'googlechat'],
   );
   // A bot token stored in the home must not come back out of this process: a
   // browser that could read one could post it somewhere.
@@ -324,6 +326,45 @@ test('every door is offered for setting up, and no credential is in the answer',
   const after = await setupOf();
   assert.equal(doorOf(after, 'telegram').credentials[0].present, true);
   assert.equal(JSON.stringify(after).includes('never-returned'), false);
+});
+
+test('the three new doors carry the credentials each of them really needs', async () => {
+  // One test, because the three were added together and the interesting question
+  // is what *differs* between them — which is the whole of what a person setting
+  // one up has to get right.
+  const setup = await setupOf();
+  // LINE names both of its secrets for the direction they act in, because the
+  // console calls them both "secret" and swapping them is invisible.
+  assert.deepEqual(doorOf(setup, 'line').credentials.map((entry) => entry.key), [
+    'channel_access_token', 'channel_secret',
+  ]);
+  assert.deepEqual(doorOf(setup, 'teams').credentials.map((entry) => entry.key), [
+    'app_id', 'app_password',
+  ]);
+  // Google Chat's private key is reported as environment-only, and it is the one
+  // credential in the whole setup that is: a PEM block is longer than any form
+  // field here would hold, and a box that accepted a paste and stored nothing is
+  // the failure this field exists to prevent.
+  const google = doorOf(setup, 'googlechat');
+  assert.deepEqual(google.credentials.map((entry) => entry.key), [
+    'client_email', 'private_key', 'audience',
+  ]);
+  assert.deepEqual(google.credentials.map((entry) => entry.env_only === true), [false, true, false]);
+});
+
+test('an environment-only credential refuses a value and still accepts a removal', async () => {
+  // Refused with the same code a stranger field gets, because the alternative is
+  // a save that answers 200 and changed nothing — the state that teaches a form
+  // to report success while the thing asked for never happened.
+  const refused = await (await setDoor({
+    id: 'googlechat', credentials: { private_key: 'x'.repeat(100) },
+  })).json();
+  assert.equal(refused.error, 'unknown_field');
+  // A removal says nothing about length, so it is still the way to say "unset".
+  const cleared = await (await setDoor({
+    id: 'googlechat', credentials: { private_key: null },
+  })).json();
+  assert.equal(cleared.error, undefined);
 });
 
 test('a token written from a page is where the agent will look for it, and only there', async () => {
@@ -817,9 +858,16 @@ test('a message may be sent through the new doors', async () => {
     '      web: "owner"',
     '      slack: "slack:C1"',
     '      discord: "dc:9999"',
+    // Each of the three new doors takes an address in its own namespace, and
+    // each of the three shapes is different: LINE names a person, Teams a
+    // conversation, and Google Chat a space — because the Chat API will not
+    // send to a person.
+    '      line: "line:U4af4980629c8f9c1d8f4f4f4f4f4f4f4"',
+    '      teams: "teams:19:abc123@thread.tacv2"',
+    '      googlechat: "gchat:spaces/AAAA1111BBBB"',
     '',
   ].join('\n'));
-  for (const channel of ['slack', 'discord']) {
+  for (const channel of ['slack', 'discord', 'line', 'teams', 'googlechat']) {
     const response = await ask({ text: 'hello', channel });
     assert.equal(response.status, 503, channel);
   }
@@ -830,11 +878,62 @@ test('a person with no address on a new door is refused before anything is writt
   // what fabricates a conversation: a question the agent deliberates on, and a
   // reply discarded at the last step.
   writePeople('people:\n  - id: owner\n    display_name: Owner\n    relation: owner\n    channels:\n      web: "owner"\n');
-  for (const channel of ['slack', 'discord']) {
+  for (const channel of ['slack', 'discord', 'line', 'teams', 'googlechat']) {
     const response = await ask({ text: 'hello', channel });
     assert.equal(response.status, 409, channel);
     const body = await response.json();
     assert.equal(body.error, 'channel_unaddressed', channel);
     assert.equal(body.channel, channel);
+  }
+});
+
+test('the three new doors are reported with the same two facts as every other door', async () => {
+  // All three admit by a list, so all three are the same shape as Slack: on, and
+  // whether the list admits anybody. One test over the three, for the same reason
+  // the Slack-and-Discord one covers two — a channel added by copy-paste is a
+  // channel that quietly forgets one of the two facts a surface needs.
+  writeChannels([
+    'web:',
+    '  enabled: true',
+    'line:',
+    '  enabled: true',
+    '  allowed_ids: []',
+    'teams:',
+    '  enabled: true',
+    '  allowed_ids: ["29:abc-def"]',
+    'googlechat:',
+    '  enabled: true',
+    '  allowed_ids: ["users/1234567890"]',
+    '',
+  ].join('\n'));
+  const body = await (await fetch(`${base}/api/channels`)).json();
+  assert.equal(body.channels.find((channel) => channel.id === 'line').admits, false,
+    'an empty allowlist admits nobody');
+  assert.equal(body.channels.find((channel) => channel.id === 'teams').admits, true);
+  assert.equal(body.channels.find((channel) => channel.id === 'googlechat').admits, true);
+});
+
+test('an allowlist entry is checked against its own door namespace', async () => {
+  // Four namespaces, four regexes. A list that accepted any of them in any door
+  // would produce a door that looks configured and admits nobody, which is the
+  // most misleading state a channel can be in — so the shape is refused here,
+  // where it can be named, rather than by the adapter after a save.
+  for (const [id, good] of [
+    ['line', 'U4af4980629c8f9c1d8f4f4f4f4f4f4f4'],
+    ['teams', '29:abc-def'],
+    ['teams', '123e4567-e89b-12d3-a456-426614174000'],
+    ['googlechat', 'users/1234567890'],
+    ['googlechat', 'ada@example.com'],
+  ]) {
+    const response = await (await setDoor({ id, allowed: [good] })).json();
+    assert.equal(response.error, undefined, `${id} accepted ${good}`);
+  }
+  for (const [id, bad] of [
+    ['line', 'spaces/AAAA'],
+    ['teams', 'users/123'],
+    ['googlechat', '29:abc-def'],
+  ]) {
+    const response = await (await setDoor({ id, allowed: [bad] })).json();
+    assert.equal(response.error, 'invalid_allowed_id', `${id} refused ${bad}`);
   }
 });

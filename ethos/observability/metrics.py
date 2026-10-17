@@ -47,6 +47,30 @@ MODEL_COST = Counter(
     "Accumulated model spend in USD",
     ["provider", "model", "bucket"],
 )
+# A free call has to leave a trace. `MODEL_COST.inc(0)` is a no-op on a
+# Prometheus counter by construction -- the series is only created when the
+# counter moves -- so a model the vendor bills at zero produced no
+# `ethos_model_cost_usd_total` series whatsoever. That reads identically to a
+# model that was never called, which is the specific confusion that made free
+# traffic look like spend: there was nothing in the scrape to contradict it.
+# Observing the per-call cost in a histogram creates the series at 0.0, so
+# "free" and "unused" are distinguishable in a dashboard.
+MODEL_CALL_COST = Histogram(
+    "ethos_model_call_cost_usd",
+    "Cost of a single model call in USD",
+    ["provider", "model", "bucket"],
+    buckets=(0.0, 1e-6, 1e-5, 1e-4, 1e-3, 1e-2, 1e-1, 1.0, 10.0),
+)
+MODEL_COST_SOURCE = Counter(
+    "ethos_model_cost_source_total",
+    "Model calls by where the price came from",
+    # `source` is the answer to "is this number real". `provider` means the
+    # vendor billed it and we recorded what it said; `config` means a checked-in
+    # rate card priced it; `unknown` means a high-water mark stood in because no
+    # price could be found. The last of those is money spent at a rate nobody
+    # chose, and it should be countable rather than a number to squint at.
+    ["source", "provider"],
+)
 MODEL_LATENCY = Histogram(
     "ethos_model_latency_seconds",
     "Model call latency",
@@ -113,6 +137,7 @@ def start_metrics_server(port: int) -> None:
 def observe_model_call(provider: str, model: str, tier: str, status: str,
                        cost_usd: float, bucket: str, latency_s: float,
                        purpose: str = "unknown", scope: str | None = None,
+                       cost_source: str = "unknown",
                        ) -> None:
     MODEL_CALLS.labels(provider=provider, model=model, tier=tier,
                        purpose=purpose, status=status).inc()
@@ -121,6 +146,10 @@ def observe_model_call(provider: str, model: str, tier: str, status: str,
                               purpose=purpose, scope=scope).inc()
     if cost_usd:
         MODEL_COST.labels(provider=provider, model=model, bucket=bucket).inc(cost_usd)
+    # Observed unconditionally, including at zero, so a free model has a series
+    # saying so rather than none at all.
+    MODEL_CALL_COST.labels(provider=provider, model=model, bucket=bucket).observe(max(0.0, cost_usd))
+    MODEL_COST_SOURCE.labels(source=cost_source, provider=provider).inc()
     MODEL_LATENCY.labels(provider=provider).observe(latency_s)
 
 

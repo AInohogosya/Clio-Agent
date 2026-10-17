@@ -57,6 +57,28 @@
 # The two new arrivals are Discord and Slack. Discord is a socket rather than a
 # door, and Slack is a door sharing WhatsApp's, which is the only structural
 # difference between them and the two channels that were here already.
+#
+# LINE, Microsoft Teams and Google Chat join them, and all three are doors
+# sharing the same receiver — the differences between them are credentials, not
+# shape:
+#
+#   line       The only one of the eight whose signature is an HMAC with no
+#              timestamp in it, so it is the one door where a captured request
+#              can be replayed forever. The per-event dedupe is what covers that.
+#
+#   teams      The only door whose inbound proof is a token rather than a
+#              signature, because Teams registers your bot with Microsoft's
+#              identity platform and mints you a credential rather than signing
+#              the body. Its sends need a *per-conversation* URL that arrives in
+#              the message, so an unsolicited message after a restart is refused
+#              until somebody writes in again — see `service_url_hosts` and the
+#              adapter's docstring.
+#
+#   googlechat The only door whose credentials are a service account rather than a
+#              token: Google issues no long-lived token to a non-interactive
+#              caller, so this holds an email and a PEM private key and signs its
+#              own assertion to get an hour of access. The private key is
+#              environment-only — it does not fit in a form field.
 
 cli:
   enabled: true
@@ -190,10 +212,124 @@ discord:
   # dropped into.
   accept_from_anyone: false
 
+line:
+  # A POST to a URL declared in the Messaging API console, like Slack and WhatsApp
+  # and unlike Telegram — so this needs `webhook` turned on and the port tunneled.
+  # Same receiver, same tunnel, one more path.
+  #
+  # There is no verification handshake here, which is unusual: LINE's console has
+  # a "Verify" button that GETs the URL once to see whether it answers. That GET
+  # is answered with a constant `OK`, and it grants nothing — a forged probe gets
+  # an answer it could have computed itself.
+  enabled: false
+  path: "/hooks/line"
+  # **Two secrets, both called "secret" on the console, and swapping them is
+  # invisible.** The channel *access token* authorises what goes out; the channel
+  # *secret* is what every inbound request is signed with. Getting them the wrong
+  # way round is a 401 on every delivery with nothing in the log to say which was
+  # wrong, so the two are named for their direction here rather than for the
+  # screen they appear on.
+  channel_access_token_env: LINE_CHANNEL_ACCESS_TOKEN
+  channel_secret_env: LINE_CHANNEL_SECRET
+  # User ids: `U` plus 32 hex characters, from `events[].source.userId` in a
+  # webhook body. Empty admits nobody.
+  #
+  # Group and room conversations are refused outright rather than listed here. A
+  # room is a conversation rather than a person, and a reply to one goes to
+  # everybody in it — so this door answers one person at a time, which is the same
+  # line Telegram draws with `allow_groups`.
+  allowed_ids: []
+  # Answer anybody who messages the bot. Off by default, and here the credential
+  # is nearly public: the bot's user id is a fixed 33-character string and its
+  # display name is a first name.
+  accept_from_anyone: false
+
+teams:
+  # A POST to the messaging endpoint declared in the Bot Framework, so this needs
+  # `webhook` turned on and the port tunneled.
+  #
+  # Unlike every other door here, Teams will only talk to a bot that has been
+  # registered at <https://dev.botframework.com>, and both directions follow from
+  # that. Inbound is authenticated by a Microsoft-signed token that must name this
+  # bot's App ID in its audience — there is no signature on the body to check.
+  # Outbound exchanges the App ID and app password for a connector token once an
+  # hour.
+  enabled: false
+  path: "/hooks/teams"
+  app_id_env: TEAMS_APP_ID
+  # The app password, which is Microsoft's word for a client secret. It is not an
+  # account password and no user sits behind it — so treat it like an API key:
+  # rotate it from the same portal you registered the bot in.
+  app_password_env: TEAMS_APP_PASSWORD
+  # Azure AD object ids, from `from.id` in an Activity. Teams writes them as
+  # `29:…` on most tenants and as a bare GUID on others, so both are accepted.
+  #
+  # The *address* for this door is a conversation rather than a person, because
+  # every member of a personal chat has a different one and a reply has to go
+  # back to the thread it was asked in. It is found in `conversation.id`.
+  allowed_ids: []
+  # Where a conversation's `serviceUrl` may point, as host suffixes — the check
+  # that stops a value in a request body deciding where the agent's words are
+  # POSTed. Narrow on purpose; a sovereign cloud or a customer-hosted channel
+  # adds its own host here rather than by loosening the check somewhere else.
+  service_url_hosts:
+    - "trafficmanager.net"
+    - "botframework.com"
+  # Answer anybody in any chat the bot is in. Off by default.
+  accept_from_anyone: false
+
+googlechat:
+  # A POST to the HTTP endpoint configured in the Chat API console, so this needs
+  # `webhook` turned on and the port tunneled.
+  #
+  # **The credentials are a service account, not a token.** Google issues no
+  # long-lived credential to a non-interactive caller, so this holds an email and
+  # a PEM private key and signs a short-lived assertion to exchange for an hour of
+  # access. Those are the two values in the service-account JSON you downloaded
+  # from the Cloud console.
+  enabled: false
+  path: "/hooks/googlechat"
+  client_email_env: GOOGLE_CHAT_CLIENT_EMAIL
+  # **Environment-only.** A PEM private key is about 1700 characters and the
+  # settings screen caps a credential at 1024, so a form field for it would
+  # accept a paste and silently store nothing. Export it instead; a literal `\n`
+  # is read as a newline, because that is the only way a PEM key survives an env
+  # file, a systemd unit or a shell.
+  private_key_env: GOOGLE_CHAT_PRIVATE_KEY
+  # What the Chat app was configured with as its **authentication audience**, and
+  # nothing here can derive it: copy it out of the Chat API configuration screen.
+  # It is either the Cloud project number or the endpoint URL, and which one it is
+  # decides which *kind* of token Google signs its requests with — both are
+  # accepted here, and this value is what pins either of them to this deployment.
+  # Get it wrong and every delivery is refused with a 401 that says only that the
+  # audience did not match.
+  audience_env: GOOGLE_CHAT_AUDIENCE
+  # A sender's `users/…` resource name or their email address, from
+  # `message.sender.name` or `user.email`. Both are in the event, and which one
+  # is there depends on whether your Workspace domain lets Chat share addresses.
+  #
+  # The address for this door is a *space*: the Chat API will not send to a
+  # person, so a direct message's `spaces/…` id is what a reply is addressed to.
+  allowed_ids: []
+  # Answer anybody who mentions the app or messages it directly. Off by default.
+  #
+  # Note that even turned on, a Chat app on an HTTP endpoint hears only @mentions
+  # and direct messages — every other message in a space it sits in is not
+  # delivered to it at all, and hearing those needs Workspace Events and a Pub/Sub
+  # subscription, which is a different transport. "The bot is in the room and it
+  # is quiet" is a configuration fact, not a fault in this file.
+  accept_from_anyone: false
+
 webhook:
   # One loopback listener shared by every channel that has to be pushed to.
   # Loopback is deliberate: reaching it from outside is the tunnel's job, which
   # is a smaller thing to get right than terminating TLS here.
+  #
+  # Five doors need this: WhatsApp, Slack, LINE, Microsoft Teams and Google Chat.
+  # All five POST to a URL declared in a console somewhere else, so none of them
+  # can be polled and all of them answer on this one port, told apart by path.
+  # Telegram, Discord and email need no listener at all — one polls, one holds a
+  # socket, one fetches over IMAP.
   enabled: false
   host: "127.0.0.1"
   port: 8730

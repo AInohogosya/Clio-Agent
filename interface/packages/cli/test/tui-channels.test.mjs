@@ -45,17 +45,86 @@ function startBridge() {
     };
     if (request.url?.startsWith('/api/channels')) return send(DOORS);
     if (request.url?.startsWith('/api/snapshot')) {
+      const now = new Date().toISOString();
       return send({
-        presence: { state: 'idle', focus: null, ts: Date.now() },
-        control: {},
-        model: null,
-        catalogue: 0,
-        cycles: [],
-        intentions: [],
-        actions: [],
-        thoughts: [],
-        budget: null,
-        guardian: null,
+        presence: {
+          state: 'ATTENDING',
+          focus: { intention_id: 'int-1', title: 'Answer the porch', kind: 'reply' },
+          ts: Date.now(),
+          recentCycles: [
+            { state: 'ATTENDING', ts: now, tier: 'T2' },
+            { state: 'WORKING', ts: now, tier: 'T1' },
+          ],
+        },
+        control: { paused: false, pause_actions: false, stopped: false, emergency: false, preview: false },
+        model: { provider: 'anthropic', model: 'claude-sonnet-5', keyPresent: true, keyHint: 'sk-…12' },
+        catalogue: 3,
+        identity: { configured: true, selfName: 'Clio' },
+        thoughts: Array.from({ length: 40 }, (_, index) => ({
+          id: `th-${index}`,
+          ts: now,
+          summary: `thought number ${index}`,
+        })),
+        intentions: [
+          {
+            id: 'int-abcdef12-3456-7890',
+            parent_id: null,
+            kind: 'reply',
+            title: 'Answer the porch',
+            desired_end_state: 'the porch answered',
+            status: 'active',
+            priority: 1.5,
+            deadline: null,
+            commissioned_by: 'owner',
+            budget_usd: 2,
+            spent_usd: 0.5,
+            origin: 'telegram',
+            children: [],
+            depth: 0,
+          },
+        ],
+        actions: [
+          {
+            id: 'act-1234abcd-5678',
+            ts_start: now,
+            ts_end: null,
+            thread_id: 'thread-99',
+            tool: 'web.search',
+            args_redacted: { q: 'porch light' },
+            reason: 'the porch asked',
+            status: 'running',
+            result_digest: null,
+            undo_ref: null,
+          },
+          {
+            id: 'act-7777bbbb-1111',
+            ts_start: now,
+            ts_end: now,
+            thread_id: null,
+            tool: 'memory.write',
+            args_redacted: null,
+            reason: null,
+            status: 'ok',
+            result_digest: null,
+            undo_ref: 'undo-1',
+          },
+        ],
+        budget: {
+          todayByBucket: [{ bucket: 'discretionary', total: 0.5 }],
+          byModel: [{ model: 'claude-sonnet-5', total: 0.5 }],
+          daily: [
+            { day: '2026-10-16', total: 0.5 },
+            { day: '2026-10-15', total: 1.5 },
+          ],
+          caps: { daily_usd: 20, monthly_usd: 400, commitment_usd: 10, discretionary_usd: 10 },
+        },
+        guardian: {
+          trash: [{ id: 't1', origin: '/tmp/a', trashed_at: now, retention_until: now, reason: 'asked', path: null }],
+          snapshots: [{ name: 'snap-1', created_at: now, reason: 'before the sweep', backend: 'fs' }],
+          integrity: { ok: true, ran_at: now, audit_chain_ok: true, artifact_mismatches: [] },
+          auditHead: { seq: 42, ts: now, summary: 'held a cycle', hash: 'deadbeefcafe' },
+          protectedCount: 3,
+        },
         messages: [
           {
             id: 'm1',
@@ -240,5 +309,77 @@ test('the transcript is narrowed to the door the terminal is on', { skip }, asyn
     // the composer shows which door will carry the next one.
     const screen = await drive([['/channel telegram', 600], ['\r', 1500]]);
     assert.match(screen, /are you still there/);
+  });
+});
+
+test('a panel row number opens what the panel numbered', { skip }, async () => {
+  await withAgent(async () => {
+    // One correspondent, the terminal's own line, then three doors: row 4 is
+    // the telegram door. `/channel 4` is the spelling that does not ask anybody
+    // to retype an id the panel has already shown them.
+    const screen = await drive([['/channel 4', 600], ['\r', 1500]]);
+    assert.match(screen, /via Telegram/);
+    assert.match(screen, /are you still there/);
+  });
+});
+
+test('a row number past the list is refused with the count', { skip }, async () => {
+  await withAgent(async () => {
+    const screen = await drive([['/channel 99', 600], ['\r', 1500]]);
+    assert.match(screen, /No such row/);
+  });
+});
+
+test('the thoughts panel is its own screen, and the whole record scrolls', { skip }, async () => {
+  await withAgent(async () => {
+    const screen = await drive([['/thoughts', 600], ['\r', 1800]]);
+    assert.match(screen, /THOUGHTS/);
+    assert.match(screen, /thought number 29/, 'the recent tail is on screen');
+    // Forty thoughts do not fit; the window says what it is showing, and the
+    // rest are a few lines away rather than gone.
+    assert.match(screen, /of 40/);
+    const paged = await drive([
+      ['/thoughts', 600], ['\r', 1200],
+      ...Array.from({ length: 12 }, () => ['\u001b[B', 220]),
+      ['\r', 1200],
+    ]);
+    assert.match(paged, /thought number 39/, 'the end of the record is reachable');
+    assert.match(paged, /9\u201340 of 40/, 'the window says where it stopped');
+  });
+});
+
+test('the intentions panel names what the reader can act on', { skip }, async () => {
+  await withAgent(async () => {
+    const screen = await drive([['/intentions', 600], ['\r', 1800]]);
+    assert.match(screen, /Answer the porch/);
+    // The short id is what /cancel takes, so it is on the same line as the title.
+    assert.match(screen, /int-abcd/, 'the short id is shown');
+    // The same facts the web's intention card shows.
+    assert.match(screen, /reply/);
+    assert.match(screen, /p1\.50/);
+    assert.match(screen, /the porch answered/);
+    assert.match(screen, /\/cancel/);
+  });
+});
+
+test('the actions panel shows the reason, the arguments and the undo path', { skip }, async () => {
+  await withAgent(async () => {
+    const screen = await drive([['/actions', 600], ['\r', 1800]]);
+    assert.match(screen, /web\.search/);
+    assert.match(screen, /act-1234/, 'the short id is shown');
+    assert.match(screen, /the porch asked/, 'the reason is shown');
+    assert.match(screen, /porch light/, 'the redacted arguments are shown');
+    assert.match(screen, /thread-99/);
+    assert.match(screen, /\/undo/);
+    assert.match(screen, /↺/, 'the undoable action is marked');
+  });
+});
+
+test('the budget panel draws the seven-day chart the web draws', { skip }, async () => {
+  await withAgent(async () => {
+    const screen = await drive([['/budget', 600], ['\r', 1800]]);
+    assert.match(screen, /BY DAY/);
+    assert.match(screen, /\$0\.50/);
+    assert.match(screen, /\$1\.50/);
   });
 });

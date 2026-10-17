@@ -166,10 +166,16 @@ class ModelRouter:
         floor_cfg = self.config.models.tiers.get(tier.value)
         return floor_cfg.floor if floor_cfg else 0.0
 
-    def score(self, entry: ModelEntry, quality_floor: float) -> float:
+    def score(self, entry: ModelEntry, quality_floor: float, request: ModelRequest | None = None) -> float:
         if entry.quality < quality_floor:
             return float("-inf")
-        c_hat = self.costs.estimate(entry.model)
+        # Priced against the request being routed, so a free candidate competes
+        # on its real cost. Under the old rate card every `:free` model carried
+        # the invented default price and was scored as though it cost money --
+        # which pushed the router toward paid models it did not need.
+        c_hat = self.costs.estimate(
+            entry.model, request, provider=entry.provider, base_url=entry.base_url or "",
+        )
         mu = self.config.gateway.routing.mu
         nu = self.config.gateway.routing.nu
         return entry.quality - mu * c_hat - nu * entry.latency_s
@@ -272,7 +278,7 @@ class ModelRouter:
             # at the only model is a better answer than no answer.
             return pinned[0]
         scored = sorted(
-            ((self.score(e, floor), e) for e in ranked),
+            ((self.score(e, floor, request), e) for e in ranked),
             key=lambda pair: pair[0],
             reverse=True,
         )

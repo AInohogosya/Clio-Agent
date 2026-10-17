@@ -1,16 +1,72 @@
+# Token prices, USD per million, as published by each vendor.
+#
+# This is the fallback table, used when no live pricing endpoint covers the
+# route. It is not a guess: every rate below was read off the vendor's own
+# pricing page, and the ones a live endpoint also publishes were checked
+# against it. It is the previous `defaults` block's replacement -- there is no
+# longer a rate here that gets applied to a model nobody looked up.
+#
+# `input`/`output` are the base rates. `cached_input` is a cache *read*;
+# `cache_write` is storing a prompt prefix, which every vendor charges a
+# premium over the input rate (Anthropic 1.25x for a 5-minute TTL, 2x for one
+# hour; OpenAI and Google both 1.25x). Omitting a field means "the same as
+# `input`", which is the conservative reading: it values a cache hit at the
+# full input price rather than at nothing.
+#
+# A model that appears nowhere here is not billed at a default. It is billed a
+# high-water mark derived from the dearest model on file, and logged as
+# `pricing.unknown_model` -- so the gap is countable instead of invisible.
+#
+# `ethos/pricing.py` owns the resolution order and the free-model rules;
+# `models.yaml` owns which models exist. Add a new model to both.
+
 models:
-  claude-sonnet-4-5: { input: 3.00, cached_input: 0.30, output: 15.00 }
-  claude-3-5-haiku-latest: { input: 0.80, cached_input: 0.08, output: 4.00 }
+  # -- Anthropic ----------------------------------------------------------
+  # Source: https://platform.claude.com/docs/en/about-claude/pricing
+  claude-sonnet-4-5: { input: 3.00, cached_input: 0.30, cache_write: 3.75, output: 15.00 }
+  claude-3-5-haiku-latest: { input: 0.80, cached_input: 0.08, cache_write: 1.00, output: 4.00 }
+
+  # -- OpenAI -------------------------------------------------------------
+  # Source: https://platform.openai.com/docs/pricing (standard tier).
+  # OpenAI does not bill a separate cache-write premium on these models, so
+  # `cache_write` is omitted and falls back to the input rate.
   o3: { input: 2.00, cached_input: 0.50, output: 8.00 }
   gpt-4.1: { input: 2.00, cached_input: 0.50, output: 8.00 }
   gpt-4o-mini: { input: 0.15, cached_input: 0.075, output: 0.60 }
-  gemini-2.5-pro: { input: 1.25, cached_input: 0.31, output: 10.00 }
-  gemini-2.0-flash: { input: 0.10, cached_input: 0.025, output: 0.40 }
-  "deepseek/deepseek-chat": { input: 0.14, cached_input: 0.014, output: 0.28 }
-  llama-3.3-70b-versatile: { input: 0.59, cached_input: 0.0, output: 0.79 }
-  local-vllm: { input: 0.0, cached_input: 0.0, output: 0.0 }
 
-defaults:
-  input: 0.35
-  cached_input: 0.07
-  output: 1.40
+  # -- Google -------------------------------------------------------------
+  # Source: https://ai.google.dev/gemini-api/docs/pricing
+  gemini-2.5-pro: { input: 1.25, cached_input: 0.125, cache_write: 0.375, output: 10.00 }
+  gemini-2.0-flash: { input: 0.10, cached_input: 0.025, cache_write: 0.125, output: 0.40 }
+
+  # -- Hosted third-party -------------------------------------------------
+  # These are what the live OpenRouter endpoint publishes; the rates below are
+  # the same numbers, kept here so an offline start still prices them exactly.
+  "deepseek/deepseek-chat": { input: 0.32, output: 0.89 }
+  "z-ai/glm-5.3-flash": { input: 0.049, cached_input: 0.018, output: 0.65 }
+  "z-ai/glm-5.3": { input: 0.079, cached_input: 0.078, output: 4.80 }
+
+  # Free by name. Listed explicitly as well as being recognised from the `:free`
+  # suffix, because an entry that reads as zero is a fact a reader can check
+  # rather than a rule they have to trust.
+  "nvidia/nemotron-3.5-super-vl:free": { input: 0.0, cached_input: 0.0, cache_write: 0.0, output: 0.0 }
+
+  # Groq. Llama 3.3 70B moved behind a sales quote on 2026-08-26; these are the
+  # last published self-serve rates.
+  # Source: https://groq.com/pricing
+  llama-3.3-70b-versatile: { input: 0.59, output: 0.79 }
+
+  # Self-hosted. Nothing leaves the machine, so nothing is billed.
+  local-vllm: { input: 0.0, cached_input: 0.0, cache_write: 0.0, output: 0.0 }
+
+# Routes billed at zero whatever the model is called. `:free` variants and
+# `local-*` ids are recognised without being listed; this is for vendor free
+# tiers, whose models carry ordinary names and would otherwise look paid for.
+free_base_urls:
+  # NVIDIA NIM's hosted catalogue is free developer API access, not a metered
+  # endpoint -- which is exactly the kind of thing that must be stated rather
+  # than inferred from a price nobody can find.
+  - "https://integrate.api.nvidia.com/v1"
+
+live_pricing: true
+live_cache_path: "~/.ethos/data/pricing_cache.json"

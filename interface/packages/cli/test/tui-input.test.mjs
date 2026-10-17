@@ -2,7 +2,7 @@ import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
 import { MAX_TERMINAL_TEXT_LENGTH } from '@project-phone/core';
 import { ACCENT_PRESETS, createPalette } from '../dist/palette.js';
-import { deleteBefore, insertAt, isCtrl, nextAccent, runCommand } from '../dist/tui-input.js';
+import { deleteBefore, insertAt, isCtrl, nextAccent, resolveByPrefix, runCommand } from '../dist/tui-input.js';
 
 const SETTINGS = { theme: 'dark', language: 'en', accent: '#F97316' };
 
@@ -308,4 +308,22 @@ test('a mistyped channel is consumed, not sent as a message', () => {
   assert.equal(handled, true);
   assert.equal(calls.some(([name]) => name === 'submit'), false);
   assert.equal(calls.some(([name]) => name === 'say'), true);
+});
+
+test('a short id resolves when exactly one action answers to it', () => {
+  const entries = [
+    { id: '9f1c2b3a-0001', tool: 'first' },
+    { id: '9f1c2b3a-0002', tool: 'second' },
+    { id: '77aa00ff-0003', tool: 'third' },
+  ];
+  // An exact id wins even when it is a prefix of nothing else.
+  assert.deepEqual(resolveByPrefix(entries, '77aa00ff-0003'), entries[2]);
+  // A unique short form is resolved.
+  assert.deepEqual(resolveByPrefix(entries, '77aa'), entries[2]);
+  // An ambiguous short form refuses rather than guessing.
+  assert.equal(resolveByPrefix(entries, '9f'), null);
+  // A form nothing answers to refuses.
+  assert.equal(resolveByPrefix(entries, 'zz'), null);
+  // An empty argument refuses: bare commands list, they do not fire.
+  assert.equal(resolveByPrefix(entries, ''), null);
 });

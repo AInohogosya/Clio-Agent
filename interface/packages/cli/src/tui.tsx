@@ -49,6 +49,7 @@ const SIDEBAR_WIDTH = 32;
 const WIDE_AT = 94;
 /** Rows the composer, its hint and the error banner can take from the pane. */
 const CHROME_ROWS = 6;
+const DEBUG_PANEL_ROWS = 8;
 
 /**
  * The full-screen chat surface.
@@ -223,8 +224,6 @@ export function Tui({ initialConfig, debug, mode, width, height, depth }: TuiPro
     </Box>
   );
 }
-
-const DEBUG_PANEL_ROWS = 8;
 
 const HELP_KEYS: Array<[string, string]> = [
   ['Enter', 'Send the message.'],

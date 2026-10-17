@@ -64,6 +64,7 @@ class ContinuityManager:
         """Reconcile journal, bus gaps, environment. Returns a wake report."""
         report: dict[str, Any] = {
             "reconciled_actions": 0,
+            "interrupted_tools": [],
             "missed_events": 0,
             "resumed_focus": None,
             "snapshot": None,
@@ -80,12 +81,27 @@ class ContinuityManager:
                 "WHERE ts_end IS NULL AND status = 'running' ORDER BY ts_start"
             )
             for row in inflight:
+                # `COALESCE`, because `NULL || jsonb` is NULL in Postgres: an
+                # attempt that died before writing a digest has exactly the NULL
+                # this row has, so the concatenation silently discarded the note
+                # in the one case the note exists to explain. The row was left
+                # saying nothing at all about why it was interrupted.
                 await self.db.execute(
                     "UPDATE action_journal SET ts_end = now(), status = 'interrupted', "
-                    "result_digest = result_digest || $1::jsonb WHERE id = $2",
-                    json.dumps({"note": "reconciled at wake"}), row["id"],
+                    "result_digest = COALESCE(result_digest, '{}'::jsonb) || $1::jsonb "
+                    "WHERE id = $2",
+                    json.dumps({
+                        "note": "reconciled at wake",
+                        "outcome": "unknown",
+                        "detail": (
+                            f"{row['tool']} was still running when the previous "
+                            "incarnation ended; whether it took effect is unknown"
+                        ),
+                    }),
+                    row["id"],
                 )
                 report["reconciled_actions"] += 1
+                report.setdefault("interrupted_tools", []).append(str(row["tool"]))
             rows = await self.db.fetch("SELECT COUNT(*) AS n FROM env_entities WHERE health = 'stale'")
             report["env_checks"] = int(rows[0]["n"]) if rows else 0
             await self.db.execute(

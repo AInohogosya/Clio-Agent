@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from uuid import UUID
 
 from ethos.config import EthosConfig
 from ethos.engine.rhythm import backoff_seconds
@@ -47,6 +48,14 @@ logger = get_logger("ethos.gsl")
 
 MAX_STRATEGIES = 3
 STEP_FAILURES_BEFORE_SWITCH = 2
+
+# The check kinds a step will be failed on. A policy, not a capability list:
+# `ObjectiveChecker` implements more, and the ones left out are the ones whose
+# inputs a plan invents rather than observes -- a URL, a metric target. Run and
+# failed honestly, they fail steps for reasons the step never controlled.
+_RUNNABLE_CHECKS = frozenset({
+    "command", "file_exists", "file_contains", "syntax", "json_field",
+})
 
 # Keys in `resume_state` that only this module reads. Named because the state
 # machine has three of them and a dict literal with three string keys in it is
@@ -367,8 +376,14 @@ class GeneralSolverLoop:
             if waiting is not None:
                 return waiting
             memories = await self._recall(intention.title, k=10)
+            # The spy belongs to this branch rather than to a helper, so the
+            # failed attempt can still report what it cost. A gateway that
+            # retried three times and then raised has spent money, and that money
+            # has to reach the intention's budget or a goal whose planning calls
+            # never succeed spends against a ceiling it never approaches.
+            spy = _CostSpy(self.gateway)
             try:
-                data, c = await self._call(understand, intention, memories)
+                data = await understand(spy, self.config, intention, memories)
             except Exception as exc:
                 if is_rate_limited_failure(exc):
                     kind = "rate_limited"
@@ -382,9 +397,9 @@ class GeneralSolverLoop:
                     ),
                     stage="understand",
                 )
-                failed.cost_usd += cost
+                failed.cost_usd += cost + spy.cost_usd
                 return failed
-            cost += c
+            cost += spy.cost_usd
             resume.update(data)
             await self._save_resume(intention, resume)
             for question in resume.get("questions", [])[:3]:
@@ -417,7 +432,7 @@ class GeneralSolverLoop:
                 # Bounded, though: "the next cycle asks again" used to be the end
                 # of the sentence, and it is now the first of three states.
                 failed = await self._planning_failed(intention, resume, exc, stage="plan")
-                failed.cost_usd += cost
+                failed.cost_usd += cost + exc.cost_usd
                 return failed
             cost += c
             await self._install_plan(intention, resume, plan,
@@ -462,7 +477,7 @@ class GeneralSolverLoop:
                 failed = await self._planning_failed(
                     intention, resume, exc, plan=plan, stage="replan",
                 )
-                failed.cost_usd += cost
+                failed.cost_usd += cost + exc.cost_usd
                 return failed
             cost += c
             await self._install_plan(intention, resume, new_plan, strategy_number=strategy_number)
@@ -511,6 +526,17 @@ class GeneralSolverLoop:
         await self._save_resume(intention, resume)
         lessons_result = await self._reflect(intention, step, step_result, failures + 1)
         step_result.lessons.extend(lessons_result.get("lessons", []))
+        # Held on the attempt rather than written to it here: this approach may
+        # survive to another step, and the attempt closes when the approach is
+        # given up, not every time a step stumbles. The save above happened
+        # before reflection ran, so this write has to persist them itself.
+        held = list(resume.get("attempt_lessons") or [])
+        for lesson in lessons_result.get("lessons", []):
+            text = str(lesson).strip()
+            if text and text not in held:
+                held.append(text[:400])
+        resume["attempt_lessons"] = held[-10:]
+        await self._save_resume(intention, resume)
         for kh in lessons_result.get("knowhow", [])[:2]:
             if isinstance(kh, dict) and kh.get("situation") and kh.get("advice"):
                 await self.memory.record_knowhow(
@@ -521,38 +547,147 @@ class GeneralSolverLoop:
             await self.memory.open_question(str(question), priority=0.6)
         return step_result
 
-    async def _call(self, fn: Any, intention: IntentionRecord, memories: list[MemoryHit]) -> tuple[dict[str, Any], float]:
-        data = await fn(self.gateway, self.config, intention, memories)
-        return data, 0.0
+    async def _close_attempt(
+        self, intention: IntentionRecord, resume: dict[str, Any], outcome: str,
+        cost_usd: float = 0.0,
+    ) -> None:
+        """Close the attempt this intention has open, if it has one.
+
+        `start_attempt` was called on every successful plan install and
+        `end_attempt` was called from nowhere. Every attempt row the database
+        accumulated therefore had `ended_at`, `outcome` and `lessons` null, and
+        stayed that way.
+
+        That is worse than untidy bookkeeping, because `_strategy` reads those
+        rows back: `list_attempts` supplies the lessons that are shown to the
+        next `devise` call, so this is the loop's only mechanism for learning
+        from its own failures. With the write missing, the agent was given an
+        ever-growing list of attempts that had all apparently just started and
+        none of which had ever concluded, and no lesson from any of them ever
+        reached the prompt that decides what to try next. It repeated the same
+        failed approach at the same goal indefinitely, with nothing in its
+        context saying it had tried that.
+
+        Lessons accumulate in `resume` as reflection produces them, because the
+        moment an attempt closes is not the moment its lessons are written: the
+        attempt closes when the approach is abandoned, and the step that taught
+        the lesson may be several steps earlier. So they are held here and
+        written once, on the attempt that was actually in flight when the
+        approach stopped being tried.
+
+        The id is popped whether or not the write succeeds. Closing an attempt
+        twice would overwrite its outcome with a later one, and the second
+        writer has strictly less to say than the first.
+        """
+        attempt_id = resume.pop("attempt_id", None)
+        lessons = resume.pop("attempt_lessons", None) or []
+        if not attempt_id:
+            return
+        try:
+            await self.memory.end_attempt(
+                UUID(str(attempt_id)), outcome,
+                {"intention_id": str(intention.id), "title": intention.title[:200]},
+                [str(lesson)[:400] for lesson in lessons][:10],
+                float(cost_usd),
+            )
+        except Exception:
+            logger.warning(
+                "gsl.attempt_close_failed", intention=str(intention.id),
+                attempt=str(attempt_id),
+            )
 
     async def _strategy(self, intention: IntentionRecord, resume: dict[str, Any],
                         strategy_number: int, plan_attempts: int = 0) -> tuple[Plan, float]:
+        """Choose an approach and plan from it, or raise `PlanUnavailable`.
+
+        Every way of failing here raises, which is the point. This used to
+        fabricate an approach when the devise call returned nothing, and then
+        build a real plan out of it -- so a goal whose planning calls were all
+        failing still arrived at `in_progress` holding a plan, and the only
+        trace of the failure was a log line nobody was reading.
+
+        The attempt is opened here and its id is kept in the resume blob, so
+        `advance` can close it. `start_attempt` used to be called and nothing
+        ever called `end_attempt`: every attempt row in the database had a null
+        outcome and no lessons, forever. That is the channel the loop's own
+        lessons travel back through -- `_strategy` reads `list_attempts` and
+        feeds their lessons into the next devise call -- so a closed loop of
+        lessons was never actually closed. The agent could learn nothing from
+        having failed, because the record of the failure was never written.
+        """
         cost = 0.0
+        # An attempt ends exactly where the next one begins. Closing it here, and
+        # only here, means every attempt that was ever opened is closed by
+        # whichever of the three things happened to it: this approach was
+        # abandoned, the goal was verified, or the goal was parked.
+        await self._close_attempt(intention, resume, "failed")
         knowhow = await self.memory.find_knowhow(intention.title, k=5)
         attempts = await self.memory.list_attempts(intention.id, limit=5)
         lessons = [lesson for a in attempts for lesson in a.lessons]
-        approaches, c1 = await self._devise_with_cost(intention, resume, knowhow, lessons)
+        try:
+            approaches, c1 = await self._devise_with_cost(intention, resume, knowhow, lessons)
+        except PlanUnavailable as exc:
+            exc.cost_usd += cost
+            raise
         cost += c1
         approach = pick_approach(approaches)
         if approach is None:
-            approach = {
-                "id": f"approach-{strategy_number}",
-                "summary": f"directly pursue: {intention.desired_end_state or intention.title}",
-                "expected_value": 0.5, "estimated_cost_usd": 0.1, "reversible": True,
-            }
+            # `_devise_with_cost` already refuses an empty candidate list, so
+            # this is unreachable rather than load-bearing. It raises instead of
+            # inventing, because the whole reason it is here at all is that the
+            # inventing was the bug.
+            raise PlanUnavailable(
+                "no approach could be chosen from the candidates devise returned",
+                kind="unusable", cost_usd=cost,
+            )
         await self.memory.record_decision(
             _decision_record(intention, f"chose approach: {approach['summary']}",
                              f"expected value {approach.get('expected_value')} of 3 candidates"),
         )
-        plan, c2 = await self._plan_with_cost(
-            intention, approach, strategy_number, plan_attempts=plan_attempts,
-        )
+        try:
+            plan, c2 = await self._plan_with_cost(
+                intention, approach, strategy_number, plan_attempts=plan_attempts,
+            )
+        except PlanUnavailable as exc:
+            exc.cost_usd += cost
+            raise
         cost += c2
-        await self.memory.start_attempt(intention.id, approach["summary"])
+        resume["attempt_id"] = str(
+            await self.memory.start_attempt(intention.id, approach["summary"])
+        )
         return plan, cost
 
     async def _devise_with_cost(self, intention: Any, resume: dict[str, Any],
                                 knowhow: list[MemoryHit], lessons: list[str]) -> tuple[list[dict[str, Any]], float]:
+        """Candidate approaches, or `PlanUnavailable`. Never an invented one.
+
+        This used to swallow its failure and return `[]`, and an empty list was
+        then read by `_strategy` as "no candidate was good enough" when it had
+        meant "the call never came back". `pick_approach` returned `None`, and
+        the fallback above it invented an approach -- "directly pursue: <the
+        title>" -- out of the goal's own description. The plan that followed was
+        then built on that invention, reported as a chosen approach, and the
+        intention went to `in_progress` looking like a goal that had been
+        thought about.
+
+        The failure was invisible by construction: it was logged and then
+        discarded, so nothing counted it. No attempt was recorded, no backoff was
+        scheduled, no degradation was triggered, and the next cycle did exactly
+        the same thing. A provider that was down produced an agent that appeared
+        to be planning for as long as it was asked, on approaches it had made
+        up.
+
+        Both ways of coming back with nothing are now the same thing --
+        `PlanUnavailable`, which the caller already knows how to count, back off,
+        degrade and park. An empty *successful* answer is in the same class as
+        the empty plan `make_plan` already refuses: the model was asked for
+        candidates and returned none, and the answer is not to invent one.
+
+        Devise is the first of the two planning calls, so its failures are
+        attributed to the `devise` stage and its cost is reported to the caller
+        even when the call is the thing that failed, so the budget ledger shows
+        what the attempt cost.
+        """
         spy = _CostSpy(self.gateway)
         try:
             approaches = await devise(
@@ -561,10 +696,24 @@ class GeneralSolverLoop:
                 tier=Tier.T3 if resume.get("consequential") else Tier.T2,
                 knowhow_limit=10,
             )
-            return approaches, spy.cost_usd
-        except Exception:
+        except Exception as exc:
             logger.exception("gsl.devise_failed")
-            return [], spy.cost_usd
+            if is_rate_limited_failure(exc):
+                kind = "rate_limited"
+            else:
+                kind = "no_model" if is_nothing_could_serve(exc) else "unusable"
+            raise PlanUnavailable(
+                f"devise request failed ({kind}): {exc}", kind=kind,
+                retry_after_s=getattr(exc, "retry_after_s", None),
+                cost_usd=spy.cost_usd,
+            ) from None
+        if not approaches:
+            logger.warning("gsl.devise_empty", intention=str(intention.id))
+            raise PlanUnavailable(
+                "devise returned no usable approach; the model was asked for "
+                "three candidates and answered with none", kind="unusable",
+            )
+        return approaches, spy.cost_usd
 
     async def _plan_with_cost(self, intention: Any, approach: dict[str, Any],
                               strategy_number: int, plan_attempts: int = 0) -> tuple[Plan, float]:
@@ -578,10 +727,21 @@ class GeneralSolverLoop:
         *changed* rather than repeated (thinking bounded, tier dropped, schema
         ask relaxed), because re-sending an identical payload with a longer
         sleep is the failure being fixed with more of it.
+
+        The cost of a plan call that fails is attached to the exception rather
+        than returned, because the caller learns the cost from the exception's
+        way out and would otherwise never learn it at all. A plan call that is
+        made, billed and then rejected is still a plan call that was made, and a
+        goal that is parked after six of them has spent six plans' worth of its
+        budget on the record that it gave up.
         """
         spy = _CostSpy(self.gateway)
-        plan = await make_plan(spy, self.config, intention, approach,
-                               strategy_number, plan_attempts)
+        try:
+            plan = await make_plan(spy, self.config, intention, approach,
+                                   strategy_number, plan_attempts)
+        except PlanUnavailable as exc:
+            exc.cost_usd += spy.cost_usd
+            raise
         return plan, spy.cost_usd
 
     async def _execute_step(self, intention: IntentionRecord, resume: dict[str, Any],
@@ -801,13 +961,25 @@ class GeneralSolverLoop:
                 logger.warning("gsl.step_context_failed")
 
         thought = str(data.get("thought", ""))[:300]
+        check_result: dict[str, Any] | None = None
         if all_ok and self.config.gsl.verify_step_checks:
             # The tools all reported success, which says the calls went through
             # and not that the step achieved anything. The plan's own check is
             # the only thing here that knows the difference, so it is asked
             # before the step is allowed to be a done step.
             check_result = await self._step_check(step)
-            if check_result is not None and not check_result.get("passed", True):
+            # `observed` is what separates a check that looked and found the
+            # work wanting -- a real failure, worth failing the step for --
+            # from one that could not look at all: an empty command, a check
+            # the loop declined. The second says nothing about the work, and
+            # failing on it used to be one step away from a bug here: the
+            # unobserved result was dropped entirely rather than returned, so
+            # the step passed without its check ever being consulted.
+            if (
+                check_result is not None
+                and not check_result.get("passed", True)
+                and check_result.get("observed", False)
+            ):
                 evidence = check_result.get("evidence") or {}
                 detail = str(
                     evidence.get("stderr") or evidence.get("stdout")
@@ -828,9 +1000,33 @@ class GeneralSolverLoop:
                 )
 
         outcome = SolverOutcome.step_done if all_ok else SolverOutcome.step_failed
+        # A step whose own check asked a question and observed nothing is a
+        # completed step, but not a *verified* one, and the two used to be
+        # indistinguishable in the record: the check was simply not consulted,
+        # so a step written off as `step_done` read exactly like one whose test
+        # suite had been run and passed. Stating it costs nothing and is the
+        # only thing that tells the two apart later.
+        thoughts = [thought] if thought else []
+        if (
+            all_ok
+            and self.config.gsl.verify_step_checks
+            and check_result is not None
+            and not check_result.get("observed", True)
+        ):
+            why = str(
+                (check_result.get("evidence") or {}).get("note")
+                or (check_result.get("evidence") or {}).get("error") or ""
+            ).strip()[:200]
+            thoughts.append(
+                f"this step's own success check ({step.success_check.get('type')}) "
+                f"could not observe anything, so it is unverified"
+                + (f"; it said: {why}" if why else "")
+            )
+            logger.info("gsl.step_done_unverified", step=step.id,
+                        check=str(step.success_check.get("type")))
         return SolverResult(
             outcome=outcome,
-            thoughts=[thought] if thought else [],
+            thoughts=thoughts,
             actions=executed,
             plan=plan,
             cost_usd=cost,
@@ -896,6 +1092,7 @@ class GeneralSolverLoop:
                 cost_usd=cost,
             ), cost
         if verification.passed:
+            await self._close_attempt(intention, resume, "succeeded", cost)
             await self.memory.close_intention(intention.id, IntentionStatus.done.value,
                                               "verification passed")
             await self.memory.record_episode(
@@ -961,7 +1158,8 @@ class GeneralSolverLoop:
                 intention, resume, exc, plan=plan, stage="replan",
             )
             failed.verification = verification
-            return failed, cost
+            failed.cost_usd += cost + exc.cost_usd
+            return failed, cost + exc.cost_usd
         cost += c
         await self._install_plan(intention, resume, new_plan, strategy_number=strategy_number)
         return SolverResult(
@@ -1033,24 +1231,65 @@ class GeneralSolverLoop:
         output into the thoughts, so the model is told what failed rather than
         only that something did.
 
-        A check that raises is a check that could not be run, and is returned as
-        nothing: the step's work is real either way, and a malformed check in a
-        model's plan is not a reason to throw away a completed step.
+        Three things are deliberately distinguished here, because collapsing them
+        is how a check stops being evidence:
+
+        * No check was asked for (`none`, `human`, absent). Nothing to say, so
+          nothing is said -- the caller treats this as "no verdict", not as
+          "unverified".
+        * A check was asked for and the checker could not observe anything --
+          an empty command, a non-numeric metric target. The result is
+          *returned*, with the checker's own note, rather than dropped. It used
+          to be dropped, and dropping it is what let a step be recorded as
+          verified on the strength of a check that had never looked at anything.
+          The caller turns `observed: False` into an explicit "this step was not
+          objectively verified" on the result, so the record says so rather than
+          being silent about it -- and never into a failed step, because a check
+          that could not run has said nothing about the work either way.
+        * A check that raised. Also returned as an absence, with the exception
+          logged: a malformed check in a model's plan is not a reason to throw
+          away a step whose work is real.
+
+        The kinds of check this loop will *run* are the deterministic ones, and
+        the list is a policy rather than an omission. `_RUNNABLE_CHECKS` holds
+        it. `ObjectiveChecker` also implements `http_status` and `metric_gte`,
+        and running them here was tried: a plan-invented URL against a port
+        nothing listens on fails honestly (`observed: True`) and fails the step,
+        which sends a plan that is otherwise working into three strategies of
+        guessing at an environment the step never controlled. So those kinds are
+        declined -- recorded as unverified rather than run -- and the record says
+        that a check was asked for and the loop declined it, which is the part
+        that used to be silent: the old allowlist skipped them without a word,
+        so a plan declaring a metric threshold looked exactly as verified as one
+        whose tests had actually been run.
         """
         check = getattr(step, "success_check", None)
         if not isinstance(check, dict) or not check:
             return None
-        if str(check.get("type", "none")) not in (
-            "command", "file_exists", "file_contains", "syntax", "json_field",
-        ):
+        kind = str(check.get("type", "none"))
+        if kind in ("none", "human", ""):
+            # Nothing was asked for. Distinct from asking and getting nothing.
             return None
+        if kind not in _RUNNABLE_CHECKS:
+            logger.info("gsl.step_check_declined", step=step.id, check=kind)
+            return {
+                "passed": True, "observed": False,
+                "evidence": {
+                    "note": f"the loop does not run {kind!r} checks, so this "
+                            "step was not objectively verified",
+                },
+            }
         try:
             result = await ObjectiveChecker(user_home()).check(check)
         except Exception:
             logger.exception("gsl.step_check_failed", step=step.id)
             return None
         if not result.get("observed"):
-            return None
+            logger.warning(
+                "gsl.step_check_unobserved", step=step.id, check=kind,
+                note=str((result.get("evidence") or {}).get("note")
+                         or (result.get("evidence") or {}).get("error") or "")[:200],
+            )
         return result
 
     async def _reflect(self, intention: IntentionRecord, step: Any, result: SolverResult,

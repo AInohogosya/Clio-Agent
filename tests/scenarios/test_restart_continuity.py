@@ -203,3 +203,115 @@ async def test_bookmark_written_to_resume_state(db, tmp_path: Path):
     assert intention.resume_state["next_planned_step"] == "step 7"
     assert intention.resume_state["mental_context"] == "deep in thought"
     await deps.bus.stop()
+
+
+async def _pending_message(db, key: str, text: str) -> str:
+    """One unanswered inbound message on a conversation key of its own."""
+    from uuid import uuid4 as _uuid4
+
+    message_id = _uuid4()
+    await db.execute(
+        "INSERT INTO messages (id, ts, direction, channel, conversation_key, person_id, "
+        "text, social_decision) VALUES ($1, now(), 'inbound', 'web', $2, "
+        "'owner', $3, NULL)",
+        message_id, key, text,
+    )
+    return str(message_id)
+
+
+async def test_an_unanswered_queue_cannot_starve_a_goal_forever(db, tmp_path: Path):
+    """A backlog of messages defers a goal; an unbounded backlog does not.
+
+    The salience gate that once arbitrated here was removed on purpose, because a
+    short "are you OK?" scored 0.38 against a 0.65 focused threshold and waited
+    about an hour -- which reads as the agent ignoring its owner. Removing it
+    made every unanswered message take the pass unconditionally, and with no
+    bound on that, an agent whose inbox fills faster than it drains never
+    reaches the `advance_goal` branch at all.
+
+    Every such cycle answers somebody, so nothing looks wrong: the drives keep
+    proposing the task, the queue keeps having a head, and the task stays exactly
+    where it was. It is the same shape as the planning backoff before it had a
+    bound -- the work is not failing, it is simply never being reached.
+
+    Asserted on the count, because the count is the mechanism: the goal runs on
+    the first `inbound_defers_goal_max + 1` consecutive passes, and the message
+    is still at the head of the queue afterwards, because deferring is not
+    discarding.
+    """
+    key = f"web:starve-{tmp_path.name}"
+    life, deps = await build_life(db, tmp_path, "starve")
+    intention_id = await deps.memory.create_intention(
+        title="Write the quarterly summary",
+        desired_end_state="the summary is written", kind="commitment",
+        origin="commission", commissioned_by="owner", priority=0.9,
+    )
+    message_id = await _pending_message(db, key, "are you there?")
+    life.focus = Focus(
+        intention_id=intention_id, title="Write the quarterly summary",
+        kind="commitment", why="commissioned by owner",
+    )
+    limit = max(0, int(life.config.rhythm.focus.inbound_defers_goal_max))
+    try:
+        kinds = []
+        for _ in range(limit + 3):
+            decision = await life.decide(ws=None)
+            kinds.append(decision.kind)
+            # The messages are never actually answered here -- `decide` is being
+            # asked what it would do, and answering needs a model. So the queue
+            # is modelled as permanently non-empty, which is the situation the
+            # bound exists for.
+            if decision.kind == "advance_goal":
+                break
+
+        assert "advance_goal" in kinds, (
+            f"a goal was starved by {len(kinds)} unanswered messages and never "
+            f"reached: {kinds}"
+        )
+        # The message defers the goal exactly `limit` times and the next pass
+        # works it: index `limit` is pass `limit + 1`.
+        assert kinds.index("advance_goal") == limit, (
+            f"expected the first {limit} passes to go to the message and the "
+            f"next to the goal, got {kinds}"
+        )
+        # The messages are still queued. Deferred, not dropped.
+        still = await deps.social.pending_inbound(limit=50)
+        assert str(message_id) in [str(m.id) for m in still], (
+            "the message was discarded rather than deferred"
+        )
+    finally:
+        await db.execute("DELETE FROM intentions WHERE id = $1", intention_id)
+        await db.execute("DELETE FROM messages WHERE id = $1", message_id)
+        await deps.bus.stop()
+
+
+async def test_a_social_focus_with_no_message_is_released_rather_than_held(
+    db, tmp_path: Path,
+):
+    """A social focus exists to answer one message, and is spent when it has.
+
+    With no message pending, `decide` used to return a social decision carrying
+    `social=None`, which matches no branch in `act` -- so the cycle did nothing
+    at all, and because that branch sits above the drives and the reverie, the
+    idle work below it was unreachable for as long as the focus lasted. 2235
+    cycles were once spent exactly that way.
+
+    `next_focus` now drops the focus as well, so it costs one dead cycle rather
+    than thousands; this asserts the cheaper half, that the spent focus is
+    released inside `decide` so the pass it wastes is the last one.
+    """
+    life, deps = await build_life(db, tmp_path, "socialfocus")
+    life.focus = Focus(
+        title="a conversation that has already been answered",
+        kind="social", why="answered last pass",
+    )
+    try:
+        decision = await life.decide(ws=None)
+        assert decision.kind != "social" or decision.social is not None, (
+            "a spent social focus produced a decision that matches no branch in act"
+        )
+        assert life.focus is None, (
+            f"the spent focus is still held: {life.focus!r}"
+        )
+    finally:
+        await deps.bus.stop()

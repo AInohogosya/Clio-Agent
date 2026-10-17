@@ -228,6 +228,12 @@ def normalized_to_chat_response(
         if not resp.text:
             message["content"] = None
     usage = resp.usage
+    # Put back together the inclusive shape an OpenAI-compatible caller expects:
+    # its `prompt_tokens` contains the cached and cache-written tokens, and its
+    # `completion_tokens` contains the reasoning. `Usage` holds them disjoint,
+    # so this is a re-assembly, not a pass-through -- and it has to name
+    # `cache_write_tokens`, or a caller reading this block would see fewer
+    # prompt tokens than were billed.
     return {
         "id": f"chatcmpl-{uuid.uuid4().hex[:24]}",
         "object": "chat.completion",
@@ -241,12 +247,9 @@ def normalized_to_chat_response(
             }
         ],
         "usage": {
-            "prompt_tokens": usage.input_tokens + usage.cached_input_tokens,
-            "completion_tokens": usage.output_tokens + usage.reasoning_tokens,
-            "total_tokens": (
-                usage.input_tokens + usage.cached_input_tokens
-                + usage.output_tokens + usage.reasoning_tokens
-            ),
+            "prompt_tokens": usage.prompt_tokens,
+            "completion_tokens": usage.completion_tokens,
+            "total_tokens": usage.total_tokens,
         },
     }
 

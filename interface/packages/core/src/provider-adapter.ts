@@ -883,7 +883,7 @@ export async function requestProviderCompletion(
   };
   if (safeSettings.provider === 'openrouter') {
     headers['HTTP-Referer'] = 'https://clio-agent.local';
-    headers['X-Title'] = 'Clio Agent 3 Beta';
+    headers['X-Title'] = 'Clio Agent 3';
   }
 
   const request = new LiveRequest(signal);

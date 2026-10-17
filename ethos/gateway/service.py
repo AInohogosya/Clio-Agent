@@ -12,7 +12,7 @@ from ethos import PRODUCT_NAME, __version__
 from ethos.config import EthosConfig, base_model_path, load_base_model
 from ethos.db import Database
 from ethos.gateway.client import backoff_delay
-from ethos.gateway.cost import BudgetExceededError, CostCalculator, SpendGuard
+from ethos.gateway.cost import BudgetExceededError, CostCalculator, SpendGuard, refresh_live_prices
 from ethos.gateway.embeddings import EmbeddingProvider, build_role_embedder
 from ethos.gateway.normalizer import estimate_tokens, was_truncated
 from ethos.gateway.providers.anthropic_native import AnthropicNativeProvider
@@ -25,6 +25,7 @@ from ethos.gateway.router import ModelRouter, NoModelAvailable, entry_key
 from ethos.observability import metrics
 from ethos.observability.logger import get_logger
 from ethos.platform import uvicorn_loop
+from ethos.pricing import CostBreakdown
 from ethos.schemas.models import (
     ModelCallRecord,
     ModelMessage,
@@ -743,6 +744,26 @@ class GatewayService:
         _ = response
         return report
 
+    def _cheapest_expected_cost(self, request: ModelRequest) -> float:
+        """The least this request could cost across the whole catalogue.
+
+        The pre-flight check's job is to notice that there is no money left,
+        and the cheapest candidate is the right number for that: using anything
+        dearer would refuse requests the agent could still afford to answer
+        through a free model, which is how a deployment running entirely on
+        free routes ends up refusing to think at all.
+        """
+        entries = self.config.models.resolved()
+        if not entries:
+            return 0.0
+        costs = [
+            self.costs.estimate(
+                e.model, request, provider=e.provider, base_url=e.base_url or "",
+            )
+            for e in entries
+        ]
+        return min(costs) if costs else 0.0
+
     async def complete(self, request: ModelRequest) -> NormalizedResponse:
         if request.tier == Tier.T0:
             raise ValueError("T0 (reflex) cognition must not call the model gateway")
@@ -750,7 +771,12 @@ class GatewayService:
         if not self.config.models.models:
             raise RuntimeError("gateway has no models configured")
 
-        await self.spend.check(request.budget_bucket, 0.05)
+        # Cheapest possible call on the cheapest configured route. This is not
+        # the per-attempt estimate -- that comes once a model is chosen -- it is
+        # a floor so a request against a completely exhausted budget fails here
+        # rather than after a round-trip. It was a flat $0.05, which is a real
+        # amount of money and a number with no connection to the request.
+        await self.spend.check(request.budget_bucket, self._cheapest_expected_cost(request))
 
         retry = self.config.gateway.retry
         max_attempts = 1 + max(0, retry.max_retries)
@@ -766,7 +792,13 @@ class GatewayService:
             # Re-read per attempt rather than once: after a failure the entry can
             # change, and each model has its own price and its own rate limits.
             provider = self._provider_for(entry)
-            await self.spend.check(attempt_request.budget_bucket, self.costs.estimate(entry.model))
+            await self.spend.check(
+                attempt_request.budget_bucket,
+                self.costs.estimate(
+                    entry.model, attempt_request,
+                    provider=entry.provider, base_url=entry.base_url or "",
+                ),
+            )
             await self.limiter.acquire(
                 entry.provider, entry.model, entry.rpm, entry.tpm, estimate_tokens(attempt_request)
             )
@@ -887,14 +919,30 @@ class GatewayService:
             response.provider = entry.provider
             response.model = entry.model
             response.latency_ms = latency_ms
-            response.cost_usd = self.costs.compute(entry.model, response.usage)
+            breakdown = self.costs.compute(
+                entry.model, response.usage,
+                provider=entry.provider, base_url=entry.base_url or "",
+                billed_cost_usd=response.billed_cost_usd,
+            )
+            response.cost_usd = breakdown.total_usd
             self.router.record_success(entry)
-            await self._record_success(request, entry, response)
+            await self._record_success(request, entry, response, breakdown)
             metrics.observe_model_call(
                 entry.provider, entry.model, request.tier.value, "ok",
                 response.cost_usd, request.budget_bucket, latency_ms / 1000.0,
                 purpose=request.purpose,
+                cost_source=breakdown.source,
             )
+            if breakdown.source == "unknown":
+                # Already warned about by the price table, but this is the
+                # moment it becomes somebody's money: say how much was billed
+                # at a rate nobody chose, and against which cap.
+                logger.warning(
+                    "gateway.cost_at_high_water_mark",
+                    provider=entry.provider, model=entry.model,
+                    purpose=request.purpose, cost_usd=breakdown.total_usd,
+                    charged_per_million=breakdown.price.as_dict(),
+                )
             return response
 
         raise last_error or RuntimeError("gateway complete failed without error")
@@ -918,32 +966,49 @@ class GatewayService:
         counter did not have.
         """
         usage = response.usage if response is not None else Usage()
-        cost = self.costs.compute(entry.model, usage) if response is not None else 0.0
+        breakdown = (
+            self.costs.compute(
+                entry.model, usage, provider=entry.provider, base_url=entry.base_url or "",
+                billed_cost_usd=response.billed_cost_usd if response else None,
+            )
+            if response is not None
+            else None
+        )
+        cost = breakdown.total_usd if breakdown is not None else 0.0
         metrics.observe_model_call(
             entry.provider, entry.model, request.tier.value, "error", cost,
             request.budget_bucket, 0.0, purpose=request.purpose,
             scope=failure_scope(exc),
+            cost_source=breakdown.source if breakdown else "unknown",
         )
         record = ModelCallRecord(
             provider=entry.provider, model=entry.model, tier=request.tier.value,
             purpose=request.purpose, thread_id=request.thread_id,
             intention_id=request.intention_id, budget_bucket=request.budget_bucket,
             input_tokens=usage.input_tokens, cached_input_tokens=usage.cached_input_tokens,
+            cache_write_tokens=usage.cache_write_tokens,
             output_tokens=usage.output_tokens, reasoning_tokens=usage.reasoning_tokens,
             cost_usd=cost, latency_ms=0, status="error", error=str(exc)[:500],
+            price_source=breakdown.source if breakdown else "unknown",
         )
         await self.spend.record(record)
 
-    async def _record_success(self, request: ModelRequest, entry: Any, response: NormalizedResponse) -> None:
+    async def _record_success(
+        self, request: ModelRequest, entry: Any, response: NormalizedResponse,
+        breakdown: CostBreakdown | None = None,
+    ) -> None:
+        usage = response.usage
         record = ModelCallRecord(
             provider=entry.provider, model=entry.model, tier=request.tier.value,
             purpose=request.purpose, thread_id=request.thread_id,
             intention_id=request.intention_id, budget_bucket=request.budget_bucket,
-            input_tokens=response.usage.input_tokens,
-            cached_input_tokens=response.usage.cached_input_tokens,
-            output_tokens=response.usage.output_tokens,
-            reasoning_tokens=response.usage.reasoning_tokens,
+            input_tokens=usage.input_tokens,
+            cached_input_tokens=usage.cached_input_tokens,
+            cache_write_tokens=usage.cache_write_tokens,
+            output_tokens=usage.output_tokens,
+            reasoning_tokens=usage.reasoning_tokens,
             cost_usd=response.cost_usd, latency_ms=response.latency_ms, status="ok",
+            price_source=breakdown.source if breakdown else "unknown",
         )
         await self.spend.record(record)
 
@@ -959,6 +1024,20 @@ class GatewayService:
             "commitment_cap": self.spend.commitment_cap,
             "discretionary_cap": self.spend.discretionary_cap,
         }
+
+    async def load_live_prices(self, *, fetch: bool = False) -> int:
+        """Fetch vendor prices once at startup and keep them on the calculator.
+
+        Deliberately not awaited inside `__init__`: the gateway is constructed
+        in tests and in scripts with no event loop and no interest in reaching
+        the network. The checked-in table prices everything correctly without
+        this, so a deployment that never calls it is slower to notice a price
+        change and wrong about nothing.
+        """
+        loaded = await refresh_live_prices(self.config, self.costs.table, fetch=fetch)
+        if loaded:
+            logger.info("gateway.pricing_ready", live_models=loaded)
+        return loaded
 
     async def aclose(self) -> None:
         if self._owns_http:

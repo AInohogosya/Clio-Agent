@@ -1,10 +1,10 @@
-# Clio Agent 3 Beta アーキテクチャ
+# Clio Agent 3 アーキテクチャ
 
 *コードベース `/Users/sasakikousei/Desktop/Ethos`(Python パッケージ名 `ethos`、バージョン `3.0.0-beta.1`、リリース 2026-10-03 JST:`ethos/__init__.py`、`pyproject.toml`)から読み取った事実のみを記述する。*
 
 ## 1. 概要
 
-Clio Agent 3 Beta は「常時存在し続ける汎用自律エージェント」である(`pyproject.toml:8`)。典型的なチャットボットとは異なり、プロンプト→応答の往復ではなく、**自分の時計で動き続けるライフループ**(`pace → perceive → attend → decide → act → record`)を持つ。ユーザーは Telegram / Slack / Discord / Email / WhatsApp / Web / CLI などの複数チャネルから非同期に話しかけ、エージェントは注意力評価(顕著度スコアリング)を経て応答・作業・静黙を自ら選ぶ。永続記憶は PostgreSQL 16 + pgvector に置かれ、夜間の記憶統合・自己モデル更新も自律的に行われる。
+Clio Agent 3 は「常時存在し続ける汎用自律エージェント」である(`pyproject.toml:8`)。典型的なチャットボットとは異なり、プロンプト→応答の往復ではなく、**自分の時計で動き続けるライフループ**(`pace → perceive → attend → decide → act → record`)を持つ。ユーザーは Telegram / Slack / Discord / Email / WhatsApp / Web / CLI などの複数チャネルから非同期に話しかけ、エージェントは注意力評価(顕著度スコアリング)を経て応答・作業・静黙を自ら選ぶ。永続記憶は PostgreSQL 16 + pgvector に置かれ、夜間の記憶統合・自己モデル更新も自律的に行われる。
 
 **ランタイムモデル**:単一プロセスループではない。`ethos up`(`ethos/core/bootstrap.py:428`)はスーパーバイザー配下の**7 プロセス構成**(gateway / toolhost / comms / worker×2 / core / 任意の web)を起動する(`ethos/core/supervisor.py:163`)。中核は `ethos-core` プロセス内のティックベースのライフループ(デフォルト 4 秒 ±15%、`ethos/engine/rhythm.py:184`)で、プロセス間の連携は Postgres の `events` テーブル + `LISTEN/NOTIFY` によるトランザクショナルイベントバス(`ethos/bus/event_bus.py:40`)で行う。ハイブリッド型:知覚はイベント駆動で届くが、処理は各ティックの先頭で排水される。
 
@@ -86,7 +86,7 @@ Telegram 到着を例にとる(ソケットは `deploy/systemd/` と `config/eth
 
 ## 7. 未解決の疑問(コードからは確定できない点)
 
-- **命名の不一致**:製品名は Clio Agent 3 Beta だが、UI パッケージ名は `@project-phone/core|web|cli`、CLI バイナリは `phone`(`interface/packages/cli/package.json`)。`project-phone` という名前が README の他の箇所では説明されておらず、移行途中の名前と思われるが根拠はコードにない。
+- **命名の不一致**:製品名は Clio Agent 3 だが、UI パッケージ名は `@project-phone/core|web|cli`、CLI バイナリは `phone`(`interface/packages/cli/package.json`)。`project-phone` という名前が README の他の箇所では説明されておらず、移行途中の名前と思われるが根拠はコードにない。
 - **ロックファイル**:Python 側に `uv.lock` 等のロックファイルがなく、依存は `pyproject.toml` の範囲指定のみ。実際に解決される版数は環境依存。
 - **ネイティブ関数呼び出しの二重経路**:内部 Self ループは JSON アクション契約、外部サブエージェントはネイティブ tool_calls。どちらへ統一する意向(あるかどうか)はコード上に明言がない。
 - **`ethos-core` の `--listen-channels`**:README と `ethos/__main__.py:347` に dev 用フラグが存在するが、7 プロセス運用では comms 側が listen を独占する設計で、両者の併用時の重複受信の扱いはドキュメント化されていない。

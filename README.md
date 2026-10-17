@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="ethos.png" alt="Clio Agent 3 Beta" width="880">
+  <img src="thumbnail.png" alt="Clio Agent 3" width="880">
 </p>
 
-<h1 align="center">Clio Agent 3 Beta</h1>
+<h1 align="center">Clio Agent 3</h1>
 
 <p align="center">
   <b>An agent that is there when you aren't.</b><br>
@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <code>3 Beta</code> · <code>released 2026-10-03 JST</code> · <code>Python ≥ 3.12</code> ·
+  <code>3.0.0-beta.3</code> · <code>released 2026-10-03 JST</code> · <code>Python ≥ 3.12</code> ·
   <code>PostgreSQL 16 + pgvector</code> · <code>Linux / macOS</code> ·
   <code>no license yet — all rights reserved</code>
 </p>
@@ -105,7 +105,7 @@ that were hard to get right.
 | | |
 |---|---|
 | **Start** | [Status and expectations](#status-and-expectations) · [Requirements](#requirements) · [Installation](#installation) · [Quickstart](#quickstart) |
-| **Use it** | [The interface](#the-interface) (a browser and a terminal, not a chat box with a dashboard) · [Talking to it from somewhere else](#talking-to-it-from-somewhere-else) (Telegram, WhatsApp, Slack, Discord, email, webhooks) |
+| **Use it** | [The interface](#the-interface) (a browser and a terminal, not a chat box with a dashboard) · [Talking to it from somewhere else](#talking-to-it-from-somewhere-else) (Telegram, WhatsApp, Slack, Discord, email, LINE, Teams, Google Chat, webhooks) |
 | **Understand it** | [How it runs](#how-it-runs) (the seven-process model) · [Repository layout](#repository-layout) · [Configuration](#configuration) |
 | **Trust it** | [Safety model](#safety-model) — the six hard limits, and an exact account of what is *not* enforced |
 | **Build on it** | [Tests](#tests) · [Deployment](#deployment) · [Contributing](#contributing) · [License](#license) |
@@ -317,7 +317,7 @@ it holds the agent's memory; to throw it away, `make db-down && rm -rf data/pgda
 
 ## The interface
 
-The interface — **Clio Agent 3 Beta** — is a browser page and a terminal client. It is not a dashboard
+The interface — **Clio Agent 3** — is a browser page and a terminal client. It is not a dashboard
 bolted onto a chat box: the agent's state and the conversation are one screen, because an agent that
 thinks when nobody is talking has to be watchable while it does.
 
@@ -596,13 +596,14 @@ gate already refuses every tool on — so the two cannot disagree about which mo
 
 ## Talking to it from somewhere else
 
-The browser is one door among several. A message from Telegram, WhatsApp, Discord, Slack, a terminal
-socket, or `curl` reaches the life loop by the same road and is scored by the same attention model.
-A channel adapter is a door, not a decision.
+The browser is one door among several. A message from Telegram, WhatsApp, Discord, Slack, LINE,
+Microsoft Teams, Google Chat, a terminal socket, or `curl` reaches the life loop by the same road and
+is scored by the same attention model. A channel adapter is a door, not a decision.
 
 **Every door is closed until you open it.** `cli` and `web` — the two doors that talk to whatever is
 reading the transcript — ship enabled, because they cannot reach anyone who is not already looking.
-Telegram, WhatsApp, Slack, Discord, email, and the shared webhook receiver all ship `enabled: false`.
+Telegram, WhatsApp, Slack, Discord, email, LINE, Teams, Google Chat, and the shared webhook receiver
+all ship `enabled: false`.
 Every allowlist is empty by default, and an empty allowlist admits nobody. Edit
 `config/channels.yaml`, or use **Settings → Messaging** in the interface. `ethos doctor`
 reports the result of that decision rather than leaving it to be discovered — one line per door
@@ -636,7 +637,7 @@ telegram:
   accept_from_anyone: true
 ```
 
-**Settings → Messaging → Answer anyone**, on Telegram, WhatsApp, Slack and Discord alike. The bridge
+**Settings → Messaging → Answer anyone**, on every door that admits by a list. The bridge
 reports it beside the allowlist, so a door with an empty list and this on reads as *admits people*
 rather than as the mute bot it looks like in the list alone.
 
@@ -662,6 +663,9 @@ replacing it:
 | WhatsApp | `contacts[].profile.name` | — (WhatsApp has no handles) | nothing — it is in the webhook body already |
 | Discord | `author.global_name`, else `username` | `username` | nothing — it is on every `MESSAGE_CREATE` |
 | Slack | `users.info` `real_name` | — | the **`users:read`** scope |
+| LINE | the `profile` API's `displayName` | — (LINE has no handles) | the **profile** permission on the channel |
+| Teams | `from.name` | — | nothing — the Connector resolves it from Azure AD |
+| Google Chat | `sender.displayName` | the email, when your domain shares it | nothing — it is in the event already |
 | Email | the display name in `From:` | — | nothing |
 
 So the agent deliberates on `From: Ada Lovelace (@ada, tg:819012345678) via telegram` rather than
@@ -690,8 +694,9 @@ display name to `owner`.
 
 Telegram posts to a chat id, WhatsApp to a phone number, and Discord and Slack to a *channel*. Each
 adapter refuses a `person_id` that does not carry its own prefix — `tg:` for Telegram, `wa:` for
-WhatsApp, `slack:` for Slack, `dc:` for Discord, `email:` for email — so `owner` is not somewhere
-any of them can post to. The mapping lives in `config/people.yaml`, one line per door:
+WhatsApp, `slack:` for Slack, `dc:` for Discord, `line:` for LINE, `teams:` for Teams, `gchat:` for
+Google Chat, `email:` for email — so `owner` is not somewhere any of them can post to. The mapping
+lives in `config/people.yaml`, one line per door:
 
 ```yaml
 people:
@@ -705,6 +710,9 @@ people:
       # whatsapp: "wa:819012345678"      # the wa_id from contacts[0].wa_id
       # slack: "slack:C0E2E"            # a channel id, not a user id
       # discord: "dc:9999"              # likewise
+      # line: "line:U4af4980629…"       # a person — the one door here addressed by user id
+      # teams: "teams:19:abc@thread.tacv2;…"   # a conversation id, not a person
+      # googlechat: "gchat:spaces/AAAA…" # a space — the Chat API cannot post to a person
     preferences: {}
 ```
 
@@ -712,6 +720,12 @@ Discord and Slack are addressed by channel rather than by person because a reply
 the conversation it was asked in, and a person with two conversations has no single one to pick. A
 DM channel is one-per-person on both, so in the ordinary case the address names a person and a
 conversation at once.
+
+Teams and Google Chat are addressed the same way because they have to be, and for a harder reason:
+**neither API will deliver a message to a person.** `spaces.messages.create` names a space; the Bot
+Framework's Connector POSTs to `{serviceUrl}/v3/conversations/{id}/activities`. So a direct message
+with the app is the space or conversation you address, and that is the whole reason a person's
+`line:` address is a user id while these two are not.
 
 `web` and `cli` need no entry: those doors deliver to whoever is reading the transcript, so the
 person is the address.
@@ -754,9 +768,10 @@ deployment; it needs a `--channel`, since an address is an address *on a door*.
 
 ### Opening a door: Settings → Messaging
 
-Every door — Telegram, WhatsApp, Slack, Discord, email, and the shared webhook receiver — has a
+Every door — Telegram, WhatsApp, Slack, Discord, email, LINE, Teams, Google Chat, and the shared
+webhook receiver — has a
 section in the settings screen with the fields it needs: its credentials, who it admits, and the
-address it reaches you at. On the four doors that admit by a list there is also **Answer anyone**,
+address it reaches you at. On the doors that admit by a list there is also **Answer anyone**,
 with the consequence spelled out underneath it, because it is the one box on that screen that turns a
 credential into a published endpoint.
 
@@ -888,6 +903,113 @@ default, and without it Discord delivers message events with empty text and no e
 channel that is connected and deaf. What a dropped connection costs is stated there too: this does
 not resume a session, so a message written while the process is disconnected is not seen.
 
+### LINE
+
+The plainest of the push doors: a signed webhook in, one push call out, and no token exchange
+anywhere. It needs the same tunnel and the same receiver as WhatsApp and Slack — a fifth push channel
+is one more *path* on the same port.
+
+```bash
+export LINE_CHANNEL_ACCESS_TOKEN=… LINE_CHANNEL_SECRET=…   # both from the Messaging API console
+
+# config/channels.yaml: line.enabled: true, webhook.enabled: true
+ethos comms
+cloudflared tunnel --url http://127.0.0.1:8730    # then point the channel at <url>/hooks/line
+```
+
+Three things to know, one of them a warning:
+
+- **The console calls both credentials "secret" and swapping them is invisible.** The *channel
+  secret* signs what arrives (`X-Line-Signature`); the *channel access token* authorises what goes
+  out. Wrong way round is a 401 on every delivery with nothing in the log to say which was wrong.
+- **LINE signs the body with no timestamp in it.** Unlike Slack's version-prefixed, timestamped
+  string, a captured LINE request verifies forever — so a captured one can be replayed. The
+  per-event dedupe covers the redelivery case, which is the one that actually happens; it is worth
+  knowing the guarantee is weaker than Slack's rather than assuming all doors are alike.
+- **The bot cannot reply, only push.** LINE's `reply` endpoint takes the one-shot `replyToken` that
+  arrived with the event, and an agent that thinks for longer than that token lives cannot use it.
+  So this always calls `message/push` — the answer to yesterday's question is not silently
+  impossible, which is the entire reason the door exists.
+
+Groups and rooms are refused outright rather than listed: a reply to a room goes to everybody in it.
+`allowed_ids` holds user ids (`U…`, from `events[].source.userId`), and naming senders needs the
+**profile** permission — without it the bot answers perfectly well while every message is attributed
+to `line:U…`.
+
+### Microsoft Teams
+
+The hardest of the doors, because Teams is not a messaging API with a webhook — it is a framework
+that will only talk to a bot registered with Microsoft's identity platform, and both directions
+follow from that.
+
+```bash
+export TEAMS_APP_ID=… TEAMS_APP_PASSWORD=…   # from the bot's registration
+
+# config/channels.yaml: teams.enabled: true, webhook.enabled: true
+ethos comms
+cloudflared tunnel --url http://127.0.0.1:8730    # then point the bot's messaging endpoint at <url>/hooks/teams
+```
+
+What that buys you and what it costs:
+
+- **Inbound is verified by token, not signature.** The Bot Framework mints a JWT naming your App ID
+  in its `aud` claim and presents it as a bearer token; this verifies it against the signing keys
+  Microsoft publishes, refreshed hourly, and refuses a token from the emulator — which is a real
+  credential for localhost development and worthless here, because there is no way to be sure of the
+  direction it came from.
+- **Sends need a per-conversation URL.** Every reply is a POST to `{serviceUrl}/v3/conversations/{id}/activities`,
+  and `serviceUrl` arrives *in the inbound activity*, not in any config. So it is remembered per
+  conversation, and the honest consequence is: **an unsolicited Teams message right after a restart
+  is refused with an error saying why**, and a *reply* — which is what this agent actually does —
+  works, because the inbound message repopulates the cache before the deliberation answers it.
+- **`serviceUrl` is checked before it is believed.** It is a URL this process will POST to, named by
+  a request body, so it is compared against `service_url_hosts` (default: `trafficmanager.net`,
+  `botframework.com`). A sovereign cloud adds its own host there deliberately.
+- **The `@mention` tag is stripped.** Teams prefixes a message aimed at the bot with
+  `<at>YourBot</at>`, and leaving it in would open every conversation with the agent's own name.
+
+Teams also delivers the bot its own messages, which is a self-answer loop; the adapter filters on
+`from.id` being the App ID rather than trusting a remembered id, because the token already answered
+that question.
+
+### Google Chat
+
+The only door whose credentials are a service account rather than a token, because Google issues no
+long-lived credential to a non-interactive caller. So this holds an email and a PEM private key and
+signs a short-lived assertion to exchange for an hour of access.
+
+```bash
+export GOOGLE_CHAT_CLIENT_EMAIL=… GOOGLE_CHAT_PRIVATE_KEY=$'\n-----BEGIN PRIVATE KEY-----\n…'
+export GOOGLE_CHAT_AUDIENCE=…   # the Chat app's "authentication audience"
+
+# config/channels.yaml: googlechat.enabled: true, webhook.enabled: true
+ethos comms
+cloudflared tunnel --url http://127.0.0.1:8730    # then point the app's HTTP endpoint at <url>/hooks/googlechat
+```
+
+Four things worth knowing before you start:
+
+- **The private key is environment-only.** A PEM block is ~1700 characters and the settings screen
+  caps a credential at 1024, so a form field would accept your paste and store nothing. The setup
+  form says so instead of offering a box, and the write path refuses a value for it rather than
+  silently dropping one. A literal `\n` in the variable is read as a newline.
+- **`GOOGLE_CHAT_AUDIENCE` is not derivable.** It is whatever the Chat app's *Authentication
+  audience* is set to — the Cloud project number, or the endpoint URL. Which one it is decides what
+  *kind* of token Google signs its requests with; both are accepted here, and this value is what
+  pins either of them to this deployment. Get it wrong and every delivery is a 401 that says only
+  that the audience did not match.
+- **By default a Chat app hears only @mentions and direct messages.** Every other message in a
+  space it sits in is not delivered to it at all — hearing those needs Workspace Events and a
+  Pub/Sub subscription, which is a different transport. *"The bot is in the room and it is quiet"*
+  is a configuration fact, not a fault.
+- **The address is a space, not a person.** `spaces.messages.create` names a space; the Chat API
+  will not send to a user. So `gchat:` addresses are `spaces/…` ids, and a reply lands in the space
+  the question was asked in — threaded, where the inbound message had an id to thread under.
+
+Inbound tokens are verified against both of Google's key sets (its public certs, and the Chat service
+account's own X.509 metadata), and the identity check requires `chat@system.gserviceaccount.com` —
+not merely "signed by Google", which any project's tokens are.
+
 ### The webhook receiver
 
 `ethos/comms/webhook.py` binds loopback only and checks the signature of every body over the raw
@@ -898,7 +1020,9 @@ a closed door rather than a published endpoint.
 On a real host the tunnel becomes a reverse proxy: keep the receiver on loopback, put Caddy or nginx
 in front of it to terminate TLS, and forward to `channels.webhook.port`. Under systemd,
 `ethos-comms.service` reads credentials from `~/.config/ethos/channel-keys.env`, which is where
-`TELEGRAM_BOT_TOKEN`, the four `WHATSAPP_*` variables and the two `SLACK_*` variables belong.
+`TELEGRAM_BOT_TOKEN`, the four `WHATSAPP_*` variables, the two `SLACK_*` variables and the
+`GOOGLE_CHAT_*` variables belong — the Google private key is the one credential that *must* live
+there, because it will not fit in the settings screen.
 `ethos-gateway.service` reads `~/.config/ethos/api-keys.env` for the same reason.
 
 ## How it runs
@@ -913,7 +1037,7 @@ reverse order under a single 10-second deadline, then killed.
 |---|---|---|
 | `ethos-gateway` | `python -m ethos gateway` | Model routing, normalization, budgets, secrets |
 | `ethos-toolhost` | `python -m ethos toolhost` | Tool execution under the guardian gate |
-| `ethos-comms` | `python -m ethos comms` | Channel adapters (CLI socket, Web WS, Telegram, WhatsApp, Slack, Discord, email) and the signed webhook listener |
+| `ethos-comms` | `python -m ethos comms` | Channel adapters (CLI socket, Web WS, Telegram, WhatsApp, Slack, Discord, email, LINE, Teams, Google Chat) and the signed webhook listener |
 | `ethos-workers-1`, `ethos-workers-2` | `python -m ethos worker` | Delegated Threads — the same framework, each in an isolated git worktree |
 | `ethos-core` | `python -m ethos core` | Self thread, life loop, attention, drives, rhythm, memory, guardian gate |
 | `ethos-web` | `node web/server/index.mjs` | Interface bridge: serves the interface, exposes the agent's state over HTTP/WS |
@@ -975,7 +1099,7 @@ scripts/           # ensure_postgres.sh: brings the database up (Docker, or a lo
 package.json       # the root manifest, so `npm start` is one command from here
 start.sh           # deprecated shim: creates the venv with uv, then runs `ethos up`
 web/server/        # the interface bridge (Node): serves interface/, translates HTTP/WS to the bus
-interface/         # Clio Agent 3 Beta, the interface: packages/core, packages/web, packages/cli
+interface/         # Clio Agent 3, the interface: packages/core, packages/web, packages/cli
 tests/             # unit (pure math/logic), integration (live DB), scenarios (end-to-end)
 deploy/            # systemd units + hypervisor-host oob-guardian
 data/              # gitignored local state of the checkout: the Postgres cluster and its
@@ -986,7 +1110,7 @@ data/              # gitignored local state of the checkout: the Postgres cluste
 `interface/` is a directory of this repository. `npm start` builds it on demand, so it does not have
 to be installed or built by hand before anything works.
 
-### Clio Agent 3 Beta, in three packages
+### Clio Agent 3, in three packages
 
 | Package | What it is |
 |---|---|
@@ -1022,6 +1146,20 @@ Six hard limits are stated in `ethos/prompts/identity.py` and reach every worksp
   guardian gate, not as an aggregate exposure calculation. The OOB watchdog suspends the guest after
   sustained overspend, **but only if `ETHOS_SUSPEND_CMD` is set** — with no command configured it
   logs and continues.
+
+  What a dollar is, is decided in `ethos/pricing.py` + `config/pricing.yaml`: per-route prices
+  resolved live from providers that publish them (OpenRouter's catalogue, cached to
+  `~/.ethos/data/pricing_cache.json`), falling back to the checked-in table of vendor list prices,
+  and finally to a logged pessimistic high-water mark for a model no source prices — there is no
+  invented default rate. Free routes (`:free` model ids, `local-*`, `pricing.yaml`'s
+  `free_base_urls`) bill exactly $0, and a provider that reports what it charged (OpenRouter's
+  `usage.cost`) is recorded verbatim. Token counts are normalized to disjoint buckets per provider
+  in `gateway/normalizer.py`, so cache reads, cache writes, and reasoning tokens are each billed
+  exactly once regardless of whether the provider's reported totals contain them. The dashboard
+  pane and the spend guard read the ledger through one shared definition of spend (same
+  `status='ok'` filter, same UTC day boundary); `tests/unit/test_pricing.py` holds the two copies
+  to that agreement, and migration `0004` repriced historical `model_calls` rows from their stored
+  token counts.
 - **H3 / H6** — dangerous command patterns are pattern-matched in the guardian classifier and
   rejected at the gate (`chmod -R 777 /`, privilege commands, reading credential stores, and so on).
   Credential *misuse* is not a gate rejection: secret substitution is enforced when an HTTP tool
@@ -1218,7 +1356,7 @@ is a state you can see on the settings screen and fix.
 ### The agent's name
 
 The agent introduces itself on the first line of every prompt it sends, in the form
-`I am <name>, an AI agent based on Clio Agent 3 Beta.` The lineage is a fact about this program, so it is
+`I am <name>, an AI agent based on Clio Agent 3.` The lineage is a fact about this program, so it is
 a constant in `ethos/prompts/identity.py` and not a setting. The name is the opposite — it is the
 one part of an identity a person is unambiguously entitled to set.
 

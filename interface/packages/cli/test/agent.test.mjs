@@ -428,7 +428,7 @@ test('a lifecycle slash command reaches the agent verb, and nothing else does', 
 
   for (const [word, expected] of [
     ['/pause', 'pause_all'], ['/hold', 'pause_all'], ['/hold-actions', 'pause_actions'],
-    ['/resume', 'resume'], ['/stop', 'stop'], ['/emergency', 'emergency_stop'],
+    ['/resume', 'resume'], ['/stop', 'stop'],
   ]) {
     seen.length = 0;
     assert.equal(runCommand(word, state, actions), true, word);
@@ -439,6 +439,48 @@ test('a lifecycle slash command reaches the agent verb, and nothing else does', 
   runCommand('/undo a1', state, actions);
   runCommand('/cancel i2', state, actions);
   assert.deepEqual(seen, ['undo:a1', 'cancel:i2']);
+});
+
+test('the emergency stop arms before it fires, the way the web\u2019s button does', () => {
+  const seen = [];
+  const armed = [];
+  const actions = {
+    setInput: () => {}, setCursor: () => {}, setScroll: () => {},
+    setScreen: () => {}, setOverlay: () => {}, submit: () => {},
+    clearConversation: () => {}, interrupt: () => {}, quit: () => {},
+    patchSettings: () => {},
+    say: (text) => said.push(text), t: (key) => key,
+    agentControl: (action) => seen.push(action),
+    setArmed: (value) => armed.push(value),
+  };
+  const said = [];
+  const state = { input: '', cursor: 0, scroll: 0, limit: 0, chatHeight: 10, scrollable: false, pending: false, screen: 'chat', overlay: 'none', settings: createSettings(), armed: false };
+
+  // Arming fires nothing.
+  runCommand('/emergency', state, actions);
+  assert.deepEqual(seen, [], 'arming must not fire');
+  assert.deepEqual(armed, [true], 'arming is remembered');
+
+  // Confirming fires — and disarms, so a second confirm is not a second shot.
+  runCommand('/emergency confirm', { ...state, armed: true }, actions);
+  assert.deepEqual(seen, ['emergency_stop'], 'confirming fires');
+  assert.ok(armed.includes(false), 'confirming disarms');
+
+  // Cancelling stands down without firing.
+  seen.length = 0;
+  runCommand('/emergency cancel', { ...state, armed: true }, actions);
+  assert.deepEqual(seen, [], 'cancelling never fires');
+  assert.ok(armed.includes(false), 'cancelling disarms');
+
+  // A confirm with nothing armed is refused, not fired.
+  seen.length = 0;
+  runCommand('/emergency confirm', state, actions);
+  assert.deepEqual(seen, [], 'a confirm with nothing armed is refused');
+
+  // A near-miss names the spelling that works instead of doing nothing.
+  said.length = 0;
+  runCommand('/emergency purhaps', state, actions);
+  assert.ok(said.includes('emergencyUsage'), 'a bad word is refused with the usage');
 });
 
 test('a panel command opens that panel rather than sending a message', () => {
@@ -453,7 +495,7 @@ test('a panel command opens that panel rather than sending a message', () => {
   const state = { input: '', cursor: 0, scroll: 0, limit: 0, chatHeight: 10, scrollable: false, pending: false, screen: 'chat', overlay: 'none', settings: createSettings() };
   for (const [word, expected] of [
     ['/presence', 'presence'], ['/intentions', 'intentions'], ['/intents', 'intentions'],
-    ['/actions', 'actions'], ['/budget', 'budget'], ['/guardian', 'guardian'],
+    ['/actions', 'actions'], ['/thoughts', 'thoughts'], ['/budget', 'budget'], ['/guardian', 'guardian'],
   ]) {
     opened.length = 0;
     assert.equal(runCommand(word, state, actions), true, word);

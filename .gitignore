@@ -114,7 +114,7 @@ home/
 # Separate projects that happen to sit beside this checkout
 #
 # `Clio Agent 3 mascots/` is its own repository with its own remote and ~27MB of
-# generated images. It is not part of Clio Agent 3 Beta — nothing here reads it — and it is
+# generated images. It is not part of Clio Agent 3 — nothing here reads it — and it is
 # ignored by name because it carries a `.git` of its own: left alone, `git add
 # -A` would stage it as a gitlink and the checkout would come out with a broken
 # reference to a repository nobody was handed. This line is the shared copy of

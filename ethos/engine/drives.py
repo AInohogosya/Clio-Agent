@@ -18,6 +18,27 @@ logger = get_logger("ethos.drives")
 
 DRIVES = ("commitment", "curiosity", "mastery", "creation", "order", "social", "homeostasis")
 
+# What an undated promise is worth to the drive that exists to keep it.
+#
+# A commission arrives with no deadline most of the time -- the deliberation is
+# told to set `deadline_iso` only when a real date was named -- and undated work
+# reads as `priority * 0.4`, which is 0.2 at the default priority. Pressure is
+# the base plus the gain, so the commitment drive read 0.20 + 0.2 = 0.40 against
+# a propose threshold of "strictly greater than 0.4": the one impulse whose
+# whole subject is work somebody is waiting on was never proposed for exactly
+# the work a commission creates. The focus carried the promise while it held,
+# but the first time the focus was dropped -- an interrupt, a newer commission
+# taking the pass -- the drives could not see the work again, and "the drives
+# picked something else" was not a risk but a certainty.
+#
+# The floor puts a lone undated promise at 0.20 + 0.5 = 0.70, comfortably
+# over the threshold, so the commitment drive proposes it on every idle pass
+# and the softmax can actually weigh it. Work with a deadline keeps its own
+# (higher, calendar-driven) score; work nobody is waiting on keeps 0.2, which
+# stays below the threshold and is the honest reading of an open to-do nobody
+# asked for.
+UNDATED_COMMITMENT_URGENCY = 0.5
+
 
 class DriveInputs(BaseModel):
     intentions: list[dict[str, Any]] = Field(default_factory=list)
@@ -109,6 +130,10 @@ def intent_urgency(item: dict[str, Any], now: datetime) -> float:
     priority = float(item.get("priority", 0.5))
     hours_left = _hours_left(item, now)
     if hours_left is None:
+        # Undated work somebody commissioned is not undated work nobody
+        # asked for; see `UNDATED_COMMITMENT_URGENCY`.
+        if item.get("kind") == "commitment":
+            return max(priority * 0.4, UNDATED_COMMITMENT_URGENCY)
         return priority * 0.4
     if hours_left < 0:
         due = 1.0

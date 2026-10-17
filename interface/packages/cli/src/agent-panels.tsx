@@ -7,6 +7,7 @@ import {
   deadlineLabel,
   flattenIntentions,
   formatClock,
+  formatDay,
   formatUsd,
   humanizeState,
   intentionTone,
@@ -14,6 +15,7 @@ import {
   channelLabel,
   type AgentBaseModel,
   type AgentConversation,
+  type AgentControl,
   type AgentDoor,
   type AgentIdentity,
   type AgentIntention,
@@ -25,7 +27,7 @@ import {
 import { doorStateNote } from './channels.js';
 import { Divider, label, Meta, Panel, toneMark } from './tui-kit.js';
 import { toneHex, truncateWidth, type Palette, type Tone } from './palette.js';
-import { meter } from './render.js';
+import { meter, wrapText } from './render.js';
 
 export type T = ReturnType<typeof createTranslator>;
 
@@ -35,7 +37,52 @@ export type T = ReturnType<typeof createTranslator>;
  * Every row is one fact the agent reported, and the wording and colours come from
  * the kernel, so a reader who moves between this and the browser is not learning
  * a second vocabulary for the same agent.
+ *
+ * The panels are the whole data set, not a summary of it: the browser's panes
+ * scroll, so a terminal that stopped at the first twenty intentions was showing
+ * less than the surface it is supposed to match. Each panel builds one flat list
+ * of rows and windows it with `scroll`/`height`, the way the transcript does —
+ * and where a row names something the reader can act on, it names the id that
+ * acts on it, because `/undo` and `/cancel` are typed here rather than clicked.
  */
+
+/** How many rows of a panel body fit on screen, bounded below so a panel never vanishes. */
+export function panelHeightFor(height: number | undefined): number {
+  return Math.max(4, (height ?? 24) - 4);
+}
+
+/** The short form of an id: long enough to be unique, short enough to type. */
+export function shortId(id: string): string {
+  return id.length <= 8 ? id : id.slice(0, 8);
+}
+
+/** One window over a panel's rows, with the honest footer when some are hidden. */
+function SlicedRows({
+  rows, scroll, height, palette, t,
+}: {
+  rows: React.ReactElement[];
+  scroll: number;
+  height: number | undefined;
+  palette: Palette;
+  t: T;
+}): React.ReactElement {
+  if (height === undefined || rows.length <= height) {
+    return <Box flexDirection="column">{rows}</Box>;
+  }
+  const furthest = Math.max(0, rows.length - height);
+  const at = Math.max(0, Math.min(scroll, furthest));
+  const shown = rows.slice(at, at + height);
+  return (
+    <Box flexDirection="column">
+      {shown}
+      <Box marginTop={1}>
+        <Text color={palette.inkFaint}>
+          {`▲▼ ${t('panelShowing', { from: at + 1, to: at + shown.length, total: rows.length })}`}
+        </Text>
+      </Box>
+    </Box>
+  );
+}
 
 /** The link's own health, which is not the agent's state. */
 export function linkLabel(link: AgentLinkStatus, streaming: boolean, t: T): string {
@@ -120,27 +167,68 @@ export function CycleStrip({ view, palette, t, width }: { view: AgentView; palet
   );
 }
 
-export function ThoughtsPanel({
-  view, language, palette, t, width,
-}: { view: AgentView; language: Language; palette: Palette; t: T; width: number }) {
-  const rows = view.thoughts.slice(0, 8).map((thought) => (
-    <Box flexDirection="column" key={thought.id}>
-      <Text color={palette.inkMuted} wrap="truncate">
-        {`${thought.ts ? formatClock(thought.ts, language) : '--:--'}  ${thought.summary}`}
-      </Text>
-    </Box>
-  ));
+/** A one-line cycle strip for the header, where a panel would take a title with it. */
+export function CycleStripLine({ view, palette }: { view: AgentView; palette: Palette }): React.ReactElement | null {
+  const cycles = view.presence.recentCycles.slice(0, 24).reverse();
+  if (!cycles.length) return null;
   return (
-    <Panel palette={palette} title={t('panelThoughts')} width={width}>
-      <Box flexDirection="column">
-        {rows.length ? rows : <Text color={palette.inkFaint}>{t('thoughtsEmpty')}</Text>}
+    <Text>
+      <Text color={palette.inkFaint}>{'◌ '}</Text>
+      {cycles.map((cycle, index) => (
+        <Text color={toneHex(palette, stateTone(cycle.state))} key={`${cycle.ts ?? 'x'}-${index}`}>
+          {toneMark(stateTone(cycle.state))}
+        </Text>
+      ))}
+    </Text>
+  );
+}
+
+export function ThoughtsPanel({
+  view, language, palette, t, width, scroll, height,
+}: {
+  view: AgentView;
+  language: Language;
+  palette: Palette;
+  t: T;
+  width: number;
+  scroll?: number;
+  height?: number;
+}) {
+  const body = Math.max(8, width - 12);
+  const rows = view.thoughts.map((thought) => {
+    const wrapped = wrapText(thought.summary, body);
+    return (
+      <Box flexDirection="column" key={thought.id} marginBottom={0}>
+        {wrapped.map((line, index) => (
+          <Text color={index === 0 ? palette.inkMuted : palette.inkFaint} key={index} wrap="truncate">
+            {index === 0
+              ? `${thought.ts ? formatClock(thought.ts, language) : '--:--'}  ${line}`
+              : `        ${line}`}
+          </Text>
+        ))}
       </Box>
+    );
+  });
+  return (
+    <Panel palette={palette} badge={String(view.thoughts.length)} title={t('panelThoughts')} width={width}>
+      <SlicedRows height={height} palette={palette} rows={rows} scroll={scroll ?? 0} t={t} />
+      {view.thoughts.length === 0 ? <Text color={palette.inkFaint}>{t('thoughtsEmpty')}</Text> : null}
     </Panel>
   );
 }
 
-function IntentionRows({
-  nodes, palette, t, language, width, now, depth, limit,
+const CLOSED_STATUSES = new Set(['done', 'completed', 'cancelled', 'abandoned']);
+
+function intentionMeta(node: AgentIntention, t: T): string {
+  const parts: string[] = [];
+  if (node.kind) parts.push(node.kind);
+  if (node.priority > 0) parts.push(`p${node.priority.toFixed(2)}`);
+  if (node.commissioned_by) parts.push(`${t('intentionBy')} ${node.commissioned_by}`);
+  return parts.join(' · ');
+}
+
+function intentionRows({
+  nodes, palette, t, language, width, now, depth,
 }: {
   nodes: readonly AgentIntention[];
   palette: Palette;
@@ -149,53 +237,90 @@ function IntentionRows({
   width: number;
   now: number;
   depth: number;
-  limit: number;
-}): React.ReactElement | null {
-  if (!nodes.length || limit <= 0) return null;
-  return (
-    <Box flexDirection="column">
-      {nodes.slice(0, limit).map((node) => {
-        const tone = intentionTone(node.status);
-        const deadline = deadlineLabel(node.deadline, now, t);
-        const budget = node.budget_usd === null
-          ? null
-          : ` ${formatUsd(node.spent_usd ?? 0, language, 2)}/${formatUsd(node.budget_usd, language, 2)}`;
-        return (
-          <Box flexDirection="column" key={node.id} marginLeft={depth}>
-            <Box>
-              <Text color={toneHex(palette, tone)}>{'● '}</Text>
-              <Text color={palette.ink} wrap="truncate">{node.title || node.id}</Text>
-              {budget ? <Text color={palette.inkFaint}>{budget}</Text> : null}
-            </Box>
-            {deadline ? (
-              <Box>
-                <Text color={deadline.overdue ? toneHex(palette, 'danger') : palette.inkFaint}>{`  ${deadline.text}`}</Text>
-              </Box>
-            ) : null}
-            <IntentionRows
-              depth={depth + 1}
-              language={language}
-              limit={limit - 1}
-              nodes={node.children}
-              now={now}
-              palette={palette}
-              t={t}
-              width={width}
-            />
-          </Box>
-        );
-      })}
-    </Box>
-  );
+}): React.ReactElement[] {
+  const rows: React.ReactElement[] = [];
+  const indent = '  '.repeat(depth);
+  for (const node of nodes) {
+    const tone = intentionTone(node.status);
+    const title = node.title || node.id;
+    const budget = node.budget_usd === null
+      ? ''
+      : `  ${formatUsd(node.spent_usd ?? 0, language, 2)}/${formatUsd(node.budget_usd, language, 2)}`;
+    rows.push(
+      <Box key={node.id}>
+        <Text>{' '.repeat(depth * 2)}</Text>
+        <Text color={toneHex(palette, tone)}>{'● '}</Text>
+        <Text color={palette.ink} wrap="truncate">{truncateWidth(title, Math.max(8, width - 8 - depth * 2))}</Text>
+        {budget ? <Text color={palette.inkFaint}>{budget}</Text> : null}
+      </Box>,
+    );
+    // The id leads the meta line: it is what `/cancel` takes, and a line that
+    // truncates from the right must cut the least actionable fact first.
+    const meta = [`·${shortId(node.id)}`, intentionMeta(node, t)].filter(Boolean).join(' · ');
+    if (meta) {
+      rows.push(
+        <Text color={palette.inkFaint} key={`${node.id}-m`} wrap="truncate">
+          {`${indent}  ${truncateWidth(meta, Math.max(8, width - 6 - depth * 2))}`}
+        </Text>,
+      );
+    }
+    const deadline = deadlineLabel(node.deadline, now, t);
+    if (deadline) {
+      rows.push(
+        <Text
+          color={deadline.overdue ? toneHex(palette, 'danger') : palette.inkFaint}
+          key={`${node.id}-d`}
+          wrap="truncate"
+        >
+          {`${indent}  ${deadline.text}`}
+        </Text>,
+      );
+    }
+    if (node.desired_end_state) {
+      rows.push(
+        <Text color={palette.inkMuted} key={`${node.id}-e`} wrap="truncate">
+          {`${indent}  ⇒ ${t('intentionDesired')}: ${truncateWidth(node.desired_end_state, Math.max(8, width - 10 - depth * 2))}`}
+        </Text>,
+      );
+    }
+    rows.push(...intentionRows({
+      depth: depth + 1,
+      language,
+      nodes: node.children,
+      now,
+      palette,
+      t,
+      width,
+    }));
+  }
+  return rows;
 }
 
 export function IntentionsPanel({
-  view, language, palette, t, width, now,
-}: { view: AgentView; language: Language; palette: Palette; t: T; width: number; now: number }) {
+  view, language, palette, t, width, now, scroll, height,
+}: {
+  view: AgentView;
+  language: Language;
+  palette: Palette;
+  t: T;
+  width: number;
+  now: number;
+  scroll?: number;
+  height?: number;
+}) {
+  const rows = intentionRows({ depth: 0, language, nodes: view.intentions, now, palette, t, width });
+  const closable = flattenIntentions(view.intentions).filter((node) => !CLOSED_STATUSES.has(node.status)).length;
   return (
     <Panel palette={palette} badge={String(flattenIntentions(view.intentions).length)} title={t('panelIntentions')} width={width}>
-      {view.intentions.length ? (
-        <IntentionRows depth={0} language={language} limit={20} nodes={view.intentions} now={now} palette={palette} t={t} width={width} />
+      {rows.length ? (
+        <Box flexDirection="column">
+          <SlicedRows height={height} palette={palette} rows={rows} scroll={scroll ?? 0} t={t} />
+          {closable > 0 ? (
+            <Box marginTop={1}>
+              <Text color={palette.inkFaint}>{t('cliCancelHint')}</Text>
+            </Box>
+          ) : null}
+        </Box>
       ) : (
         <Text color={palette.inkFaint}>{t('intentionsEmpty')}</Text>
       )}
@@ -203,129 +328,293 @@ export function IntentionsPanel({
   );
 }
 
+function actionRows({
+  actions, palette, t, language, width,
+}: {
+  actions: AgentView['actions'];
+  palette: Palette;
+  t: T;
+  language: Language;
+  width: number;
+}): React.ReactElement[] {
+  const rows: React.ReactElement[] = [];
+  const body = Math.max(8, width - 8);
+  for (const action of actions) {
+    const tone = actionTone(action.status);
+    rows.push(
+      <Box key={action.id}>
+        <Text color={palette.inkFaint}>{`${action.ts_start ? formatClock(action.ts_start, language) : '--:--'}  `}</Text>
+        <Text color={toneHex(palette, tone)}>{'● '}</Text>
+        <Text color={palette.ink} wrap="truncate">{truncateWidth(action.tool, Math.max(8, width - 26))}</Text>
+        <Text color={toneHex(palette, tone)}>{`  ${humanizeState(action.status)}`}</Text>
+        {action.undo_ref ? <Text color={palette.accent}>{'  ↺'}</Text> : null}
+      </Box>,
+    );
+    const facts = [
+      `·${shortId(action.id)}`,
+      action.thread_id ? action.thread_id.slice(0, 12) : '',
+    ].filter(Boolean).join(' · ');
+    rows.push(
+      <Text color={palette.inkFaint} key={`${action.id}-i`} wrap="truncate">{`  ${facts}`}</Text>,
+    );
+    if (action.reason) {
+      const why = wrapText(action.reason, body).slice(0, 2);
+      why.forEach((line, index) => {
+        rows.push(
+          <Text color={palette.inkMuted} key={`${action.id}-r${index}`} wrap="truncate">
+            {index === 0 ? `  ${t('actionWhy')}: ${line}` : `    ${line}`}
+          </Text>,
+        );
+      });
+    }
+    if (action.args_redacted && Object.keys(action.args_redacted).length > 0) {
+      const json = wrapText(JSON.stringify(action.args_redacted), body).slice(0, 3);
+      const hidden = wrapText(JSON.stringify(action.args_redacted), body).length - json.length;
+      json.forEach((line, index) => {
+        rows.push(
+          <Text color={palette.inkFaint} key={`${action.id}-a${index}`} wrap="truncate">
+            {index === 0 ? `  ${t('actionArgs')}: ${line}` : `    ${line}`}
+          </Text>,
+        );
+      });
+      if (hidden > 0) {
+        rows.push(
+          <Text color={palette.inkFaint} key={`${action.id}-am`}>{`    ⋯ ${t('cliMoreLines', { count: hidden })}`}</Text>,
+        );
+      }
+    }
+  }
+  return rows;
+}
+
 export function ActionsPanel({
-  view, language, palette, t, width,
-}: { view: AgentView; language: Language; palette: Palette; t: T; width: number }) {
-  const rows = view.actions.slice(0, 14).map((action) => (
-    <Box key={action.id}>
-      <Text color={palette.inkFaint}>{`${action.ts_start ? formatClock(action.ts_start, language) : '--:--'}  `}</Text>
-      <Text color={toneHex(palette, actionTone(action.status))}>{'● '}</Text>
-      <Text color={palette.ink} wrap="truncate">{action.tool}</Text>
-      <Text color={palette.inkFaint}>{`  ${action.status}`}</Text>
-      {action.undo_ref ? <Text color={palette.accent}>{'  /undo'}</Text> : null}
-    </Box>
-  ));
+  view, language, palette, t, width, scroll, height,
+}: {
+  view: AgentView;
+  language: Language;
+  palette: Palette;
+  t: T;
+  width: number;
+  scroll?: number;
+  height?: number;
+}) {
+  const rows = actionRows({ actions: view.actions, language, palette, t, width });
+  const undoable = view.actions.filter((action) => action.undo_ref).length;
   return (
     <Panel palette={palette} badge={String(view.actions.length)} title={t('panelActions')} width={width}>
       <Box flexDirection="column">
-        {rows.length ? rows : <Text color={palette.inkFaint}>{t('actionsEmpty')}</Text>}
+        {rows.length ? (
+          <SlicedRows height={height} palette={palette} rows={rows} scroll={scroll ?? 0} t={t} />
+        ) : (
+          <Text color={palette.inkFaint}>{t('actionsEmpty')}</Text>
+        )}
+        {undoable > 0 ? (
+          <Box marginTop={1}>
+            <Text color={palette.inkFaint}>{t('cliUndoHint')}</Text>
+          </Box>
+        ) : null}
       </Box>
     </Panel>
   );
 }
 
+/** Seven days of spend, one bar a day — the terminal's twin of the web's DailyBars. */
+function DailyBars({
+  daily, language, palette, t, width,
+}: {
+  daily: AgentView['budget']['daily'];
+  language: Language;
+  palette: Palette;
+  t: T;
+  width: number;
+}) {
+  const peak = Math.max(...daily.map((row) => row.total), 0.0001);
+  return (
+    <Box flexDirection="column">
+      {daily.map((row) => (
+        <Box key={row.day}>
+          <Text color={palette.inkFaint}>{`${formatDay(row.day, language)} `}</Text>
+          <Text>{meter(row.total, peak, Math.max(6, Math.min(20, width - 20)), palette, 'accent')}</Text>
+          <Text color={palette.inkMuted}>{` ${formatUsd(row.total, language, 2)}`}</Text>
+        </Box>
+      ))}
+      <Text color={palette.inkFaint}>{label(t('budgetByDay'))}</Text>
+    </Box>
+  );
+}
+
 export function BudgetPanel({
-  view, language, palette, t, width,
-}: { view: AgentView; language: Language; palette: Palette; t: T; width: number }) {
+  view, language, palette, t, width, scroll, height,
+}: {
+  view: AgentView;
+  language: Language;
+  palette: Palette;
+  t: T;
+  width: number;
+  scroll?: number;
+  height?: number;
+}) {
   const caps = view.budget.caps;
   const rows = view.budget.todayByBucket;
   const total = rows.reduce((sum, row) => sum + row.total, 0);
-  const cells = Math.max(8, width - 8);
+  const cells = Math.max(8, width - 14);
+  const body: React.ReactElement[] = [];
+  body.push(
+    <Meta key="today" label={t('budgetToday')} palette={palette}>{formatUsd(total, language)}</Meta>,
+  );
+  if (caps.daily_usd > 0) {
+    body.push(
+      <Text key="cap-meter">{meter(total, caps.daily_usd, cells, palette, total > caps.daily_usd ? 'danger' : 'accent')}</Text>,
+      <Text key="cap-note" color={palette.inkFaint}>
+        {t('budgetOf', { spent: formatUsd(total, language), cap: formatUsd(caps.daily_usd, language) })}
+      </Text>,
+    );
+  } else {
+    body.push(<Text key="cap-note" color={palette.inkFaint}>{t('budgetNoCap')}</Text>);
+  }
+  if (rows.length) {
+    body.push(<Divider key="d1" palette={palette} width={width - 4} />);
+    for (const row of rows) {
+      const cap = row.bucket === 'commitment' ? caps.commitment_usd : caps.discretionary_usd;
+      body.push(
+        <Box flexDirection="column" key={row.bucket} marginTop={0}>
+          <Meta label={row.bucket === 'commitment' ? t('budgetCommitment') : t('budgetDiscretionary')} palette={palette}>
+            {formatUsd(row.total, language)}
+          </Meta>
+          {cap > 0 ? (
+            <Text>{meter(row.total, cap, cells, palette, row.bucket === 'commitment' ? 'accent' : 'warning')}</Text>
+          ) : null}
+        </Box>,
+      );
+    }
+  }
+  if (view.budget.byModel.length) {
+    body.push(<Divider key="d2" palette={palette} width={width - 4} />);
+    body.push(<Text key="bm-h" bold color={palette.inkFaint}>{label(t('budgetByModel'))}</Text>);
+    for (const row of view.budget.byModel) {
+      body.push(
+        <Meta key={row.model} label={truncateWidth(row.model, Math.max(8, width - 16))} palette={palette}>
+          {formatUsd(row.total, language)}
+        </Meta>,
+      );
+    }
+  }
+  if (view.budget.daily.length > 1) {
+    body.push(<Divider key="d3" palette={palette} width={width - 4} />);
+    body.push(
+      <DailyBars daily={view.budget.daily} key="daily" language={language} palette={palette} t={t} width={width} />,
+    );
+  }
   return (
     <Panel palette={palette} borderColor={palette.accent} title={t('panelBudget')} width={width}>
-      <Box flexDirection="column">
-        <Meta label={t('budgetToday')} palette={palette}>{formatUsd(total, language)}</Meta>
-        {caps.daily_usd > 0 ? (
-          <Box flexDirection="column" marginTop={1}>
-            <Text>{meter(total, caps.daily_usd, cells, palette, total > caps.daily_usd ? 'danger' : 'accent')}</Text>
-            <Text color={palette.inkFaint}>
-              {t('budgetOf', { spent: formatUsd(total, language), cap: formatUsd(caps.daily_usd, language) })}
-            </Text>
-          </Box>
-        ) : (
-          <Text color={palette.inkFaint}>{t('budgetNoCap')}</Text>
-        )}
-        {rows.length ? <Divider palette={palette} width={width - 4} /> : null}
-        {rows.map((row) => {
-          const cap = row.bucket === 'commitment' ? caps.commitment_usd : caps.discretionary_usd;
-          return (
-            <Box flexDirection="column" key={row.bucket} marginTop={1}>
-              <Meta label={row.bucket === 'commitment' ? t('budgetCommitment') : t('budgetDiscretionary')} palette={palette}>
-                {formatUsd(row.total, language)}
-              </Meta>
-              {cap > 0 ? <Text>{meter(row.total, cap, cells, palette, row.bucket === 'commitment' ? 'accent' : 'warning')}</Text> : null}
-            </Box>
-          );
-        })}
-        {view.budget.byModel.length ? (
-          <Box flexDirection="column" marginTop={1}>
-            <Divider palette={palette} width={width - 4} />
-            <Text bold color={palette.inkFaint}>{label(t('budgetByModel'))}</Text>
-            {view.budget.byModel.slice(0, 4).map((row) => (
-              <Meta key={row.model} label={truncateWidth(row.model, 18)} palette={palette}>{formatUsd(row.total, language)}</Meta>
-            ))}
-          </Box>
-        ) : null}
-      </Box>
+      <SlicedRows height={height} palette={palette} rows={body} scroll={scroll ?? 0} t={t} />
     </Panel>
   );
 }
 
 export function GuardianPanel({
-  view, language, palette, t, width, now,
-}: { view: AgentView; language: Language; palette: Palette; t: T; width: number; now: number }) {
+  view, language, palette, t, width, now, scroll, height,
+}: {
+  view: AgentView;
+  language: Language;
+  palette: Palette;
+  t: T;
+  width: number;
+  now: number;
+  scroll?: number;
+  height?: number;
+}) {
   const guardian = view.guardian;
   const integrity = guardian.integrity;
+  const body: React.ReactElement[] = [];
+  body.push(
+    <Meta key="integrity" label={t('guardianIntegrity')} palette={palette}>
+      {!integrity ? t('guardianIntegrityStale') : (
+        <Text color={toneHex(palette, integrity.ok ? 'success' : 'danger')}>
+          {integrity.ok ? t('guardianIntegrityOk') : t('guardianIntegrityFail')}
+        </Text>
+      )}
+    </Meta>,
+  );
+  if (integrity?.ran_at) {
+    body.push(
+      <Meta key="integrity-at" label={t('presenceUpdated')} palette={palette}>{formatClock(integrity.ran_at, language)}</Meta>,
+    );
+  }
+  if (integrity && integrity.artifact_mismatches.length > 0) {
+    body.push(
+      <Text key="mismatches" color={toneHex(palette, 'danger')}>
+        {t('guardianMismatches', { count: integrity.artifact_mismatches.length })}
+      </Text>,
+    );
+  }
+  if (guardian.auditHead) {
+    body.push(
+      <Meta key="audit" label={t('guardianAudit')} palette={palette}>
+        {`#${guardian.auditHead.seq ?? '—'} ${(guardian.auditHead.hash ?? '').slice(0, 12)}`}
+      </Meta>,
+    );
+  }
+  body.push(
+    <Meta key="protected" label={t('budgetProtected')} palette={palette}>{String(guardian.protectedCount)}</Meta>,
+  );
+
+  body.push(
+    <Text key="snap-h" bold color={palette.inkFaint}>{label(t('guardianSnapshots'))}</Text>,
+  );
+  if (guardian.snapshots.length) {
+    for (const snapshot of guardian.snapshots) {
+      body.push(
+        <Meta
+          key={snapshot.name}
+          label={truncateWidth(snapshot.name, Math.max(8, width - 18))}
+          palette={palette}
+        >
+          {snapshot.created_at ? formatClock(snapshot.created_at, language) : t('presenceNever')}
+        </Meta>,
+      );
+      if (snapshot.reason) {
+        body.push(
+          <Text color={palette.inkFaint} key={`${snapshot.name}-r`} wrap="truncate">
+            {`  ${truncateWidth(snapshot.reason, Math.max(8, width - 6))}`}
+          </Text>,
+        );
+      }
+    }
+  } else {
+    body.push(<Text key="snap-e" color={palette.inkFaint}>{t('guardianSnapshotsEmpty')}</Text>);
+  }
+
+  body.push(
+    <Text key="trash-h" bold color={palette.inkFaint}>{label(t('guardianTrash'))}</Text>,
+  );
+  if (guardian.trash.length) {
+    for (const entry of guardian.trash) {
+      const retained = entry.retention_until ? Date.parse(entry.retention_until) : Number.NaN;
+      const expired = Number.isFinite(retained) && retained <= now;
+      const shown = entry.retention_until
+        ? formatClock(entry.retention_until, language)
+        : t('presenceNever');
+      body.push(
+        <Meta key={`${entry.id}-o`} label={truncateWidth(entry.origin, Math.max(8, width - 20))} palette={palette}>
+          <Text color={toneHex(palette, expired ? 'muted' : 'warning')}>{shown}</Text>
+        </Meta>,
+      );
+      if (entry.reason) {
+        body.push(
+          <Text color={palette.inkFaint} key={`${entry.id}-r`} wrap="truncate">
+            {`  ${truncateWidth(entry.reason, Math.max(8, width - 6))}`}
+          </Text>,
+        );
+      }
+    }
+  } else {
+    body.push(<Text key="trash-e" color={palette.inkFaint}>{t('guardianTrashEmpty')}</Text>);
+  }
+
   return (
     <Panel palette={palette} title={t('panelGuardian')} width={width}>
-      <Box flexDirection="column">
-        <Meta label={t('guardianIntegrity')} palette={palette}>
-          {!integrity ? t('guardianIntegrityStale') : (
-            <Text color={toneHex(palette, integrity.ok ? 'success' : 'danger')}>
-              {integrity.ok ? t('guardianIntegrityOk') : t('guardianIntegrityFail')}
-            </Text>
-          )}
-        </Meta>
-        {integrity?.ran_at ? (
-          <Meta label={t('presenceUpdated')} palette={palette}>{formatClock(integrity.ran_at, language)}</Meta>
-        ) : null}
-        {integrity && integrity.artifact_mismatches.length > 0 ? (
-          <Text color={toneHex(palette, 'danger')}>
-            {t('guardianMismatches', { count: integrity.artifact_mismatches.length })}
-          </Text>
-        ) : null}
-        {guardian.auditHead ? (
-          <Meta label={t('guardianAudit')} palette={palette}>
-            {`#${guardian.auditHead.seq ?? '—'} ${(guardian.auditHead.hash ?? '').slice(0, 10)}`}
-          </Meta>
-        ) : null}
-        <Meta label={t('budgetProtected')} palette={palette}>{String(guardian.protectedCount)}</Meta>
-
-        <Box flexDirection="column" marginTop={1}>
-          <Text bold color={palette.inkFaint}>{label(t('guardianSnapshots'))}</Text>
-          {guardian.snapshots.length ? guardian.snapshots.slice(0, 5).map((snapshot) => (
-            <Meta key={snapshot.name} label={truncateWidth(snapshot.name, 18)} palette={palette}>
-              {snapshot.created_at ? formatClock(snapshot.created_at, language) : t('presenceNever')}
-            </Meta>
-          )) : <Text color={palette.inkFaint}>{t('guardianSnapshotsEmpty')}</Text>}
-        </Box>
-
-        <Box flexDirection="column" marginTop={1}>
-          <Text bold color={palette.inkFaint}>{label(t('guardianTrash'))}</Text>
-          {guardian.trash.length ? guardian.trash.slice(0, 6).map((entry, index) => {
-            const retained = entry.retention_until ? Date.parse(entry.retention_until) : Number.NaN;
-            const expired = Number.isFinite(retained) && retained <= now;
-            const shown = entry.retention_until
-              ? formatClock(entry.retention_until, language)
-              : t('presenceNever');
-            return (
-              <Meta key={`${entry.id}-${index}`} label={truncateWidth(entry.origin, 16)} palette={palette}>
-                <Text color={toneHex(palette, expired ? 'muted' : 'warning')}>{shown}</Text>
-              </Meta>
-            );
-          }) : <Text color={palette.inkFaint}>{t('guardianTrashEmpty')}</Text>}
-        </Box>
-      </Box>
+      <SlicedRows height={height} palette={palette} rows={body} scroll={scroll ?? 0} t={t} />
     </Panel>
   );
 }
@@ -339,7 +628,7 @@ export function GuardianPanel({
  * cannot leave a field half-edited.
  */
 export function AgentSettingsPanel({
-  settings, revision, palette, t, width, model, identity, catalogue,
+  settings, revision, palette, t, width, model, identity, catalogue, control,
 }: {
   settings: Settings;
   revision: number;
@@ -352,7 +641,10 @@ export function AgentSettingsPanel({
   identity?: AgentIdentity | null;
   /** How many models it falls back to when there is no base model. */
   catalogue?: number;
+  /** The lifecycle flags, so the panel can report them beside the commands that change them. */
+  control?: AgentControl;
 }) {
+  const summary = control ? controlSummary(control, t) : null;
   return (
     <Panel borderColor={palette.accent} palette={palette} title={t('cliSettings')} width={width}>
       <Box flexDirection="column">
@@ -360,6 +652,14 @@ export function AgentSettingsPanel({
         <IdentityRow identity={identity} palette={palette} t={t} />
         <Meta label={t('agentEndpoint')} palette={palette}>{settings.agentUrl}</Meta>
         <Meta label={t('agentPerson')} palette={palette}>{settings.agentPerson}</Meta>
+        {summary ? (
+          <Meta label={t('controlLabel')} palette={palette} tone={summary.tone}>{summary.text}</Meta>
+        ) : null}
+        {control ? (
+          <Meta label={t('previewLabel')} palette={palette} tone={control.preview ? 'warning' : 'muted'}>
+            {control.preview ? t('previewOn') : t('previewOff')}
+          </Meta>
+        ) : null}
         <BaseModelRows catalogue={catalogue} model={model} palette={palette} t={t} />
         <Meta label={t('syncRevision')} palette={palette}>{String(revision)}</Meta>
         <Meta label={t('theme')} palette={palette}>{settings.theme}</Meta>
@@ -372,6 +672,7 @@ export function AgentSettingsPanel({
             `/link ${t('agentEndpoint')}`,
             `/person ${t('agentPerson')}`,
             '/model [provider model]',
+            '/preview on | off',
             '/theme',
             '/lang',
             '/accent',
@@ -479,12 +780,15 @@ function BaseModelRows({
  * travels, a person is who it is with, and the id beside each name is the one
  * that opens it here, the way a click opens it there.
  *
+ * Every row is numbered, because `/channel <n>` is the spelling that does not
+ * ask anybody to type a uuid: the same list the web clicks, indexed.
+ *
  * A closed door is listed rather than hidden. Those are in the transcript — a
  * conversation happened there — and the agent can no longer be spoken to on them,
  * which from a filter looks exactly like nothing having been said.
  */
 export function ChannelsPanel({
-  current, currentConversation, conversations, doors, closed, personId, palette, t, width,
+  current, currentConversation, conversations, doors, closed, personId, palette, t, width, scroll, height,
 }: {
   current: string;
   currentConversation: string;
@@ -495,76 +799,90 @@ export function ChannelsPanel({
   palette: Palette;
   t: T;
   width: number;
+  scroll?: number;
+  height?: number;
 }) {
+  const rows: React.ReactElement[] = [];
+  rows.push(
+    <Text bold color={palette.inkFaint} key="people-h">{t('peopleFilter').toUpperCase()}</Text>,
+  );
+  conversations.forEach((conversation, index) => {
+    const active = conversation.id === currentConversation;
+    rows.push(
+      <Box key={conversation.id} gap={1}>
+        <Text color={palette.inkFaint}>{`${String(index + 1).padStart(2, ' ')}.`}</Text>
+        <Text color={toneHex(palette, active ? 'accent' : 'muted')}>{active ? '●' : '○'}</Text>
+        <Text
+          bold={active}
+          color={active ? toneHex(palette, 'accent') : toneHex(palette, 'muted')}
+          wrap="truncate"
+        >
+          {truncateWidth(conversation.label, Math.max(8, width - 34))}
+        </Text>
+        <Text color={palette.inkFaint} wrap="truncate">
+          {truncateWidth(`${channelLabel(conversation.channel)} · ${conversation.id}`, 28)}
+        </Text>
+      </Box>,
+    );
+  });
+  rows.push(<Text color={palette.inkFaint} key="people-f">{t('cliPeopleSwitch')}</Text>);
+
+  rows.push(
+    <Box key="doors-gap" marginTop={1} />,
+    <Text bold color={palette.inkFaint} key="doors-h">{t('cliDoorsTitle').toUpperCase()}</Text>,
+  );
+  if (doors.length === 0) {
+    rows.push(<Text color={palette.inkFaint} key="doors-e">{t('cliChannelsEmpty')}</Text>);
+  }
+  doors.forEach((door, index) => {
+    const inUse = door.id === current;
+    rows.push(
+      <Box flexDirection="column" key={door.id} marginBottom={1}>
+        <Box gap={1}>
+          <Text color={palette.inkFaint}>{`${String(conversations.length + index + 1).padStart(2, ' ')}.`}</Text>
+          <Text color={toneHex(palette, inUse ? 'accent' : door.admits ? 'success' : 'warning')}>
+            {inUse ? '●' : door.admits ? '●' : '○'}
+          </Text>
+          <Text
+            bold={inUse}
+            color={inUse ? toneHex(palette, 'accent') : toneHex(palette, 'muted')}
+          >
+            {truncateWidth(channelLabel(door.id), Math.max(8, width - 28))}
+          </Text>
+          {inUse ? <Text color={palette.accent}>{t('cliChannelsCurrent')}</Text> : null}
+          <Text color={palette.inkFaint}>{truncateWidth(door.id, 12)}</Text>
+        </Box>
+        <Text color={palette.inkFaint}>
+          {door.admits
+            ? doorStateNote(door, personId, palette, width - 4, (key) => t(key as never))
+            : t('cliChannelsAdmitsNobody')}
+        </Text>
+      </Box>,
+    );
+  });
+
+  if (closed.length > 0) {
+    rows.push(
+      <Box key="closed" flexDirection="column" marginTop={1}>
+        <Text bold color={palette.inkFaint}>{label(t('channelClosed'))}</Text>
+        <Text color={palette.inkFaint}>{closed.map(channelLabel).join(', ')}</Text>
+      </Box>,
+    );
+  }
+  rows.push(
+    <Box key="hints" marginTop={1} flexDirection="column">
+      <Text color={palette.inkFaint}>{t('cliChannelsSwitch')}</Text>
+      {/* The panel answers "what can I reach", so it has to say how a door that
+          is not there yet gets opened — otherwise a reader who finds no
+          Telegram in this list concludes the agent cannot be reached that way,
+          which is true of this moment and false of the deployment. */}
+      <Text color={palette.inkFaint}>{t('cliChannelsSet')}</Text>
+    </Box>,
+  );
+
   return (
     <Panel palette={palette} title={t('panelChannels')} width={width}>
-      <Box flexDirection="column">
-        <Box flexDirection="column" marginBottom={1}>
-          <Text bold color={palette.inkFaint}>{t('peopleFilter').toUpperCase()}</Text>
-          {conversations.map((conversation) => {
-            const active = conversation.id === currentConversation;
-            return (
-              <Box key={conversation.id} gap={1}>
-                <Text color={toneHex(palette, active ? 'accent' : 'muted')}>{active ? '●' : '○'}</Text>
-                <Text
-                  bold={active}
-                  color={active ? toneHex(palette, 'accent') : toneHex(palette, 'muted')}
-                  wrap="truncate"
-                >
-                  {truncateWidth(conversation.label, Math.max(8, width - 30))}
-                </Text>
-                <Text color={palette.inkFaint} wrap="truncate">
-                  {truncateWidth(`${channelLabel(conversation.channel)} · ${conversation.id}`, 24)}
-                </Text>
-              </Box>
-            );
-          })}
-          <Text color={palette.inkFaint}>{t('cliPeopleSwitch')}</Text>
-        </Box>
-        <Box flexDirection="column" marginBottom={1}>
-          <Text bold color={palette.inkFaint}>{t('cliDoorsTitle').toUpperCase()}</Text>
-          {doors.length === 0 ? <Text color={palette.inkFaint}>{t('cliChannelsEmpty')}</Text> : null}
-          {doors.map((door) => {
-            const inUse = door.id === current;
-            return (
-              <Box flexDirection="column" key={door.id} marginBottom={1}>
-                <Box gap={1}>
-                  <Text color={toneHex(palette, inUse ? 'accent' : door.admits ? 'success' : 'warning')}>
-                    {inUse ? '●' : door.admits ? '●' : '○'}
-                  </Text>
-                  <Text
-                    bold={inUse}
-                    color={inUse ? toneHex(palette, 'accent') : toneHex(palette, 'muted')}
-                  >
-                    {truncateWidth(channelLabel(door.id), Math.max(8, width - 24))}
-                  </Text>
-                  {inUse ? <Text color={palette.accent}>{t('cliChannelsCurrent')}</Text> : null}
-                  <Text color={palette.inkFaint}>{truncateWidth(door.id, 12)}</Text>
-                </Box>
-                <Text color={palette.inkFaint}>
-                  {door.admits
-                    ? doorStateNote(door, personId, palette, width - 4, (key) => t(key as never))
-                    : t('cliChannelsAdmitsNobody')}
-                </Text>
-              </Box>
-            );
-          })}
-        </Box>
-        {closed.length > 0 ? (
-          <Box flexDirection="column" marginTop={1}>
-            <Text bold color={palette.inkFaint}>{label(t('channelClosed'))}</Text>
-            <Text color={palette.inkFaint}>{closed.map(channelLabel).join(', ')}</Text>
-          </Box>
-        ) : null}
-        <Box marginTop={1} flexDirection="column">
-          <Text color={palette.inkFaint}>{t('cliChannelsSwitch')}</Text>
-          {/* The panel answers "what can I reach", so it has to say how a door that
-              is not there yet gets opened — otherwise a reader who finds no
-              Telegram in this list concludes the agent cannot be reached that way,
-              which is true of this moment and false of the deployment. */}
-          <Text color={palette.inkFaint}>{t('cliChannelsSet')}</Text>
-        </Box>
-      </Box>
+      <SlicedRows height={height} palette={palette} rows={rows} scroll={scroll ?? 0} t={t} />
     </Panel>
   );
 }

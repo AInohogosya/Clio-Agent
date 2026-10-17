@@ -57,10 +57,18 @@ class PlanUnavailable(RuntimeError):
     """
 
     def __init__(self, message: str, kind: str = "unusable",
-                 retry_after_s: float | None = None):
+                 retry_after_s: float | None = None, cost_usd: float = 0.0):
         super().__init__(message)
         self.kind = kind
         self.retry_after_s = retry_after_s
+        # What the attempt cost before it failed. Devise runs before plan, so a
+        # plan that comes back unusable has usually already paid for the devise
+        # call that chose the approach -- and that money was being dropped on the
+        # floor, because the caller only learns the cost from a *successful*
+        # return. A goal that failed to plan twenty times reported nothing spent,
+        # so it never reached its budget, and the one ceiling that does not
+        # depend on the loop's own bookkeeping never fired.
+        self.cost_usd = cost_usd
 
 
 def budget_bucket_for(intention: Any) -> str:

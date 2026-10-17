@@ -1,6 +1,6 @@
 # How Clio Agent 3 Works
 
-**Clio Agent 3 Beta** — Python package `ethos`, `3.0.0-beta.3`, released
+**Clio Agent 3** — Python package `ethos`, `3.0.0-beta.3`, released
 2026-10-03 JST (`ethos/__init__.py`, `pyproject.toml:7-8`).
 
 > *An agent that is there when you aren't. Not a function that maps a prompt
@@ -456,16 +456,27 @@ record/billing. T0 reflex never calls the gateway (`service.py:713`).
   `RATE_LIMIT_MAX_WAIT 300`, `LONG_WAIT 10`. `_next_entry()`
   (`service.py:439`): exclude failed, honor `fail_over`; client retries
   transport only, not 502.
-- **Cost (H2)** (`ethos/gateway/cost.py:25`):
-  `(in·pin + cached·pcached + out·pout + reasoning·pout)/1M, round6`;
-  e.g. sonnet `3.00/.30/15.00`, haiku `.8/.08/4`, mini `.15/.075/.6`
-  (`pricing.yaml`; defaults `.35/.07/1.4 $/M`). `SpendGuard`
-  (`cost.py:40`): daily/monthly caps from `permissions.hard_limits
-  (H2 daily 20 / monthly 400)`; `commitment_cap = daily·reserve_pct .50`,
-  `discretionary = rest`; `check(bucket,est)` before call raises
-  `BudgetExceededError → 402`; sums `model_calls status=ok` per day/month/
-  bucket; no-DB = no-op. Out-of-band `deploy/oob/oob_guardian.py`
-  (hypervisor side) watches the same $20/$400 with kill switch.
+- **Cost (H2)** (`ethos/gateway/cost.py` + `ethos/pricing.py`):
+  five disjoint token buckets, five rates:
+  `(in·pin + cached·pcached + writtens·pwrite + (out+reasoning)·pout)/1M, round6`.
+  Prices resolve per route: a live provider price first (OpenRouter's
+  catalogue, cached to disk with a TTL), then the verified table in
+  `pricing.yaml`, then a pessimistic high-water mark that logs
+  `pricing.unknown_model` — there is no invented default any more. Free is
+  free: `:free` ids, `local-*`, and `free_base_urls` (NVIDIA NIM) bill $0.
+  Provider-reported `usage.cost` (OpenRouter) is used verbatim when present.
+  Token conventions are normalized per provider in `normalizer.py`, because
+  OpenAI/Google fold cached and reasoning tokens into their reported totals
+  and Anthropic does not — copying totals through was billing those tokens
+  twice. `SpendGuard` (`cost.py`): daily/monthly caps from
+  `permissions.hard_limits (H2 daily 20 / monthly 400)`;
+  `commitment_cap = daily·reserve_pct .50`, `discretionary = rest`;
+  `check(bucket,est)` before call raises `BudgetExceededError → 402`; sums
+  `model_calls status=ok` per UTC day/month/bucket through one shared query
+  that the dashboard bridge restates (`tests/unit/test_pricing.py` asserts the
+  two agree). Backfill migration `0004` repriced historical rows from their
+  token counts. Out-of-band `deploy/oob/oob_guardian.py` (hypervisor side)
+  watches the same $20/$400 with kill switch.
 - **Embeddings** (`ethos/gateway/embeddings.py:112`): `FastembedEmbedder`
   ONNX local, L2-normed, `BAAI/bge-large-en-v1.5` dim 1024 (1.2 GB;
   `bge-small 384/.067GB` needs `dim:384` + widening migration —

@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "ethos"
 version = "3.0.0-beta.3"
-description = "Clio Agent 3 Beta: a continuously existing, general-purpose autonomous agent"
+description = "Clio Agent 3: a continuously existing, general-purpose autonomous agent"
 requires-python = ">=3.12"
 dependencies = [
     "uvloop>=0.19; sys_platform != 'win32'",
@@ -30,6 +30,11 @@ dependencies = [
     "python-telegram-bot>=21.1",
     "aioimaplib>=1.0",
     "aiosmtplib>=3.0",
+    # JWT verification for the two doors whose inbound proof is a bearer token
+    # rather than a body signature (Microsoft Teams, Google Chat), and signing for
+    # the Google Chat service account. Imported lazily by ethos.comms.jwt, so an
+    # install with both doors off never loads it.
+    "cryptography>=42",
     "pyyaml>=6.0",
     "numpy>=1.26",
     "pyarrow>=16.0",

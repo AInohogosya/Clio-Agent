@@ -13,6 +13,7 @@ from ethos.gsl.acceptance import changed_paths
 from ethos.gsl.loop import GeneralSolverLoop
 from ethos.gsl.verification import VerificationLadder
 from ethos.memory.store import MemoryStore
+from ethos.schemas.models import NormalizedResponse, Usage
 from tests.conftest import (
     FakeRegistry,
     FakeVerifier,
@@ -781,18 +782,58 @@ async def test_a_truncated_plan_is_not_installed(db, config, tmp_path):
 # --------------------------------------------------------------------------
 
 
+class _DevisingUnplannableGateway(ScriptedGateway):
+    """Understands once, devises successfully forever, and never returns a plan.
+
+    The degradation test is about the *plan* request specifically: that the
+    payload changes after `plan_attempts_before_degrade` rather than being
+    re-sent. Getting there needs devise to succeed, because a plan is planned
+    from an approach.
+
+    The plain script's `{}` default empties the devise call too, and that used to
+    be harmless here for a bad reason: the loop fabricated an approach whenever
+    devise returned nothing, so the test reached the plan call on an invented
+    premise and passed. The fabrication is the thing this class now exists to
+    rule out -- it answers every devise with three real candidates, so if the
+    plan call stops happening, the reason has to be something about planning.
+    """
+
+    _DEVISE = _json({
+        "approaches": [
+            {"id": "a1", "summary": "write directly", "expected_value": 0.9,
+             "estimated_cost_usd": 0.02, "reversible": True},
+            {"id": "a2", "summary": "write through a script", "expected_value": 0.7,
+             "estimated_cost_usd": 0.02, "reversible": True},
+            {"id": "a3", "summary": "write by hand", "expected_value": 0.5,
+             "estimated_cost_usd": 0.10, "reversible": False},
+        ],
+    })
+
+    async def complete(self, request):
+        if request.purpose == "gsl.devise":
+            self.requests.append(request)
+            self.spend += 0.01
+            return NormalizedResponse(
+                text=self._DEVISE, cost_usd=0.01,
+                usage=Usage(input_tokens=100, output_tokens=20),
+            )
+        return await super().complete(request)
+
+
 async def _never_plannable(db, config, tmp_path, marker):
     """An intention whose plan calls all fail, and a handle on the call log.
 
-    Only the understand call is scripted. Everything after it is the gateway's
-    default `"{}"`, which is what an unhelpful model looks like from here: an
-    object with no steps in it, every time, forever. That is the shape the outage
-    had, and it is worth testing against that shape rather than against a
-    carefully varied set of failures.
+    Devise succeeds and the plan call never does, because "the plan calls all
+    fail" is the thing under test and the two are not the same failure. Only
+    the understand call is scripted beyond that; everything else is the
+    gateway's default `"{}"`, which is what an unhelpful model looks like from
+    here: an object with no steps in it, every time, forever. That is the shape
+    the outage had, and it is worth testing against that shape rather than
+    against a carefully varied set of failures.
     """
     memory = await make_memory(db, config)
     await db.execute("DELETE FROM intentions WHERE title LIKE $1", f"%{marker}%")
-    gateway = ScriptedGateway([
+    gateway = _DevisingUnplannableGateway([
         _json({"understanding": "write the file", "unknowns": [], "difficulty": 0.4,
                "consequential": False, "questions": []}),
     ])
@@ -1436,5 +1477,478 @@ async def test_a_failed_understanding_call_backs_off_instead_of_killing_the_cycl
         assert final.status == "parked", f"outcomes={outcomes}"
         reason = (final.resume_state or {}).get("parked_reason") or final.closed_reason or ""
         assert "understand" in reason, reason
+    finally:
+        await db.execute("DELETE FROM intentions WHERE id = $1", intention_id)
+
+
+# ---------------------------------------------------------------- progress
+
+
+async def test_a_bookmark_does_not_erase_the_plan_it_was_taken_during(
+    db, config, tmp_path,
+):
+    """The solver's working record survives being interrupted.
+
+    `resume_state` is one column with two writers: the loop keeps the plan, the
+    understanding and the per-step counts in it, and `Life.bookmark` writes a
+    human-readable summary over it. Writing the bookmark as the whole value --
+    which is what it did -- meant every attention interrupt and every social turn
+    replaced the plan with a summary of having one.
+
+    The symptom was not a crash and not a stall. The next `advance` found no
+    `plan` and no `understanding`, so it re-understood and re-planned from phase
+    one and made the same first step again, on a loop that looked busy in every
+    table counting activity. So this asserts the invariant directly: a bookmark
+    adds its own fields and leaves the solver's alone.
+    """
+    marker = "zz-bookmarkmerge"
+    memory = await make_memory(db, config)
+    await db.execute("DELETE FROM intentions WHERE title LIKE $1", f"%{marker}%")
+    intention_id = await memory.create_intention(
+        title=f"{marker} bookmark must not erase the plan",
+        desired_end_state="a file exists", kind="task", origin="self",
+    )
+    plan = {
+        "approach_id": "a1", "approach": "write directly",
+        "steps": [{
+            "id": "s1", "description": "write the deliverable file",
+            "tool_hints": [], "success_check": {}, "reversible": True,
+            "status": "pending", "attempts": 0, "result": None,
+        }],
+    }
+    try:
+        await memory.update_intention(intention_id, status="in_progress",
+                                      resume_state={
+                                          "understanding": "write the file",
+                                          "plan": plan,
+                                          "step_attempts": {"s1": 1},
+                                          "strategy_number": 2,
+                                          "artifacts": [{"tool": "fs.write", "args": {"path": "a"}}],
+                                      })
+        from ethos.schemas.gsl import Bookmark
+
+        await memory.set_bookmark(intention_id, Bookmark(
+            next_planned_step="write the deliverable file",
+            mental_context="deep in the first step",
+        ))
+
+        after = await memory.get_intention(intention_id)
+        state = after.resume_state or {}
+        # What the bookmark had to say.
+        assert state["next_planned_step"] == "write the deliverable file", state
+        assert state["mental_context"] == "deep in the first step", state
+        # And what it had no business touching.
+        assert state["plan"] == plan, "the bookmark replaced the plan"
+        assert state["understanding"] == "write the file", state
+        assert state["step_attempts"] == {"s1": 1}, state
+        assert state["strategy_number"] == 2, state
+        assert state["artifacts"], "the bookmark erased the artifact record"
+    finally:
+        await db.execute("DELETE FROM intentions WHERE id = $1", intention_id)
+
+
+async def test_an_interrupted_goal_resumes_its_plan_instead_of_restarting(
+    db, config, tmp_path,
+):
+    """The end-to-end version: bookmark, then advance, and the plan is still there.
+
+    The merge is asserted at the column in the test above; this one walks the
+    loop through it, because the thing that matters is not that two keys
+    survived a write but that a goal at `in_progress` with a plan still runs its
+    next step rather than spending three more model calls re-reading itself.
+    The gateway is scripted for exactly three calls -- understand, devise, plan --
+    and returns `{}` for anything after, so a restart shows up as a failed step
+    with no understanding and a restart shows up in the outcome.
+    """
+    marker = "zz-interruptedplan"
+    memory = await make_memory(db, config)
+    await db.execute("DELETE FROM intentions WHERE title LIKE $1", f"%{marker}%")
+    gateway = ScriptedGateway([
+        _json({"understanding": "write the file", "unknowns": [], "difficulty": 0.4,
+               "consequential": False, "questions": []}),
+        _json({"approaches": [{"id": "a1", "summary": "write directly",
+                               "expected_value": 0.9, "estimated_cost_usd": 0.02,
+                               "reversible": True}]}),
+        _json({"steps": [{"id": "s1", "description": "write the deliverable file",
+                          "tool_hints": [], "success_check": {},
+                          "reversible": True}]}),
+    ])
+    gsl = _solver(db, config, tmp_path, gateway, memory)
+    intention_id = await memory.create_intention(
+        title=f"{marker} interrupted mid-plan", desired_end_state="a file exists",
+        kind="task", origin="self",
+    )
+    try:
+        for _ in range(2):
+            intention = await memory.get_intention(intention_id)
+            await gsl.advance(intention, ws=None)
+        installed = await memory.get_intention(intention_id)
+        assert installed.status == "in_progress", installed.status
+        assert (installed.resume_state or {}).get("plan"), installed.resume_state
+
+        from ethos.schemas.gsl import Bookmark
+
+        await memory.set_bookmark(intention_id, Bookmark(
+            next_planned_step="write the deliverable file",
+            mental_context="interrupted before the first step",
+        ))
+
+        after = await memory.get_intention(intention_id)
+        result = await gsl.advance(after, ws=None)
+        # It reached the step and executed it, rather than starting over: the
+        # script has no fourth answer, so a restart would come back empty.
+        assert result.outcome.value in ("step_done", "step_failed"), result.outcome
+        assert any("understood goal" in t for t in result.thoughts) is False, (
+            "the goal re-understood itself instead of running its plan"
+        )
+        assert gateway.texts == [], "the plan was installed again from scratch"
+        final = await memory.get_intention(intention_id)
+        assert (final.resume_state or {}).get("plan"), "the plan did not survive"
+    finally:
+        await db.execute("DELETE FROM intentions WHERE id = $1", intention_id)
+
+
+class _NoDeviseGateway(ScriptedGateway):
+    """Understands, then answers every devise with nothing at all.
+
+    The failure this models is a model that returns an object with no approaches
+    in it -- which is what an unhelpful deployment looks like from here, and what
+    the outage looked like. It is distinct from the provider being down: the
+    call succeeds, the answer is useless.
+    """
+
+    async def complete(self, request):
+        if request.purpose == "gsl.devise":
+            self.requests.append(request)
+            self.spend += 0.01
+            return NormalizedResponse(
+                text=_json({"approaches": []}), cost_usd=0.01,
+                usage=Usage(input_tokens=100, output_tokens=20),
+            )
+        return await super().complete(request)
+
+
+async def test_a_devise_call_that_returns_nothing_is_counted_not_invented_around(
+    db, config, tmp_path,
+):
+    """No approaches means the goal is not plannable, and that is a failure.
+
+    This used to be swallowed and answered with an invention. `_devise_with_cost`
+    returned `[]`, `pick_approach` returned `None`, and the fallback wrote
+    "directly pursue: <the goal's own description>" into the decision record as
+    a chosen approach. `make_plan` then built a real plan on that fabrication,
+    the intention went to `in_progress`, and the goal looked thought-about.
+
+    Worse, nothing counted it. The log line was written and dropped, so no
+    attempt was recorded, no backoff was scheduled, no degradation triggered and
+    no park ever arrived. A deployment that could not plan produced an agent
+    that appeared to be planning indefinitely, on approaches it had made up.
+
+    So: no invented approach is recorded, the failure is counted, and the walk
+    ends parked with a reason instead of continuing indefinitely.
+    """
+    marker = "zz-deviseempty"
+    memory = await make_memory(db, config)
+    await db.execute("DELETE FROM intentions WHERE title LIKE $1", f"%{marker}%")
+    gateway = _NoDeviseGateway([
+        _json({"understanding": "write the file", "unknowns": [], "difficulty": 0.4,
+               "consequential": False, "questions": []}),
+    ])
+    config.gsl.plan_backoff_s = 0.0
+    config.gsl.plan_backoff_max_s = 0.0
+    gsl = _solver(db, config, tmp_path, gateway, memory)
+    intention_id = await memory.create_intention(
+        title=f"{marker} devise returns nothing", desired_end_state="a file exists",
+        kind="task", origin="self", budget_usd=5.0,
+    )
+    try:
+        outcomes = []
+        for _ in range(config.gsl.plan_attempts_before_park + 4):
+            intention = await memory.get_intention(intention_id)
+            if intention.status in ("parked", "done", "failed", "cancelled"):
+                break
+            result = await gsl.advance(intention, ws=None)
+            outcomes.append(result.outcome.value)
+
+        # Counted on the first failure, not swallowed.
+        counted = await memory.get_intention(intention_id)
+        assert (counted.resume_state or {}).get("plan_attempts", 0) >= 1, counted.resume_state
+
+        # And nothing was invented along the way.
+        rows = await db.fetch(
+            "SELECT statement FROM decisions WHERE intention_id = $1", intention_id,
+        )
+        for row in rows:
+            assert "directly pursue" not in row["statement"], (
+                f"an approach was fabricated: {row['statement']}"
+            )
+
+        final = await memory.get_intention(intention_id)
+        assert final.status == "parked", f"outcomes={outcomes}"
+        reason = (final.resume_state or {}).get("parked_reason") or final.closed_reason or ""
+        assert "devise" in reason, reason
+    finally:
+        await db.execute("DELETE FROM intentions WHERE id = $1", intention_id)
+
+
+async def test_a_devise_call_that_raises_is_a_failure_and_not_a_silent_fallback(
+    db, config, tmp_path,
+):
+    """The same thing when the call raises rather than answering emptily.
+
+    `_devise_with_cost` swallowed every exception and returned an empty list,
+    which is the same empty list an unhelpful model produces -- so a provider
+    that was down, a key that had expired and a model that simply had no
+    opinions were all the same event to the loop, and all of them were free.
+    """
+    from ethos.gateway.providers.base import ProviderError
+
+    marker = "zz-deviseraise"
+    memory = await make_memory(db, config)
+    await db.execute("DELETE FROM intentions WHERE title LIKE $1", f"%{marker}%")
+    gateway = _RaisingGateway([
+        _json({"understanding": "write the file", "unknowns": [], "difficulty": 0.4,
+               "consequential": False, "questions": []}),
+    ], fail_after=1,
+        error=ProviderError("openai_compat", 0, "HTTP 0: transport: down",
+                            retryable=True),
+    )
+    config.gsl.plan_backoff_s = 0.0
+    config.gsl.plan_backoff_max_s = 0.0
+    gsl = _solver(db, config, tmp_path, gateway, memory)
+    intention_id = await memory.create_intention(
+        title=f"{marker} devise raises", desired_end_state="a file exists",
+        kind="task", origin="self", budget_usd=5.0,
+    )
+    try:
+        outcomes = []
+        for _ in range(config.gsl.plan_attempts_before_park + 4):
+            intention = await memory.get_intention(intention_id)
+            if intention.status in ("parked", "done", "failed", "cancelled"):
+                break
+            result = await gsl.advance(intention, ws=None)
+            outcomes.append(result.outcome.value)
+
+        final = await memory.get_intention(intention_id)
+        assert final.status == "parked", f"outcomes={outcomes}"
+        reason = (final.resume_state or {}).get("parked_reason") or final.closed_reason or ""
+        assert "devise" in reason, reason
+        assert not (final.resume_state or {}).get("plan"), (
+            "a plan was installed from a devise call that raised"
+        )
+    finally:
+        await db.execute("DELETE FROM intentions WHERE id = $1", intention_id)
+
+
+async def test_the_understand_call_reports_what_it_cost(db, config, tmp_path):
+    """Starting the work is not free, and the budget has to know it.
+
+    `_call` -- the wrapper every understand request went through -- returned a
+    literal `0.0`. Understand is the first model call a goal makes, so the cost
+    of opening it was never reported, never added to the intention's spend, and
+    so could never contribute to the budget ceiling. A goal spent against its
+    budget only from the plan onwards, which is to say it was allowed to overrun
+    by exactly the part that decides whether it can afford to try at all.
+
+    Asserted on the phase in isolation: one `advance` that does nothing but
+    understand, reported as costing something.
+    """
+    marker = "zz-understandcost"
+    memory = await make_memory(db, config)
+    await db.execute("DELETE FROM intentions WHERE title LIKE $1", f"%{marker}%")
+    gateway = ScriptedGateway([
+        _json({"understanding": "write the file", "unknowns": [], "difficulty": 0.4,
+               "consequential": False, "questions": []}),
+    ], costs=[0.25])
+    gsl = _solver(db, config, tmp_path, gateway, memory)
+    intention_id = await memory.create_intention(
+        title=f"{marker} understand is billed", desired_end_state="a file exists",
+        kind="task", origin="self", budget_usd=5.0,
+    )
+    try:
+        intention = await memory.get_intention(intention_id)
+        result = await gsl.advance(intention, ws=None)
+        assert result.outcome.value == "step_done", result.outcome
+        assert result.cost_usd == pytest.approx(0.25), (
+            f"the understand call reported {result.cost_usd} instead of 0.25"
+        )
+    finally:
+        await db.execute("DELETE FROM intentions WHERE id = $1", intention_id)
+
+
+async def test_a_planning_attempt_that_fails_still_reports_what_it_spent(
+    db, config, tmp_path,
+):
+    """Money spent on an attempt is money spent, whichever way the attempt went.
+
+    The caller only ever learned a planning call's cost from a *successful*
+    return, so devise (which always ran first) and the failed plan call itself
+    were both free. The intention that closes the loop, `Life._advance_goal`,
+    charges `result.cost_usd` against the intention's budget -- so a goal that
+    failed to plan twenty times reported nothing spent, never approached its
+    ceiling, and the one limit that does not depend on the loop's own
+    bookkeeping never fired.
+
+    Asserted on the failed attempt rather than the successful path: this is the
+    branch where the number used to be zero.
+    """
+    marker = "zz-plancost"
+    memory = await make_memory(db, config)
+    await db.execute("DELETE FROM intentions WHERE title LIKE $1", f"%{marker}%")
+    # Devise is scripted with candidates; the plan call returns the default
+    # `"{}"`, which `make_plan` refuses as a plan. Both calls are billed, and
+    # both are paid for by an attempt that produced nothing.
+    gateway = _DevisingUnplannableGateway([
+        _json({"understanding": "write the file", "unknowns": [], "difficulty": 0.4,
+               "consequential": False, "questions": []}),
+    ], costs=[0.25])
+    config.gsl.plan_backoff_s = 0.0
+    config.gsl.plan_backoff_max_s = 0.0
+    gsl = _solver(db, config, tmp_path, gateway, memory)
+    intention_id = await memory.create_intention(
+        title=f"{marker} failed plans are billed", desired_end_state="a file exists",
+        kind="task", origin="self", budget_usd=5.0,
+    )
+    try:
+        intention = await memory.get_intention(intention_id)
+        await gsl.advance(intention, ws=None)  # understand
+
+        before = gateway.spend
+        intention = await memory.get_intention(intention_id)
+        result = await gsl.advance(intention, ws=None)  # devise + plan, plan fails
+        spent = gateway.spend - before
+
+        assert result.outcome.value == "step_failed", result.outcome
+        assert spent > 0.0, "the attempt made no model calls, so this proves nothing"
+        assert result.cost_usd == pytest.approx(spent), (
+            f"the gateway billed {spent} for this attempt and the loop reported "
+            f"{result.cost_usd}; a failed planning attempt has to be charged for "
+            f"the calls it made or its budget never moves"
+        )
+    finally:
+        await db.execute("DELETE FROM intentions WHERE id = $1", intention_id)
+
+
+async def test_a_finished_goal_closes_the_attempt_it_opened(db, config, tmp_path):
+    """An attempt that never ends teaches the agent nothing.
+
+    `start_attempt` was called on every plan install and `end_attempt` was
+    called from nowhere, so every attempt row kept a null `outcome`, a null
+    `ended_at` and no lessons, forever. That matters because `_strategy` reads
+    those rows back and feeds their lessons into the next `devise` call -- it is
+    the loop's only route from having failed to trying something different. With
+    the write missing, the agent was shown a growing list of attempts that had
+    all apparently just begun and none of which had ever concluded, and no lesson
+    from any of them ever reached the prompt that decides what to do next.
+
+    Asserted on the row rather than on the call: the record is the thing that was
+    broken, and a row that looks finished is what makes the loop able to learn.
+    """
+    marker = "zz-attemptclose"
+    memory = await make_memory(db, config)
+    await db.execute("DELETE FROM intentions WHERE title LIKE $1", f"%{marker}%")
+    await db.execute("DELETE FROM attempts WHERE intention_id NOT IN (SELECT id FROM intentions)")
+    gateway = ScriptedGateway([
+        _json({"understanding": "write the file", "unknowns": [], "difficulty": 0.4,
+               "consequential": False, "questions": []}),
+        _json({"approaches": [{"id": "a1", "summary": "write directly",
+                               "expected_value": 0.9, "estimated_cost_usd": 0.02,
+                               "reversible": True}]}),
+        _json({"steps": [{"id": "s1", "description": "write the deliverable file",
+                          "tool_hints": ["fs.write"],
+                          "success_check": {"type": "file_exists",
+                                            "path": str(tmp_path / "closed.txt")},
+                          "reversible": True}]}),
+        _json({"thought": "writing it", "done": True,
+               "actions": [{"tool": "fs.write",
+                            "args": {"path": str(tmp_path / "closed.txt"),
+                                     "content": "ETHOS\n"}}]}),
+    ])
+    gsl = _solver(db, config, tmp_path, gateway, memory)
+    intention_id = await memory.create_intention(
+        title=f"{marker} close the attempt", desired_end_state="a file exists",
+        kind="task", origin="self", budget_usd=5.0,
+        success_criteria=[{"type": "file_exists", "path": str(tmp_path / "closed.txt")}],
+    )
+    try:
+        outcomes = []
+        for _ in range(10):
+            intention = await memory.get_intention(intention_id)
+            result = await gsl.advance(intention, ws=None)
+            outcomes.append(result.outcome.value)
+            if result.outcome.value in ("goal_done", "parked", "awaiting_review"):
+                break
+
+        final = await memory.get_intention(intention_id)
+        assert final.status == "done", outcomes
+        attempts = await memory.list_attempts(intention_id)
+        assert attempts, "the goal ran but opened no attempt"
+        for attempt in attempts:
+            assert attempt.ended_at is not None, (
+                f"attempt {attempt.id} was opened and never closed"
+            )
+            assert attempt.outcome == "succeeded", (
+                f"attempt {attempt.id} closed with outcome {attempt.outcome!r}"
+            )
+    finally:
+        await db.execute("DELETE FROM intentions WHERE id = $1", intention_id)
+
+
+async def test_a_step_whose_check_observed_nothing_says_so(db, config, tmp_path):
+    """A completed step is not the same claim as a verified one.
+
+    `_step_check` returned `None` whenever the checker reported `observed:
+    False`, and the caller treated `None` as "no verdict to worry about". So a
+    step whose plan asked for a check that could not run -- a type the checker
+    does not implement, an empty command, a non-numeric target -- was recorded
+    as `step_done` and read back later exactly like a step whose test suite had
+    been run and passed. The distinction the checker goes to some trouble to
+    expose (`observed` exists precisely to separate "passed" from "looked at
+    something") was discarded on the way out.
+
+    The step still finishes -- its work is real and a broken check is a fault in
+    the plan, not in the work. What it no longer does is finish *silently*.
+    """
+    marker = "zz-unobserved"
+    memory = await make_memory(db, config)
+    await db.execute("DELETE FROM intentions WHERE title LIKE $1", f"%{marker}%")
+    gateway = ScriptedGateway([
+        _json({"understanding": "write the file", "unknowns": [], "difficulty": 0.4,
+               "consequential": False, "questions": []}),
+        _json({"approaches": [{"id": "a1", "summary": "write directly",
+                               "expected_value": 0.9, "estimated_cost_usd": 0.02,
+                               "reversible": True}]}),
+        _json({"steps": [{
+            "id": "s1", "description": "write the deliverable file",
+            "tool_hints": ["fs.write"],
+            # A check the loop's old five-name allowlist did not include, so it
+            # was never even handed to the checker.
+            "success_check": {"type": "totally_unknown_check", "value": 1},
+            "reversible": True,
+        }]}),
+        _json({"thought": "writing the file", "done": True,
+               "actions": [{"tool": "fs.write",
+                            "args": {"path": str(tmp_path / "unobserved.txt"),
+                                     "content": "ETHOS\n"}}]}),
+    ])
+    gsl = _solver(db, config, tmp_path, gateway, memory)
+    intention_id = await memory.create_intention(
+        title=f"{marker} unobserved check", desired_end_state="a file exists",
+        kind="task", origin="self", budget_usd=5.0,
+    )
+    try:
+        for _ in range(2):
+            intention = await memory.get_intention(intention_id)
+            await gsl.advance(intention, ws=None)
+
+        intention = await memory.get_intention(intention_id)
+        result = await gsl.advance(intention, ws=None)
+
+        assert result.outcome.value == "step_done", result.outcome
+        assert any("not" in t and "verified" in t for t in result.thoughts), (
+            f"an unverified step finished without saying it was unverified: "
+            f"{result.thoughts}"
+        )
+        assert (tmp_path / "unobserved.txt").exists(), "the work itself should be real"
     finally:
         await db.execute("DELETE FROM intentions WHERE id = $1", intention_id)

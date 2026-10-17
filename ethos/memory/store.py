@@ -480,7 +480,50 @@ class MemoryStore:
         )
 
     async def set_bookmark(self, intention_id: UUID, bookmark: Bookmark) -> None:
-        await self.update_intention(intention_id, resume_state=bookmark.model_dump(mode="json"))
+        """Merge a bookmark into `resume_state`, never replace it.
+
+        `resume_state` is one column holding two writers' state. The solver loop
+        keeps the goal's whole working record in it -- the plan, the
+        understanding, the per-step attempt counts, the artifacts, the planning
+        backoff -- and this method writes eight fields of human-readable summary
+        on top. Writing the bookmark as the *whole* value is what it used to do,
+        and the two sets of keys are disjoint enough that it did not look like
+        data loss: every assertion that a bookmark round-trips still passed.
+
+        What it actually cost is the solver loop's entire state, on every
+        interrupt. `Life.bookmark` is called whenever attention interrupts the
+        focus and whenever a social turn suspends it, so a task the agent was
+        part-way through had its plan replaced by a summary of having a plan.
+        The next `advance` read that summary, found no `understanding` and no
+        `plan` in it, and started the goal over from phase one. It did not freeze
+        and it did not error -- it re-understood, re-planned and re-executed,
+        over and over, at full cost, forever making the same first step. The task
+        looked alive in every table that counted activity.
+
+        So this merges: the bookmark's own fields are written over whatever is
+        there, and every key the solver loop owns is left alone. The merge is in
+        SQL rather than in Python because the read-modify-write it would replace
+        is the same race that would lose the plan to a concurrent save.
+
+        Empty fields are not written. A `Bookmark` built by `Life.bookmark` sets
+        `step_id`, `last_action` and `partial_results` to nothing at all, and a
+        blind merge would use those nulls to erase the solver's record of what it
+        last did. A bookmark is a partial snapshot; it should fill in what it
+        knows and stay quiet about what it does not.
+        """
+        patch = {
+            key: value for key, value in bookmark.model_dump(mode="json").items()
+            if value is not None and value != {} and value != []
+        }
+        if not patch:
+            return
+        await self.db.execute(
+            "UPDATE intentions "
+            "SET resume_state = COALESCE(resume_state, '{}'::jsonb) || $1::jsonb, "
+            "updated_at = now() "
+            "WHERE id = $2",
+            json.dumps(patch), intention_id,
+        )
 
     async def record_decision(self, decision: DecisionRecord) -> UUID:
         await self.db.execute(

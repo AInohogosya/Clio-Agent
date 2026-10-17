@@ -146,6 +146,11 @@ class Life:
         # has no slice syntax at all.
         self._thoughts: deque[str] = deque(maxlen=THOUGHT_BUFFER)
         self._consolidation_done_tonight: str | None = None
+        # Consecutive passes an unanswered message has taken from a goal the
+        # agent was holding. Counted rather than inferred, because "the
+        # conversation took priority" is true on every one of those passes and
+        # true forever; only the count says whether the goal is being starved.
+        self._inbound_deferrals: int = 0
 
     # ------------------------------------------------------------- wake
 
@@ -398,6 +403,33 @@ class Life:
         # when the reply commissions no new work.
         inbound = await self._pending_inbound_messages()
 
+        # Immediate is not unconditional. Removing the gate fixed "the agent
+        # ignored its owner" and opened "the agent never touches its work": with
+        # no bound at all, the head of an unanswered queue takes every pass, so
+        # an agent whose inbox fills faster than it drains never reaches the
+        # `advance_goal` branch below. Every cycle answers somebody, the task
+        # stays exactly where it was, and nothing in the record says the goal
+        # was ever skipped -- a queue is supposed to be unbounded, so the
+        # starvation is invisible from the message side too.
+        #
+        # So the priority is counted, not assumed. After
+        # `inbound_defers_goal_max` consecutive passes spent on a message while
+        # holding a goal, the goal is worked and the message stays at the head
+        # of the queue for the next pass. Both needs are still served; neither
+        # can starve the other, which is what an uncounted priority always
+        # becomes.
+        if inbound and self._goal_is_owed():
+            self._inbound_deferrals += 1
+            limit = max(0, int(self.config.rhythm.focus.inbound_defers_goal_max))
+            if self._inbound_deferrals > limit:
+                logger.info(
+                    "life.goal_preferred_to_message",
+                    deferrals=self._inbound_deferrals, limit=limit,
+                )
+                inbound = []
+        elif inbound:
+            self._inbound_deferrals = 0
+
         if inbound:
             if (
                 self.focus is not None
@@ -421,13 +453,28 @@ class Life:
             )
 
         if self.focus is not None and self.focus.intention_id is not None:
+            # Worked. Whatever was waiting in the queue has not been lost, and
+            # the next pass starts the count over -- which is the point: the
+            # bound is on how long a goal may be *continuously* deferred, not on
+            # how many messages may be answered while work is outstanding.
+            self._inbound_deferrals = 0
             return Decision(kind="advance_goal", tier="T2", rationale="advance current intention")
 
+        # A social focus exists to answer one message. With no message pending
+        # there is nothing to deliberate, so this used to return a decision that
+        # matched no branch in `act` -- a cycle spent entirely on producing
+        # nothing, with the drives and the reverie below it unreachable for as
+        # long as the focus lasted. `next_focus` now drops the focus, so it
+        # costs one cycle rather than thousands; falling through instead costs
+        # none, and gives the idle branches below the pass they were being
+        # starved of.
         if self.focus is not None and self.focus.kind == "social":
-            return Decision(
-                kind="social", tier="T2", social=None,
-                rationale="social focus without pending message; nothing to do",
-            )
+            # Released here rather than left for `next_focus` to drop, so the
+            # idle branches below get this pass and the drives get the next one.
+            # A social focus is spent the moment its message is handled; holding
+            # a dead one is what parked the agent for 2235 cycles once already.
+            logger.info("life.social_focus_without_message", focus=self.focus.title)
+            self.focus = None
 
         if self.focus is not None and self.focus.kind == "impulse":
             intention = await self.memory.get_intention(self.focus.intention_id) if self.focus.intention_id else None
@@ -444,7 +491,32 @@ class Life:
         if self.deps.rhythm.mind_wander_due():
             return Decision(kind="mind_wander", tier="T1", rationale="idle: mind-wandering glance")
 
+        if self.focus is not None and self.focus.kind == "social":
+            return Decision(
+                kind="social", tier="T2", social=None,
+                rationale="social focus without pending message; nothing to do",
+            )
+
         return Decision(kind="none", tier="T0", rationale="nothing pending; wait")
+
+    def _goal_is_owed(self) -> bool:
+        """Whether the focus is real work this agent is committed to finishing.
+
+        The question behind the inbound-priority bound: deferring a conversation
+        to work on a task is a trade, and declining to make it is a different
+        answer from not noticing there was one. So the thing being deferred has
+        to be work, judged by the same test `decide` acts on -- a focus that
+        carries an intention id -- and not merely any focus at all.
+
+        A social focus is excluded because a message is never deferred by a
+        message: the agent answering somebody is not a lapse from the work.
+        """
+        focus = self.focus
+        return bool(
+            focus is not None
+            and focus.kind != "social"
+            and focus.intention_id is not None
+        )
 
     def _message_is_consequential(self, message: Any) -> bool:
         # The same judgement `SocialCognition` makes, for the same reason: this
@@ -1032,6 +1104,22 @@ class Life:
     # -------------------------------------------------------- next focus
 
     def next_focus(self, decision: Decision, outcome: Outcome) -> Focus | None:
+        settled = self._settled_focus(decision, outcome)
+        if settled is None and self._suspended_focus is not None:
+            # Work suspended for an interruption is owed the pass back,
+            # whatever kind of cycle the interruption turned out to be. The
+            # social branch used to be the only reader of the suspended slot,
+            # so an interrupt whose cycle answered nobody -- a timer fired
+            # into an empty queue, a percept that broke into work and then
+            # dissolved -- ended its turn with `None`, and the owed work fell
+            # out of focus with its promise still open. Every path that
+            # settles on nothing now hands the pass back rather than dropping
+            # it on the floor.
+            settled = self._suspended_focus
+            self._suspended_focus = None
+        return settled
+
+    def _settled_focus(self, decision: Decision, outcome: Outcome) -> Focus | None:
         if decision.kind == "advance_goal" and outcome.results:
             result = outcome.results[0]
             result_outcome = result.get("outcome")
@@ -1059,17 +1147,23 @@ class Life:
             # focus, and the work the reply announced starts on the following tick.
             focus = _commission_focus(outcome.commission)
             if focus is not None:
+                # A new promise takes the pass. The work this turn suspended
+                # for the message stays open and the drives can still find it,
+                # but it does not resume ahead of the newer promise: the slot
+                # is one deep on purpose, and a stale entry left here would
+                # resurface after the new work's own social turns and steal
+                # the pass from work that is still owed.
                 self._suspended_focus = None
                 return focus
-            # No new work was commissioned: resume what the social turn
-            # interrupted, so immediate replies do not dissolve the focus.
-            # The suspension was bookmarked in `decide`, so resuming here only
-            # continues it; a vanished intention degrades in `_advance_goal`.
-            if self._suspended_focus is not None:
-                resumed = self._suspended_focus
-                self._suspended_focus = None
-                return resumed
-            return focus
+            # No new work was commissioned: the pass returns to what the social
+            # turn interrupted, so immediate replies do not dissolve the
+            # focus. The suspension was bookmarked when it was made -- in
+            # `decide` for a message that arrived mid-work, in `_cycle` for an
+            # attention interrupt -- so resuming here only continues it; a
+            # vanished intention degrades in `_advance_goal`. The handback
+            # itself is the net in `next_focus`, so an interrupt whose cycle
+            # answers nobody reaches it too.
+            return None
         return self.focus
 
     # -------------------------------------------------- pace and upkeep
@@ -1300,7 +1394,26 @@ class Life:
         )
         previous_focus = self.focus
         if appraisal.interrupt:
-            await self.bookmark(self.focus)
+            # An interrupt takes this pass from whatever the agent was holding,
+            # and the work it takes it from has to survive the taking the same
+            # way it survives the social turn `decide` suspends it for: named in
+            # `_suspended_focus`, so `next_focus` can hand the pass back once
+            # the interruption has been dealt with.
+            #
+            # Without this, the interrupted focus was bookmarked and then
+            # dropped. The bookmark kept the intention's own resume state, but
+            # nothing anywhere was holding the agent to it: `decide` only
+            # suspends a focus that is not already social, and the interrupt
+            # has just made it social, so the one mechanism that carried owed
+            # work across a turn never ran. Whether the promise was ever seen
+            # again was left to the drives to notice an undated intention --
+            # the exact lottery the commission focus exists to take the work
+            # out of.
+            interrupted = self.focus
+            owed = self._goal_is_owed() and self._suspended_focus is None
+            await self.bookmark(interrupted)
+            if owed:
+                self._suspended_focus = interrupted
             self.focus = appraisal.new_focus
             await self._roll_on_focus_change(previous_focus, self.focus)
         elif self.focus is None:

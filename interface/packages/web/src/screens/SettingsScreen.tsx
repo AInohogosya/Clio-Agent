@@ -562,35 +562,47 @@ function DoorCard({
         {door.credentials.map((credential) => (
           <div key={credential.key}>
             <FieldLabel hint={credential.env || undefined}>{credential.label}</FieldLabel>
-            <div className="flex items-center gap-2">
-              <Input
-                autoComplete="off"
-                className="font-mono"
-                maxLength={MAX_CREDENTIAL_LENGTH}
-                onChange={(event) => setTyped((current) => ({ ...current, [credential.key]: event.target.value }))}
-                placeholder="••••••••"
-                spellCheck={false}
-                type="password"
-                value={typed[credential.key] ?? ''}
-              />
-              {credential.present ? (
-                <Button
-                  onClick={() => {
-                    // The field goes empty with it: a form still showing the text
-                    // of a credential that was just removed is a form asserting
-                    // two things at once about which secret the next save sends.
-                    setTyped((current) => {
-                      const { [credential.key]: _gone, ...rest } = current;
-                      return rest;
-                    });
-                    void onSave({ id: door.id, credentials: { [credential.key]: null } });
-                  }}
-                  variant="quiet"
-                >
-                  {t('doorForget')}
-                </Button>
-              ) : null}
-            </div>
+            {/* No input for an environment-only credential, and not a disabled one:
+                a disabled box invites a paste that goes nowhere, and this answers a
+                question a disabled box cannot — which variable to export. The one
+                thing it does offer is the same thing every other credential offers:
+                a way to say "this is not set", so a half-configured door still shows
+                as half-configured. */}
+            {credential.envOnly ? (
+              <p className="rounded-lg border border-dashed border-[var(--line)] px-3 py-2 font-mono text-xs text-[var(--ink-muted)]">
+                {credential.env ? `set in ${credential.env}` : 'environment only'}
+              </p>
+            ) : (
+              <div className="flex items-center gap-2">
+                <Input
+                  autoComplete="off"
+                  className="font-mono"
+                  maxLength={MAX_CREDENTIAL_LENGTH}
+                  onChange={(event) => setTyped((current) => ({ ...current, [credential.key]: event.target.value }))}
+                  placeholder="••••••••"
+                  spellCheck={false}
+                  type="password"
+                  value={typed[credential.key] ?? ''}
+                />
+                {credential.present ? (
+                  <Button
+                    onClick={() => {
+                      // The field goes empty with it: a form still showing the text
+                      // of a credential that was just removed is a form asserting
+                      // two things at once about which secret the next save sends.
+                      setTyped((current) => {
+                        const { [credential.key]: _gone, ...rest } = current;
+                        return rest;
+                      });
+                      void onSave({ id: door.id, credentials: { [credential.key]: null } });
+                    }}
+                    variant="quiet"
+                  >
+                    {t('doorForget')}
+                  </Button>
+                ) : null}
+              </div>
+            )}
             <p className="mt-1.5 text-[0.68rem] leading-5 text-[var(--ink-faint)]">
               {credential.envPresent
                 ? t('doorKeyFromEnv', { variable: credential.env })

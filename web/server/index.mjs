@@ -12,7 +12,7 @@ import { WebSocketServer } from "ws";
 /**
  * The interface bridge.
  *
- * The interface is Clio Agent 3 Beta's: a browser page and a terminal client that both read
+ * The interface is Clio Agent 3's: a browser page and a terminal client that both read
  * this agent and ask it to do things. So this process has exactly two jobs, and
  * it is a peer of the agent rather than part of it — it holds no state of its own,
  * and everything it shows is a row the agent wrote.
@@ -1660,6 +1660,45 @@ const DOOR_SETUP = [
     credentials: [{ key: "token", env: "token_env", label: "Bot token" }],
   },
   {
+    id: "line",
+    allowlist: "allowed_ids",
+    allowKind: "id",
+    prefix: "line:",
+    needsWebhook: true,
+    credentials: [
+      { key: "channel_access_token", env: "channel_access_token_env", label: "Channel access token (outbound)" },
+      { key: "channel_secret", env: "channel_secret_env", label: "Channel secret (signs inbound)" },
+    ],
+  },
+  {
+    id: "teams",
+    allowlist: "allowed_ids",
+    allowKind: "aad",
+    prefix: "teams:",
+    needsWebhook: true,
+    credentials: [
+      { key: "app_id", env: "app_id_env", label: "Microsoft App ID" },
+      { key: "app_password", env: "app_password_env", label: "App password" },
+    ],
+  },
+  {
+    id: "googlechat",
+    allowlist: "allowed_ids",
+    allowKind: "workspace",
+    prefix: "gchat:",
+    needsWebhook: true,
+    credentials: [
+      { key: "client_email", env: "client_email_env", label: "Service account email" },
+      // Environment-only, and not by preference. A PEM private key is around
+      // 1700 characters and `MAX_CREDENTIAL_LENGTH` is 1024, so a form field
+      // would accept a paste and `text()` would quietly return an empty string
+      // for it — a save that reported success and stored nothing. Refusing the
+      // write here is the honest version of what a truncated key would be.
+      { key: "private_key", env: "private_key_env", label: "Service account private key", envOnly: true },
+      { key: "audience", env: "audience_env", label: "Authentication audience" },
+    ],
+  },
+  {
     id: "email",
     allowlist: null,
     allowKind: null,
@@ -1705,7 +1744,7 @@ function readChannelSetup(person = "owner") {
     return {
       id: door.id,
       enabled: present.enabled === true,
-      credentials: door.credentials.map(({ key, env, label }) => {
+      credentials: door.credentials.map(({ key, env, label, envOnly }) => {
         const value = typeof present[key] === "string" ? present[key].trim() : "";
         const variable = ENV_NAME.test(String(present[env] ?? "")) ? present[env] : "";
         return {
@@ -1715,6 +1754,9 @@ function readChannelSetup(person = "owner") {
           present: value.length > 0,
           hint: keyHint(value),
           env_present: environmentValue(variable).length > 0,
+          // Reported so the form can show where this one lives instead of a box
+          // that would refuse whatever was pasted into it.
+          env_only: envOnly === true,
         };
       }),
       allowlist: door.allowlist,
@@ -1801,7 +1843,15 @@ function writeChannelSetup(body) {
 
   const credentials = {};
   for (const [key, value] of Object.entries(body?.credentials ?? {})) {
-    if (!door.credentials.some((entry) => entry.key === key)) return { error: "unknown_field" };
+    const entry = door.credentials.find((candidate) => candidate.key === key);
+    if (!entry) return { error: "unknown_field" };
+    // A credential this process will not accept a value for, refused with the
+    // same code a stranger's field gets. The alternative is the one thing this
+    // write path exists to prevent: a form answering 200 to a save that changed
+    // nothing, so the person walks away believing a door is configured when it is
+    // not. `null` is still allowed — forgetting something is not the same act as
+    // setting it, and it says nothing about length.
+    if (entry.envOnly === true && value !== null) return { error: "unknown_field" };
     if (value === null) {
       credentials[key] = null;
       continue;
@@ -1901,11 +1951,22 @@ function writeChannelSetup(body) {
 /**
  * An allowlist entry as this door stores it, or `null` when it is not one.
  *
- * Checked per door because the four are four different namespaces: a chat id is
- * a number, a phone number is digits without a `+`, and a Slack or Discord id is
- * a short token. A list that accepted any of them in any door would produce a
- * door that looks configured and admits nobody — the bot answers `/id` and
- * nothing else, which is the most misleading state a channel can be in.
+ * Checked per door because these are different namespaces: a chat id is a
+ * number, a phone number is digits without a `+`, a Slack or Discord id is a
+ * short token, a Teams sender is an Azure AD object id (`29:…` on most tenants
+ * and a bare GUID on others), and a Google Chat sender is a `users/…` resource
+ * name or an email address. A list that accepted any of them in any door would
+ * produce a door that looks configured and admits nobody — the bot answers `/id`
+ * and nothing else, which is the most misleading state a channel can be in.
+ *
+ * The last two are deliberately wider than the others, and the reason is worth
+ * stating because it looks like the kind of check that should be tighter: a
+ * Microsoft object id has two published shapes and a Chat sender has two
+ * published shapes, and a regex that admitted one of each would refuse the other
+ * half for no reason a person could act on. The list is still an allowlist —
+ * somebody has to have typed it — so a wider shape is a wider set of *candidates*
+ * for a value only this deployment's operator supplies, not a door opened to
+ * anybody.
  */
 function allowedIdOf(door, value) {
   if (door.allowKind === "chat") {
@@ -1916,6 +1977,21 @@ function allowedIdOf(door, value) {
   }
   if (door.allowKind === "id") {
     return /^[A-Za-z0-9_-]{2,64}$/.test(value) ? value : null;
+  }
+  if (door.allowKind === "aad") {
+    // An Azure AD object id: `29:abc-def…` on a personal channel, or a bare
+    // GUID. A GUID is 32 hex characters and 4 dashes; anything shaped like one
+    // is accepted, and the `29:` form is checked separately because its tail is
+    // base64url rather than hex.
+    if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)) return value;
+    return /^29:[A-Za-z0-9_-]{2,60}$/.test(value) ? value : null;
+  }
+  if (door.allowKind === "workspace") {
+    // A Google Chat sender, as the event reports one: a `users/…` resource name
+    // or an email address. Both are what Workspace hands out, and which one a
+    // person has is a property of whether their domain lets Chat share it.
+    if (/^users\/\d{1,30}$/.test(value)) return value;
+    return /^[^\s@]{1,64}@[^\s@]{1,64}\.[^\s@]{1,32}$/.test(value) ? value : null;
   }
   return value || null;
 }
@@ -2067,6 +2143,9 @@ function readChannels(book = readAddressBook()) {
       { id: "whatsapp", config: channels.whatsapp, list: "allowed_phone_numbers" },
       { id: "slack", config: channels.slack, list: "allowed_ids" },
       { id: "discord", config: channels.discord, list: "allowed_ids" },
+      { id: "line", config: channels.line, list: "allowed_ids" },
+      { id: "teams", config: channels.teams, list: "allowed_ids" },
+      { id: "googlechat", config: channels.googlechat, list: "allowed_ids" },
     ];
     for (const door of allowlisted) {
       if (!door.config || typeof door.config !== "object" || door.config.enabled !== true) continue;
@@ -2226,14 +2305,28 @@ async function readView() {
     pool.query(
       "SELECT id, ts_start, ts_end, thread_id, tool, args_redacted, reason, status, result_digest, undo_ref FROM action_journal ORDER BY ts_start DESC LIMIT 50",
     ),
+    // Spend, read on the same terms the spend guard enforces it.
+    //
+    // These three used to differ from `SpendGuard` in two ways, and both made
+    // the pane disagree with the cap it is drawn against. It filtered
+    // `status = 'ok'` and these did not, so failed attempts -- which cost money
+    // and are written to the ledger -- were counted here and not there. And the
+    // boundary was `current_date`, which is midnight in the *database session's*
+    // timezone, against the guard's UTC midnight: a deployment whose database
+    // runs on local time was showing a different day than the one being capped.
+    //
+    // `ethos/gateway/cost.py` holds the canonical definitions (`SPEND_SQL` and
+    // friends, and `start_of_day`). This is the same query written twice
+    // because this process speaks SQL and not Python; `tests/unit/test_pricing.py`
+    // asserts the two agree, because the drift that produced this was silent.
     pool.query(
-      "SELECT budget_bucket AS bucket, COALESCE(SUM(cost_usd), 0) AS total FROM model_calls WHERE ts >= current_date GROUP BY budget_bucket",
+      "SELECT budget_bucket AS bucket, COALESCE(SUM(cost_usd), 0) AS total FROM model_calls WHERE ts >= date_trunc('day', now() AT TIME ZONE 'UTC') AND status = 'ok' GROUP BY budget_bucket",
     ),
     pool.query(
-      "SELECT model, COALESCE(SUM(cost_usd), 0) AS total FROM model_calls WHERE ts >= current_date GROUP BY model ORDER BY total DESC LIMIT 8",
+      "SELECT model, COALESCE(SUM(cost_usd), 0) AS total FROM model_calls WHERE ts >= date_trunc('day', now() AT TIME ZONE 'UTC') AND status = 'ok' GROUP BY model ORDER BY total DESC LIMIT 8",
     ),
     pool.query(
-      "SELECT to_char(date_trunc('day', ts), 'YYYY-MM-DD') AS day, COALESCE(SUM(cost_usd), 0) AS total FROM model_calls WHERE ts >= current_date - 6 GROUP BY 1 ORDER BY 1",
+      "SELECT to_char(date_trunc('day', ts AT TIME ZONE 'UTC'), 'YYYY-MM-DD') AS day, COALESCE(SUM(cost_usd), 0) AS total FROM model_calls WHERE ts >= date_trunc('day', now() AT TIME ZONE 'UTC') - interval '6 days' AND status = 'ok' GROUP BY 1 ORDER BY 1",
     ),
     pool.query("SELECT attrs FROM env_entities WHERE kind = 'trash' ORDER BY key LIMIT 100"),
     pool.query("SELECT attrs FROM env_entities WHERE kind = 'snapshot' ORDER BY key DESC LIMIT 20"),
@@ -2554,10 +2647,16 @@ app.post("/api/control", handle(async (req, res) => {
  * words to an arbitrary destination. The set is fixed and short — a new channel
  * means a new adapter, and an adapter is a deliberate thing to add.
  */
-const MESSAGE_CHANNELS = new Set(["web", "cli", "telegram", "whatsapp", "slack", "discord", "email"]);
+const MESSAGE_CHANNELS = new Set([
+  "web", "cli", "telegram", "whatsapp", "slack", "discord", "email",
+  "line", "teams", "googlechat",
+]);
 
 /** The doors whose `person_id` is an address in the channel's own namespace. */
-const ADDRESSED_CHANNELS = new Set(["telegram", "whatsapp", "slack", "discord", "email"]);
+const ADDRESSED_CHANNELS = new Set([
+  "telegram", "whatsapp", "slack", "discord", "email",
+  "line", "teams", "googlechat",
+]);
 
 /**
  * A message from a surface, recorded and published.
@@ -3907,7 +4006,7 @@ server.listen(PORT, "127.0.0.1", () => {
   // this line is served without a restart and the line above it is not a
   // prediction that has since stopped being true.
   const ui = fs.existsSync(indexFile())
-    ? `Clio Agent 3 Beta on http://127.0.0.1:${PORT}`
+    ? `Clio Agent 3 on http://127.0.0.1:${PORT}`
     : "interface not built yet (the API is live; the page appears once `npm run build` finishes)";
   console.log(`ethos-web listening on http://127.0.0.1:${PORT} — ${ui}`);
 });

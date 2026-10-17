@@ -15,6 +15,7 @@ import {
   emptyAgentView,
   isValidAgentEndpoint,
   normalizeMessages,
+  readAgentChannelSetup,
   readAgentDoors,
   readAgentView,
   readIntentions,
@@ -447,8 +448,39 @@ test('a channel is named the way a reader would say it', () => {
   assert.equal(channelLabel('telegram'), 'Telegram');
   assert.equal(channelLabel('web'), 'Web');
   assert.equal(channelLabel('whatsapp'), 'WhatsApp');
+  assert.equal(channelLabel('line'), 'LINE');
+  assert.equal(channelLabel('teams'), 'Microsoft Teams');
+  assert.equal(channelLabel('googlechat'), 'Google Chat');
   assert.equal(channelLabel('something-new'), 'something-new', 'a name this build does not know is shown, not replaced');
   assert.equal(channelLabel(''), '');
+});
+
+test('an environment-only credential is read as one, and rendered without a box', () => {
+  // The Google Chat private key is longer than any form field here would hold,
+  // so the setup reports where it lives instead of offering a paste that would
+  // be discarded. The default matters: a credential the agent has not said this
+  // about is one a person may still type.
+  const setup = readAgentChannelSetup({ setup: { person: 'owner', file: '/x', doors: [{
+    id: 'googlechat',
+    enabled: false,
+    credentials: [
+      { key: 'client_email', label: 'Service account email', env: 'GOOGLE_CHAT_CLIENT_EMAIL',
+        present: false, hint: '', env_present: false },
+      { key: 'private_key', label: 'Service account private key', env: 'GOOGLE_CHAT_PRIVATE_KEY',
+        present: false, hint: '', env_present: false, env_only: true },
+    ],
+    allowlist: 'allowed_ids',
+    allowed: [],
+    admits: false,
+    accept_from_anyone: false,
+    prefix: 'gchat:',
+    address: '',
+    needs_webhook: true,
+    webhook_on: false,
+  }] } });
+  const credentials = setup.doors[0].credentials;
+  assert.equal(credentials[0].envOnly, false, 'an ordinary credential is still typable');
+  assert.equal(credentials[1].envOnly, true);
 });
 
 test('the doors the agent has open are read whole', () => {

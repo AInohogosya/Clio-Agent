@@ -14,9 +14,54 @@ logger = get_logger("ethos.guardian.journal")
 
 
 class DuplicateAction(Exception):
+    """A prior attempt already owns this idempotency key.
+
+    `prior` is that attempt's journal row. Whether the new call may proceed is
+    not a property of the key but of the row's `status`, which is why the row
+    travels with the exception: `replayable(prior)` is the only question a
+    caller should have to ask.
+    """
+
     def __init__(self, prior: dict[str, Any]):
         super().__init__("idempotency key already used")
         self.prior = prior
+
+
+# The journal's terminal statuses. A row in any other state is an attempt whose
+# fate is unknown -- it is still `running`, or a previous incarnation died and
+# left it that way.
+STATUS_OK = "ok"
+STATUS_FAILED = "failed"
+STATUS_TIMEOUT = "timeout"
+STATUS_REJECTED = "rejected"
+STATUS_INTERRUPTED = "interrupted"
+
+#: Statuses that are a decided outcome: the attempt finished, and the answer is
+#: whatever it finished with.
+TERMINAL_STATUSES = frozenset({STATUS_OK, STATUS_FAILED, STATUS_TIMEOUT, STATUS_REJECTED})
+
+
+def replayable(prior: dict[str, Any] | None) -> bool:
+    """Whether `prior`'s outcome may be handed back in place of a re-execution.
+
+    Only a completed success. This is the whole invariant the idempotency key
+    exists to protect, and it is deliberately narrow:
+
+    * `ok` -- the work demonstrably happened. Replaying it is the point: a
+      duplicate call returns the first call's answer instead of doing it twice.
+    * `failed` / `timeout` / `rejected` -- the attempt finished and did *not*
+      do the work. These are retries, not duplicates. Replaying them would
+      report a failure as though it were the original outcome, and -- because
+      the caller reads `ok=True` off the envelope -- would convert "it broke"
+      into "it worked", which is the one conversion nothing downstream can undo.
+    * `running` / `interrupted` (or any unknown status) -- the attempt may or
+      may not have taken effect. This is `STATUS_OUTCOME_UNKNOWN` in the
+      sub-agent vocabulary, and it is not the same as either of the above: the
+      work might be half-done. Reporting success would be a lie; reporting
+      failure would invite a blind re-execution over a half-applied change.
+      Neither is this layer's to decide, so it is not replayed at all.
+    """
+    return bool(prior) and prior.get("status") == STATUS_OK
 
 
 class ActionJournal:
@@ -79,6 +124,31 @@ class ActionJournal:
                 return record
         return None
 
+    async def _release(self, prior: dict[str, Any]) -> None:
+        """Detach a decided non-success from its key so the retry can claim it.
+
+        The column is `UNIQUE`, so a failed attempt left its key permanently
+        unusable: every later attempt to do the same work collided with the
+        corpse of the attempt that had already failed. Releasing sets the key
+        to NULL rather than deleting the row -- the row is the record of what
+        was tried and how it went, and a journal that drops it to make room for
+        a retry is not a journal.
+
+        An indeterminate row (`running`, `interrupted`) is never released here.
+        Its attempt may still be in effect somewhere, and handing its key to
+        another attempt is how two attempts come to own one piece of work.
+        """
+        action_id = prior.get("id") if isinstance(prior, dict) else None
+        if not action_id:
+            return
+        if self.db is not None:
+            await self.db.execute(
+                "UPDATE action_journal SET idempotency_key = NULL WHERE id = $1",
+                action_id,
+            )
+            return
+        await self._file_update(action_id, {"idempotency_key": None})
+
     async def begin(
         self,
         *,
@@ -94,7 +164,21 @@ class ActionJournal:
         if idempotency_key:
             prior = await self.find_by_idempotency(idempotency_key)
             if prior is not None:
-                raise DuplicateAction(prior)
+                if replayable(prior):
+                    raise DuplicateAction(prior)
+                if prior.get("status") in TERMINAL_STATUSES:
+                    # A decided non-success: this is the retry it was blocking,
+                    # so the key is released and the retry is journalled as its
+                    # own attempt rather than answered with the old failure.
+                    await self._release(prior)
+                else:
+                    # Indeterminate (`running`, `interrupted`). The attempt may
+                    # still be in effect, so it is neither replayed nor
+                    # released: re-executing here would put two attempts on one
+                    # piece of work, and the key is UNIQUE so a second row
+                    # could not be written anyway. The caller is handed the row
+                    # so it can report an unknown outcome instead of a success.
+                    raise DuplicateAction(prior)
         if self.db is not None:
             await self.db.execute(
                 "INSERT INTO action_journal (id, ts_start, thread_id, intention_id, tool, "

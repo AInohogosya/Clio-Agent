@@ -24,7 +24,7 @@ import {
   type ClientSnapshot,
   type Settings,
 } from '@project-phone/core';
-import { doorRefusalText, doorSummary, findConversation, resolveDoor } from './channels.js';
+import { doorRefusalText, doorSummary, findConversation, resolveDoor, type DoorChoice, type DoorRefusal } from './channels.js';
 import { saveConfig, watchConfig, type PhoneConfig } from './config.js';
 import {
   appendDebug,
@@ -339,31 +339,7 @@ export function useAgentSession(
    * switching anyway — turns all three into a question that is deliberated on and
    * never answered.
    */
-  const setChannel = useCallback((name: string) => {
-    const wanted = name.trim();
-    if (!wanted) {
-      // A bare `/channel` reports, the way a bare `/name` reports the name and a
-      // bare `/person` reports the person. It is the form a reader reaches for
-      // when they want to know where their words are going, and answering it
-      // with silence would make the reporting form a no-op that looks like a
-      // broken command.
-      say(t('channelViaLabel', { channel: channelLabel(channel) }), 'accent');
-      return;
-    }
-    // A conversation id — `{door}:{address}` — is the key the transcript files
-    // messages under and the browser's people list selects on, so it is the
-    // spelling that opens one conversation here too. A name nothing holds falls
-    // through to the refusals below, which name the doors that would have worked.
-    const opened = findConversation(conversations, wanted);
-    if (opened) {
-      setChannelState(opened.channel);
-      setAddressState(opened.person);
-      agent.setChannel(opened.channel);
-      agent.setAddress(opened.person || null);
-      say(t('channelViaLabel', { channel: channelLabel(opened.channel) }), 'accent');
-      return;
-    }
-    const choice = resolveDoor(doors, client.getSnapshot().settings.agentPerson, wanted);
+  const moveThrough = useCallback((choice: DoorChoice | DoorRefusal) => {
     if (!choice.ok) {
       say(doorRefusalText(choice, client.getSnapshot().settings.language), 'warning');
       return;
@@ -388,7 +364,56 @@ export function useAgentSession(
     // and a toast reading `via slack` is indistinguishable from one reading
     // `via web`. The id is in `/channels` for anybody who needs to type it.
     say(t('channelViaLabel', { channel: channelLabel(choice.channel) }), 'accent');
-  }, [agent, channel, client, conversations, doors, say, t]);
+  }, [agent, client, say, t]);
+
+  const setChannel = useCallback((name: string) => {
+    const wanted = name.trim();
+    if (!wanted) {
+      // A bare `/channel` reports, the way a bare `/name` reports the name and a
+      // bare `/person` reports the person. It is the form a reader reaches for
+      // when they want to know where their words are going, and answering it
+      // with silence would make the reporting form a no-op that looks like a
+      // broken command.
+      say(t('channelViaLabel', { channel: channelLabel(channel) }), 'accent');
+      return;
+    }
+    // A conversation id — `{door}:{address}` — is the key the transcript files
+    // messages under and the browser's people list selects on, so it is the
+    // spelling that opens one conversation here too. A name nothing holds falls
+    // through to the refusals below, which name the doors that would have worked.
+    // A row number is the same list the channels panel draws — conversations
+    // first, then doors — because `/channel 3` is the spelling that does not
+    // ask anybody to retype an id the panel already showed.
+    const row = /^\d+$/.test(wanted) ? Number.parseInt(wanted, 10) : null;
+    if (row !== null) {
+      const conversation = conversations[row - 1];
+      if (conversation) {
+        setChannelState(conversation.channel);
+        setAddressState(conversation.person);
+        agent.setChannel(conversation.channel);
+        agent.setAddress(conversation.person || null);
+        say(t('channelViaLabel', { channel: channelLabel(conversation.channel) }), 'accent');
+        return;
+      }
+      const door = doors[row - 1 - conversations.length];
+      if (!door) {
+        say(t('cliChannelsRange', { count: conversations.length + doors.length }), 'warning');
+        return;
+      }
+      moveThrough(resolveDoor(doors, client.getSnapshot().settings.agentPerson, door.id));
+      return;
+    }
+    const opened = findConversation(conversations, wanted);
+    if (opened) {
+      setChannelState(opened.channel);
+      setAddressState(opened.person);
+      agent.setChannel(opened.channel);
+      agent.setAddress(opened.person || null);
+      say(t('channelViaLabel', { channel: channelLabel(opened.channel) }), 'accent');
+      return;
+    }
+    moveThrough(resolveDoor(doors, client.getSnapshot().settings.agentPerson, wanted));
+  }, [agent, channel, client, conversations, doors, moveThrough, say, t]);
 
   useEffect(() => bindAgentConversation(client, agent), [agent, client]);
 

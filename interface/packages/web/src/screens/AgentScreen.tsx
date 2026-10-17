@@ -751,7 +751,11 @@ function BudgetPane({ view, t, language }: { view: AgentView; t: AgentT; languag
             {view.budget.byModel.map((row) => (
               <li className="flex items-baseline justify-between gap-2 text-xs" key={row.model}>
                 <span className="truncate text-[var(--ink-muted)]">{row.model}</span>
-                <span className="font-mono text-[var(--ink)]">{formatUsd(row.total, language)}</span>
+                {/* A zero here means the route is priced at zero, and $0.00
+                    reads like a malfunction or a rounding artifact. Saying
+                    "free" is the fact; it is also the answer to the question
+                    the pane exists for. */}
+                <span className="font-mono text-[var(--ink)]">{row.total > 0 ? formatUsd(row.total, language) : t('budgetFree')}</span>
               </li>
             ))}
           </ul>

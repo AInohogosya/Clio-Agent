@@ -19,6 +19,104 @@ from ethos.schemas.tools import ToolCall, ToolSpec
 _NAME_RE = re.compile(r"[^a-zA-Z0-9_-]")
 
 
+# ------------------------------------------------------- usage accounting
+#
+# Every provider reports its token counts in a different shape, and the shapes
+# disagree about whether the total already contains its parts:
+#
+#   Anthropic   input_tokens                EXCLUDES cache read and cache write
+#               output_tokens               reasoning is inside output
+#   OpenAI      prompt_tokens               INCLUDES cached_tokens
+#               completion_tokens           INCLUDES reasoning_tokens
+#   Google      promptTokenCount           INCLUDES cachedContentTokenCount
+#               candidatesTokenCount       EXCLUDES thoughtsTokenCount
+#
+# Handing two of those shapes to one `input*rate + cached*cached_rate` formula
+# bills the cached tokens twice, at the full input rate and again at the
+# discount. The rule below is the whole fix: a total that already contains a
+# part has that part subtracted back out, and only then does it become
+# `input_tokens`.
+
+def _count(value: Any) -> int:
+    try:
+        number = int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+    return max(0, number)
+
+
+def _split_total(total: Any, part: Any) -> tuple[int, int]:
+    """Split a reported total into (the rest, the part), never going negative.
+
+    A provider that reports a part larger than its own total is describing
+    something other than what we asked for; clamping to zero keeps that from
+    turning into a negative token count and a cost that adds backwards.
+    """
+    whole = _count(total)
+    carved = min(_count(part), whole)
+    return whole - carved, carved
+
+
+def usage_from_disjoint(
+    input_tokens: Any = 0,
+    cached_input_tokens: Any = 0,
+    cache_write_tokens: Any = 0,
+    output_tokens: Any = 0,
+    reasoning_tokens: Any = 0,
+) -> Usage:
+    """For a provider whose reported counters do not overlap."""
+    return Usage(
+        input_tokens=_count(input_tokens),
+        cached_input_tokens=_count(cached_input_tokens),
+        cache_write_tokens=_count(cache_write_tokens),
+        output_tokens=_count(output_tokens),
+        reasoning_tokens=_count(reasoning_tokens),
+    )
+
+
+def usage_from_inclusive_prompt(
+    prompt_total: Any, cached: Any = 0,
+) -> tuple[int, int]:
+    """(input, cached) from a prompt total that already contains the cached part.
+
+    No cache-write term: the providers that report an inclusive prompt total
+    (OpenAI, Google) do not break out what storing a prefix cost, so there is
+    no number to split out. Anthropic, which does report it, uses the disjoint
+    path instead.
+    """
+    return _split_total(prompt_total, cached)
+
+
+def usage_from_inclusive_completion(
+    completion_total: Any, reasoning: Any = 0,
+) -> tuple[int, int]:
+    """(output, reasoning) from a completion total that contains its reasoning."""
+    return _split_total(completion_total, reasoning)
+
+
+def billed_cost_of(data: dict[str, Any]) -> float | None:
+    """The provider's own figure for what it charged, when it publishes one.
+
+    OpenRouter returns an exact `usage.cost` per request. Where that exists it
+    is not an estimate to be checked against a rate card -- it is the invoice
+    line. `None` means the provider did not say, which is a different fact
+    from having said zero.
+    """
+    usage_data = data.get("usage")
+    if not isinstance(usage_data, dict):
+        return None
+    raw = usage_data.get("cost")
+    if raw is None:
+        return None
+    try:
+        cost = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if cost != cost or cost < 0:  # NaN or negative
+        return None
+    return cost
+
+
 def sanitize_tool_name(name: str) -> str:
     return _NAME_RE.sub("__", name)[:64]
 
@@ -231,10 +329,15 @@ def response_from_anthropic(
                 arguments=dict(block.get("input") or {}),
             ))
     usage_data = data.get("usage", {}) or {}
-    usage = Usage(
-        input_tokens=int(usage_data.get("input_tokens", 0)),
-        cached_input_tokens=int(usage_data.get("cache_read_input_tokens", 0)),
-        output_tokens=int(usage_data.get("output_tokens", 0)),
+    # Anthropic's counters do not overlap: `input_tokens` is already the
+    # uncached remainder, and the two cache counters are separate. This is the
+    # one shape that maps across unchanged -- which is exactly why the other
+    # providers need a subtraction rather than a copy.
+    usage = usage_from_disjoint(
+        input_tokens=usage_data.get("input_tokens", 0),
+        cached_input_tokens=usage_data.get("cache_read_input_tokens", 0),
+        cache_write_tokens=usage_data.get("cache_creation_input_tokens", 0),
+        output_tokens=usage_data.get("output_tokens", 0),
     )
     return NormalizedResponse(
         text="".join(text_parts) or None,
@@ -246,6 +349,7 @@ def response_from_anthropic(
         model=model,
         cache_creation=bool(usage_data.get("cache_creation_input_tokens")),
         cache_read=bool(usage_data.get("cache_read_input_tokens")),
+        billed_cost_usd=billed_cost_of(data),
         raw=data,
     )
 
@@ -346,11 +450,21 @@ def response_from_openai_responses(
                 arguments=_json_loads_args(item.get("arguments")),
             ))
     usage_data = data.get("usage", {}) or {}
+    # `input_tokens` and `output_tokens` are totals: the first already contains
+    # the cached prompt, the second already contains the reasoning.
+    input_tokens, cached_tokens = usage_from_inclusive_prompt(
+        usage_data.get("input_tokens", 0),
+        (usage_data.get("input_tokens_details") or {}).get("cached_tokens", 0),
+    )
+    output_tokens, reasoning_tokens = usage_from_inclusive_completion(
+        usage_data.get("output_tokens", 0),
+        (usage_data.get("output_tokens_details") or {}).get("reasoning_tokens", 0),
+    )
     usage = Usage(
-        input_tokens=int(usage_data.get("input_tokens", 0)),
-        cached_input_tokens=int((usage_data.get("input_tokens_details") or {}).get("cached_tokens", 0)),
-        output_tokens=int(usage_data.get("output_tokens", 0)),
-        reasoning_tokens=int((usage_data.get("output_tokens_details") or {}).get("reasoning_tokens", 0)),
+        input_tokens=input_tokens,
+        cached_input_tokens=cached_tokens,
+        output_tokens=output_tokens,
+        reasoning_tokens=reasoning_tokens,
     )
     return NormalizedResponse(
         text="".join(text_parts) or None,
@@ -360,6 +474,7 @@ def response_from_openai_responses(
         finish_reason=data.get("status"),
         provider=provider,
         model=model,
+        billed_cost_usd=billed_cost_of(data),
         raw=data,
     )
 
@@ -485,11 +600,19 @@ def response_from_google(
                     arguments=dict(fc.get("args") or {}),
                 ))
     usage_data = data.get("usageMetadata", {}) or {}
+    # Google is the asymmetric one: `promptTokenCount` contains the cached
+    # tokens, but `candidatesTokenCount` does *not* contain
+    # `thoughtsTokenCount`. Assuming either half behaves like OpenAI or like
+    # Anthropic gets one of the two wrong.
+    input_tokens, cached_tokens = usage_from_inclusive_prompt(
+        usage_data.get("promptTokenCount", 0),
+        usage_data.get("cachedContentTokenCount", 0),
+    )
     usage = Usage(
-        input_tokens=int(usage_data.get("promptTokenCount", 0)),
-        cached_input_tokens=int(usage_data.get("cachedContentTokenCount", 0)),
-        output_tokens=int(usage_data.get("candidatesTokenCount", 0)),
-        reasoning_tokens=int(usage_data.get("thoughtsTokenCount", 0)),
+        input_tokens=input_tokens,
+        cached_input_tokens=cached_tokens,
+        output_tokens=usage_data.get("candidatesTokenCount", 0),
+        reasoning_tokens=usage_data.get("thoughtsTokenCount", 0),
     )
     finish = (candidates[0].get("finishReason") if candidates else None)
     return NormalizedResponse(
@@ -500,6 +623,7 @@ def response_from_google(
         finish_reason=finish,
         provider=provider,
         model=model,
+        cache_read=bool(cached_tokens),
         raw=data,
     )
 
@@ -619,11 +743,23 @@ def response_from_openai_compat(
             raw={"details": list(details)} if isinstance(details, list) and details else None,
         ))
     usage_data = data.get("usage", {}) or {}
+    # Same inclusive shape as OpenAI chat completions: `prompt_tokens` contains
+    # the cached prompt and `completion_tokens` contains the reasoning. Most of
+    # this catalogue is reached through this adapter, which is why the free
+    # models on it were being billed twice over on every cached turn.
+    input_tokens, cached_tokens = usage_from_inclusive_prompt(
+        usage_data.get("prompt_tokens", 0),
+        (usage_data.get("prompt_tokens_details") or {}).get("cached_tokens", 0),
+    )
+    output_tokens, reasoning_tokens = usage_from_inclusive_completion(
+        usage_data.get("completion_tokens", 0),
+        (usage_data.get("completion_tokens_details") or {}).get("reasoning_tokens", 0),
+    )
     usage = Usage(
-        input_tokens=int(usage_data.get("prompt_tokens", 0)),
-        cached_input_tokens=int((usage_data.get("prompt_tokens_details") or {}).get("cached_tokens", 0)),
-        output_tokens=int(usage_data.get("completion_tokens", 0)),
-        reasoning_tokens=int((usage_data.get("completion_tokens_details") or {}).get("reasoning_tokens", 0)),
+        input_tokens=input_tokens,
+        cached_input_tokens=cached_tokens,
+        output_tokens=output_tokens,
+        reasoning_tokens=reasoning_tokens,
     )
     return NormalizedResponse(
         text=message.get("content") or None,
@@ -633,6 +769,8 @@ def response_from_openai_compat(
         finish_reason=choices[0].get("finish_reason") if choices else None,
         provider=provider,
         model=model,
+        cache_read=bool(cached_tokens),
+        billed_cost_usd=billed_cost_of(data),
         raw=data,
     )
 

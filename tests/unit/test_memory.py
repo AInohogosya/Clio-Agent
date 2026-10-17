@@ -152,6 +152,69 @@ async def test_retriever_no_rows(memory_config):
     assert len(result) == 0
 
 
+class _RecordingDB:
+    """Keeps every statement it is asked to run, for asserting on them."""
+
+    def __init__(self) -> None:
+        self.statements: list[tuple[str, tuple]] = []
+
+    async def execute(self, sql: str, *args) -> None:
+        self.statements.append((sql, args))
+
+    async def fetch(self, *args, **kwargs):
+        return []
+
+    async def fetchrow(self, *args, **kwargs):
+        return None
+
+
+async def test_a_bookmark_merges_into_the_resume_state_rather_than_replacing_it(memory_config):
+    """The bug that made a promised task unfinishable without ever failing.
+
+    `resume_state` is one column with two writers: the solver loop keeps the
+    goal's whole working record there -- understanding, plan, step attempts,
+    strategy number, artifacts, backoff -- and the bookmark writes eight fields
+    of human-readable summary on top. `set_bookmark` used to write the bookmark
+    as the *whole* value, and the two key sets are disjoint enough that every
+    bookmark round-trip assertion still passed. What it actually cost was the
+    solver's entire state, on every interrupt and every social turn: the next
+    `advance` found no `understanding` and no `plan` and started the goal over
+    from phase one, at full cost, for as long as anybody kept talking to the
+    agent. It did not freeze and did not error -- it re-understood and
+    re-planned forever, and looked alive in every table that counted activity.
+
+    A live agent was found with an intention `in_progress` whose resume state
+    held nothing but a bookmark, and an owner who had asked for the same task
+    four times.
+    """
+    import json as _json
+    from uuid import uuid4
+
+    from ethos.memory.store import MemoryStore
+    from ethos.schemas.gsl import Bookmark
+
+    db = _RecordingDB()
+    store = MemoryStore(db, HashingEmbedder(1024), load_config("config"))
+    intention_id = uuid4()
+
+    await store.set_bookmark(intention_id, Bookmark(mental_context="mid-step, s2 of 4"))
+
+    assert len(db.statements) == 1, "one write, not a read-modify-write sequence"
+    sql, args = db.statements[0]
+    assert "||" in sql, (
+        "the bookmark must merge into the resume state, not replace it: a plain "
+        "SET is the wipe, and every promise the agent was keeping died on it"
+    )
+    patch = _json.loads(args[0])
+    assert set(patch) == {"bookmarked_at", "mental_context"}, (
+        "a bookmark is a partial snapshot: the empty fields a `Life.bookmark` "
+        "builds (step_id, approach_id, last_action, partial_results, "
+        "next_planned_step, open_hypotheses) must not be written at all, or "
+        "the merge erases with nulls what it kept"
+    )
+    assert args[1] == intention_id
+
+
 # --------------------------------------------------------------------------
 # The read is total
 

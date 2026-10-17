@@ -13,10 +13,10 @@ export type Translator = ReturnType<typeof createTranslator>;
  * conversation is two things competing for the same rows, and the transcript is
  * the thing a reader scrolls back through.
  */
-export type Screen = 'chat' | 'settings' | 'presence' | 'intentions' | 'actions' | 'budget' | 'guardian' | 'channels';
+export type Screen = 'chat' | 'settings' | 'presence' | 'intentions' | 'actions' | 'thoughts' | 'budget' | 'guardian' | 'channels';
 
 /** Every screen that is not the conversation, and so is left by the same key. */
-export const PANEL_SCREENS: readonly Screen[] = ['presence', 'intentions', 'actions', 'budget', 'guardian', 'channels'];
+export const PANEL_SCREENS: readonly Screen[] = ['presence', 'intentions', 'actions', 'thoughts', 'budget', 'guardian', 'channels'];
 
 export type Overlay = 'none' | 'help';
 
@@ -43,6 +43,8 @@ export interface ComposerState {
   screen: Screen;
   overlay: Overlay;
   settings: Settings;
+  /** Whether the emergency stop is armed and waiting for its confirmation. */
+  armed?: boolean;
 }
 
 /** Everything a keystroke may change. */
@@ -104,17 +106,32 @@ export interface ComposerActions {
    * going.
    */
   agentChannel?: (argument: string) => void;
+  /**
+   * Scrolls the open panel by `delta` rows.
+   *
+   * Panels are read, and a reader who can only see the first twenty intentions
+   * is a reader who has been shown a summary and told it was the list. Wired
+   * like the transcript's own scroll so the same keys move whatever is on
+   * screen.
+   */
+  agentPanelScroll?: (delta: number) => void;
+  /** Arms and disarms the emergency stop. Absent where there is no agent. */
+  setArmed?: (armed: boolean) => void;
 }
 
-/** The verb a lifecycle command word means, or `null` for an unknown one. */
-export const LIFECYCLE_WORDS: Record<string, (typeof AGENT_CONTROL_ACTIONS)[number]> = {
+/** The verb a lifecycle command word means, or `null` for an unknown one.
+ * `/emergency` is deliberately absent: an emergency stop is the one verb that
+ * is armed first and fired second, the way the browser's two-step button arms
+ * it. Firing on the same keystroke that arms would make the most destructive
+ * control on the surface the easiest to trigger by a typo.
+ */
+export const LIFECYCLE_WORDS: Record<string, Exclude<(typeof AGENT_CONTROL_ACTIONS)[number], 'emergency_stop'>> = {
   hold: 'pause_all',
   pause: 'pause_all',
   'hold-actions': 'pause_actions',
   'pause-actions': 'pause_actions',
   resume: 'resume',
   stop: 'stop',
-  emergency: 'emergency_stop',
 };
 
 /**
@@ -162,6 +179,24 @@ export function deleteBefore(input: string, cursor: number): DraftEdit | null {
 export function nextAccent(accent: string, argument: string): string {
   if (/^#[0-9a-f]{6}$/i.test(argument)) return argument.toUpperCase();
   return accentStep(accent, 1);
+}
+
+/**
+ * The one entry whose id starts with `wanted`, or `null` when none or several do.
+ *
+ * The panels show short ids, so the commands that act on them accept the short
+ * form: an exact match wins, a unique prefix is resolved, and an ambiguous or
+ * empty one refuses rather than guessing — an undo that fired the wrong action
+ * would be worse than one that had to be typed in full.
+ */
+export function resolveByPrefix(
+  entries: ReadonlyArray<{ id: string; tool: string }>,
+  wanted: string,
+): { id: string; tool: string } | null {
+  const exact = entries.find((entry) => entry.id === wanted);
+  if (exact) return exact;
+  const matches = entries.filter((entry) => entry.id.startsWith(wanted) && wanted.length > 0);
+  return matches.length === 1 ? matches[0]! : null;
 }
 
 /**
@@ -232,6 +267,45 @@ export function runCommand(message: string, state: ComposerState, actions: Compo
     actions.agentControl(preview);
     return true;
   }
+  // Emergency stop: armed first, fired second — the same two steps the
+  // browser's header button keeps. A bare `/emergency` arms; `/emergency
+  // confirm` fires; `/emergency cancel` stands down. Any other word is refused
+  // with the spelling that works, because a near-miss on this command must
+  // never read as "nothing happened, try anything".
+  if (name === 'emergency') {
+    const word = argument.toLowerCase();
+    if (actions.setArmed) {
+      if (word === 'confirm') {
+        if (state.armed === true) {
+          actions.setArmed(false);
+          actions.agentControl?.('emergency_stop');
+        } else {
+          actions.say(actions.t('emergencyUsage'), 'warning');
+        }
+        return true;
+      }
+      if (word === 'cancel') {
+        actions.setArmed(false);
+        actions.say(actions.t('controlCancel'), 'accent');
+        return true;
+      }
+      if (word) {
+        actions.say(actions.t('emergencyUsage'), 'warning');
+        return true;
+      }
+      if (state.armed === true) {
+        actions.say(actions.t('emergencyUsage'), 'warning');
+        return true;
+      }
+      actions.setArmed(true);
+      actions.say(actions.t('controlArmEmergency'), 'warning');
+      return true;
+    }
+    // No arming wired (a surface without the state for it): the word fires
+    // directly, as it always did, rather than silently doing nothing.
+    if (!word) actions.agentControl?.('emergency_stop');
+    return true;
+  }
   const lifecycle = LIFECYCLE_WORDS[name];
   if (lifecycle) {
     if (!actions.agentControl) {
@@ -247,6 +321,9 @@ export function runCommand(message: string, state: ComposerState, actions: Compo
     intents: 'intentions',
     actions: 'actions',
     journal: 'actions',
+    // Its own screen, as the browser's own tab is: folding the thought stream
+    // into presence made one panel answer two questions and truncated both.
+    thoughts: 'thoughts',
     budget: 'budget',
     spend: 'budget',
     guardian: 'guardian',
@@ -349,19 +426,6 @@ export function useComposerInput(state: ComposerState, actions: ComposerActions)
       else actions.setScreen('settings');
       return;
     }
-    if (isCtrl(value, key, 'p')) {
-      actions.cyclePanel?.(false);
-      return;
-    }
-    if (isCtrl(value, key, 'l')) {
-      actions.clearConversation();
-      return;
-    }
-    if (isCtrl(value, key, 'k')) {
-      actions.setInput('');
-      actions.setCursor(0);
-      return;
-    }
 
     // Escape unwinds the topmost thing on screen, in order, so the way out is
     // always the way back from wherever the reader is. The help panel says
@@ -387,13 +451,37 @@ export function useComposerInput(state: ComposerState, actions: ComposerActions)
       return;
     }
 
-    // A panel is modal: nothing below it takes keystrokes, so a keystroke
-    // cannot land in a composer the reader cannot see.
+    // The help panel replaces the whole view, so nothing behind it takes
+    // keystrokes: a chord that worked through the panel would act on a
+    // composer or a panel the reader cannot see.
     if (overlay === 'help') return;
 
-    // Only the conversation has a composer. A panel is read, and a keystroke
-    // that landed in a composer nobody can see would be a message nobody sent.
-    if (screen !== 'chat') return;
+    if (isCtrl(value, key, 'p')) {
+      actions.cyclePanel?.(false);
+      return;
+    }
+    if (isCtrl(value, key, 'l')) {
+      actions.clearConversation();
+      return;
+    }
+    if (isCtrl(value, key, 'k')) {
+      actions.setInput('');
+      actions.setCursor(0);
+      return;
+    }
+
+    // A panel is read, and its own scroll moves its own rows: the same keys
+    // that scroll the transcript scroll whatever the reader is looking at.
+    // Tab still steps through the panels from here — a reader who opened one
+    // panel with Tab must not have to close it to reach the next.
+    if (screen !== 'chat') {
+      if (key.pageUp) actions.agentPanelScroll?.(-page);
+      else if (key.pageDown) actions.agentPanelScroll?.(page);
+      else if (key.upArrow) actions.agentPanelScroll?.(-1);
+      else if (key.downArrow) actions.agentPanelScroll?.(1);
+      else if (key.tab) actions.cyclePanel?.(key.shift === true);
+      return;
+    }
 
     if (key.pageDown) {
       actions.setScroll((current) => Math.min(limit, current + page));

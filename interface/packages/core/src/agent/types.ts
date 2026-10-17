@@ -1165,6 +1165,17 @@ export interface AgentDoorCredential {
   present: boolean;
   hint: string;
   envPresent: boolean;
+  /**
+   * Whether this one can only come from the environment.
+   *
+   * For a credential longer than a text field: the Google Chat private key is a
+   * PEM block around 1700 characters and this program caps a credential at
+   * 1024, so a box for it would accept a paste and the write underneath would
+   * discard it as unreadable. A form that says where the value lives is
+   * recoverable; one that shows an empty box and reports a successful save is
+   * not.
+   */
+  envOnly?: boolean;
 }
 
 /**
@@ -1272,6 +1283,7 @@ export function readAgentChannelSetup(value: unknown): AgentChannelSetup {
                     present: credential.present === true,
                     hint: text(credential.hint, LIMITS.code).trim(),
                     envPresent: credential.env_present === true,
+                    envOnly: credential.env_only === true,
                   }
                 : null;
             })
@@ -1390,6 +1402,13 @@ export function channelLabel(channel: string): string {
     slack: 'Slack',
     discord: 'Discord',
     email: 'Email',
+    // Spelled the way each vendor styles its own name, which is the only spelling
+    // anybody using this is likely to type. `LINE` is the exception that proves
+    // the rule: it is not a word, so a title-cased "Line" would be read as
+    // something else entirely.
+    line: 'LINE',
+    teams: 'Microsoft Teams',
+    googlechat: 'Google Chat',
     // The shared receiver, which is not a door anybody talks on and is still
     // something a person has to be able to name while setting up WhatsApp or
     // Slack: it is the other half of both of them.

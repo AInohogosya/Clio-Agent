@@ -24,6 +24,11 @@ Authenticator = Callable[[dict[str, str], bytes], bool]
 # See `WebhookReceiver._serve` for why answering one of these is safe.
 ChallengeProbe = Callable[[dict[str, Any]], "str | None"]
 
+# A route's answer to "somebody is asking whether this URL is there". Given
+# nothing, because the only way to ask is to make the request. Returns `None` for
+# a route with no reachability check, and the body to answer with otherwise.
+PingProbe = Callable[[], "str | None"]
+
 Handler = Callable[[dict[str, Any]], Awaitable[None]]
 
 # Enough for a signed webhook request and no more. A real one carries a handful
@@ -132,10 +137,11 @@ class WebhookReceiver:
         verify_token: str | None = None,
         authentic: Authenticator | None = None,
         challenge: ChallengeProbe | None = None,
+        ping: PingProbe | None = None,
     ) -> None:
         self.routes[path] = WebhookRoute(path=path, secret=secret, handler=handler,
                                          verify_token=verify_token, authentic=authentic,
-                                         challenge=challenge)
+                                         challenge=challenge, ping=ping)
 
     async def start(self) -> None:
         self._server = await asyncio.start_server(self._handle, self.host, self.port)
@@ -241,14 +247,31 @@ class WebhookReceiver:
         await _respond(writer, 200, "ok")
 
     async def _handle_get(self, route: WebhookRoute, query: str, writer: asyncio.StreamWriter) -> None:
-        """The subscribe handshake: a URL proves itself once, by echoing a token.
+        """What a `GET` on a door is: either a reachability probe or the handshake.
 
-        This is the one unauthenticated write in the system, and it writes
-        nothing. It answers a challenge with the operator's own token, which
-        changes nothing about this process; what it establishes is that whoever
-        configured the webhook at the provider is the operator, because only they
-        know the token.
+        Two different questions on one method, told apart by what the route was
+        built with rather than by what the request contains.
+
+        **A reachability probe.** LINE's developer console has a "Verify" button
+        that GETs the webhook URL once and marks the door invalid on anything
+        that is not a 2xx — a check with nothing in it to prove, because at that
+        point the operator has not yet been asked for the channel secret in any
+        form this listener could check. `ping` is how a route says "a GET here
+        means somebody is checking the URL is there", and answering it is as
+        safe as the challenge below: the reply is a constant, nothing is written,
+        and no handler runs.
+
+        **The subscribe handshake**, which is the one unauthenticated write in the
+        system and which still writes nothing. A `GET` carrying a token the
+        operator chose, proved by echoing that token back. What it establishes is
+        that whoever configured the webhook at the provider is the operator,
+        because only they know the token.
         """
+        if route.ping is not None:
+            answer = route.ping()
+            if isinstance(answer, str):
+                await _respond_plain(writer, 200, answer)
+                return
         params = _parse_query(query)
         if "hub.challenge" not in params:
             await _respond(writer, 404, "not_found")
@@ -265,14 +288,15 @@ class WebhookReceiver:
 class WebhookRoute:
     """One path on the receiver, and the secret that speaks for it.
 
-    Three different proofs, because the providers ask for three different things.
-    The handshake is a `GET` carrying a token the operator chose, and it is proved
-    by echoing that token. Everything after it is a `POST` whose body Meta signed
-    with the app secret, proved by recomputing that signature over the bytes
-    exactly as they arrived — and Slack signs the same kind of body the same way
-    except that it mixes a timestamp and its own version prefix into the string
-    being signed, which is why the scheme is a value on the route rather than a
-    method on this class.
+    Four different proofs, because the providers ask for four different things.
+    The reachability check is a `GET` with nothing in it, answered with a
+    constant. The handshake is a `GET` carrying a token the operator chose, and
+    it is proved by echoing that token. Everything after it is a `POST` whose
+    body Meta signed with the app secret, proved by recomputing that signature
+    over the bytes exactly as they arrived — and Slack signs the same kind of body
+    the same way except that it mixes a timestamp and its own version prefix into
+    the string being signed. Which is why each scheme is a value on the route
+    rather than a method on this class.
     """
 
     def __init__(
@@ -283,6 +307,7 @@ class WebhookRoute:
         verify_token: str | None = None,
         authentic: Authenticator | None = None,
         challenge: ChallengeProbe | None = None,
+        ping: PingProbe | None = None,
     ):
         self.path = path
         self.secret = secret
@@ -290,6 +315,7 @@ class WebhookRoute:
         self.verify_token = verify_token
         self.authenticator = authentic
         self.challenge = challenge
+        self.ping = ping
 
     def authentic_body(self, headers: dict[str, str], raw: bytes) -> bool:
         """Whether a body may become a message.

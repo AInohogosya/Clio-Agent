@@ -527,7 +527,7 @@ def bring_up(
         )
         print("", flush=True)
         _offer_page()
-        print("  settings → Messaging                 open a door (Telegram, WhatsApp, Slack, Discord, email)")
+        print("  settings → Messaging                 open a door (Telegram, WhatsApp, Slack, Discord, email, LINE, Teams, Google Chat)")
         print("  ethos stop                            stop the agent")
         print("  ethos logs                            follow its logs")
         print("", flush=True)
@@ -546,7 +546,7 @@ def bring_up(
     # rather than a sentence: the doors are configured in the settings screen,
     # in `phone channels set`, and in the agent's own home. The `doctor` run
     # above already said which of them are open and what each is missing.
-    print("  settings → Messaging                 open a door (Telegram, WhatsApp, Slack, Discord, email)")
+    print("  settings → Messaging                 open a door (Telegram, WhatsApp, Slack, Discord, email, LINE, Teams, Google Chat)")
     print("  ethos stop                            stop the agent")
     print("  ethos logs                            follow its logs")
     print("", flush=True)

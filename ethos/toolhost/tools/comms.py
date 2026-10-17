@@ -9,7 +9,10 @@ from ethos.toolhost.server import Tool, ToolContext, Toolhost
 #: decides where the reply is delivered and which conversation the row is filed
 #: under, so a free-text one is a way to file the agent's own words under a
 #: conversation nobody can find.
-SEND_CHANNELS = ("web", "cli", "telegram", "whatsapp", "slack", "discord", "email")
+SEND_CHANNELS = (
+    "web", "cli", "telegram", "whatsapp", "slack", "discord", "email",
+    "line", "teams", "googlechat",
+)
 
 
 class CommSendTool(Tool):

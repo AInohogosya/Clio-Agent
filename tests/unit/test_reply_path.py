@@ -3,21 +3,26 @@ from __future__ import annotations
 import ast
 import asyncio
 import tokenize
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from uuid import uuid4
 
 from ethos.engine.attention import Attention
-from ethos.engine.drives import Motivation
+from ethos.engine.drives import (
+    DriveInputs,
+    Motivation,
+    propose_impulses,
+    resolve_impulse_target,
+)
 from ethos.engine.life import Life, LifeDeps
 from ethos.engine.rhythm import RhythmController
 from ethos.gateway.embeddings import HashingEmbedder
 from ethos.prompts.deliberation import social_deliberation_messages
-from ethos.schemas.events import EventKind
-from ethos.schemas.gsl import Decision, Outcome
-from ethos.schemas.messages import Message
+from ethos.schemas.events import Appraisal, EventKind
+from ethos.schemas.gsl import Decision, Focus, IntentionRecord, Outcome
+from ethos.schemas.messages import Message, SocialDecision
 from ethos.social.deliberation import SocialCognition
 from ethos.social.etiquette import OutboundPipeline
 from ethos.social.relationships import RelationshipStore
@@ -1785,6 +1790,222 @@ def test_a_message_that_asked_for_nothing_still_releases_its_focus() -> None:
         "an empty commission is not work"
     assert life.next_focus(decision, Outcome(commission={"intention_id": ""})) is None, \
         "nor is one that names no intention"
+
+
+def test_an_interrupt_hands_the_pass_back_to_the_work_it_interrupted() -> None:
+    """The other way a promise used to die, one cycle earlier than the rest.
+
+    A salient percept that interrupts focused work swapped the work focus out
+    for the percept's own social focus, and nothing recorded where the work
+    had gone: `decide` suspends a focus only when it is *not* social, and the
+    interrupt had just made it social, so the suspend never ran. The turn
+    answered the interruption, `next_focus` settled on nothing, and the work
+    the agent had promised fell out of focus with the bookmark its only
+    trace -- an undated intention at the bottom of every ordering, waiting for
+    the drives to happen to propose it. This is the seam the commission focus
+    never covered: it carries a promise out of the turn that made it, and the
+    interrupt path dropped promises that were already being kept.
+
+    One cycle, end to end, with the interrupt arriving first: the work focus
+    is owed, the interrupt suspends it, the message is answered, and the pass
+    comes back to the work rather than to whatever the drives would have
+    invented next.
+    """
+    config = make_config(Path("/tmp/ethos-test-interrupt-resume"))
+    config.paths.ensure()
+    work = Focus(
+        intention_id=uuid4(), title="add slugify() to code.py",
+        kind="commitment", why="work asked for in the message just answered",
+    )
+    message = Message(
+        person_id="owner", channel="web", conversation_key="web:owner",
+        text="how's it going?",
+    )
+    decision = SocialDecision(
+        action="reply_now",
+        reply_texts=["still on it — the file next"],
+        reason="a status question, answered while the work waits",
+    )
+
+    class _Rhythm:
+        def energy(self, spent: float = 0.0) -> float:
+            return 0.8
+
+        def should_rest(self, energy: float, max_utility: float = 0.5) -> bool:
+            return False
+
+        def mind_wander_due(self) -> bool:
+            return False
+
+        def reverie_due(self) -> bool:
+            return False
+
+        def due_daily(self, at: str, done: str | None) -> bool:
+            return False
+
+        async def after_cycle(self, outcome: Any) -> None:
+            return None
+
+        async def wait_until_next(self, state: Any) -> None:
+            return None
+
+    class _Memory:
+        def __init__(self) -> None:
+            self.bookmarks: list[Any] = []
+
+        async def set_bookmark(self, intention_id: Any, bookmark: Any) -> None:
+            self.bookmarks.append((intention_id, bookmark))
+
+        async def list_intentions(self, limit: int = 12) -> list[Any]:
+            return []
+
+        async def search(self, query: str, k: int = 12) -> list[Any]:
+            return []
+
+    class _OneMessageSocial:
+        def __init__(self) -> None:
+            self.handled = False
+
+        async def pending_inbound(self, limit: int = 5) -> list[Any]:
+            return [] if self.handled else [message]
+
+        async def deliberate(self, **kwargs: Any) -> SocialDecision:
+            return decision
+
+        async def mark_handled(self, message: Any, decided: Any = None) -> None:
+            self.handled = True
+
+    class _InterruptingAttention:
+        """Appraise as an interrupt would: swap in a social focus unconditionally."""
+
+        def __init__(self, new_focus: Focus) -> None:
+            self.new_focus = new_focus
+
+        async def appraise(self, percepts: Any, focus: Any, **kwargs: Any) -> Appraisal:
+            appraisal = Appraisal(interrupt=True, new_focus=None)
+            appraisal.new_focus = self.new_focus
+            return appraisal
+
+    class _Context:
+        def snapshot(self) -> dict[str, Any]:
+            return {}
+
+        def restore(self, state: Any) -> None:
+            return None
+
+        def render_blocks(self) -> tuple[str, str]:
+            return ("", "")
+
+        async def append(self, *args: Any, **kwargs: Any) -> None:
+            return None
+
+        async def roll(self, *args: Any, **kwargs: Any) -> None:
+            return None
+
+    class _SelfModel:
+        async def identity_document(self, **kwargs: Any) -> str:
+            return "identity"
+
+    out = _RecordingOut()
+    memory = _Memory()
+    social = _OneMessageSocial()
+    life = Life(LifeDeps(
+        config=config, control=SimpleNamespace(), bus=None, memory=memory,
+        self_model=_SelfModel(),
+        attention=_InterruptingAttention(Focus(
+            title="Respond to owner", kind="social", why="status question",
+        )),
+        motivation=None, rhythm=_Rhythm(), gateway=None, gsl=None, social=social,
+        comms_out=out, toolhost=None, audit=ListAudit(), continuity=_Quiet(),
+        consolidation=None, embedder=None, context=_Context(), thread_id="self",
+    ))
+    life.focus = work
+
+    asyncio.run(life._cycle())
+
+    assert len(out.sent) == 1, "the interruption is still answered in its own turn"
+    assert social.handled, "and its message is finished with"
+    assert memory.bookmarks, "the interrupted work is bookmarked, not just remembered"
+    assert life.focus is not None and life.focus.intention_id == work.intention_id, (
+        "the pass must come back to the work the interrupt took it from, or the "
+        "promise was dropped the moment anything salient happened"
+    )
+    assert life._suspended_focus is None, "the slot is spent, not left to resurface later"
+
+
+def test_work_suspended_for_an_interrupt_is_returned_when_the_cycle_settles_on_nothing() -> None:
+    """An interrupt whose cycle answers nobody still owes the pass back.
+
+    The suspended slot used to be read by the social branch of `next_focus`
+    alone, so an interrupt that produced no social turn -- a timer fired into
+    an empty queue, a percept that broke into work and dissolved -- ended its
+    cycle with `None` and the suspended work was stranded in a slot nothing
+    would ever read again.
+    """
+    config = make_config(Path("/tmp/ethos-test-suspended-net"))
+    config.paths.ensure()
+    life = Life(LifeDeps(
+        config=config, control=_Quiet(), bus=None, memory=_Quiet(),
+        self_model=_Quiet(), attention=None, motivation=None, rhythm=_Quiet(),
+        gateway=None, gsl=None, social=None, comms_out=None, toolhost=None,
+        audit=ListAudit(), continuity=_Quiet(), consolidation=None,
+        embedder=None, thread_id="self",
+    ))
+    owed = Focus(
+        intention_id=uuid4(), title="add slugify() to code.py",
+        kind="commitment", why="work asked for in the message just answered",
+    )
+    life._suspended_focus = owed
+
+    settled = life.next_focus(
+        Decision(kind="none", tier="T0", rationale="a timer that answered nothing"),
+        Outcome(),
+    )
+
+    assert settled is owed, "work suspended for an interrupt is owed the next pass"
+    assert life._suspended_focus is None, "and the slot is spent exactly once"
+
+
+def test_the_commitment_drive_can_see_work_somebody_is_waiting_on() -> None:
+    """The fallback that has to find a dropped promise, and could not.
+
+    The commission focus carries a promise while it holds, but the first time
+    the focus is dropped -- an interrupt, a newer commission taking the pass --
+    the only mechanism that can pick the work back up is the commitment drive.
+    A commission arrives with no deadline most of the time, and undated work
+    read as `priority * 0.4` = 0.2, so the commitment pressure landed at
+    0.20 base + 0.2 = 0.40 against a propose threshold of *strictly greater*
+    than 0.4: `advance_commitment` was never proposed for exactly the work a
+    commission creates, and a dropped promise was unfindable by design.
+    """
+    config = make_config(Path("/tmp/ethos-test-drive-sees-promise"))
+    config.paths.ensure()
+    promised = IntentionRecord(
+        kind="commitment", title="add slugify() to code.py", priority=0.5,
+    )
+    inputs = DriveInputs.from_intentions([promised])
+    drive = Motivation(config)
+
+    pressures = drive.drive_pressures(inputs)
+    assert pressures["commitment"] > config.rhythm.drives.propose_threshold, (
+        "a lone undated promise sits exactly at the propose threshold and the "
+        "drive that exists to keep it is never proposed"
+    )
+    proposed = propose_impulses(pressures, inputs, config.rhythm.drives.propose_threshold)
+    assert "advance_commitment" in [impulse.name for impulse in proposed]
+    target = resolve_impulse_target("advance_commitment", inputs, datetime.now(UTC))
+    assert target is not None and target["title"] == "add slugify() to code.py"
+
+    # The floor is about promises, not about all open work: an undated
+    # self-chosen to-do stays below the threshold, as it always was.
+    todo = IntentionRecord(kind="task", title="tidy the notes", priority=0.5)
+    solo = DriveInputs.from_intentions([todo])
+    solo_pressures = drive.drive_pressures(solo)
+    assert solo_pressures["commitment"] <= config.rhythm.drives.propose_threshold
+    assert "advance_commitment" not in [
+        impulse.name
+        for impulse in propose_impulses(solo_pressures, solo, config.rhythm.drives.propose_threshold)
+    ]
 
 
 def test_the_deliberation_is_told_that_answering_is_not_doing() -> None:

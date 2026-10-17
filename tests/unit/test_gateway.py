@@ -309,19 +309,30 @@ async def test_rate_limiter_allows_and_throttles():
 
 def test_cost_calculation_matches_pricing(full_config):
     costs = CostCalculator(full_config)
+    # `Usage` buckets are disjoint by contract, so a million of each is a
+    # million billed at each of the three rates -- which is what the old test
+    # asserted too, but on a calculator that also billed a provider-reported
+    # inclusive total twice. The rate card itself is unchanged.
     usage = Usage(input_tokens=1_000_000, cached_input_tokens=1_000_000, output_tokens=1_000_000)
     cost = costs.compute("claude-sonnet-4-5", usage)
     price = full_config.pricing.price_for("claude-sonnet-4-5")
-    expected = price.input + price.cached_input + price.output
-    assert cost == pytest.approx(expected, rel=1e-6)
+    assert cost.total_usd == pytest.approx(price.input + price.cached_input + price.output, rel=1e-6)
 
 
-def test_cost_uses_defaults_for_unknown_model(full_config):
+def test_unknown_model_bills_high_water_mark(full_config):
     costs = CostCalculator(full_config)
     usage = Usage(input_tokens=1_000_000, output_tokens=1_000_000)
     cost = costs.compute("some-unknown-model", usage)
-    expected = full_config.pricing.defaults.input + full_config.pricing.defaults.output
-    assert cost == pytest.approx(expected, rel=1e-6)
+    # No invented mid-range default. The price is the table's pessimistic
+    # stand-in, it is flagged as such, and the dearest configured model is
+    # billed less than it -- an unknown model must never come out cheaper than
+    # a known one.
+    assert cost.source == "unknown"
+    known = max(
+        p.input for p in full_config.pricing.table()._configured.values()
+    )
+    assert cost.price.input >= known
+    assert cost.total_usd == pytest.approx(cost.price.input + cost.price.output, rel=1e-6)
 
 
 def test_budget_exception_carries_details():

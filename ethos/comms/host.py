@@ -11,7 +11,10 @@ from ethos.comms.adapters.base import ChannelAdapter
 from ethos.comms.adapters.cli import CliAdapter
 from ethos.comms.adapters.discord import DiscordAdapter
 from ethos.comms.adapters.email import EmailAdapter
+from ethos.comms.adapters.googlechat import GoogleChatAdapter
+from ethos.comms.adapters.line import PONG, LineAdapter, line_signature
 from ethos.comms.adapters.slack import SlackAdapter, slack_signature
+from ethos.comms.adapters.teams import TeamsAdapter
 from ethos.comms.adapters.telegram import TelegramAdapter
 from ethos.comms.adapters.web import WebAdapter
 from ethos.comms.adapters.whatsapp import WhatsappAdapter
@@ -269,6 +272,12 @@ class CommsHost:
             self._plan_slack(plan, channels, creds, add)
         if channels.discord.enabled:
             self._plan_discord(plan, channels, creds, add)
+        if channels.line.enabled:
+            self._plan_line(plan, channels, creds, add)
+        if channels.teams.enabled:
+            self._plan_teams(plan, channels, creds, add)
+        if channels.googlechat.enabled:
+            self._plan_google_chat(plan, channels, creds, add)
 
         if channels.email.enabled:
             address = creds.get("email.address")
@@ -289,7 +298,7 @@ class CommsHost:
         # The listener, but only if a push door actually needs one. Keyed on that
         # rather than on the webhook being switched on, because the old behaviour was
         # a receiver made by the first channel that asked for it: a deployment with
-        # `webhook.enabled` and no WhatsApp and no Slack has nothing to deliver, and
+        # `webhook.enabled` and every push door shut has nothing to deliver, and
         # a listener bound for it is a port taken for nothing.
         plan.receiver = self._plan_receiver(channels) if plan.wants_receiver else None
         return plan
@@ -436,14 +445,188 @@ class CommsHost:
             "message the bot, read author.id, add it to channels.discord.allowed_ids",
         )
 
+    def _plan_line(self, plan: _Plan, channels: ChannelsConfig,
+                   creds: dict[str, str], add: Any) -> None:
+        """
+        LINE, which is a signed webhook on a path and the plainest of the three.
+
+        The same shape as Slack and the same receiver: a tunnel exposes one URL,
+        so a fourth channel that pushes to one lands on the same listener and is
+        told apart by path. Which is the whole reason there is one receiver rather
+        than six.
+
+        Two things are LINE-specific and both are on the route rather than in the
+        handler. `ping` is there because LINE's developer console proves a URL is
+        reachable with a bare `GET` at configuration time, before anybody has been
+        asked for the channel secret — a check this listener would otherwise
+        answer 404 to, and a 404 that reads on the console as "this webhook URL
+        is not valid". And the secret passed as the route's `secret` is the
+        *channel secret*, which is the one value inbound is signed with; the
+        channel access token is the one value outbound is sent with, and mixing
+        them up produces a 401 on every delivery that looks like a bad tunnel.
+        """
+        cfg = channels.line
+        missing = channels.missing_credentials("line")
+        if missing:
+            logger.warning("comms.line_disabled_missing_env", missing=missing)
+            return
+        if not self._receiver_wanted(channels):
+            logger.warning(
+                "comms.line_disabled_no_webhook",
+                hint="set channels.webhook.enabled so LINE has somewhere to POST",
+            )
+            return
+        adapter = LineAdapter(
+            creds["line.channel_access_token"],
+            creds["line.channel_secret"],
+            allowed_ids=cfg.allowed_ids,
+            accept_from_anyone=cfg.accept_from_anyone,
+        )
+        add("line", adapter,
+            ("line", creds["line.channel_access_token"], creds["line.channel_secret"], cfg.path,
+             tuple(cfg.allowed_ids), cfg.accept_from_anyone))
+        plan.wants_receiver = True
+        plan.routes.append(_Route(
+            signature=(cfg.path, creds["line.channel_secret"]),
+            kwargs={
+                "path": cfg.path,
+                "secret": creds["line.channel_secret"],
+                "authentic": line_signature(creds["line.channel_secret"]),
+                "ping": lambda: PONG,
+                "handler": lambda payload: adapter.handle_webhook(payload, self._handle_inbound),
+            },
+        ))
+        _warn_no_allowlist(
+            len(cfg.allowed_ids), cfg.accept_from_anyone,
+            "comms.line_no_allowlist",
+            "message the bot, read events[].source.userId, add it to "
+            "channels.line.allowed_ids",
+        )
+
+    def _plan_teams(self, plan: _Plan, channels: ChannelsConfig,
+                    creds: dict[str, str], add: Any) -> None:
+        """
+        Microsoft Teams, which is the first door here whose route has no secret
+        to compare against.
+
+        Every other push route carries a string and an `Authenticator` that
+        computes an HMAC over the body. This one carries the App ID, and what it
+        registers is `TeamsAdapter.authentic` — a closure over a set of signing
+        keys Microsoft publishes and this process fetched at start. The route's
+        `secret` is still set, because `WebhookRoute.authentic_body` refuses a
+        route without one and that refusal is the correct answer for a door whose
+        real credential is something else; it is never reached, because an
+        `authenticator` is consulted first.
+
+        The two credentials are a pair rather than one and both are required: an
+        App ID with no app password can verify inbound and cannot send, which is
+        a door that answers and is then silent in the other direction.
+        """
+        cfg = channels.teams
+        missing = channels.missing_credentials("teams")
+        if missing:
+            logger.warning("comms.teams_disabled_missing_env", missing=missing)
+            return
+        if not self._receiver_wanted(channels):
+            logger.warning(
+                "comms.teams_disabled_no_webhook",
+                hint="set channels.webhook.enabled so the Bot Framework has somewhere to POST",
+            )
+            return
+        adapter = TeamsAdapter(
+            creds["teams.app_id"],
+            creds["teams.app_password"],
+            allowed_ids=cfg.allowed_ids,
+            accept_from_anyone=cfg.accept_from_anyone,
+            service_url_hosts=list(cfg.service_url_hosts),
+        )
+        add("teams", adapter,
+            ("teams", creds["teams.app_id"], creds["teams.app_password"], cfg.path,
+             tuple(cfg.allowed_ids), tuple(cfg.service_url_hosts), cfg.accept_from_anyone))
+        plan.wants_receiver = True
+        plan.routes.append(_Route(
+            signature=(cfg.path, creds["teams.app_id"], creds["teams.app_password"]),
+            kwargs={
+                "path": cfg.path,
+                "secret": creds["teams.app_id"],
+                "authentic": adapter.authentic(),
+                "handler": lambda payload: adapter.handle_webhook(payload, self._handle_inbound),
+            },
+        ))
+        _warn_no_allowlist(
+            len(cfg.allowed_ids), cfg.accept_from_anyone,
+            "comms.teams_no_allowlist",
+            "message the bot, read from.id, add it to channels.teams.allowed_ids",
+        )
+
+    def _plan_google_chat(self, plan: _Plan, channels: ChannelsConfig,
+                          creds: dict[str, str], add: Any) -> None:
+        """
+        Google Chat, the one door whose credentials are a pair of files.
+
+        Three are required and each for a different direction, which is why this
+        is the first `missing_credentials` call in this file that has more than
+        one reason to stop it:
+
+        * `client_email` and `private_key` — the service account. Inbound does not
+          need them (Google's own keys sign what it sends) and outbound cannot
+          work without them, so a deployment with only an audience has a door that
+          receives and is then silent in the other direction.
+        * `audience` — the value the inbound token's `aud` claim must carry. It
+          is not the app id and not a URL this repository knows: it is whatever
+          the Chat app's "Authentication audience" is set to, which is either the
+          Cloud project number or the endpoint URL. Nothing can be verified
+          without it, and an empty one means every delivery is refused — so it is
+          a credential rather than a convenience, and `missing_credentials` names
+          it in the same breath as the two that are obviously secrets.
+        """
+        cfg = channels.googlechat
+        missing = channels.missing_credentials("googlechat")
+        if missing:
+            logger.warning("comms.googlechat_disabled_missing_env", missing=missing)
+            return
+        if not self._receiver_wanted(channels):
+            logger.warning(
+                "comms.googlechat_disabled_no_webhook",
+                hint="set channels.webhook.enabled so Google Chat has somewhere to POST",
+            )
+            return
+        adapter = GoogleChatAdapter(
+            creds["googlechat.client_email"],
+            creds["googlechat.private_key"],
+            creds["googlechat.audience"],
+            allowed_ids=cfg.allowed_ids,
+            accept_from_anyone=cfg.accept_from_anyone,
+        )
+        add("googlechat", adapter,
+            ("googlechat", creds["googlechat.client_email"], creds["googlechat.private_key"],
+             creds["googlechat.audience"], cfg.path, tuple(cfg.allowed_ids),
+             cfg.accept_from_anyone))
+        plan.wants_receiver = True
+        plan.routes.append(_Route(
+            signature=(cfg.path, creds["googlechat.audience"]),
+            kwargs={
+                "path": cfg.path,
+                "secret": creds["googlechat.audience"],
+                "authentic": adapter.authentic(),
+                "handler": lambda payload: adapter.handle_webhook(payload, self._handle_inbound),
+            },
+        ))
+        _warn_no_allowlist(
+            len(cfg.allowed_ids), cfg.accept_from_anyone,
+            "comms.googlechat_no_allowlist",
+            "message the bot, read message.sender.name or user.email, add it to "
+            "channels.googlechat.allowed_ids",
+        )
+
     def _receiver_wanted(self, channels: ChannelsConfig) -> bool:
         """Whether a push door has a listener to arrive on.
 
         The one loopback listener, wanted rather than made, because a tunnel exposes
-        one URL and one port is one thing to forward: WhatsApp and Slack are told
-        apart by path rather than by which listener they arrived on. A second
-        `WebhookReceiver` on the same port would race the first for it and the loser
-        would be logged as a webhook that failed to start.
+        one URL and one port is one thing to forward: WhatsApp, Slack, LINE, Teams
+        and Google Chat are all told apart by path rather than by which listener
+        they arrived on. A second `WebhookReceiver` on the same port would race the
+        first for it and the loser would be logged as a webhook that failed to start.
 
         False when the webhook listener is switched off, which is the one thing a
         push channel cannot work without — there is nowhere for a POST to land.

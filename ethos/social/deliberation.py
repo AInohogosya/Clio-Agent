@@ -512,6 +512,14 @@ class SocialCognition:
         not see. An agent whose planning loop had frozen looked, to the only
         thing that writes its replies, like an agent with nothing to report.
 
+        `blocked` was in that list for as long as it was here, and nothing in the
+        system has ever written that status -- it is not in `IntentionStatus` and
+        no code path assigns it. So the query named a row that cannot exist,
+        which is a way of saying "if work were ever blocked, the reply would
+        mention it" without anyone noticing that nothing ever marks work blocked.
+        The list is now exactly the statuses the schema has, so a status added to
+        the enum cannot be quietly forgotten here again.
+
         The planning failure count comes out of the intention's own resume state,
         because that is where the bounded loop puts it: an intention part-way
         through its attempts says so, rather than looking the same as one that has
@@ -522,7 +530,8 @@ class SocialCognition:
         try:
             rows = await self.db.fetch(
                 "SELECT title, status, closed_reason, resume_state FROM intentions "
-                "WHERE status IN ('proposed','active','in_progress','blocked','parked') "
+                "WHERE status IN ('proposed','active','in_progress','waiting',"
+                "'awaiting_review','parked') "
                 "ORDER BY priority DESC NULLS LAST, deadline ASC NULLS LAST LIMIT $1",
                 int(self.config.social.execution_state_max_blocked) + 2,
             )
@@ -833,7 +842,8 @@ class SocialCognition:
         try:
             rows = await self.db.fetch(
                 "SELECT title, status, priority, commissioned_by FROM intentions "
-                "WHERE status IN ('proposed', 'active', 'in_progress', 'blocked') "
+                "WHERE status IN ('proposed', 'active', 'in_progress', 'waiting', "
+                "'awaiting_review') "
                 "ORDER BY priority DESC NULLS LAST, deadline ASC NULLS LAST LIMIT 8",
             )
         except Exception:

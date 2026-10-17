@@ -253,8 +253,16 @@ def test_google_response_normalization():
     response = response_from_google(data, "google", "gemini-2.5-pro", {"fs__read": "fs.read"})
     assert response.text == "bonjour"
     assert response.tool_calls[0].name == "fs.read"
-    assert response.usage.input_tokens == 20
+    # `promptTokenCount` contains the cached tokens, so the uncached remainder
+    # is 15 and the cached part is 5. Asserting the raw 20 here would be
+    # asserting the double-billing that charged a cache hit at the full input
+    # rate and again at the discount. `candidatesTokenCount` excludes
+    # `thoughtsTokenCount`, so those two stay as reported.
+    assert response.usage.input_tokens == 15
+    assert response.usage.cached_input_tokens == 5
+    assert response.usage.output_tokens == 10
     assert response.usage.reasoning_tokens == 3
+    assert response.usage.total_tokens == 33
     assert response.finish_reason == "STOP"
 
 

@@ -14,6 +14,7 @@ import yaml
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 from ethos import DEFAULT_SELF_NAME
+from ethos.pricing import ModelPrice, PriceTable
 
 
 def _expand(value: str) -> str:
@@ -324,6 +325,25 @@ class EnergyConfig(BaseModel):
 class FocusConfig(BaseModel):
     max_session_min: float = 90.0
     micro_break_min: float = 5.0
+
+    # How many consecutive cycles an unanswered message may take the pass while
+    # the agent is holding a goal, before the goal is worked instead and the
+    # message waits one more cycle.
+    #
+    # Answering a person promptly is right, and it is right every time. It stops
+    # being right when the queue never drains: with the salience gate removed,
+    # the head of the unanswered queue took the pass unconditionally, so an
+    # agent receiving messages faster than it could answer them never reached
+    # `advance_goal` again. Not "deprioritised" -- never reached. The task sat
+    # at whatever status it had reached, the drives kept proposing it as work
+    # to do, and every cycle answered somebody else instead.
+    #
+    # Both are real needs, so neither is dropped: the message is still at the
+    # head of the queue and is answered on the very next pass. What changes is
+    # that an unbounded backlog can no longer defer a goal indefinitely, which
+    # is the same bound the planning backoff applies to a model that will not
+    # answer. Zero restores the old unconditional priority.
+    inbound_defers_goal_max: int = 2
 
 
 class MindWanderingConfig(BaseModel):
@@ -837,18 +857,54 @@ class ModelsConfig(BaseModel):
         return [self.base.entry(), *self.models]
 
 
-class ModelPrice(BaseModel):
-    input: float
-    cached_input: float
-    output: float
-
-
 class PricingConfig(BaseModel):
-    models: dict[str, ModelPrice] = Field(default_factory=dict)
-    defaults: ModelPrice = ModelPrice(input=0.35, cached_input=0.07, output=1.40)
+    """Where a token price comes from, and the checked-in copy of it.
 
-    def price_for(self, model: str) -> ModelPrice:
-        return self.models.get(model, self.defaults)
+    `models` is the verified static table: real vendor list prices, checked
+    against the vendors' own pricing pages, used when nothing better is
+    reachable. It is a fallback and not a guess, which is the distinction that
+    matters -- the previous `defaults` block was a guess wearing a table's
+    clothes, and it is gone.
+
+    Live pricing covers the hosts that publish a machine-readable price.
+    Anything the live endpoints do not cover falls to `models`, and anything
+    neither covers is billed a high-water mark and logged rather than silently
+    billed at whatever number happened to be lying around.
+    """
+
+    model_config = {"extra": "allow"}
+
+    models: dict[str, dict[str, float]] = Field(default_factory=dict)
+    # Hosted routes billed at zero however the model is named: vendor free
+    # tiers, self-hosted endpoints. `:free` variants and `local-*` ids are
+    # recognised without being listed.
+    free_base_urls: list[str] = Field(default_factory=list)
+    live_pricing: bool = True
+    live_cache_path: str = "~/.ethos/data/pricing_cache.json"
+    live_timeout_s: float = 10.0
+
+    def _table(self, live: dict[str, ModelPrice] | None = None) -> PriceTable:
+        return PriceTable(
+            configured=self.models,
+            live=live,
+            free_base_urls=self.free_base_urls,
+        )
+
+    def table(self) -> PriceTable:
+        """The resolved price table, without live prices.
+
+        Synchronous and offline by design: it is what a route can be priced
+        against at import time, in a unit test, and in the one-off scripts that
+        ask what a model costs. `CostCalculator` upgrades it in place once the
+        live fetch lands.
+        """
+        return self._table()
+
+    def price_for(self, model: str, provider: str = "", base_url: str = "") -> ModelPrice:
+        return self.table().resolve(model, provider=provider, base_url=base_url)
+
+    def cache_file(self) -> Path:
+        return Path(_expand(self.live_cache_path))
 
 
 class ProviderQuirks(BaseModel):
@@ -1073,6 +1129,130 @@ class SlackChannelConfig(BaseModel):
     accept_from_anyone: bool = False
 
 
+class LineChannelConfig(BaseModel):
+    """LINE, which is a signed webhook on a path like Slack and not a socket.
+
+    Needs `channels.webhook` turned on, because the Messaging API POSTs to a URL
+    declared in the channel's console and there is nowhere else for it to land.
+
+    The two credentials are the whole point of remembering to keep them apart:
+    LINE shows both on the same screen, they are both called "secret" on the
+    console, and using the wrong one produces a 401 on every single delivery
+    with nothing in the log to say which was wrong. The **channel secret** signs
+    what arrives; the **channel access token** authorises what goes out.
+    """
+
+    enabled: bool = False
+    path: str = "/hooks/line"
+    channel_access_token_env: str = "LINE_CHANNEL_ACCESS_TOKEN"
+    channel_access_token: str = ""
+    # The channel secret, not the access token: every inbound request is signed
+    # with it, and it is the value the `X-Line-Signature` header is an HMAC of.
+    channel_secret_env: str = "LINE_CHANNEL_SECRET"
+    channel_secret: str = ""
+    # User ids (`U` plus 32 hex characters). Empty admits nobody.
+    #
+    # Group and room conversations are refused outright by the adapter rather than
+    # filtered here, so there is one kind of id on this list: a room is a
+    # conversation rather than a person, and a reply to one goes to everybody in
+    # it.
+    allowed_ids: list[str] = Field(default_factory=list)
+    # Answer anybody who messages the bot. Off by default, for the reason every
+    # other door's is — and here the credential is closer to public than most:
+    # the bot's user id is a stable, guessable-shaped string and its display name
+    # is a first name.
+    accept_from_anyone: bool = False
+
+
+class TeamsChannelConfig(BaseModel):
+    """Microsoft Teams, through the Bot Framework.
+
+    The only door here whose inbound proof is a *token* rather than a signature,
+    and the only one whose credentials identify a registered application rather
+    than a bot: Teams will not talk to a bot that has not been registered with
+    Microsoft's identity platform, and both directions depend on that
+    registration. So `app_id` is the audience every inbound token must name, and
+    `app_password` is exchanged for a connector token once an hour.
+
+    `service_url_hosts` is the one field in this file that is a security control
+    rather than a destination, and it is configuration for that reason. A Teams
+    activity carries the URL its own messages must be POSTed back to, so it is a
+    value from a request body deciding where this process sends — and it is
+    checked before it is believed. Narrow by default; a sovereign cloud or a
+    customer-hosted channel adds its own host deliberately.
+    """
+
+    enabled: bool = False
+    path: str = "/hooks/teams"
+    app_id_env: str = "TEAMS_APP_ID"
+    app_id: str = ""
+    # The app password, which is Microsoft's word for a client secret. It is not
+    # an account password and there is no user behind it.
+    app_password_env: str = "TEAMS_APP_PASSWORD"
+    app_password: str = ""
+    # Azure AD object ids. Teams writes them as `29:<opaque>` on most tenants and
+    # as a bare GUID on others, so nothing here narrows the shape: the set stores
+    # what the activity said. (The interface's allowlist field is the place that
+    # guesses, and it guesses wide.)
+    allowed_ids: list[str] = Field(default_factory=list)
+    # Where a conversation's `serviceUrl` is allowed to point, as host suffixes.
+    # A departure from the pattern every other door follows, and deliberate: this
+    # list is a check on a value that arrived in a request, so the safe default
+    # is the narrow one and widening it is a decision somebody makes on purpose.
+    service_url_hosts: list[str] = Field(
+        default_factory=lambda: ["trafficmanager.net", "botframework.com"],
+    )
+    # Answer anybody who messages the bot. Off by default.
+    accept_from_anyone: bool = False
+
+
+class GoogleChatChannelConfig(BaseModel):
+    """Google Chat, whose credentials are a service account rather than a token.
+
+    Two things here are unlike any other door and both are consequences of the
+    same fact: Google issues no long-lived token to a non-interactive caller. So
+    this door holds a *service account* — an email and a PEM private key — and
+    exchanges a signed assertion for a one-hour access token every time it needs
+    to send.
+
+    `private_key` is therefore the one credential in this repository a settings
+    form cannot hold. A PEM key is around 1700 characters and the interface caps
+    a credential at 1024, so it is marked environment-only in the setup form and
+    the write path refuses it, rather than a paste being silently dropped for
+    being too long.
+
+    `audience` is the value an inbound token's `aud` claim must carry, and it is
+    neither the app id nor a URL this repository can know: Google Chat apps
+    declare an "authentication audience" that is either the Cloud project number
+    or the endpoint URL, and which of the two decides *which kind of token* — and
+    so which set of signing keys — arrives. Both are accepted here, and this
+    value is what pins either of them to this deployment.
+    """
+
+    enabled: bool = False
+    path: str = "/hooks/googlechat"
+    # The service account's address, e.g.
+    # `ethos-bot@my-project.iam.gserviceaccount.com`.
+    client_email_env: str = "GOOGLE_CHAT_CLIENT_EMAIL"
+    client_email: str = ""
+    # The service account's PEM private key. Environment-only: see the docstring.
+    # A literal `\n` is accepted for a newline, because that is how a PEM key
+    # survives a shell, an env file and a systemd unit.
+    private_key_env: str = "GOOGLE_CHAT_PRIVATE_KEY"
+    private_key: str = ""
+    # What the Chat app was configured with as its authentication audience: a
+    # project number, or the endpoint URL the tunnel forwards. Copy it out of the
+    # Chat API configuration; nothing here can derive it.
+    audience_env: str = "GOOGLE_CHAT_AUDIENCE"
+    audience: str = ""
+    # A sender's `users/…` resource name or their email address — both are in the
+    # event, and both are admitted because an operator has usually pasted
+    # whichever they had to hand. Empty admits nobody.
+    allowed_ids: list[str] = Field(default_factory=list)
+    # Answer anybody who mentions the app or messages it directly. Off by default.
+    accept_from_anyone: bool = False
+
+
 # The doors a person can turn on, and what each one needs before it can be.
 #
 # One table for three readers that would otherwise each carry their own copy and
@@ -1084,7 +1264,9 @@ class SlackChannelConfig(BaseModel):
 # `*_env` field (the variable's name) beside a plain field of the same stem (the
 # value), so the list of what a door needs is read off the model itself and a
 # credential added to a channel is automatically part of its door.
-_DOORS_WITH_CREDENTIALS = ("telegram", "whatsapp", "slack", "discord", "email")
+_DOORS_WITH_CREDENTIALS = (
+    "telegram", "whatsapp", "slack", "discord", "email", "line", "teams", "googlechat",
+)
 _DOORS_WITH_ANY_CREDENTIAL = ("web", *_DOORS_WITH_CREDENTIALS)
 
 
@@ -1102,12 +1284,20 @@ DOOR_ALLOWLISTS: dict[str, str] = {
     "whatsapp": "allowed_phone_numbers",
     "slack": "allowed_ids",
     "discord": "allowed_ids",
+    "line": "allowed_ids",
+    "teams": "allowed_ids",
+    "googlechat": "allowed_ids",
 }
 
 # The doors that can only be pushed to, and so need the shared receiver. Without
 # it a WhatsApp or Slack door is open, has every credential, and is sent nothing —
 # which is what a door with no way in looks like from the outside.
-PUSH_DOORS: tuple[str, ...] = ("whatsapp", "slack")
+#
+# Five of the eight. Telegram polls, Discord holds a socket and email fetches
+# over IMAP, so those three need no listener at all; everything else is a POST to
+# a URL declared at the provider, which is a URL this process has to be reachable
+# at.
+PUSH_DOORS: tuple[str, ...] = ("whatsapp", "slack", "line", "teams", "googlechat")
 
 
 class ChannelsConfig(BaseModel):
@@ -1129,6 +1319,9 @@ class ChannelsConfig(BaseModel):
     whatsapp: WhatsappChannelConfig = WhatsappChannelConfig()
     slack: SlackChannelConfig = SlackChannelConfig()
     discord: DiscordChannelConfig = DiscordChannelConfig()
+    line: LineChannelConfig = LineChannelConfig()
+    teams: TeamsChannelConfig = TeamsChannelConfig()
+    googlechat: GoogleChatChannelConfig = GoogleChatChannelConfig()
     email: EmailChannelConfig = EmailChannelConfig()
     webhook: WebhookConfig = WebhookConfig()
 

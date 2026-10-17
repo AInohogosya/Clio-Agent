@@ -16,7 +16,12 @@ from ethos.config import EthosConfig
 from ethos.gateway.secrets import redact
 from ethos.guardian.classifier import classify_tool
 from ethos.guardian.gate import GateDecision, GuardianGate
-from ethos.guardian.journal import ActionJournal, DuplicateAction
+from ethos.guardian.journal import (
+    STATUS_INTERRUPTED,
+    STATUS_OK,
+    ActionJournal,
+    DuplicateAction,
+)
 from ethos.observability import metrics
 from ethos.observability.logger import get_logger
 from ethos.schemas.events import EventKind
@@ -204,11 +209,7 @@ class Toolhost:
                     side_effects=sorted(classify_tool(name, args).categories),
                 )
             except DuplicateAction as exc:
-                return ToolResult(
-                    ok=True,
-                    content={"idempotent": True, "prior": exc.prior},
-                    error=None,
-                )
+                return self._replay(name, exc.prior, started)
         else:
             journal_id = await self.journal.begin(
                 thread_id=ctx.thread_id, intention_id=ctx.intention_id, tool=name,
@@ -258,6 +259,32 @@ class Toolhost:
                     ok=False, error_code=ToolErrorCode.EXECUTION,
                     error=str(exc), journal_id=journal_id,
                 )
+            # A tool reports its own outcome by returning a `ToolResult`. Every
+            # other tool returns a bare value, which means success by having
+            # returned at all -- but a tool that says `ok=False` in the value it
+            # returned has said the work did not happen, and overwriting that
+            # with `ok=True` here is what turned a failed sub-agent run into a
+            # journalled success and a plan step marked done over work that
+            # never occurred. The envelope now reports what the tool reported,
+            # and the digest records the tool's payload rather than the envelope
+            # it arrived in -- the digest is what a later replay reads back.
+            if isinstance(content, ToolResult):
+                inner = content
+                digest = {"summary": _digest(inner.content if inner.ok else inner.error)}
+                await self._finish(
+                    journal_id, STATUS_OK if inner.ok else "failed",
+                    digest, inner.undo_ref or decision.undo_ref,
+                )
+                metrics.observe_action(name, STATUS_OK if inner.ok else "failed")
+                if inner.ok and ctx.commissioned_by:
+                    await self._auto_register_commission(name, args, ctx)
+                await self._publish_action(
+                    journal_id, name, STATUS_OK if inner.ok else "failed",
+                )
+                return inner.model_copy(update={
+                    "duration_ms": int((time.monotonic() - started) * 1000),
+                    "journal_id": journal_id,
+                })
             digest = {"summary": _digest(content)}
             await self._finish(journal_id, "ok", digest, decision.undo_ref)
             metrics.observe_action(name, "ok")
@@ -273,6 +300,52 @@ class Toolhost:
             logger.exception("toolhost.execute_failed tool=%s", name)
             await self._finish(journal_id, "failed", {"error": str(exc)[:500]}, None)
             return ToolResult(ok=False, error_code=ToolErrorCode.EXECUTION, error=str(exc))
+
+    def _replay(self, name: str, prior: dict[str, Any], started: float) -> ToolResult:
+        """Answer a duplicate call from the journal instead of re-executing.
+
+        The journal hands back every prior attempt on this key, not only the
+        successful ones, because an interrupted attempt must not be re-run
+        blind and a failed one must not be reported as a success. So the `ok` on
+        the envelope is read off the prior row rather than assumed:
+
+        * `ok` -- the work happened. This is the idempotency guarantee: the
+          second call returns the first call's answer instead of doing it twice.
+        * `failed` / `timeout` / `rejected` -- a decided non-success, released by
+          the journal so the retry proceeds; reaching here means the retry is
+          being told what happened rather than re-run blindly.
+        * `running` / `interrupted` -- the attempt may or may not have taken
+          effect. Reported as a failure carrying that, because `ok=True` here
+          would mark a step done over work that may never have run.
+        """
+        status = str(prior.get("status") or "")
+        digest = prior.get("result_digest")
+        if isinstance(digest, str):
+            try:
+                digest = json.loads(digest)
+            except ValueError:
+                digest = {"summary": digest}
+        prior = {**prior, "result_digest": digest}
+        metrics.observe_action(name, f"replay_{status or 'unknown'}")
+        if status == STATUS_OK:
+            return ToolResult(
+                ok=True, content={"idempotent": True, "prior": prior},
+                duration_ms=int((time.monotonic() - started) * 1000),
+            )
+        summary = (digest or {}).get("summary") if isinstance(digest, dict) else None
+        error = (
+            f"a prior attempt of {name} ended as {status or 'an unknown status'}"
+            + (f": {summary}" if summary else "")
+            + "; this call did not run"
+        )
+        if status in (STATUS_INTERRUPTED, "running"):
+            # The distinction the caller cannot recover on its own: this is not
+            # known to have failed, it is known not to be known.
+            error += ". Its effect is unknown - inspect before retrying"
+        return ToolResult(
+            ok=False, content={"prior": prior}, error_code=ToolErrorCode.EXECUTION,
+            error=error,
+        )
 
     async def _finish(self, journal_id: str | None, status: str, digest: dict[str, Any],
                       undo_ref: str | None) -> None:

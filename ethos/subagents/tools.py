@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from ethos.schemas.tools import ToolErrorCode, ToolResult
 from ethos.toolhost.server import Tool, ToolContext, Toolhost
 
 
@@ -20,6 +21,39 @@ def _registry(host: Toolhost) -> Any:
         return host.service("subagents")
     except RuntimeError:
         return None
+
+
+# A delegation's own status vocabulary is richer than ok/failed, and the two
+# the caller most needs told apart are the ones a bare `ok=False` would merge:
+# `blocked` is a safe stop awaiting a human, `unknown` is an outcome that may or
+# may not have happened and must never be retried blind. Both are failures of
+# *this* step -- the work is not done -- so both are reported as one, with the
+# real status carried in the payload so the loop's reflection can read it.
+_SUBAGENT_ERROR_CODE = {
+    "timeout": ToolErrorCode.TIMEOUT,
+    "unavailable": ToolErrorCode.ENVIRONMENT,
+}
+
+
+def _as_result(payload: dict[str, Any]) -> ToolResult:
+    """A sub-agent's outcome as an action outcome.
+
+    Only `done` is success. Everything else -- failed, blocked, unknown,
+    timeout, unavailable -- means the step's work was not accomplished, and
+    reporting it as anything but a failure lets the caller mark the step done
+    over a run that failed, was blocked, or whose result is genuinely unknown.
+    """
+    status = str(payload.get("status") or "")
+    if status == "done":
+        return ToolResult(ok=True, content=payload)
+    summary = payload.get("summary") or payload.get("error") or ""
+    return ToolResult(
+        ok=False,
+        content=payload,
+        error_code=_SUBAGENT_ERROR_CODE.get(status, ToolErrorCode.EXECUTION),
+        error=f"{payload.get('agent', 'sub-agent')} reported {status or 'an unknown status'}"
+              + (f": {summary}" if summary else ""),
+    )
 
 
 class SubagentStatusTool(Tool):
@@ -45,9 +79,16 @@ class FoundryRunTool(Tool):
         "factory. It designs and plans the change, then runs every task "
         "through a deterministic state machine with sandboxed gates and a "
         "merge train; merged branches land in the target repository. "
-        "Long-running: call with a concrete, complete objective."
+        "This call blocks until the objective is done, blocked or failed, and "
+        "the agent does nothing else meanwhile -- for work expected to outlast "
+        "a few minutes, spawn it as a thread (role 'foundry') and carry on."
     )
-    timeout_s = 7200.0
+    # A ceiling, not a budget: the sub-agent stops itself at its own configured
+    # `timeout_s` and reports `timeout`, which is a far better answer than this
+    # layer cutting the call off with no result. It only exists so a wedged
+    # child cannot hold the step open forever, and it is deliberately above the
+    # default 3600s budget so the sub-agent's own accounting is what reports.
+    timeout_s = 3900.0
     input_schema = {
         "type": "object",
         "properties": {
@@ -61,16 +102,19 @@ class FoundryRunTool(Tool):
     async def run(self, args: dict[str, Any], ctx: ToolContext, host: Toolhost) -> Any:
         registry = _registry(host)
         if registry is None or not registry.has("foundry"):
-            return {"status": "unavailable", "error": "foundry sub-agent is not available"}
+            return _as_result({
+                "agent": "foundry", "status": "unavailable",
+                "error": "foundry sub-agent is not available",
+            })
         result = await registry.run(
             "foundry",
             str(args["task"]),
             workdir=args.get("workdir") or ctx.cwd,
             max_cycles=args.get("max_cycles"),
         )
-        if isinstance(result, dict) and result.get("status") == "unavailable":
-            return result
-        return result.to_dict()
+        if isinstance(result, dict):
+            return _as_result(result)
+        return _as_result(result.to_dict())
 
 
 class ApexRunTool(Tool):
@@ -79,9 +123,14 @@ class ApexRunTool(Tool):
         "Delegate a desktop goal to APEX, the revision-aware desktop "
         "controller. It observes the real desktop and executes one verified, "
         "fenced step at a time until the goal is done, blocked, or the "
-        "outcome is unknowable. Drives real input on this machine."
+        "outcome is unknowable. Drives real input on this machine. "
+        "This call blocks until the goal resolves and the agent does nothing "
+        "else meanwhile -- for longer work, spawn it as a thread (role 'apex')."
     )
-    timeout_s = 1800.0
+    # Same relationship to the sub-agent's own budget as `subagent.foundry`:
+    # above its 900s default, so APEX reports its own `blocked`/`failed`
+    # verdict rather than being cut off here with nothing to say.
+    timeout_s = 1200.0
     input_schema = {
         "type": "object",
         "properties": {
@@ -95,16 +144,19 @@ class ApexRunTool(Tool):
     async def run(self, args: dict[str, Any], ctx: ToolContext, host: Toolhost) -> Any:
         registry = _registry(host)
         if registry is None or not registry.has("apex"):
-            return {"status": "unavailable", "error": "apex sub-agent is not available"}
+            return _as_result({
+                "agent": "apex", "status": "unavailable",
+                "error": "apex sub-agent is not available",
+            })
         result = await registry.run(
             "apex",
             str(args["task"]),
             mode=args.get("mode"),
             max_steps=args.get("max_steps"),
         )
-        if isinstance(result, dict) and result.get("status") == "unavailable":
-            return result
-        return result.to_dict()
+        if isinstance(result, dict):
+            return _as_result(result)
+        return _as_result(result.to_dict())
 
 
 __all__ = ["ApexRunTool", "FoundryRunTool", "SubagentStatusTool"]
