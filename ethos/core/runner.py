@@ -363,7 +363,10 @@ async def run_core(config: EthosConfig | None = None, *, listen_channels: bool =
 
 async def _shutdown(runtime: CoreRuntime, sig: signal.Signals) -> None:
     logger.info("core.signal_received", signal=sig.name)
-    runtime.control.stopped = True
+    # `ending`, not just `stopped`: a signal ends the process, where a stop from a
+    # surface parks the agent and waits to be resumed. `end` also raises the same
+    # events `stop` does, so a cycle in flight is cut short here as well.
+    runtime.control.end(f"signal:{sig.name}")
     with contextlib.suppress(Exception):
         await runtime.control.apply_command("stop", f"signal:{sig.name}")
     # The ending is recorded here, where the signal is, rather than left to the

@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from ethos.config import EthosConfig
 from ethos.gateway.normalizer import was_truncated
+from ethos.gateway.service import format_wait, rate_limit_wait_for_attempt
 from ethos.observability.logger import get_logger
 from ethos.prompts.deliberation import (
     execution_state_block,
@@ -108,10 +110,49 @@ _USER_ACTIONABLE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# What says the credential or the account is at fault rather than the moment:
+# a rejected key, an exhausted quota, a billing limit. A bare "limit exceeded"
+# is deliberately absent: on its own it is what a rate limit says, and reading
+# every 429 as a key problem is what stopped ordinary rate limits after three
+# attempts instead of waiting them out.
+_QUOTA_RE = re.compile(
+    r"401|403|invalid_api_key|invalid api key|incorrect api key|unauthorized"
+    r"|key limit exceeded|quota|billing|insufficient|forbidden",
+    re.IGNORECASE,
+)
+
 
 def needs_user_action(error_text: str) -> bool:
-    """Whether a model failure needs the user to fix something (key/limit)."""
-    return bool(error_text and _USER_ACTIONABLE_RE.search(error_text))
+    """Whether a model failure needs the user to fix something (key/limit).
+
+    A plain 429 rate limit is not one: it clears on its own, so it is waited
+    out on the escalation schedule rather than surfaced as a broken key. Only
+    a rate limit that also names a quota, billing or credential problem stops
+    early and asks a person to fix it.
+    """
+    if not error_text:
+        return False
+    if is_rate_limited_text(error_text) and not _QUOTA_RE.search(error_text):
+        return False
+    return bool(_USER_ACTIONABLE_RE.search(error_text))
+
+
+def _retry_after_from(exc: BaseException) -> float | None:
+    """The provider's asked-for wait carried on the exception, if any."""
+    from ethos.gateway.service import retry_after_of
+
+    return retry_after_of(exc)
+
+
+def _format_wait(wait_s: float | None) -> str:
+    """A wait for a screen, humanized so an hour reads as an hour."""
+    return format_wait(wait_s)
+
+
+def is_rate_limited_text(error_text: str) -> bool:
+    """Whether a failure string is a 429 rate limit rather than another error."""
+    lowered = (error_text or "").lower()
+    return "429" in lowered or "rate limit" in lowered or "too many requests" in lowered
 
 
 CONSEQUENTIAL_MARKERS = ("money", "$", "pay", "buy", "sell", "trade", "wire", "contract",
@@ -573,7 +614,7 @@ class SocialCognition:
 
     async def _ask(
         self, prompt_messages: list[dict[str, str]], tier: Tier, consequential: bool,
-    ) -> tuple[dict[str, Any], bool, int, str | None]:
+    ) -> tuple[dict[str, Any], bool, int, str | None, bool]:
         """The decision object, and what went wrong if there was none.
 
         Two attempts, and the second one is different rather than the same again.
@@ -598,12 +639,15 @@ class SocialCognition:
         do it" recovered this way is a promise with nothing behind it, which is
         the one thing the prompt above goes to some length to prevent.
 
-        Returns `(data, cut_off, ceiling_used, failure)`. `failure` is the
-        sentence that will be recorded against the turn, so it says what actually
-        happened: an answer that never arrived is not an answer that could not be
-        read, and the person is told which of the two they are looking at.
+        Returns `(data, cut_off, ceiling_used, failure, user_action)`. `failure`
+        is the sentence that will be recorded against the turn, so it says what
+        actually happened: an answer that never arrived is not an answer that
+        could not be read, and the person is told which of the two they are
+        looking at. `user_action` is True only for failures the user must fix
+        (401/403 key or limit); transient 429/503/timeouts are retried quietly.
         """
         last: str = "the model could not be reached; nothing said in its place"
+        last_exc: str = ""
         # The best prose answer seen, if any. Held rather than used immediately
         # so the object gets asked for first, and used at the end so that an
         # answer the model did write is never thrown away.
@@ -611,11 +655,16 @@ class SocialCognition:
         # The same, for an answer that arrived as an object under other names.
         fallback: dict[str, Any] | None = None
         for attempt, ceiling in enumerate((DELIBERATION_MAX_TOKENS, DELIBERATION_ESCALATED_MAX_TOKENS)):
-            if attempt and last.startswith("the model could not be reached"):
-                # The provider is not answering at all. More room does not
-                # change that, and asking a second time spends money to be told
-                # the same thing.
-                return {}, False, DELIBERATION_MAX_TOKENS, last
+            if attempt and (
+                last.startswith("the model could not be reached")
+                or last.startswith("rate limited")
+            ):
+                # The provider is not answering at all, or is rate limiting.
+                # More room does not change either: a 429 is about time, not
+                # space, and asking a second time spends money to be told the
+                # same thing. The message stays queued and the schedule in
+                # `record_failure` decides when it is asked again.
+                return {}, False, DELIBERATION_MAX_TOKENS, last, needs_user_action(last_exc)
             user_text = prompt_messages[1]["content"] + (_ASK_AGAIN if attempt else "")
             request = ModelRequest(
                 tier=tier,
@@ -631,9 +680,37 @@ class SocialCognition:
             )
             try:
                 response = await self.gateway.complete(request)
-            except Exception:
-                logger.exception("social.deliberate_call_failed", attempt=attempt + 1)
-                last = "the model could not be reached; nothing said in its place"
+            except Exception as exc:
+                last_exc = f"{type(exc).__name__}: {exc}"[:500]
+                rate_limited = "429" in last_exc or "rate limit" in last_exc.lower()
+                wait_s = _retry_after_from(exc)
+                if needs_user_action(last_exc):
+                    logger.warning("social.deliberate_call_failed", attempt=attempt + 1)
+                elif rate_limited:
+                    logger.warning(
+                        "social.deliberate_rate_limited_waiting",
+                        attempt=attempt + 1,
+                        wait_in_s=wait_s,
+                        waiting=True,
+                        reason=last_exc[:200],
+                    )
+                else:
+                    logger.info(
+                        "social.deliberate_call_retrying",
+                        attempt=attempt + 1,
+                        immediate=True,
+                        reason=last_exc[:200],
+                    )
+                if rate_limited:
+                    last = (
+                        "rate limited (429); waiting "
+                        f"{_format_wait(wait_s)} before retrying; nothing said in its place"
+                    )
+                else:
+                    last = (
+                        "the model could not be reached; retrying immediately; "
+                        "nothing said in its place"
+                    )
                 continue
             data = _parse_json(response.text or "")
             cut_off = was_truncated(response.finish_reason)
@@ -641,7 +718,7 @@ class SocialCognition:
                 # Recovered from a reply the provider stopped: usable, but the
                 # record says so, because a decision read back later is not to
                 # be taken for a whole one.
-                return data, cut_off, ceiling, None
+                return data, cut_off, ceiling, None, False
             if not cut_off and _prose_body(response.text) is not None:
                 prose = response.text or ""
                 last = "the model answered in prose instead of the decision object"
@@ -684,14 +761,21 @@ class SocialCognition:
                 "social.deliberate_prose_answer",
                 chars=len(recovered["reply_texts"][0]),
             )
-            return recovered, False, DELIBERATION_ESCALATED_MAX_TOKENS, None
+            return recovered, False, DELIBERATION_ESCALATED_MAX_TOKENS, None, False
         if fallback is not None:
             logger.warning(
                 "social.deliberate_wrong_keys",
                 chars=len(fallback["reply_texts"][0]),
             )
-            return fallback, False, DELIBERATION_ESCALATED_MAX_TOKENS, None
-        return {}, False, DELIBERATION_ESCALATED_MAX_TOKENS, last
+            return fallback, False, DELIBERATION_ESCALATED_MAX_TOKENS, None, False
+        user_action = needs_user_action(last_exc)
+        if user_action:
+            last = f"{last} (action needed: check API key or spending limit)"
+        elif is_rate_limited_text(last_exc) or last.startswith("rate limited"):
+            last = f"{last} (waiting for rate limit, retrying in background)"
+        else:
+            last = f"{last} (retrying immediately in background)"
+        return {}, False, DELIBERATION_ESCALATED_MAX_TOKENS, last, user_action
 
     async def _recent_conversation(self, message: Message) -> str:
         """The last few turns of this conversation, oldest first.
@@ -788,10 +872,18 @@ class SocialCognition:
             "FROM messages "
             "WHERE direction = 'inbound' AND ("
             "  social_decision IS NULL"
-            "  OR (social_decision->>'decided') = 'false'"
-            "      AND COALESCE((social_decision->>'attempts')::int, 0) < $2"
+            "  OR ((social_decision->>'decided') = 'false'"
+            "      AND COALESCE((social_decision->>'attempts')::int, 0) < CASE "
+            "        WHEN (social_decision->>'needs_user_action') = 'false' THEN $3::int "
+            "        ELSE $2::int END"
+            # A rate-limited message is waited out, not re-asked every cycle: its
+            # failure row carries the epoch before which it must not be asked
+            # again (five minutes, then an hour, five hours, a day). Rows without
+            # one -- every other failure -- are due immediately, as before.
+            "      AND COALESCE(NULLIF((social_decision->>'next_retry_after_epoch'), '')"
+            "        ::double precision, 0) <= EXTRACT(EPOCH FROM now()))"
             ") ORDER BY ts ASC LIMIT $1",
-            limit, MAX_DELIBERATION_ATTEMPTS,
+            limit, MAX_DELIBERATION_ATTEMPTS, MAX_TRANSIENT_ATTEMPTS,
         )
         out: list[Message] = []
         for row in rows:
@@ -840,8 +932,15 @@ class SocialCognition:
         The attempt count lives in the same column rather than in a new one,
         because it is bookkeeping about a decision that was never formed and
         there is no decision to attach it to. `pending_inbound` reads it back to
-        decide whether to ask again; once it reaches `MAX_DELIBERATION_ATTEMPTS`
-        the row stops being pending and is left as the readable record it is.
+        decide whether to ask again; transient failures retry up to
+        `MAX_TRANSIENT_ATTEMPTS`, user-actionable ones (bad key/limit) stop at
+        `MAX_DELIBERATION_ATTEMPTS` and surface.
+
+        A rate-limited failure additionally schedules *when* to ask again: five
+        minutes after the first 429, then an hour, five hours, a day, staying at
+        a day. `pending_inbound` holds the row until then, so the wait is a wait
+        rather than a re-ask every cycle, and the reason names it so the screen
+        can show "waiting about 1h" instead of silence.
 
         It overwrites a previous failure and nothing else. `mark_handled` writes
         the same column and has to be able to retire a message that failed first,
@@ -851,6 +950,26 @@ class SocialCognition:
         """
         attempts = int(message.social_decision.get("attempts", 0) or 0) + 1
         payload = {**message.social_decision, **decision, "attempts": attempts}
+        reason = str(payload.get("reason") or "")
+        user_action = bool(payload.get("needs_user_action")) or needs_user_action(reason)
+        rate_limited = bool(payload.get("rate_limited")) or (
+            is_rate_limited_text(reason) and not user_action
+        )
+        if rate_limited and not user_action:
+            hint = payload.get("wait_s")
+            try:
+                hint_s = float(hint) if hint is not None else None
+            except (TypeError, ValueError):
+                hint_s = None
+            wait_s = rate_limit_wait_for_attempt(attempts, hint_s)
+            payload["rate_limited"] = True
+            payload["wait_s"] = wait_s
+            payload["next_retry_after_epoch"] = time.time() + wait_s
+            base_reason = reason.split("; waiting ", 1)[0][:400]
+            payload["reason"] = (
+                f"{base_reason}; waiting {format_wait(wait_s)} before retry "
+                f"(rate-limited attempt {attempts})"
+            )
         if self.db is None:
             return payload
         await self.db.execute(
@@ -959,7 +1078,7 @@ def _reply_texts(raw: Any) -> list[str]:
     if not isinstance(raw, list):
         return []
     texts: list[str] = []
-    for entry in raw[:3]:
+    for entry in raw:
         if isinstance(entry, str) and entry.strip():
             texts.append(entry.strip())
     return texts
@@ -1239,7 +1358,7 @@ def _object_as_the_reply(data: dict[str, Any]) -> dict[str, Any] | None:
         return None
     return {
         "action": "reply_now",
-        "reply_texts": texts[:3],
+        "reply_texts": texts,
         "urgency": Urgency.normal.value,
         "reason": (
             "answered inside a differently named field rather than in "

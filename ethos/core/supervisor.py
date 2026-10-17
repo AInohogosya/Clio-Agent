@@ -249,10 +249,16 @@ class Supervisor:
     def _should_restart(self, spec: ProcessSpec) -> bool:
         if self._stopping or spec.optional:
             return False
+        # A child that ran stably earns its restarts back: the limit bounds a
+        # tight crash loop (a missing API key at start-up), not the lifetime of
+        # the supervisor. Without this, a core that crash-looped five times
+        # before its key was pasted into the settings page stayed retired
+        # forever — and the page the person just used to fix it could never
+        # show a live agent until somebody ran `ethos up` again.
+        if spec.restart_count and time.monotonic() - spec.last_start >= 60.0:
+            spec.restart_count = 0
         if spec.restart_count >= self.MAX_RESTARTS:
             logger.error("supervisor.giving_up", process=spec.name)
-            return False
-        if time.monotonic() - spec.last_start < 10.0 and spec.restart_count >= 2:
             return False
         return True
 

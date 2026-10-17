@@ -113,6 +113,33 @@ test('switching to OpenAI starts from its default model', () => {
   assert.equal(settings.model, PROVIDER_DEFAULTS.openai.model);
 });
 
+test('adopting remote settings takes the tuple verbatim, with no provider reset', () => {
+  const client = new DuplexClient({
+    settings: {
+      provider: 'openai',
+      apiKey: 'openai-secret',
+      baseUrl: 'https://api.openai.com/v1',
+      model: 'shared-model-name',
+    },
+  });
+
+  // What another surface saved: a different provider that happens to use the
+  // same model name, with its own endpoint and key. Routing this through the
+  // local-edit reset would drop all three on the grounds that the model
+  // "equals ours" — the remote side already means exactly this tuple.
+  client.replaceSettings(createSettings({
+    provider: 'anthropic',
+    apiKey: 'anthropic-secret',
+    baseUrl: 'https://api.anthropic.com/v1',
+    model: 'shared-model-name',
+  }));
+  const settings = client.getSnapshot().settings;
+  assert.equal(settings.provider, 'anthropic');
+  assert.equal(settings.apiKey, 'anthropic-secret');
+  assert.equal(settings.baseUrl, 'https://api.anthropic.com/v1');
+  assert.equal(settings.model, 'shared-model-name');
+});
+
 test('OpenAI-compatible providers post to chat/completions with bearer auth', async () => {
   for (const id of HOSTED_PROVIDERS) {
     const definition = PROVIDER_DEFINITIONS[id];

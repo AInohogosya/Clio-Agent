@@ -28,6 +28,7 @@ const CODE_TABLE: Record<ErrorCode, TranslationKey> = {
   config_cleanup_failed: 'cliConfigCleanup',
   legacy_key_cleanup_failed: 'cliConfigCleanup',
   config_too_large: 'cliConfigTooLarge',
+  config_unreadable: 'cliConfigUnreadable',
   unsafe_config_target: 'cliUnsafeConfigTarget',
   insecure_config_permissions: 'cliConfigPermissions',
   config_not_owned_by_user: 'cliConfigOwner',

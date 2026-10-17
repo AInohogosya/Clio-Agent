@@ -8,11 +8,13 @@ import {
   quarantineConfigFile,
   readTrustedConfigFile,
   watchConfigFile,
+  withConfigFileLock,
   writeConfigFile,
 } from './config-file.js';
 import { isSafeCredential } from './security.js';
 import {
   describeCredential,
+  mergeSharedState,
   nextRevision,
   normalizeSharedState,
   SHARED_STATE_VERSION,
@@ -139,20 +141,48 @@ function parseJsonOrNull(raw: string): unknown {
 /**
  * Reads the shared file.
  *
- * A read only ever narrows what it trusts; it never decides the file is
- * worthless. Unparseable contents are quarantined so they can be recovered, a
- * transient failure leaves the file untouched for the next attempt, and a
- * merely-loose permission is repaired in place. The settings survive all three.
+ * A path that was never written yields defaults without creating anything. A
+ * file that cannot be parsed is quarantined so its settings can be recovered,
+ * and the session starts on defaults. A file that merely cannot be read *this
+ * once* — a rename in flight, a momentary permission failure — throws
+ * `config_unreadable` rather than answering with defaults: an empty state
+ * that looks authoritative is what a later save turns into an empty file, and
+ * that is how settings are "reset" by a restart that never happened. Callers
+ * that must ride out a gap without failing use `tryReadConfig`; callers that
+ * must not mistake a gap for a file use this and let the error surface.
  */
 export function readConfig(env: NodeJS.ProcessEnv = process.env): SharedState {
+  const state = tryReadConfig(env);
+  if (!state) throw new Error('config_unreadable');
+  return state;
+}
+
+/**
+ * Reads the shared file, or `null` when it is momentarily out of reach.
+ *
+ * Hard failures — an untrusted target, an insecure directory — still throw:
+ * those are verdicts about the file, not gaps in reading it. Only the
+ * transient case returns `null`, and a `null` must never be saved, merged as
+ * authoritative, or shown as the current settings. It means "not now".
+ */
+export function tryReadConfig(env: NodeJS.ProcessEnv = process.env): SharedState | null {
   let path: string;
   try {
     path = configPath();
   } catch (error) {
     if (!isTransientFailure(error)) throw error;
-    return emptyConfig(env);
+    return null;
   }
+  return readConfigFileState(path, env);
+}
 
+/**
+ * The state of one file: read, normalised, and quarantined when it cannot be
+ * parsed — or `null` when the bytes are momentarily out of reach. Must be
+ * called with the config lock held when the caller is about to write, so the
+ * read it merges into the write is the bytes the previous write left.
+ */
+function readConfigFileState(path: string, env: NodeJS.ProcessEnv): SharedState | null {
   const verdict = readTrustedConfigFile(path);
   if (verdict.outcome === 'read') {
     const parsed = parseJsonOrNull(verdict.raw);
@@ -160,18 +190,21 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env): SharedState {
     // Readable, but not a state file. The bytes may still be somebody's
     // settings, so they are moved aside rather than overwritten.
     quarantineConfigFile(path);
+    return emptyConfig(env);
   }
+  if (verdict.outcome === 'unreadable') return null;
   return emptyConfig(env);
 }
 
-/** Atomic, owner-only write. A credential supplied by the environment never reaches disk. */
+/** Atomic, owner-only write of exactly what was passed. Serialised against every other writer. */
 export function writeConfig(config: SharedState, env: NodeJS.ProcessEnv = process.env): SharedState {
   const safeConfig = forDisk(config, env);
   const serialized = `${JSON.stringify(safeConfig, null, 2)}\n`;
   // Refused before anything is created on disk: an over-large state is a bug in
   // the caller, not a reason to leave a directory behind.
   if (Buffer.byteLength(serialized, 'utf8') > MAX_CONFIG_BYTES) throw new Error('config_too_large');
-  writeConfigFile(configPath(), serialized);
+  const path = configPath();
+  withConfigFileLock(path, () => writeConfigFile(path, serialized));
   return safeConfig;
 }
 
@@ -186,22 +219,63 @@ export function saveConfig(config: SharedState, options: SaveConfigOptions = {})
   const env = options.env ?? process.env;
   const now = typeof options.now === 'number' && Number.isFinite(options.now) ? options.now : Date.now();
   const bump = options.bumpRevision !== false;
-  return writeConfig({
-    ...config,
-    origin: options.origin ?? config.origin ?? 'cli',
-    transport: 'file',
-    revision: bump ? nextRevision(config) : config.revision,
-    updatedAt: now,
-  }, env);
+  const path = configPath();
+  // The whole cycle under one lock: read the bytes the previous save left,
+  // fold this state into them, and write the result. A save that merely
+  // overwrote the file with its own possibly-stale copy is how a second
+  // surface's settings were silently undone — and how a revision moved
+  // backwards. Merging under the lock means a concurrent writer's changes
+  // survive this save, and the revision only ever moves forward.
+  return withConfigFileLock(path, () => {
+    const disk = readConfigFileState(path, env);
+    // The disk is momentarily out of reach. Writing now would mean writing
+    // without knowing what is there, which is exactly the overwrite this lock
+    // exists to prevent — so the save fails and the caller keeps its state.
+    if (!disk) throw new Error('config_unreadable');
+    const incoming = normalizeSharedState({
+      ...config,
+      origin: options.origin ?? config.origin ?? 'cli',
+      transport: 'file',
+      updatedAt: now,
+    }, { defaultTransport: 'file', environmentKey: environmentApiKey(env) });
+    const merged = mergeSharedState(disk, incoming);
+    // The transcript merges as an append-only union — except an explicit,
+    // up-to-date removal. A clear passes an empty list built on the current
+    // revision; unioning that with the disk would resurrect every cleared
+    // message and make clearing impossible. A stale, shorter list is not a
+    // removal, it is a writer that has not seen the latest arrivals, so only
+    // a list that is both current and purely a deletion is honoured verbatim.
+    if (incoming.revision >= disk.revision && incoming.messages.length < disk.messages.length) {
+      const diskIds = new Set(disk.messages.map((message) => message.id));
+      if (incoming.messages.every((message) => diskIds.has(message.id))) {
+        merged.messages = [...incoming.messages];
+      }
+    }
+    const floor = Math.max(disk.revision, incoming.revision);
+    merged.revision = bump ? nextRevision({ revision: floor }) : floor;
+    merged.updatedAt = Math.max(disk.updatedAt, incoming.updatedAt);
+    // A save happened, whoever won the merge: the origin names the surface
+    // that wrote these bytes, and the transport is the file that holds them.
+    merged.origin = incoming.origin;
+    merged.transport = 'file';
+    const safeConfig = forDisk(merged, env);
+    const serialized = `${JSON.stringify(safeConfig, null, 2)}\n`;
+    if (Buffer.byteLength(serialized, 'utf8') > MAX_CONFIG_BYTES) throw new Error('config_too_large');
+    writeConfigFile(path, serialized);
+    return safeConfig;
+  });
 }
 
 /**
  * Watches the shared file so a change made by the browser, or by a second
  * phone process, is adopted instead of silently overwritten.
  *
- * A read that fails is swallowed: a concurrent writer can be mid-rename, and
- * the next event settles it. The watch itself never throws — an always-on
- * process that died because one `stat` failed would take the transcript with it.
+ * A read that fails is swallowed *without* calling back: a concurrent writer
+ * can be mid-rename, and reporting that gap as a change would hand the caller
+ * a default state nobody wrote — which the caller would then adopt and save,
+ * resetting the settings. The next event after the rename lands settles it.
+ * The watch itself never throws — an always-on process that died because one
+ * `stat` failed would take the transcript with it.
  */
 export function watchConfig(
   onChange: (config: SharedState) => void,
@@ -215,7 +289,9 @@ export function watchConfig(
   }
   const watch = watchConfigFile(path, () => {
     try {
-      onChange(readConfig(env));
+      const next = tryReadConfig(env);
+      if (!next) return;
+      onChange(next);
     } catch {
       // A concurrent writer can be mid-rename; the next event settles it.
     }

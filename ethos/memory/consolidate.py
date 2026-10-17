@@ -269,7 +269,9 @@ class ConsolidationDAG:
         )
         name = await self._self_name()
         data = await self._complete_json(
-            DISTILL_PROMPT.format(name=name), episodes_text, Tier.T2, "consolidation.distill",
+            DISTILL_PROMPT.format(name=name, episodes=episodes_text),
+            f"Distil {len(members[:40])} episode(s).",
+            Tier.T2, "consolidation.distill",
         )
         facts = data.get("facts", [])
         return [f for f in facts if isinstance(f, dict) and f.get("statement")]

@@ -196,7 +196,12 @@ def test_a_remote_embedder_raises_rather_than_substituting_hashed_vectors():
     ends up holding two spaces and every later search is silently wrong. A tool
     call that fails is visible; that is not.
     """
-    embedder = RemoteEmbedder("/nonexistent/gateway.sock", dim=1024, retries=0)
+    import socket
+
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        closed_port = s.getsockname()[1]
+    embedder = RemoteEmbedder("/nonexistent/gateway.sock", port=closed_port, dim=1024, retries=0)
     with pytest.raises(RuntimeError, match="gateway embedding unavailable"):
         embedder.embed(["a sentence"])
     embedder.close()

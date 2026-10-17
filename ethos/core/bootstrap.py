@@ -488,27 +488,53 @@ def bring_up(
     _run(["status"], root=root, check=False)
     print("", flush=True)
 
+    url = f"http://127.0.0.1:{interface_port(config)}"
+    _, interface_up, interface_detail = interface_health(config)
+
+    def _offer_page() -> None:
+        if interface_up:
+            print(f"  open {url}                the agent, in a browser", flush=True)
+            if open_browser and not os.environ.get("ETHOS_NO_OPEN"):
+                _open(url)
+        elif interface_built:
+            print(f"  the browser page is not being served yet ({interface_detail}); the bridge answers at {url} when it is", flush=True)
+        else:
+            print(f"  the browser page is not being served; the bridge answers at {url} when it is", flush=True)
+
     if not ready:
+        print(
+            "The agent has not published a sign of life yet — most often this means "
+            "no model API is reachable (missing key, revoked key, or no network).",
+            file=sys.stderr,
+            flush=True,
+        )
+        print(
+            "The supervisor and the bridge were still started, so the settings page "
+            "below can be used to configure the APIs right now; the agent picks "
+            "them up without a restart (tip: `ethos up --wait 0` opens the page "
+            "without waiting).",
+            file=sys.stderr,
+            flush=True,
+        )
         where = []
         if supervisor_log.is_file():
             where.append(f"  {supervisor_log}          what the supervisor started, and what it lost")
         where.append(f"  {log_dir}/   what each process said — `ethos logs` follows both")
         print(
-            "\n".join(["The agent did not come up. These are the two logs that say why:", *where]),
+            "\n".join(["These are the two logs that say why:", *where]),
             file=sys.stderr,
             flush=True,
         )
-        return EXIT_FAILED
+        print("", flush=True)
+        _offer_page()
+        print("  settings → Messaging                 open a door (Telegram, WhatsApp, Slack, Discord, email)")
+        print("  ethos stop                            stop the agent")
+        print("  ethos logs                            follow its logs")
+        print("", flush=True)
+        return EXIT_OK
 
     say("the agent is running")
-    url = f"http://127.0.0.1:{interface_port(config)}"
-    _, interface_up, _ = interface_health(config)
-    if interface_built and interface_up:
-        print(f"  open {url}                the agent, in a browser", flush=True)
-        if open_browser and not os.environ.get("ETHOS_NO_OPEN"):
-            _open(url)
-    else:
-        print(f"  the browser page is not being served; the bridge answers at {url} when it is")
+    _offer_page()
     # The interface's own commands are only worth suggesting where the interface
     # is: a deployment that never cloned it should not be told about a terminal
     # client it cannot run.

@@ -1021,7 +1021,21 @@ export function SettingsScreen({
         if (!found?.configured || seeded.current) return;
         seeded.current = true;
         setDraft((current) => {
-          const provider = isProviderId(found.provider) ? found.provider : current.provider;
+          // Prefer the vendor the agent reports. Older agent files may report
+          // only the shared protocol (`openai_compat`) — not a picker id — so
+          // fall back to matching the reported endpoint against known provider
+          // defaults before keeping the draft's value; otherwise a stale
+          // (frequently OpenRouter) shared-file value silently wins and the
+          // agent's NVIDIA choice reads as reverted.
+          let provider: ProviderId = current.provider;
+          if (isProviderId(found.provider)) {
+            provider = found.provider;
+          } else if (found.baseUrl) {
+            const endpoint = found.baseUrl.trim().replace(/\/+$/, '');
+            const match = (Object.keys(PROVIDER_DEFINITIONS) as ProviderId[])
+              .find((id) => PROVIDER_DEFINITIONS[id].defaultBaseUrl === endpoint);
+            if (match) provider = match;
+          }
           const next = sanitizeDraftSettings({
             ...current,
             provider,
@@ -1463,10 +1477,14 @@ export function SettingsScreen({
     // The two modes write to two different places, and both are wanted: the shared
     // settings file is what the terminal reads and what direct mode uses, while
     // the base model and the name belong to the agent's own configuration and
-    // nowhere else.
-    onUpdate(commitDraftSettings(draft));
-    setDirty(false);
+    // nowhere else. In agent mode the agent write goes first: writing the shared
+    // file before the agent refused (missing key, bad endpoint, agent offline)
+    // left the two stores disagreeing — shared saying e.g. NVIDIA while the
+    // agent file still said OpenRouter — and the next open re-seeds the draft
+    // from the agent file, reading as a mysterious revert.
     if (!agentMode || (!saveBaseModel && !saveIdentity)) {
+      onUpdate(commitDraftSettings(draft));
+      setDirty(false);
       setNotice(t('cliSavedShared'));
       return;
     }
@@ -1480,8 +1498,9 @@ export function SettingsScreen({
     // and the first one is the one that leads, because a save that failed at all
     // failed at the thing that stops the agent answering.
     //
-    // Said plainly, because the settings file *was* written either way: a reader told
-    // only "saved" would go on believing an agent that had never heard of either.
+    // The shared file is written only once the base model has landed (or there
+    // was nothing of it to write): a reader told only "saved" would go on
+    // believing an agent that had never heard of either.
     let said = '';
     let failed: { error: unknown; kind: 'base' | 'name' } | null = null;
     try {
@@ -1496,6 +1515,18 @@ export function SettingsScreen({
       failed ??= { error, kind: 'name' };
     }
 
+    if (failed?.kind === 'base') {
+      // The provider lives in the agent file: leaving the shared file unwritten
+      // keeps the two stores agreeing with each other (both still on the old
+      // provider) instead of one racing ahead to a provider the agent refused.
+      // `dirty` stays set so the edit is not silently lost.
+      setError(`${failureReason(failed.error, failed.kind)} ${t('agentBaseModelSavingFailed')}`);
+      setBaseSaving(false);
+      return;
+    }
+    onUpdate(commitDraftSettings(draft));
+    setDirty(false);
+
     if (failed) {
       // "Nothing was changed" is only true when no half of the save landed, so it is
       // said only then.
@@ -1509,7 +1540,13 @@ export function SettingsScreen({
   };
 
   const close = () => {
-    if (canSave && dirty) onUpdate(commitDraftSettings(draft));
+    // A quiet close must never write half a save: persisting the shared file
+    // here while the agent's base model still holds the old vendor is exactly
+    // the split that re-seeds the draft from the agent file on the next open
+    // and reads as "NVIDIA reverted to OpenRouter". Base-model edits are only
+    // persisted by Save (which writes the agent file first); closing with one
+    // pending simply discards the draft, and non-base edits still autosave.
+    if (canSave && dirty && !(agentMode && baseTouched)) onUpdate(commitDraftSettings(draft));
     onClose();
   };
 

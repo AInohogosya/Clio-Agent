@@ -101,6 +101,25 @@ models:
     supports_tools: true
     diversity_family: deepseek
 
+  # Failover for a deployment whose OpenRouter key is on the free tier: the
+  # paid entries above answer 403 "key limit exceeded" on such a key, so a
+  # base model that hiccups would otherwise have nowhere left to fail over to
+  # and land in `no_model_available`. Measured 5/5 valid JSON at the 2048-token
+  # budget, ~4s. The other `:free` candidates were not: `gemma-4-31b-it` is
+  # throttled to 429s and `lfm-2.5-2.6b` returns reasoning-only replies.
+  - provider: openai_compat
+    model: nvidia/nemotron-3.5-super-vl:free
+    base_url: "https://openrouter.ai/api/v1"
+    api_key_env: OPENROUTER_API_KEY
+    tiers: [T2]
+    quality: 0.70
+    latency_s: 4.5
+    rpm: 20
+    tpm: 100000
+    supports_thinking: false
+    supports_tools: true
+    diversity_family: nvidia
+
   - provider: openai_compat
     model: llama-3.3-70b-versatile
     base_url: "https://api.groq.com/openai/v1"

@@ -48,7 +48,19 @@ class OpenAICompatProvider(Provider):
         self._no_template_kwargs: set[str] = set()
 
     def available(self) -> bool:
-        return bool(self.base_url)
+        if self.api_key:
+            return True
+        try:
+            from urllib.parse import urlsplit
+
+            host = urlsplit(self.base_url).hostname or ""
+            if host.rstrip(".").lower() in ("localhost",) or host.rstrip(".").lower().endswith(".localhost"):
+                return True
+            import ipaddress
+
+            return ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            return False
 
     def _headers(self) -> dict[str, str]:
         headers = {"content-type": "application/json"}

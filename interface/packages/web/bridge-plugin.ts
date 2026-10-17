@@ -24,11 +24,12 @@ import {
 import {
   configPath,
   constantTimeEquals,
+  emptyConfig,
   environmentApiKey,
   MAX_CONFIG_BYTES,
   hasEnvironmentApiKey,
-  readConfig,
   saveConfig,
+  tryReadConfig,
   watchConfig,
 } from '@project-phone/core/store';
 import { BRIDGE_PREFIX, bridgePath, sameIds, TOKEN_HEADER, TOKEN_QUERY_KEY } from './src/bridge-protocol';
@@ -55,7 +56,7 @@ const MAX_HISTORY_ENTRIES = 24;
 const MAX_HISTORY_ENTRY_LENGTH = 8_000;
 const MAX_EVENT_CLIENTS = 16;
 const MAX_CONFIG_PATH_LENGTH = 512;
-const MAX_CATALOGUE_ENTRIES = 400;
+const MAX_CATALOGUE_ENTRIES = 500;
 
 /**
  * The body budget, matched to what the file itself accepts.
@@ -338,8 +339,11 @@ function withStoredCredential(settings: Settings): Settings {
   const environmentKey = environmentApiKey();
   if (environmentKey) return createSettings({ ...settings, apiKey: environmentKey });
   if (settings.apiKey.trim()) return settings;
-  const stored = readConfig();
-  return stored.settings.apiKey.trim()
+  // A file that is momentarily out of reach is not a file with no key: fall
+  // back to the settings as they are rather than reporting a stored key as
+  // missing, which would read as the credential having been removed.
+  const stored = tryReadConfig();
+  return stored?.settings.apiKey.trim()
     ? createSettings({ ...settings, apiKey: stored.settings.apiKey })
     : settings;
 }
@@ -372,9 +376,13 @@ export function phoneBridge(): Plugin {
 
   const ensure = (): BridgeState => {
     if (bridge) return bridge;
+    // A file that is momentarily out of reach is not an empty file: start on
+    // defaults in memory and let the watcher adopt the real state when the
+    // next event lands. Saves re-read under the config lock and merge, so this
+    // in-memory stand-in can never overwrite the settings it has not seen.
     const created: BridgeState = {
       token,
-      state: readConfig(),
+      state: tryReadConfig() ?? emptyConfig(),
       clients: new Set(),
       stopWatching: () => undefined,
     };
@@ -466,7 +474,16 @@ export function phoneBridge(): Plugin {
             respond(response, 200, { state: publicSnapshot(active.state) });
             return;
           }
-          respond(response, 200, { state: publicSnapshot(publish(active, saveConfig(merged.state, { origin: 'web' }))) });
+          // The disk can be momentarily out of reach (a concurrent rename);
+          // that is a retry, not a save of whatever happens to be in memory.
+          let published: SharedState;
+          try {
+            published = publish(active, saveConfig(merged.state, { origin: 'web' }));
+          } catch (error) {
+            respond(response, 503, { error: error instanceof Error ? error.message : 'save_failed' });
+            return;
+          }
+          respond(response, 200, { state: publicSnapshot(published) });
         },
         (error: unknown) => {
           respond(
@@ -594,8 +611,15 @@ export function phoneBridge(): Plugin {
     }
 
     if (path === bridgePath('clear') && request.method === 'POST') {
+      let cleared: SharedState;
+      try {
+        cleared = publish(active, saveConfig({ ...active.state, messages: [] }, { origin: 'web' }));
+      } catch (error) {
+        respond(response, 503, { error: error instanceof Error ? error.message : 'save_failed' });
+        return;
+      }
       respond(response, 200, {
-        state: publicSnapshot(publish(active, saveConfig({ ...active.state, messages: [] }, { origin: 'web' }))),
+        state: publicSnapshot(cleared),
       });
       return;
     }

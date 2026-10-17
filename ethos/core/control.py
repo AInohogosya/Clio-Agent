@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from datetime import UTC, datetime
 from typing import Any
@@ -56,8 +57,29 @@ class ControlPlane:
         self.pause_actions = False
         self.emergency = False
         self.preview = False
+        # This process is *ending*, as opposed to the agent being stopped. Only a
+        # signal sets it, and it is the one thing that ends the life loop: a stop
+        # from a surface parks the agent (see `Life.life`) so the Resume button
+        # beside it has something to resume, whereas a Ctrl-C has to actually end
+        # the process. Before this was split, `stop` could only mean "exit", which
+        # is why resume could not be a restart: the process a stop ended was the
+        # process the surface was talking to, and the supervisor brought a new one
+        # up behind it with the flag already cleared — so the Stop button did not
+        # stick and the Resume button did nothing, and both read as dead.
+        self.ending = False
         self._resume_event = asyncio.Event()
         self._resume_event.set()
+        # Set while the agent is stopped, so a cycle already in flight can be cut
+        # short instead of running to its end before anybody noticed.
+        self._stop_event = asyncio.Event()
+        # Which flags are standing because a file in the run dir says so, rather
+        # than because a surface asked. See `_apply_files`.
+        self._stop_from_file = False
+        self._hold_from_file = False
+        # Set by anything that changes a flag, and cleared by whoever waits on it.
+        # One event rather than one per flag because the loop never cares *which*
+        # flag changed, only that its cached reading is stale.
+        self._wake_event = asyncio.Event()
         self._loaded = False
 
     @property
@@ -105,6 +127,9 @@ class ControlPlane:
                 # undone by removing it — plus the host's own switches above
                 # the agent (the OOB file, VM suspend, kill -9).
                 self.stopped = False
+        # The row's flags are new to this process and every waiter needs them,
+        # so the events are brought in step before anything can wait on them.
+        self._after_change()
         self._apply_files()
         # The row now says what *this* process is doing rather than how the last
         # one ended, and that is the only reading every reader can use.
@@ -126,17 +151,73 @@ class ControlPlane:
             await self._persist()
 
     def _apply_files(self) -> None:
+        before = self.snapshot()
+        # Each file is a two-way switch, and each remembers whether it is the one
+        # that set the flag. That is what makes removing the file release the hold
+        # without also releasing a hold a surface pressed: a stop a person asked
+        # for has no file behind it and is taken back with `resume`, while a stop
+        # the host wrote is the host's to lift, and the only way it ever could be.
+        # It mattered more once a stop stopped meaning "the process ends" — a hold
+        # nothing could take back was a hold only a restart could take back, which
+        # is the same dead button from the other side.
         if os.path.exists(self.stop_file):
+            self._stop_from_file = True
             self.stopped = True
-        if os.path.exists(self.pause_file):
+        elif self._stop_from_file:
+            self._stop_from_file = False
+            self.stopped = False
+        held = os.path.exists(self.pause_file) or os.path.exists(self.emergency_file)
+        if held:
+            self._hold_from_file = True
             self.paused = True
             self.pause_actions = True
-        if os.path.exists(self.emergency_file):
-            self.emergency = True
-            self.paused = True
-            self.pause_actions = True
+            if os.path.exists(self.emergency_file):
+                self.emergency = True
+        elif self._hold_from_file:
+            self._hold_from_file = False
+            self.paused = False
+            self.pause_actions = False
+            self.emergency = False
+        self._after_change(before)
 
-    async def _persist(self) -> None:
+    def _after_change(self, before: dict[str, Any] | None = None) -> None:
+        """Keeps the waiters in step with the flags they are waiting on.
+
+        Every gate that blocks — a parked loop, a cycle waiting to be interrupted
+        — is an `asyncio.Event` next to the flag it is blocked on, and an event
+        that outlives the flag is how "I pressed stop and the agent carried on"
+        happens. So the events are set from the flags here rather than remembered
+        at each assignment: one place, and no verb added later can forget.
+        """
+        after = self.snapshot()
+        if before == after:
+            return
+        if self.stopped:
+            self._stop_event.set()
+        else:
+            self._stop_event.clear()
+        if self.paused or self.stopped:
+            self._resume_event.clear()
+        else:
+            self._resume_event.set()
+        self._wake_event.set()
+
+    async def _persist(self, changed: set[str] | None = None) -> None:
+        """Writes this process's reading of the lifecycle row.
+
+        `changed` names the flags this write is about, and then only those keys
+        are merged into the row. The full replace it used to do was a lost update
+        waiting for a late event: this row has more than one writer (the bridge
+        writes the verb a surface pressed, this process writes its own reading of
+        it), and a process that answers an *earlier* verb persisted its whole
+        snapshot — including a `stopped: false` it had read before the stop was
+        pressed — straight over the stop that had just been written. A stop that
+        silently reverts reads exactly like a Stop button that does not work.
+
+        The one full write is `load`, and it is deliberate: correcting a stale
+        flag is right for the process whose own ending was recorded, and wrong for
+        every other process (see the note there).
+        """
         if self.db is None:
             return
         attrs = {
@@ -147,37 +228,88 @@ class ControlPlane:
             "preview": self.preview,
             "updated_at": datetime.now(UTC).isoformat(),
         }
-        await self.db.upsert_env(CONTROL_KIND, CONTROL_KEY, attrs, owner="control")
+        if changed is None:
+            await self.db.upsert_env(CONTROL_KIND, CONTROL_KEY, attrs, owner="control")
+            return
+        merge = {key: attrs[key] for key in changed if key in attrs}
+        merge["updated_at"] = attrs["updated_at"]
+        if not merge:
+            return
+        # The same key-by-key merge the interface's bridge uses, so a flag written
+        # by one writer and a flag written by the other can both be standing.
+        await self.db.execute(
+            "INSERT INTO env_entities (id, kind, key, attrs, owner, last_verified_at, health) "
+            "VALUES (gen_random_uuid(), $1, $2, $3::jsonb, $4, now(), 'ok') "
+            "ON CONFLICT (key) DO UPDATE SET attrs = ("
+            "  SELECT jsonb_object_agg(key, value) FROM ("
+            "    SELECT key, value FROM jsonb_each(COALESCE(env_entities.attrs, '{}'::jsonb))"
+            "    WHERE key NOT IN (SELECT key FROM jsonb_each($3::jsonb))"
+            "    UNION ALL"
+            "    SELECT key, value FROM jsonb_each($3::jsonb)"
+            "  ) merged"
+            "), last_verified_at = now()",
+            CONTROL_KIND, CONTROL_KEY, json.dumps(merge), "control",
+        )
 
     async def apply_command(self, action: str, by: str = "system") -> dict[str, Any]:
+        before = self.snapshot()
+        changed: set[str] = set()
         if action == "pause_all":
             self.paused = True
             self.pause_actions = True
-            self._resume_event.clear()
+            changed = {"paused", "pause_actions"}
         elif action == "pause_actions":
             self.pause_actions = True
+            changed = {"pause_actions"}
         elif action == "resume":
+            # `stopped` included, deliberately and against the older rule that
+            # resume was not a restart. The rule was right while a stop could only
+            # mean "end the process": there was nothing left for a resume to
+            # restart, so clearing the flag would have let a resume quietly revive
+            # an agent somebody had stopped for good. A stop now parks the agent
+            # in this process — it is still here, still answering, and its Resume
+            # button is the way back — so the case the old rule was protecting
+            # against no longer exists, and a Resume that left the flag standing
+            # was a button that could only ever report that it had done nothing.
             self.paused = False
             self.pause_actions = False
             self.emergency = False
-            self._resume_event.set()
+            self.stopped = False
+            changed = {"paused", "pause_actions", "emergency", "stopped"}
         elif action == "stop":
             self.stopped = True
+            changed = {"stopped"}
         elif action == "emergency_stop":
             self.emergency = True
             self.paused = True
             self.pause_actions = True
             self.stopped = True
-            self._resume_event.clear()
+            changed = {"emergency", "paused", "pause_actions", "stopped"}
         elif action == "preview_on":
             self.preview = True
+            changed = {"preview"}
         elif action == "preview_off":
             self.preview = False
+            changed = {"preview"}
         else:
             return {"ok": False, "error": f"unknown action {action}"}
-        await self._persist()
+        self._after_change(before)
+        await self._persist(changed)
         logger.info("control.command", action=action, by=by)
         return {"ok": True, "action": action, "by": by}
+
+    def end(self, by: str = "signal") -> None:
+        """This process is ending, rather than the agent being stopped.
+
+        A signal is the one reader that must end the loop, so it is kept separate
+        from `stopped` and is not a row anybody can set: the row is what a surface
+        reads, and a surface that could set "this process is ending" would be a
+        surface that can make the agent unrecoverable with a button.
+        """
+        self.ending = True
+        self.stopped = True
+        self._after_change()
+        logger.info("control.ending", by=by)
 
     async def refresh(self) -> None:
         """Called at the top of every cycle: files + bus state are truth [H1]."""
@@ -188,6 +320,19 @@ class ControlPlane:
 
     async def wait_resume(self) -> None:
         await self._resume_event.wait()
+
+    async def wait_stop(self) -> None:
+        """Waits until the agent is asked to stop, so a cycle can be cut short."""
+        await self._stop_event.wait()
+
+    async def wait_wake(self) -> None:
+        """Waits until something changes the flags, then re-reads them.
+
+        Bounded by the caller's timeout: a parked agent that nobody resumes still
+        has to say it is there on the presence heartbeat.
+        """
+        await self._wake_event.wait()
+        self._wake_event.clear()
 
     def snapshot(self) -> dict[str, Any]:
         return {

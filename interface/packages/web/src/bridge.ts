@@ -373,6 +373,9 @@ function applyFrame(line: string, answer: string, onDelta: (text: string) => voi
     onDelta(frame.text);
     return answer + frame.text;
   }
+  if (frame.type === 'done') {
+    return typeof frame.text === 'string' ? answer + frame.text : answer;
+  }
   if (frame.type === 'error') {
     throw new Error(typeof frame.error === 'string' && frame.error ? frame.error : 'provider_error');
   }

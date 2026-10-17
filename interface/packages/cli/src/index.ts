@@ -584,9 +584,14 @@ async function runConfig(runtime: Runtime): Promise<number> {
     return 0;
   }
 
+  // Applied to a fresh read rather than the state this process started with:
+  // a second surface may have saved since, and editing a stale copy would
+  // undo its changes. The merged save below would still protect them, but an
+  // explicit edit belongs on the latest bytes, not underneath them.
+  const fresh = readConfig();
   const next = options.configAction === 'set'
-    ? setConfigField(config, field, options.value ?? '')
-    : unsetConfigField(config, field);
+    ? setConfigField(fresh, field, options.value ?? '')
+    : unsetConfigField(fresh, field);
   const saved = saveConfig(next, { origin: 'cli' });
   if (options.json) {
     out(jsonPayload(saved));
@@ -659,8 +664,11 @@ function runHistory(runtime: Runtime): void {
 }
 
 function runClear(runtime: Runtime): void {
-  const removed = runtime.config.messages.length;
-  const saved = saveConfig({ ...runtime.config, messages: [] }, { origin: 'cli' });
+  // Cleared from a fresh read: a second surface may have appended since this
+  // process started, and clearing a stale copy would drop its arrivals.
+  const fresh = readConfig();
+  const removed = fresh.messages.length;
+  const saved = saveConfig({ ...fresh, messages: [] }, { origin: 'cli' });
   if (runtime.options.json) {
     out(jsonPayload(saved, { removed }));
     return;

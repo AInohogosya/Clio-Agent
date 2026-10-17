@@ -23,6 +23,7 @@ export {
   hasEnvironmentApiKey,
   readConfig,
   saveConfig,
+  tryReadConfig,
   watchConfig,
   writeConfig,
 } from '@project-phone/core/store';

@@ -13,6 +13,7 @@ from ethos.engine.drives import DriveInputs, Motivation
 from ethos.engine.rhythm import RhythmController
 from ethos.engine.states import State, StateMachine
 from ethos.engine.workspace import WorkspaceAssembler
+from ethos.gateway.service import format_wait as _format_retry_wait
 from ethos.observability import metrics
 from ethos.observability.logger import bind_context, get_logger
 from ethos.schemas.context import TurnKind
@@ -645,7 +646,7 @@ class Life:
         # the invariant the join existed for: nothing is dropped, nothing is decided
         # twice, and every message on the surface answers the message it followed.
         # An entry with no words in it is not a message, so it is not sent as one.
-        texts = [text.strip() for text in decision.reply_texts[:3] if text and text.strip()]
+        texts = [text.strip() for text in decision.reply_texts if text and text.strip()]
         # Nothing to say is the same decision either way round: whether the action
         # was `act_silently` or a reply that turned out to be blank, the turn ends
         # in a declared silence and nothing goes out.
@@ -657,7 +658,13 @@ class Life:
                 # Nothing was decided, so nothing is finished with. Retiring the
                 # row is what closed the question as though the agent had
                 # answered it, and the agent answered nothing.
-                await self._hold_undecided(message, decision)
+                failed = await self._hold_undecided(message, decision)
+                if isinstance(failed, dict) and failed.get("reason"):
+                    # The queue now knows more than the decision does: which
+                    # attempt this was and, for a rate limit, how long the wait
+                    # is. Carry that into the announcement so the screen names
+                    # the pause ("waiting about 1h") instead of a bare failure.
+                    decision.reason = str(failed["reason"])[:500]
             await self._announce_decline(message, decision)
             return commission
         for text in texts:
@@ -741,7 +748,7 @@ class Life:
             conversation_key=message.conversation_key,
         )
 
-    async def _hold_undecided(self, message: Any, decision: Any) -> None:
+    async def _hold_undecided(self, message: Any, decision: Any) -> dict[str, Any] | None:
         """Keeps a message nobody managed to decide about, for a later attempt.
 
         No model answered, so the person asked a question that was never heard
@@ -756,11 +763,16 @@ class Life:
         this message would otherwise be asked again every cycle forever, and each
         ask costs money. After the last attempt the row is left exactly as it is,
         which is a permanent, readable record that the agent tried and could not.
+        Transient outages stay pending longer (retried quietly); only failures
+        the user must fix stop early and surface.
         """
-        await self.deps.social.record_failure(message, {
+        reason = decision.reason if hasattr(decision, "reason") else str(getattr(decision, "reason", ""))
+        user_action = "(action needed" in (reason or "")
+        return await self.deps.social.record_failure(message, {
             "action": decision.action.value,
             "reason": decision.reason,
             "decided": False,
+            "needs_user_action": user_action,
         })
 
     async def _record_thought(self, thought: str, *, importance: float, half_life_h: float,
@@ -847,17 +859,59 @@ class Life:
         agent never getting to answer — both are `act_silently` and both produce
         no outbound row — so it is told which one this was, and says the second
         one as a failure rather than reporting a decision the agent never made.
+
+        `needs_user_action` tells the surface whether to show anything at all:
+        transient outages (429/503/timeout) are retried quietly and stay a
+        background `retrying` state; only key/limit failures surface prominently.
+
+        `status_text`, `wait_s` and `error_kind` tell the surface *how* it is
+        retrying, so a screen can name the pause: a 429 waits an extended
+        period ("Rate limited (429) -- waiting about 90s before retrying..."),
+        while any other transient failure retries immediately
+        ("Retrying immediately..."). Without these a wait reads as silence,
+        and silence reads as the agent having stopped midway.
         """
         if self.bus is None:
             return
         try:
+            reason = (decision.ignore_reason or decision.reason or "")[:200]
+            decided = getattr(decision, "decided", True)
+            full_reason = str(getattr(decision, "reason", "") or "")
+            user_action = "(action needed" in full_reason
+            retrying = (not decided and not user_action)
+            lowered = full_reason.lower()
+            rate_limited = "429" in full_reason or "rate limit" in lowered or "rate-limit" in lowered
+            wait_s = _retry_wait_s(full_reason)
+            if not decided and user_action:
+                status_text = f"Action needed: {reason}"
+                error_kind = "needs_user_action"
+            elif not decided and rate_limited:
+                status_text = (
+                    f"Rate limited (429) -- waiting {_format_retry_wait(wait_s)} "
+                    f"before retrying... ({reason})"
+                )
+                error_kind = "rate_limited_waiting"
+            elif not decided:
+                status_text = f"Retrying immediately... ({reason})"
+                error_kind = "retrying_immediately"
+            else:
+                status_text = reason
+                error_kind = "declined" if decided else "unanswered"
             await self.bus.publish(EventKind.MESSAGE_HANDLED, {
                 "message_id": str(message.id),
                 "person_id": message.person_id,
                 "channel": message.channel,
                 "action": decision.action.value,
-                "reason": (decision.ignore_reason or decision.reason or "")[:200],
-                "decided": getattr(decision, "decided", True),
+                "reason": reason,
+                "decided": decided,
+                "needs_user_action": user_action,
+                "retrying": retrying,
+                "rate_limited": rate_limited,
+                "wait_s": wait_s,
+                "status_text": status_text,
+                "error_kind": error_kind,
+                "waiting": retrying and rate_limited,
+                "immediate": retrying and not rate_limited,
             })
         except Exception:
             logger.exception("life.decline_publish_failed")
@@ -1080,14 +1134,77 @@ class Life:
         while self.control.paused and not self.control.stopped:
             await self._publish_presence()
             try:
-                await asyncio.wait_for(self.control.wait_resume(), timeout=PARKED_HEARTBEAT_S)
+                # `wait_wake` rather than `wait_resume`, because a hold can also
+                # be *raised* — a stop arriving while the agent is parked here —
+                # and a waiter parked on the resume event alone would sit out its
+                # whole heartbeat before noticing, which is the length of time
+                # this whole method exists to prevent.
+                await asyncio.wait_for(self.control.wait_wake(), timeout=PARKED_HEARTBEAT_S)
             except TimeoutError:
-                continue
-            # The resume may have come from a file rather than from a surface, so
-            # the flags are read again before the loop trusts them.
+                pass
+            # The flags are read again on both paths, not just the woken one: a
+            # resume can come from a file rather than from a surface, and a file
+            # announces itself by being absent. `continue`-ing on the timeout — as
+            # this did — meant the absence was never looked at, so a hold released
+            # by removing a file could only be released by a restart.
             await self.deps.control.refresh()
 
     # --------------------------------------------------------------- life
+
+    async def _parked_stopped(self) -> None:
+        """Waits out a stop without going deaf, and without ending.
+
+        The same shape as `_parked`, and for the same reason: a loop that goes
+        quiet for as long as the hold lasts is indistinguishable from a dead
+        agent, so every pass still says the agent is here. The difference is what
+        it waits for — a resume, rather than a resume *and* the absence of a stop,
+        because a stop is now a hold the owner can take back from the same button
+        that set it.
+
+        Nothing is left undone while parked, which is the point: the cycle that
+        was in flight when the stop arrived was cut short, so the pass the stop
+        interrupted ends where it was interrupted rather than being repeated from
+        the top.
+        """
+        while self.control.stopped and not self.control.ending:
+            await self._publish_presence()
+            try:
+                await asyncio.wait_for(self.control.wait_wake(), timeout=PARKED_HEARTBEAT_S)
+            except TimeoutError:
+                pass
+            await self.deps.control.refresh()
+
+    async def _cycle_until_stopped(self) -> None:
+        """One cycle, cut short by a stop that arrives while it is running.
+
+        The flags were only ever read at the top of the loop, so a stop pressed
+        while a cycle was in flight took effect whenever that cycle ended — and a
+        cycle is a whole deliberation, with model calls that can each retry six
+        times against a rate-limited provider. Thirty minutes of a Stop button
+        doing nothing is not a slow agent, it is a switch that is only wired to
+        the top of the loop; the cycle is a task here so the loop can stop waiting
+        on it.
+
+        Cancelling mid-call is what a Ctrl-C does to the same code, and the tools
+        that could be interrupted journal themselves before they act, so a stop
+        lands between steps rather than inside one that had already happened.
+        """
+        cycle = asyncio.ensure_future(self._cycle())
+        asked = asyncio.ensure_future(self.control.wait_stop())
+        try:
+            done, _pending = await asyncio.wait(
+                {cycle, asked}, return_when=asyncio.FIRST_COMPLETED,
+            )
+            if cycle in done:
+                await cycle
+            else:
+                cycle.cancel()
+                try:
+                    await cycle
+                except (asyncio.CancelledError, Exception):
+                    pass
+        finally:
+            asked.cancel()
 
     async def life(self) -> None:
         await self.wake_up()
@@ -1099,8 +1216,20 @@ class Life:
             # the one switch H1 calls always effective, effective only until
             # restart [H1].
             await self.deps.control.refresh()
-            if self.control.stopped:
+            # Only a signal ends the loop. A stop from a surface parks the agent
+            # instead, because the button that set it is the button that takes it
+            # back: ending the process on every stop left the surface with a
+            # Resume that could not resume (the process it resumed was gone, and
+            # the supervisor's replacement had already cleared the flag) and a
+            # Stop that undid itself a few seconds later.
+            if self.control.ending:
                 break
+            if self.control.stopped:
+                self.states.transition(State.PAUSED, "control stop")
+                await self._parked_stopped()
+                self.states.transition(State.RESUMING, "control resume")
+                self.states.transition(State.THINKING_REFLECTING, "resumed")
+                continue
             if self.control.paused:
                 self.states.transition(State.PAUSED, "control pause")
                 await self._parked()
@@ -1109,7 +1238,7 @@ class Life:
                 continue
 
             try:
-                await self._cycle()
+                await self._cycle_until_stopped()
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -1231,6 +1360,21 @@ def _deadline_from_spec(value: Any) -> datetime | None:
     except ValueError:
         logger.warning("life.deadline_unreadable", value=text[:60])
         return None
+
+
+def _retry_wait_s(reason: str) -> float | None:
+    """The wait named in a retry reason ("about 90s", "about 1h"), if it names one."""
+    import re
+
+    match = re.search(r"about\s+(\d+(?:\.\d+)?)\s*([smhd])", reason or "")
+    if not match:
+        return None
+    try:
+        value = float(match.group(1))
+    except ValueError:
+        return None
+    unit = match.group(2)
+    return value * {"s": 1.0, "m": 60.0, "h": 3600.0, "d": 86400.0}[unit]
 
 
 def _decision_json(decision: Decision) -> str:

@@ -9,6 +9,8 @@ import {
   openSync,
   readFileSync,
   renameSync,
+  rmdirSync,
+  statSync,
   unlinkSync,
   watch,
   writeFileSync,
@@ -213,7 +215,14 @@ function removeTemporary(path: string): void {
   }
 }
 
-/** Atomic, owner-only write. The caller has already decided what may be stored. */
+/** Atomic, owner-only write. The caller has already decided what may be stored.
+ *
+ * The caller must hold the config lock (see `withConfigFileLock`): the rename
+ * itself is atomic, but a read-modify-write that is not serialised against a
+ * second writer in another process is a lost update no matter how atomic the
+ * rename is. `store.ts` takes the lock for every write; call this directly
+ * only when the lock is already held.
+ */
 export function writeConfigFile(path: string, serialized: string): void {
   ensureSecureParent(path);
   const target = existingStat(path);
@@ -232,9 +241,121 @@ export function writeConfigFile(path: string, serialized: string): void {
     fileDescriptor = null;
     renameSync(temporaryPath, path);
     chmodSync(path, 0o600);
+    // The rename is durable only once the directory entry is: without this a
+    // crash between the rename and the kernel's writeback leaves the old file
+    // in place and the new settings silently unwritten — a restart that lands
+    // on yesterday's settings with no error anywhere.
+    fsyncParentDirectory(path);
   } finally {
     if (fileDescriptor !== null) closeSync(fileDescriptor);
     removeTemporary(temporaryPath);
+  }
+}
+
+/**
+ * Best-effort durability for the directory entry a rename just installed.
+ *
+ * Failures are swallowed: a filesystem that cannot fsync a directory still
+ * holds the renamed file, and a write that landed must not be reported as one
+ * that did not.
+ */
+function fsyncParentDirectory(path: string): void {
+  let directoryDescriptor: number | null = null;
+  try {
+    directoryDescriptor = openSync(dirname(path), 'r');
+    fsyncSync(directoryDescriptor);
+  } catch {
+    // Best effort: the file itself was already fsync-ed before the rename.
+  } finally {
+    if (directoryDescriptor !== null) {
+      try {
+        closeSync(directoryDescriptor);
+      } catch {
+        // The sync already happened or failed; closing cannot change that.
+      }
+    }
+  }
+}
+
+/**
+ * How long a lock directory may sit untouched before it is treated as the
+ * remains of a crashed process rather than a live writer. Short enough that a
+ * crash stalls the next save for seconds rather than forever, long enough
+ * that a slow save under load is never mistaken for a dead one.
+ */
+export const CONFIG_LOCK_STALE_MS = 10_000;
+
+/** How long a writer waits for a live lock before refusing rather than queuing forever. */
+export const CONFIG_LOCK_WAIT_MS = 5_000;
+
+function lockDirectory(path: string): string {
+  return `${path}.lock`;
+}
+
+function lockIsStale(lockDir: string): boolean {
+  try {
+    const age = Date.now() - statSync(lockDir).mtimeMs;
+    return age > CONFIG_LOCK_STALE_MS;
+  } catch {
+    // Gone between the failed mkdir and this stat: not stale, just raced.
+    return false;
+  }
+}
+
+function sleepSync(ms: number): void {
+  // `Atomics.wait` is the only synchronous sleep a single-threaded runtime
+  // has; the buffer is never shared, so this always times out after `ms`.
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/**
+ * Runs `run` with no other writer of this file able to run at the same time.
+ *
+ * The terminal, the one-shot commands and the local web bridge are separate
+ * processes sharing one file, and an atomic rename does not save them: two
+ * read-modify-write cycles interleaved still lose one side's changes, and a
+ * stale read saved over a newer file moves the revision backwards. The lock
+ * serialises the whole cycle — read, merge, write — so a save always sees the
+ * bytes the previous save left.
+ *
+ * The lock is a directory created exclusively beside the file, so it lives on
+ * the same filesystem and needs no daemon. A crashed holder leaves it behind,
+ * which is why it expires: after `CONFIG_LOCK_STALE_MS` without a touch it is
+ * removed and taken. Waiting longer than `CONFIG_LOCK_WAIT_MS` for a live
+ * holder throws `config_locked` rather than queueing forever behind a process
+ * that may never finish.
+ */
+export function withConfigFileLock<T>(path: string, run: () => T): T {
+  ensureSecureParent(path);
+  const lockDir = lockDirectory(path);
+  const deadline = Date.now() + CONFIG_LOCK_WAIT_MS;
+  for (;;) {
+    try {
+      mkdirSync(lockDir);
+      break;
+    } catch (error) {
+      const code = error instanceof Error && 'code' in error ? String((error as { code?: unknown }).code) : '';
+      if (code !== 'EEXIST') throw error;
+    }
+    // Somebody holds it. A dead holder's directory is removed and taken;
+    // a live one is waited on, briefly.
+    try {
+      if (lockIsStale(lockDir)) rmdirSync(lockDir);
+    } catch {
+      // Raced with the holder finishing: fall through to waiting.
+    }
+    if (Date.now() > deadline) throw new Error('config_locked');
+    sleepSync(20);
+  }
+  try {
+    return run();
+  } finally {
+    try {
+      rmdirSync(lockDir);
+    } catch {
+      // Our own lock vanished (a stale-reaper took it while we ran, which
+      // means we ran past the stale horizon — the write already landed).
+    }
   }
 }
 

@@ -5,7 +5,7 @@ import { join, dirname } from 'node:path';
 import { test } from 'node:test';
 import process from 'node:process';
 import { createSettings } from '../dist/index.js';
-import { configPath, readConfig, saveConfig, watchConfig, writeConfig } from '../dist/store.js';
+import { configPath, emptyConfig, readConfig, saveConfig, tryReadConfig, watchConfig, writeConfig } from '../dist/store.js';
 
 function withTempConfig(run) {
   const directory = mkdtempSync(join(tmpdir(), 'phone-store-'));
@@ -192,7 +192,7 @@ test('a payload that is not an object is quarantined too', () => {
   });
 });
 
-test('a momentarily unreadable file is left alone for the next attempt', () => {
+test('a momentarily unreadable file throws instead of answering with defaults', () => {
   withTempConfig(({ path }) => {
     saveConfig({
       ...readConfig(),
@@ -200,11 +200,16 @@ test('a momentarily unreadable file is left alone for the next attempt', () => {
     }, { origin: 'cli' });
     const good = readFileSync(path, 'utf8');
 
-    // A permission revoked for a moment, or a rename in flight, is not damage.
+    // A permission revoked for a moment, or a rename in flight, is not damage
+    // — and it is not an empty file either. Answering it with defaults is what
+    // a later save turns into an empty file, which is how settings used to be
+    // "reset" by a restart that never happened.
     chmodSync(path, 0o000);
-    const blocked = readConfig();
-    assert.equal(blocked.settings.provider, 'openai');
-    assert.equal(blocked.settings.apiKey, '');
+    assert.throws(() => readConfig(), /config_unreadable/);
+    assert.equal(tryReadConfig(), null);
+    // A save attempted into the gap fails rather than overwriting the settings
+    // it cannot see.
+    assert.throws(() => saveConfig(emptyConfig(), { origin: 'cli' }), /config_unreadable/);
 
     chmodSync(path, 0o600);
     // Nothing was overwritten, so the settings come straight back.
@@ -212,6 +217,68 @@ test('a momentarily unreadable file is left alone for the next attempt', () => {
     assert.equal(readConfig().settings.language, 'zh');
     assert.equal(JSON.parse(readFileSync(path, 'utf8')).settings.apiKey, 'kept-key-8888');
     assert.equal(readFileSync(path, 'utf8'), good);
+  });
+});
+
+test('a stale save keeps the newer settings instead of overwriting them', () => {
+  withTempConfig(() => {
+    const first = saveConfig({
+      ...readConfig(),
+      settings: createSettings({ provider: 'openai', apiKey: 'durable-key', theme: 'light' }),
+    }, { origin: 'cli' });
+    // A second surface saves on top: newer settings, newer revision.
+    const second = saveConfig({
+      ...first,
+      settings: createSettings({ ...first.settings, language: 'ja' }),
+    }, { origin: 'web' });
+    assert.equal(second.revision, first.revision + 1);
+
+    // The first surface, still holding its earlier copy, saves without having
+    // seen the second surface's change. The newer settings must survive; the
+    // revision must still move forward rather than backwards.
+    const saved = saveConfig(first, { origin: 'cli' });
+    assert.equal(saved.revision, second.revision + 1);
+    const reloaded = readConfig();
+    assert.equal(reloaded.settings.language, 'ja');
+    assert.equal(reloaded.settings.theme, 'light');
+    assert.equal(reloaded.settings.apiKey, 'durable-key');
+    assert.equal(reloaded.origin, 'cli');
+  });
+});
+
+test('concurrent arrivals in the transcript survive each other\'s saves', () => {
+  withTempConfig(() => {
+    const base = saveConfig({
+      ...readConfig(),
+      messages: [{ id: 'm1', role: 'user', text: 'first', createdAt: 1_700_000_000_001 }],
+    }, { origin: 'cli' });
+    // Two surfaces each append to the copy they hold; each save must keep the
+    // other's arrival rather than restoring the transcript it read.
+    const fromCli = {
+      ...base,
+      messages: [...base.messages, { id: 'm2', role: 'assistant', text: 'second', createdAt: 1_700_000_000_002 }],
+    };
+    const fromWeb = {
+      ...base,
+      messages: [...base.messages, { id: 'm3', role: 'assistant', text: 'third', createdAt: 1_700_000_000_003 }],
+    };
+    saveConfig(fromCli, { origin: 'cli' });
+    const saved = saveConfig(fromWeb, { origin: 'web' });
+    assert.deepEqual(saved.messages.map((message) => message.id), ['m1', 'm2', 'm3']);
+    assert.deepEqual(readConfig().messages.map((message) => message.id), ['m1', 'm2', 'm3']);
+  });
+});
+
+test('clearing still clears, and only when it is up to date', () => {
+  withTempConfig(() => {
+    const seeded = saveConfig({
+      ...readConfig(),
+      messages: [{ id: 'm1', role: 'user', text: 'first', createdAt: 1_700_000_000_001 }],
+    }, { origin: 'cli' });
+    const cleared = saveConfig({ ...readConfig(), messages: [] }, { origin: 'cli' });
+    assert.deepEqual(cleared.messages, []);
+    assert.equal(cleared.revision, seeded.revision + 1);
+    assert.deepEqual(readConfig().messages, []);
   });
 });
 

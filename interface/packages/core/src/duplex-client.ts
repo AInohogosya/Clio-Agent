@@ -282,6 +282,12 @@ export class DuplexClient {
     // provider clears the model and leaves the choice to the person. A
     // credential is never carried across, because that would post one
     // provider's key to another provider's endpoint.
+    //
+    // This reset is for a *local edit* — somebody choosing a provider in a
+    // form. State adopted from another surface already carries the tuple that
+    // surface chose and must be taken verbatim; routing it through here would
+    // re-derive defaults from value equality and drop a deliberately shared
+    // endpoint or model. That path uses `replaceSettings`.
     const safeSettings = candidate.provider === current.provider
       ? candidate
       : createSettings({
@@ -292,6 +298,21 @@ export class DuplexClient {
       });
     this.update((snapshot) => ({ ...snapshot, settings: safeSettings }));
     this.emit({ type: 'settings', settings: { ...safeSettings } });
+  }
+
+  /**
+   * Adopts settings authored elsewhere — a change another surface saved to the
+   * shared file — exactly as they are.
+   *
+   * No provider-change reset: the remote side already holds the credential
+   * tuple it means, and "the model happens to equal ours" is not evidence the
+   * author left it untouched. Normalisation still applies, so an unusable
+   * value becomes its default rather than an endpoint this client would send to.
+   */
+  replaceSettings(settings: Settings): void {
+    const next = createSettings(settings);
+    this.update((snapshot) => ({ ...snapshot, settings: next }));
+    this.emit({ type: 'settings', settings: { ...next } });
   }
 
   updateSettings(patch: Partial<Settings>): void {

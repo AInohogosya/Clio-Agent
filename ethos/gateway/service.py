@@ -69,6 +69,84 @@ class UnusableResponse(RuntimeError):
         self.request_scoped = request_scoped
 
 
+# A 429 is the provider asking for time, and the time it asks for is often
+# longer than the ordinary retry ceiling. Capping it at `max_backoff_s` (30s)
+# retried a 120s ask after 30s, burned the whole budget in one minute, and
+# parked the goal that was being worked on -- the "stops midway" outage.
+# So a rate limit waits out what was asked (up to this per sleep), while every
+# other failure keeps the short ceiling that keeps a life cycle moving.
+RATE_LIMIT_MAX_WAIT_S = 300.0
+
+# The escalation a rate limit is waited out on: five minutes, then an hour,
+# then five hours, then a day. Five minutes is only the first rung -- a limit
+# that is still there after five minutes is not one that clears in six, so
+# each consecutive rate-limited failure waits longer, up to a day, and stays
+# at a day rather than giving up. Read across cycles rather than slept through
+# in one call: holding a life cycle open for a day is a longer outage than the
+# one being waited out, so one sleep never exceeds `RATE_LIMIT_MAX_WAIT_S`
+# and the longer rungs are scheduled by the caller (the social queue and the
+# solver loop), which keep working on anything else meanwhile.
+RATE_LIMIT_WAIT_SCHEDULE_S = (300.0, 3600.0, 18000.0, 86400.0)
+
+# The longest single wait ever scheduled, so a provider asking for a week is
+# still only ever waited out a day at a time before being asked again.
+RATE_LIMIT_WAIT_CAP_S = 86400.0
+
+# At or above this, a wait is "extended" and surfaces as a waiting status
+# rather than as an immediate retry. Shown on screen so a pause reads as a
+# pause instead of as silence.
+LONG_WAIT_THRESHOLD_S = 10.0
+
+
+def is_rate_limited(exc: BaseException) -> bool:
+    """Whether a failure is a 429, however it arrived."""
+    return isinstance(exc, ProviderError) and exc.status == 429
+
+
+def retry_after_of(exc: BaseException) -> float | None:
+    """The provider's asked-for wait, when it asked for one."""
+    value = getattr(exc, "retry_after_s", None)
+    return float(value) if isinstance(value, (int, float)) else None
+
+
+def rate_limit_wait_for_attempt(attempt: int, retry_after_s: float | None = None) -> float:
+    """How long to wait after `attempt` consecutive rate-limited failures.
+
+    `attempt` is 1-based: the first 429 waits out five minutes, the next an
+    hour, then five hours, then a day, and it stays at a day rather than
+    giving up. A provider's own `Retry-After` is honoured when it asks for
+    longer than the rung (capped at a day), because it knows something about
+    its own load that no schedule here does.
+    """
+    index = min(max(0, attempt - 1), len(RATE_LIMIT_WAIT_SCHEDULE_S) - 1)
+    scheduled = RATE_LIMIT_WAIT_SCHEDULE_S[index]
+    if retry_after_s is not None:
+        try:
+            return max(scheduled, min(float(retry_after_s), RATE_LIMIT_WAIT_CAP_S))
+        except (TypeError, ValueError):
+            return scheduled
+    return scheduled
+
+
+def format_wait(wait_s: float | None) -> str:
+    """A wait for a screen: 'about 90s', 'about 5m', 'about 2h', 'about 1d'."""
+    if wait_s is None:
+        return "a short wait"
+    try:
+        total = max(1, round(float(wait_s)))
+    except (TypeError, ValueError):
+        return "a short wait"
+    if total < 120:
+        return f"about {total}s"
+    if total < 3600:
+        minutes = max(1, round(total / 60))
+        return f"about {minutes}m"
+    if total < 172800:
+        hours = max(1, round(total / 3600))
+        return f"about {hours}h"
+    return f"about {max(1, round(total / 86400))}d"
+
+
 # Which lever a failure moves. Read off the exception rather than off the retry
 # loop's position in the sequence, because the same exception at attempt 4 is
 # the same kind of event it was at attempt 0.
@@ -325,7 +403,10 @@ class GatewayService:
                 request_scoped=True,
             )
 
-    def _delay_before_retry(self, attempt: int, retry_after_s: float | None) -> float:
+    def _delay_before_retry(
+        self, attempt: int, retry_after_s: float | None,
+        *, rate_limited: bool = False,
+    ) -> float:
         """
         Exponential, capped, and jittered.
 
@@ -338,17 +419,21 @@ class GatewayService:
 
         A `Retry-After` the provider sent is honoured when it is longer than the
         curve would have waited, because it knows something about its own load
-        that no curve here does. It is still capped: a provider asking for two
-        minutes is asking a life cycle to stop for two minutes, and moving on to
-        another model is the better answer.
+        that no curve here does. For a 429 it is honoured up to
+        `RATE_LIMIT_MAX_WAIT_S`: a provider asking for two minutes is asking to
+        be waited out, and retrying after 30s is what burned the budget and
+        parked the goal. For every other failure the ceiling stays
+        `max_backoff_s`, because moving on to another model is the better
+        answer there.
 
-        The ceiling is applied last, so `max_backoff_s` is the longest this can
+        The ceiling is applied last, so the cap is the longest this can
         ever be rather than the longest it is before jitter.
         """
         retry = self.config.gateway.retry
+        cap = RATE_LIMIT_MAX_WAIT_S if rate_limited else retry.max_backoff_s
         return backoff_delay(
             attempt, base_s=retry.backoff_s, jitter=retry.jitter,
-            cap_s=retry.max_backoff_s, retry_after_s=retry_after_s,
+            cap_s=cap, retry_after_s=retry_after_s,
         )
 
     def _next_entry(
@@ -484,6 +569,40 @@ class GatewayService:
             reason=str(exc)[:200],
             wait_in_s=round(delay, 2),
         )
+        await asyncio.sleep(delay)
+
+    async def _sleep_before_retry(
+        self, delay: float, failed: Any, following: Any, *, rate_limited: bool,
+    ) -> None:
+        """
+        Waits before the next attempt -- but only if the next attempt is owed one.
+
+        The delay computed above is a debt to the model that just failed: backoff
+        exists to stop hammering a provider that asked for time, and it is that
+        provider's time being asked for. Once the retry has moved to a *different*
+        model, that debt has been paid by the move -- the new model has not been
+        asked, so it has asked for nothing, and the model that did ask is not
+        going to be asked again on this request.
+
+        Charging it anyway is time a person spent waiting on a provider that had
+        already been replaced, and it is paid on the request that writes a
+        person's reply, which is where the wait is felt. The split in the logs is
+        the whole argument for leaving the other case alone: retries that changed
+        model slept 2.0s each, retries that stayed slept 9.7s each and had nowhere
+        to go -- `_next_entry` only hands back the model that just failed when the
+        selection came back empty -- so the long sleeps are the ones owed and the
+        short ones are the ones wasted.
+
+        A rate limit is the exception and is the reason this is not simply "skip
+        it whenever the model changed". A 429 is the *provider* asking rather than
+        the model, so the model after it is frequently on the same provider and is
+        owed the same wait; skipping there would trade a silence for a rate limit,
+        which is a worse outcome than either.
+        """
+        if not delay:
+            return
+        if entry_key(following) != entry_key(failed) and not rate_limited:
+            return
         await asyncio.sleep(delay)
 
     async def _entry_for(self, request: ModelRequest, max_attempts: int) -> Any:
@@ -692,7 +811,10 @@ class GatewayService:
                     # unsupported parameter supported, and escalating on one
                     # spends the budget to arrive at the same 400.
                     attempt_request, changes = self._widen_request(attempt_request)
-                delay = self._delay_before_retry(attempt, getattr(exc, "retry_after_s", None))
+                rate_limited = is_rate_limited(exc)
+                delay = self._delay_before_retry(
+                    attempt, retry_after_of(exc), rate_limited=rate_limited,
+                )
                 following = self._next_entry(
                     attempt_request, entry, tried, model_scoped=scope == _MODEL_SCOPED,
                 )
@@ -716,6 +838,20 @@ class GatewayService:
                         f"tier={attempt_request.tier.value} after excluding "
                         f"{len(tried)} model(s): {exc}"
                     ) from exc
+                if delay >= LONG_WAIT_THRESHOLD_S or rate_limited:
+                    logger.warning(
+                        "gateway.rate_limited_waiting",
+                        attempt=attempt + 1,
+                        of=max_attempts,
+                        provider=entry.provider,
+                        model=entry.model,
+                        purpose=attempt_request.purpose,
+                        status=429,
+                        retry_after_s=retry_after_of(exc),
+                        wait_in_s=round(delay, 2),
+                        waiting=True,
+                        error=str(exc)[:300],
+                    )
                 logger.warning(
                     "gateway.retry",
                     attempt=attempt + 1,
@@ -729,6 +865,8 @@ class GatewayService:
                     next_provider=following.provider,
                     next_model=following.model,
                     retry_in_s=round(delay, 2),
+                    waiting=delay >= LONG_WAIT_THRESHOLD_S,
+                    immediate=delay < LONG_WAIT_THRESHOLD_S,
                     error=str(exc)[:300],
                 )
                 # Counted here and not at the next call, so a retry that moved no
@@ -739,7 +877,9 @@ class GatewayService:
                     changed_request=bool(changes),
                     changed_model=entry_key(following) != entry_key(entry),
                 )
-                await asyncio.sleep(delay)
+                await self._sleep_before_retry(
+                    delay, entry, following, rate_limited=rate_limited,
+                )
                 entry = following
                 continue
 

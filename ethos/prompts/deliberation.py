@@ -109,11 +109,11 @@ below says nothing has been journaled, nothing has: do not narrate work as under
 {cross_talk}
 
 Decide one action and write the reply {name} would naturally send (concise, plain, human).
-The reply is one to three messages: each entry in `reply_texts` is sent as its own message, in
-order. Use several entries only when the parts stand alone — an answer and a follow-up thought,
-or a note that work has started and the answer itself — and keep each one short; lines that
-belong together belong in one entry. Zero messages is fine when the action is silence or a
-question left for later.
+The reply is however many messages it takes: each entry in `reply_texts` is sent as its own
+message, in order. Use several entries only when the parts stand alone — an answer and a
+follow-up thought, or a note that work has started and the answer itself — and keep each one
+short; lines that belong together belong in one entry. Zero messages is fine when the action
+is silence or a question left for later.
 
 Respond with strict JSON only:
 {{

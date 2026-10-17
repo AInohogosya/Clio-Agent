@@ -135,9 +135,11 @@ def up(
     this command cannot be trusted.
 
     Idempotent: run it on a running agent and it says so and leaves it alone.
-    Exits 0 when the agent is up, 1 when it is not, 130 on Ctrl-C — in which case
-    the agent it started is still running, because it was started in its own
-    session on purpose.
+    Exits 0 when the supervisor and the bridge are up — even when the agent has
+    not published a sign of life yet (no reachable model API), so the settings
+    page is always available to configure one — 1 on a start-up that could not
+    start anything, 130 on Ctrl-C — in which case the agent it started is still
+    running, because it was started in its own session on purpose.
 
     `./start.sh` still works and is deprecated: it creates the virtualenv (which
     needs `uv`, and so cannot be done from inside an installed package) and then

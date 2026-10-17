@@ -912,7 +912,7 @@ function text(value, max) {
 function baseUrlOf(provider, value) {
   const trimmed = text(value, MAX_ENDPOINT_LENGTH).trim().replace(/\/+$/, "");
   if (trimmed) return trimmed;
-  return BASE_PROVIDER_DEFAULTS[provider].baseUrl;
+  return BASE_PROVIDER_DEFAULTS[provider]?.baseUrl ?? "";
 }
 
 /**
@@ -1025,7 +1025,56 @@ function readBaseModelFile() {
   return data;
 }
 
+/**
+ * The base model file for a write: present-and-readable, or missing.
+ *
+ * `readBaseModelFile` answers "nothing I can see" for every failure, which is
+ * right for a read — but a write carries the stored key across, and "nothing I
+ * can see" at that moment means the key is silently dropped (or the save fails
+ * as `key_required` for a key that is still on disk). A file that is there and
+ * will not open is therefore a refusal, not an absence; only a file that was
+ * never written, an empty one, or one that parses to nothing carries nothing.
+ * An unparseable file keeps the old behaviour — the screen offers to write a
+ * good document over it — because it holds a single tuple and no sibling
+ * settings a replacement could delete.
+ */
+function readBaseModelFileForWrite() {
+  let raw;
+  try {
+    raw = fs.readFileSync(BASE_MODEL_FILE, "utf8");
+  } catch (error) {
+    if (error?.code === "ENOENT") return { ok: true, data: null };
+    return { ok: false, data: null };
+  }
+  if (!raw.trim()) return { ok: true, data: null };
+  let data;
+  try {
+    data = loadYaml(raw);
+  } catch {
+    return { ok: true, data: null };
+  }
+  if (!data || typeof data !== "object" || Array.isArray(data)) return { ok: true, data: null };
+  return { ok: true, data };
+}
+
 /** The base model as a surface may see it: never the key, only whether there is one. */
+function inferBaseModelVendor(data, protocol) {
+  if (typeof data.vendor === "string" && data.vendor) return data.vendor;
+  // An old or hand-written file may carry no `vendor`, only the shared
+  // `openai_compat` protocol plus an endpoint. Reporting the bare protocol
+  // leaves every picker holding an id it does not know (`openai_compat` is not
+  // a ProviderId), so the form keeps its stale value — frequently OpenRouter —
+  // and the agent's NVIDIA choice reads as reverted. The endpoint disambiguates
+  // the vendors that share the protocol, so infer from it before falling back.
+  const baseUrl = typeof data.base_url === "string" ? data.base_url.trim().replace(/\/+$/, "") : "";
+  if (baseUrl) {
+    for (const [vendor, defaults] of Object.entries(BASE_PROVIDER_DEFAULTS)) {
+      if (defaults && defaults.baseUrl === baseUrl) return vendor;
+    }
+  }
+  return protocol;
+}
+
 function readBaseModel() {
   const data = readBaseModelFile();
   if (!data) return { ...NO_BASE_MODEL };
@@ -1043,8 +1092,8 @@ function readBaseModel() {
     // into a picker. It is reported beside the protocol rather than instead of
     // it, because two vendors share one protocol often enough that a form given
     // only the protocol could not tell which endpoint and which key belong
-    // together. A hand-written file with no `vendor` falls back to the protocol.
-    provider: typeof data.vendor === "string" && data.vendor ? data.vendor : protocol,
+    // together. A file with no `vendor` is inferred from its endpoint.
+    provider: inferBaseModelVendor(data, protocol),
     protocol,
     model: typeof data.model === "string" ? data.model : "",
     base_url: typeof data.base_url === "string" ? data.base_url : "",
@@ -1053,6 +1102,49 @@ function readBaseModel() {
     key_env: keyEnv,
     key_env_present: envValue.length > 0,
   };
+}
+
+/**
+ * Flushes a freshly renamed settings file and its directory entry to disk.
+ *
+ * A rename without a flush is durable only when the kernel gets around to it:
+ * a crash or power loss in between leaves the old file in place and the new
+ * settings silently unwritten — a restart that lands on yesterday's settings
+ * with no error anywhere. Best effort throughout: a filesystem that cannot
+ * sync still holds the renamed file, and a write that landed must not be
+ * reported as one that did not.
+ */
+function fsyncWritten(file) {
+  let fd = null;
+  try {
+    fd = fs.openSync(file, "r");
+    fs.fsyncSync(fd);
+  } catch {
+    /* the rename itself already landed */
+  } finally {
+    if (fd !== null) {
+      try {
+        fs.closeSync(fd);
+      } catch {
+        /* the sync already happened or failed */
+      }
+    }
+  }
+  let dirFd = null;
+  try {
+    dirFd = fs.openSync(path.dirname(file), "r");
+    fs.fsyncSync(dirFd);
+  } catch {
+    /* the file itself was already synced */
+  } finally {
+    if (dirFd !== null) {
+      try {
+        fs.closeSync(dirFd);
+      } catch {
+        /* nothing further to do */
+      }
+    }
+  }
 }
 
 /**
@@ -1085,7 +1177,18 @@ function writeBaseModel(body) {
   // removed, because an empty field cannot be told from one nobody filled in —
   // and it has to come *after* that decision, or the carry-over below would put
   // the key straight back and the button would do nothing.
-  const stored = readBaseModelFile();
+  //
+  // The stored file is read strictly here rather than forgivingly: a momentarily
+  // unreadable file read as absent would carry no key across and silently drop
+  // the credential the file still holds. Refusing names the file, which is still
+  // there to be read, so the save is retried rather than the key replaced.
+  const storedFile = readBaseModelFileForWrite();
+  if (!storedFile.ok) {
+    const detail = `${BASE_MODEL_FILE} is not a readable settings document; nothing was written to it`;
+    console.error(`ethos-web base model not written — ${detail}`);
+    return { error: "settings_unreadable", detail };
+  }
+  const stored = storedFile.data;
   const storedKey = stored && typeof stored.api_key === "string" ? stored.api_key : "";
   // A name that is not a name is not carried across: the file keeps whatever
   // somebody wrote by hand, and this write records a reference that can actually
@@ -1142,6 +1245,7 @@ function writeBaseModel(body) {
     fs.writeFileSync(temporary, dumpYaml(document), { encoding: "utf8", mode: 0o600 });
     fs.renameSync(temporary, BASE_MODEL_FILE);
     fs.chmodSync(BASE_MODEL_FILE, 0o600);
+    fsyncWritten(BASE_MODEL_FILE);
   } catch (error) {
     try {
       fs.unlinkSync(temporary);
@@ -1228,6 +1332,7 @@ function writeIdentity(body) {
     fs.writeFileSync(temporary, dumpYaml({ self_name: name }), { encoding: "utf8", mode: 0o600 });
     fs.renameSync(temporary, IDENTITY_FILE);
     fs.chmodSync(IDENTITY_FILE, 0o600);
+    fsyncWritten(IDENTITY_FILE);
   } catch (error) {
     try {
       fs.unlinkSync(temporary);
@@ -1401,16 +1506,20 @@ function extractModelIds(payload, vendor) {
  * read and then replaces the whole file: an unreadable file read as an empty one
  * turns one save into a deletion of every other door. So `ok` says whether
  * whatever is on disk is a document this code can read back and write out again,
- * and a file that is missing or empty is `ok` — there is nothing there to lose,
- * and refusing every save until somebody deleted the file by hand would be worse
- * than writing over nothing.
+ * and only a file that is missing or empty is `ok` without being read — there is
+ * nothing there to lose, and refusing every save until somebody deleted the file
+ * by hand would be worse than writing over nothing. A file that is present but
+ * cannot be read (a permission failure, a lock held elsewhere) is *not* `ok`:
+ * it may hold every door, and a save built from an empty document would delete
+ * them all to change one.
  */
 function parseYamlFile(file) {
   let raw;
   try {
     raw = fs.readFileSync(file, "utf8");
-  } catch {
-    return { ok: true, data: {} };
+  } catch (error) {
+    if (error?.code === "ENOENT") return { ok: true, data: {} };
+    return { ok: false, data: {} };
   }
   if (!raw.trim()) return { ok: true, data: {} };
   let data;
@@ -1842,6 +1951,7 @@ function writeHomeDocument(file, change, what) {
     fs.writeFileSync(temporary, dumpYaml(document), { encoding: "utf8", mode: 0o600 });
     fs.renameSync(temporary, file);
     fs.chmodSync(file, 0o600);
+    fsyncWritten(file);
   } catch (error) {
     try {
       fs.unlinkSync(temporary);
@@ -2374,14 +2484,23 @@ async function publish(kind, source, payload) {
 /**
  * The lifecycle verbs.
  *
- * The flags are merged rather than replaced, so `stopped` survives a later
- * `resume`: a shallow replace would let "resume" silently restart an agent that
- * somebody had stopped on purpose, which is the one restart nobody asked for.
+ * The flags are merged key by key rather than replaced, so a verb only ever
+ * touches the flags it means: `preview` is a mode and belongs to neither the
+ * holds nor the verb that clears them.
+ *
+ * `resume` clears `stopped` as well as the pauses. It used not to, on the rule
+ * that a resume must not silently restart an agent somebody had stopped on
+ * purpose — but that rule assumed a stop ended the *process*, so there was
+ * nothing left for a resume to restart and the flag had to outlive it. A stop
+ * parks the agent now (`ethos/engine/life.py`), it is still there, and the
+ * Resume button beside the Stop button is how it is started again. So the case
+ * the old rule protected against is the one the surface cannot express any more:
+ * a person pressing Resume is asking for the agent back.
  */
 const CONTROL_FLAGS = {
   pause_actions: { pause_actions: true },
   pause_all: { paused: true, pause_actions: true },
-  resume: { paused: false, pause_actions: false, emergency: false },
+  resume: { paused: false, pause_actions: false, emergency: false, stopped: false },
   stop: { stopped: true },
   emergency_stop: { paused: true, pause_actions: true, stopped: true, emergency: true },
   // `preview` is a mode, not a hold, and it is kept out of the verbs above on
@@ -2592,11 +2711,902 @@ app.post("/api/intentions/:id/close", handle(async (req, res) => {
   res.json({ queued: true });
 }));
 
-// The interface's own local bridge (its dev server) owns this prefix. Answering with an
-// empty body rather than the single-page app means a browser that probes for it
-// gets "not here" instead of HTML where it expected JSON — and, unlike a 404, it
-// does not print an error in the reader's console on every load.
-app.use("/__phone", (_req, res) => res.status(204).end());
+/**
+ * The shared phone settings (provider, model, key, language, theme, …) as
+ * durable state, so the page keeps what a person configured across a reload
+ * and across a restart of this process.
+ *
+ * The interface served here is the same duplex surface the local dev bridge
+ * (`interface/packages/web/bridge-plugin.ts`) serves: the page speaks
+ * `GET /__phone/session`, `GET|POST /__phone/state`, `GET /__phone/events`,
+ * `GET /__phone/models`, `POST /__phone/complete` and `POST /__phone/clear`
+ * under a per-process token. Previously this prefix answered `204` to
+ * everything, so the page ran without a bridge: every setting lived in the
+ * tab's memory and a reload silently restored the defaults — the provider,
+ * model, API key and language a person had just saved were gone.
+ *
+ * The file is the same one the terminal and the Desk companion read
+ * (`PROJECT_PHONE_CONFIG`, else `~/.config/project-phone/config.json`), so
+ * the browser, `phone` and a planner reading the Desk file share one store
+ * rather than three opinions. Writes are atomic and owner-only (`0600`,
+ * directory `0700`), the key is never sent back to the page (only whether one
+ * is on file, and a four-character hint), and a key that arrives in the
+ * process environment is spent without ever being written down.
+ */
+const PHONE_BRIDGE_PREFIX = "/__phone";
+const PHONE_TOKEN_HEADER = "x-phone-token";
+const PHONE_TOKEN_QUERY = "token";
+const PHONE_STATE_VERSION = 2;
+const PHONE_MAX_MESSAGES = 100;
+const PHONE_MAX_MESSAGE_TEXT = 100_000;
+const PHONE_MAX_PROMPT = 32_000;
+const PHONE_MAX_HISTORY = 24;
+const PHONE_MAX_HISTORY_ENTRY = 8_000;
+const PHONE_MAX_EVENT_CLIENTS = 16;
+const PHONE_MAX_PATH_LENGTH = 512;
+const PHONE_COMPLETE_TIMEOUT_MS = 120_000;
+const PHONE_CONTROL = /[\x00-\x1f\x7f]/;
+const PHONE_ACCENT = /^#[0-9a-f]{6}$/i;
+const PHONE_LANGUAGES = ["en", "ja", "zh"];
+const PHONE_THEMES = ["dark", "light"];
+const PHONE_INTERFACES = ["agent", "direct"];
+const PHONE_DEFAULT_ACCENT = "#F97316";
+const PHONE_DEFAULT_AGENT_URL = "http://127.0.0.1:8720";
+
+function phoneConfigPath() {
+  const configured = (process.env.PROJECT_PHONE_CONFIG ?? "").trim();
+  if (configured) {
+    if (configured === "~") return os.homedir();
+    if (configured.startsWith("~/") || configured.startsWith("~\\")) {
+      return path.join(os.homedir(), configured.slice(2));
+    }
+    return path.resolve(configured);
+  }
+  return path.join(os.homedir(), ".config", "project-phone", "config.json");
+}
+
+function phoneDisplayPath() {
+  const full = phoneConfigPath();
+  return full.length > PHONE_MAX_PATH_LENGTH ? `${full.slice(0, PHONE_MAX_PATH_LENGTH)}…` : full;
+}
+
+function phoneText(value, max) {
+  return typeof value === "string" && value.length <= max && !PHONE_CONTROL.test(value) ? value : "";
+}
+
+function phoneLoopbackHost(hostname) {
+  const host = String(hostname ?? "").replace(/^\[|\]$/g, "").replace(/\.$/, "").toLowerCase();
+  if (!host) return false;
+  if (host === "localhost" || host.endsWith(".localhost") || host === "::1") return true;
+  return /^127\./.test(host);
+}
+
+function phoneAgentEndpoint(value) {
+  const raw = phoneText(value, MAX_ENDPOINT_LENGTH).trim();
+  if (!raw) return "";
+  let url;
+  try {
+    url = new URL(raw);
+  } catch {
+    return "";
+  }
+  if (url.protocol !== "http:") return "";
+  if (url.username || url.password || url.search || url.hash) return "";
+  if (url.pathname !== "/" && url.pathname !== "") return "";
+  if (!phoneLoopbackHost(url.hostname)) return "";
+  return raw.replace(/\/+$/, "");
+}
+
+function phoneProviderDefault(provider) {
+  const entry = BASE_PROVIDER_DEFAULTS[provider];
+  return entry ? { baseUrl: entry.baseUrl, model: entry.model ?? "" } : { baseUrl: "", model: "" };
+}
+
+/** The shared settings as the one valid shape: anything unusable becomes its default. */
+function normalizePhoneSettings(input) {
+  const source = input && typeof input === "object" && !Array.isArray(input) ? input : {};
+  const provider = typeof source.provider === "string" && Object.prototype.hasOwnProperty.call(BASE_PROVIDERS, source.provider)
+    ? source.provider
+    : "openai";
+  const defaults = phoneProviderDefault(provider);
+  const face = PHONE_INTERFACES.includes(source.interface) ? source.interface : "agent";
+  const agentUrl = phoneAgentEndpoint(source.agentUrl) || PHONE_DEFAULT_AGENT_URL;
+  const personRaw = phoneText(source.agentPerson, 64).trim();
+  const agentPerson = personRaw || "owner";
+  const apiKey = phoneText(source.apiKey, MAX_API_KEY_LENGTH).trim();
+  const baseRaw = phoneText(source.baseUrl, MAX_ENDPOINT_LENGTH).trim().replace(/\/+$/, "");
+  const baseUrl = baseRaw || defaults.baseUrl;
+  const modelRaw = phoneText(source.model, 256).trim();
+  const model = MODEL_NAME.test(modelRaw) ? modelRaw : defaults.model;
+  const language = PHONE_LANGUAGES.includes(source.language) ? source.language : "en";
+  const theme = PHONE_THEMES.includes(source.theme) ? source.theme : "dark";
+  const accent = typeof source.accent === "string" && PHONE_ACCENT.test(source.accent) ? source.accent : PHONE_DEFAULT_ACCENT;
+  return {
+    interface: face, agentUrl, agentPerson, provider, apiKey, baseUrl, model, language, theme, accent,
+  };
+}
+
+function phoneCredential(apiKey) {
+  const envKey = typeof process.env.PROJECT_PHONE_API_KEY === "string"
+    ? process.env.PROJECT_PHONE_API_KEY.trim()
+    : "";
+  if (envKey) return { present: true, source: "environment", hint: keyHint(envKey) };
+  const stored = typeof apiKey === "string" ? apiKey.trim() : "";
+  if (stored) return { present: true, source: "file", hint: keyHint(stored) };
+  return { present: false, source: "none", hint: "" };
+}
+
+function validPhoneMessage(item) {
+  if (!item || typeof item !== "object" || Array.isArray(item)) return false;
+  if (typeof item.id !== "string" || !item.id || item.id.length > 128) return false;
+  if (item.role !== "user" && item.role !== "assistant" && item.role !== "system") return false;
+  if (typeof item.text !== "string" || !item.text || item.text.length > PHONE_MAX_MESSAGE_TEXT) return false;
+  if (PHONE_CONTROL.test(item.text.replace(/\n/g, ""))) return false;
+  if (typeof item.createdAt !== "number" || !Number.isFinite(item.createdAt) || item.createdAt < 0) return false;
+  return true;
+}
+
+function normalizePhoneMessages(value) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter(validPhoneMessage)
+    .slice(-PHONE_MAX_MESSAGES)
+    .map((message) => ({
+      id: message.id,
+      role: message.role,
+      text: message.text,
+      createdAt: message.createdAt,
+    }));
+}
+
+function defaultPhoneState() {
+  const settings = normalizePhoneSettings({});
+  return {
+    version: PHONE_STATE_VERSION,
+    revision: 0,
+    updatedAt: 0,
+    origin: null,
+    transport: "file",
+    settings,
+    messages: [],
+    credential: phoneCredential(settings.apiKey),
+  };
+}
+
+/** The store as it is on disk, or defaults when there is nothing usable to read. */
+function readPhoneState() {
+  let data = null;
+  try {
+    data = JSON.parse(fs.readFileSync(phoneConfigPath(), "utf8"));
+  } catch {
+    return defaultPhoneState();
+  }
+  if (!data || typeof data !== "object" || Array.isArray(data)) return defaultPhoneState();
+  return normalizePhoneState(data);
+}
+
+/**
+ * The store as it is on disk, with "missing" told apart from "unreadable".
+ *
+ * `readPhoneState` answers defaults for every failure, which is right for a
+ * read — a page must render something — but a write built on that answer
+ * replaces the whole file: a momentarily unreadable file read as empty turns
+ * one save into a deletion of every setting and message it held. Writers use
+ * this and refuse when it says no. Only a file that was never written is safe
+ * to build on as empty; anything present but unreadable, or holding no
+ * document, stops the save instead.
+ */
+function readPhoneStateStrict() {
+  let raw;
+  try {
+    raw = fs.readFileSync(phoneConfigPath(), "utf8");
+  } catch (error) {
+    if (error?.code === "ENOENT") return { ok: true, state: defaultPhoneState() };
+    return { ok: false, state: null };
+  }
+  let data;
+  try {
+    data = JSON.parse(raw);
+  } catch {
+    return { ok: false, state: null };
+  }
+  if (!data || typeof data !== "object" || Array.isArray(data)) return { ok: false, state: null };
+  return { ok: true, state: normalizePhoneState(data) };
+}
+
+function normalizePhoneState(data) {
+  const settings = normalizePhoneSettings(data.settings);
+  const revision = typeof data.revision === "number" && Number.isFinite(data.revision) && data.revision >= 0
+    ? Math.min(Math.floor(data.revision), 2_147_483_647)
+    : 0;
+  const updatedAt = typeof data.updatedAt === "number" && Number.isFinite(data.updatedAt) && data.updatedAt >= 0
+    ? data.updatedAt
+    : 0;
+  const origin = data.origin === "cli" || data.origin === "web" ? data.origin : null;
+  return {
+    version: PHONE_STATE_VERSION,
+    revision,
+    updatedAt,
+    origin,
+    transport: "file",
+    settings,
+    messages: normalizePhoneMessages(data.messages),
+    // The stored status is never believed: it describes a key the file may no
+    // longer hold (or an environment key the file never held), so it is
+    // recomputed from the settings and the live environment.
+    credential: phoneCredential(settings.apiKey),
+  };
+}
+
+/**
+ * How long a phone-config lock may sit untouched before it is treated as the
+ * remains of a crashed process rather than a live writer — and how long a
+ * writer waits for a live one before refusing with `config_locked` rather than
+ * queueing forever. The terminal takes the same lock from its own process (see
+ * `withConfigFileLock` in the interface package), so a save here is serialised
+ * against a save there: without it two read-modify-write cycles interleave and
+ * one surface's settings are silently undone by the other's.
+ */
+const PHONE_LOCK_STALE_MS = 10_000;
+const PHONE_LOCK_WAIT_MS = 5_000;
+
+function sleepPhoneSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function withPhoneConfigLock(run) {
+  const file = phoneConfigPath();
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+  const lockDir = `${file}.lock`;
+  const deadline = Date.now() + PHONE_LOCK_WAIT_MS;
+  for (;;) {
+    try {
+      fs.mkdirSync(lockDir);
+      break;
+    } catch (error) {
+      if (error?.code !== "EEXIST") throw error;
+    }
+    try {
+      if (Date.now() - fs.statSync(lockDir).mtimeMs > PHONE_LOCK_STALE_MS) fs.rmdirSync(lockDir);
+    } catch {
+      /* raced with the holder finishing */
+    }
+    if (Date.now() > deadline) {
+      const locked = new Error("the shared settings file is locked by another writer");
+      locked.code = "config_locked";
+      throw locked;
+    }
+    sleepPhoneSync(20);
+  }
+  try {
+    return run();
+  } finally {
+    try {
+      fs.rmdirSync(lockDir);
+    } catch {
+      /* a reaper took it; the write already landed */
+    }
+  }
+}
+
+/**
+ * Atomic, owner-only write. A credential supplied by the environment never
+ * reaches the disk: only the exact session value is stripped, anything else
+ * the caller holds is theirs to keep.
+ *
+ * Call with the phone config lock held: the rename is atomic but a
+ * read-modify-write that is not serialised against the terminal's own saves is
+ * a lost update however atomic the rename is.
+ */
+function writePhoneStateFile(state) {
+  const envKey = typeof process.env.PROJECT_PHONE_API_KEY === "string"
+    ? process.env.PROJECT_PHONE_API_KEY.trim()
+    : "";
+  const settings = (envKey && state.settings.apiKey.trim() === envKey)
+    ? { ...state.settings, apiKey: "" }
+    : state.settings;
+  const document = {
+    version: PHONE_STATE_VERSION,
+    revision: state.revision,
+    updatedAt: state.updatedAt,
+    origin: state.origin,
+    transport: "file",
+    settings,
+    messages: state.messages,
+    credential: phoneCredential(settings.apiKey),
+  };
+  const file = phoneConfigPath();
+  const temporary = `${file}.${process.pid}.tmp`;
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+  try {
+    fs.writeFileSync(temporary, `${JSON.stringify(document, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+    fs.renameSync(temporary, file);
+    fs.chmodSync(file, 0o600);
+    fsyncWritten(file);
+  } catch (error) {
+    try {
+      fs.unlinkSync(temporary);
+    } catch {
+      /* nothing was written */
+    }
+    throw error;
+  }
+  return { ...document, credential: phoneCredential(state.settings.apiKey) };
+}
+
+/** The state as the page may see it: never the key, only whether there is one. */
+function publicPhoneState(state) {
+  const credential = phoneCredential(state.settings.apiKey);
+  return {
+    version: PHONE_STATE_VERSION,
+    revision: state.revision,
+    updatedAt: state.updatedAt,
+    origin: state.origin,
+    transport: "bridge",
+    settings: { ...state.settings, apiKey: "" },
+    credential: { present: credential.present, source: credential.source, hint: credential.hint },
+    messages: state.messages,
+    configFile: phoneDisplayPath(),
+    credentialSource: credential.source,
+  };
+}
+
+function phonePublicEqual(left, right) {
+  return left.interface === right.interface
+    && left.agentUrl === right.agentUrl
+    && left.agentPerson === right.agentPerson
+    && left.provider === right.provider
+    && left.baseUrl === right.baseUrl
+    && left.model === right.model
+    && left.language === right.language
+    && left.theme === right.theme
+    && left.accent === right.accent;
+}
+
+function phoneSameIds(left, right) {
+  if (left.length !== right.length) return false;
+  return left.every((item, index) => item.id === right[index]?.id);
+}
+
+function unionPhoneMessages(current, incoming) {
+  const merged = new Map();
+  for (const item of current) if (item.id) merged.set(item.id, item);
+  for (const item of incoming) if (item.id) merged.set(item.id, item);
+  return [...merged.values()]
+    .sort((a, b) => (a.createdAt !== b.createdAt ? a.createdAt - b.createdAt : (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)))
+    .slice(-PHONE_MAX_MESSAGES);
+}
+
+/**
+ * Folds a snapshot authored by the browser into the shared file.
+ *
+ * The transcript merges as an append-only union so nothing is lost when both
+ * surfaces write. A key the browser supplies is written for the terminal to
+ * use; a redacted snapshot (empty key) never clears the stored one — `unset`
+ * from a terminal is the deliberate way to remove it. Changing provider drops
+ * the old key unless the browser supplies the new one, so one vendor's key is
+ * never posted to another vendor's endpoint.
+ */
+function mergePhoneIncoming(current, incoming) {
+  const record = incoming && typeof incoming === "object" && !Array.isArray(incoming) ? incoming : {};
+  const fromBrowser = normalizePhoneSettings(record.settings);
+  const suppliedKey = phoneText(record.settings && typeof record.settings === "object" ? record.settings.apiKey : "", MAX_API_KEY_LENGTH).trim();
+  const providerChanged = fromBrowser.provider !== current.settings.provider;
+  const apiKey = providerChanged ? suppliedKey : (suppliedKey || current.settings.apiKey);
+  const settings = normalizePhoneSettings({ ...fromBrowser, apiKey });
+  const messages = Array.isArray(record.messages)
+    ? unionPhoneMessages(current.messages, normalizePhoneMessages(record.messages))
+    : current.messages;
+  const unchanged = !providerChanged
+    && phonePublicEqual(current.settings, settings)
+    && current.settings.apiKey.trim() === settings.apiKey.trim()
+    && phoneSameIds(current.messages, messages);
+  if (unchanged) return { state: current, changed: false };
+  return {
+    state: {
+      ...current,
+      origin: "web",
+      transport: "file",
+      settings,
+      messages,
+      revision: current.revision >= 2_147_483_647 ? 2_147_483_647 : current.revision + 1,
+      updatedAt: Date.now(),
+    },
+    changed: true,
+  };
+}
+
+function phoneTokenEquals(left, right) {
+  if (typeof left !== "string" || typeof right !== "string" || !left || !right) return false;
+  const a = Buffer.from(left, "utf8");
+  const b = Buffer.from(right, "utf8");
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
+}
+
+const PHONE_TOKEN = crypto.randomBytes(32).toString("base64url");
+const phoneEventClients = new Set();
+let phoneLastRevision = -1;
+
+function watchPhoneFile() {
+  let file;
+  try {
+    file = phoneConfigPath();
+  } catch {
+    return;
+  }
+  let directory;
+  try {
+    directory = path.dirname(file);
+    fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+  } catch {
+    return;
+  }
+  const base = path.basename(file);
+  let timer = null;
+  try {
+    const watcher = fs.watch(directory, () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        timer = null;
+        let snapshot = null;
+        try {
+          snapshot = publicPhoneState(readPhoneState());
+        } catch {
+          return;
+        }
+        if (snapshot.revision === phoneLastRevision) return;
+        phoneLastRevision = snapshot.revision;
+        const frame = `data: ${JSON.stringify({ type: "state", state: snapshot })}\n\n`;
+        for (const client of [...phoneEventClients]) {
+          try {
+            client.write(frame);
+          } catch {
+            phoneEventClients.delete(client);
+          }
+        }
+      }, 60);
+    });
+    watcher.unref?.();
+  } catch {
+    /* a page that polls still works; the stream just carries our own writes */
+  }
+}
+
+watchPhoneFile();
+
+function requirePhoneToken(req) {
+  const header = req.get(PHONE_TOKEN_HEADER);
+  const value = Array.isArray(header) ? header[0] : header;
+  return phoneTokenEquals(typeof value === "string" ? value : "", PHONE_TOKEN);
+}
+
+/** The key a server-side request would be signed with: the environment first, then the file. */
+function phoneStoredKey(provider) {
+  let stored = "";
+  try {
+    const state = readPhoneState();
+    if (state.settings.provider === provider) stored = state.settings.apiKey;
+  } catch {
+    stored = "";
+  }
+  const definition = BASE_PROVIDERS[provider];
+  if (definition?.requiresKey) {
+    for (const variable of definition.env) {
+      const value = environmentValue(variable);
+      if (value) return { key: value, source: "environment" };
+    }
+  }
+  if (stored.trim()) return { key: stored.trim(), source: "stored" };
+  return { key: "", source: "none" };
+}
+
+function phoneHistory(record) {
+  if (!record || !Array.isArray(record.history)) return [];
+  return record.history.slice(-PHONE_MAX_HISTORY).flatMap((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+    const role = item.role;
+    const content = typeof item.content === "string" ? item.content : "";
+    if (!content || (role !== "user" && role !== "assistant" && role !== "system")) return [];
+    return [{ role, content: content.slice(0, PHONE_MAX_HISTORY_ENTRY) }];
+  });
+}
+
+// The interface's own local bridge (its dev server) owns this prefix in
+// development. In production this process serves the built page itself, so it
+// is also the bridge: the same session/state/events/models/complete/clear
+// contract, backed by the same shared file the terminal reads, rather than a
+// `204` that left the page with nowhere to keep its settings.
+app.get(`${PHONE_BRIDGE_PREFIX}/session`, handle(async (req, res) => {
+  if (!sameOwner(req)) {
+    return res.status(403).json({ error: "cross_origin_refused" });
+  }
+  const state = readPhoneState();
+  phoneLastRevision = state.revision;
+  const snapshot = publicPhoneState(state);
+  res.json({
+    token: PHONE_TOKEN,
+    revision: snapshot.revision,
+    configFile: snapshot.configFile,
+    credentialSource: snapshot.credentialSource,
+    state: snapshot,
+  });
+}));
+
+app.get(`${PHONE_BRIDGE_PREFIX}/state`, handle(async (req, res) => {
+  if (!requirePhoneToken(req)) {
+    return res.status(401).json({ error: "unauthorized" });
+  }
+  const snapshot = publicPhoneState(readPhoneState());
+  phoneLastRevision = snapshot.revision;
+  res.json({ state: snapshot });
+}));
+
+app.post(`${PHONE_BRIDGE_PREFIX}/state`, handle(async (req, res) => {
+  if (!requirePhoneToken(req)) {
+    return res.status(401).json({ error: "unauthorized" });
+  }
+  if (!sameOwner(req)) {
+    return res.status(403).json({ error: "cross_origin_refused" });
+  }
+  const body = req.body ?? {};
+  // Refused rather than built on defaults when the file will not open: a save
+  // assembled from an empty stand-in would replace every setting and message
+  // with it. The page retries, and the file is still there to be read.
+  const strict = readPhoneStateStrict();
+  if (!strict.ok) {
+    return res.status(400).json({ error: "settings_unreadable", detail: "the shared file could not be read; nothing was written" });
+  }
+  const current = strict.state;
+  const merged = mergePhoneIncoming(current, body);
+  if (!merged.changed) {
+    const snapshot = publicPhoneState(current);
+    phoneLastRevision = snapshot.revision;
+    return res.json({ state: snapshot });
+  }
+  // Re-read under the same lock the terminal's saves take, and merge again if
+  // the file moved underneath this request: writing the first merge would undo
+  // whatever the other surface saved in between.
+  let saved;
+  try {
+    saved = withPhoneConfigLock(() => {
+      const fresh = readPhoneStateStrict();
+      if (!fresh.ok) {
+        const failed = new Error("the shared file could not be read; nothing was written");
+        failed.code = "settings_unreadable";
+        throw failed;
+      }
+      const attempt = fresh.state.revision === current.revision && fresh.state.updatedAt === current.updatedAt
+        ? merged
+        : mergePhoneIncoming(fresh.state, body);
+      if (!attempt.changed) return fresh.state;
+      return writePhoneStateFile(attempt.state);
+    });
+  } catch (error) {
+    const status = error?.code === "settings_unreadable" ? 400 : 503;
+    return res.status(status).json({ error: error?.code ?? "save_failed" });
+  }
+  const snapshot = publicPhoneState(saved);
+  phoneLastRevision = snapshot.revision;
+  const frame = `data: ${JSON.stringify({ type: "state", state: snapshot })}\n\n`;
+  for (const client of [...phoneEventClients]) {
+    try {
+      client.write(frame);
+    } catch {
+      phoneEventClients.delete(client);
+    }
+  }
+  res.json({ state: snapshot });
+}));
+
+app.get(`${PHONE_BRIDGE_PREFIX}/events`, (req, res) => {
+  const token = typeof req.query?.[PHONE_TOKEN_QUERY] === "string" ? req.query[PHONE_TOKEN_QUERY] : "";
+  if (!phoneTokenEquals(token, PHONE_TOKEN)) {
+    res.status(401).json({ error: "unauthorized" });
+    return;
+  }
+  if (phoneEventClients.size >= PHONE_MAX_EVENT_CLIENTS) {
+    res.status(503).json({ error: "too_many_clients" });
+    return;
+  }
+  res.writeHead(200, {
+    "cache-control": "no-store",
+    connection: "keep-alive",
+    "content-type": "text/event-stream; charset=utf-8",
+    "referrer-policy": "no-referrer",
+    "x-accel-buffering": "no",
+    "x-content-type-options": "nosniff",
+    "x-frame-options": "DENY",
+  });
+  res.write("retry: 2000\n\n");
+  try {
+    const snapshot = publicPhoneState(readPhoneState());
+    phoneLastRevision = snapshot.revision;
+    res.write(`data: ${JSON.stringify({ type: "state", state: snapshot })}\n\n`);
+  } catch {
+    /* the stream still carries later writes */
+  }
+  phoneEventClients.add(res);
+  req.on("close", () => phoneEventClients.delete(res));
+});
+
+app.get(`${PHONE_BRIDGE_PREFIX}/models`, handle(async (req, res) => {
+  if (!requirePhoneToken(req)) {
+    return res.status(401).json({ error: "unauthorized" });
+  }
+  let provider = "openai";
+  try {
+    provider = readPhoneState().settings.provider;
+  } catch {
+    provider = "openai";
+  }
+  // A catalogue fetched with the stored credential when there is one, else the
+  // static fallback the page also falls back to on its own. Never a failure:
+  // a form with a short list is recoverable and a form that threw is not.
+  const found = phoneStoredKey(provider);
+  if (found.key) {
+    let baseUrl = "";
+    try {
+      baseUrl = readPhoneState().settings.baseUrl || phoneProviderDefault(provider).baseUrl;
+    } catch {
+      baseUrl = phoneProviderDefault(provider).baseUrl;
+    }
+    if (endpointAllowed(baseUrl)) {
+      const headers = { Accept: "application/json" };
+      if (BASE_PROVIDERS[provider]?.requiresKey) {
+        if (BASE_PROVIDERS[provider].auth === "x-api-key") {
+          headers["x-api-key"] = found.key;
+          headers["anthropic-version"] = ANTHROPIC_VERSION;
+        } else if (BASE_PROVIDERS[provider].auth === "x-goog-api-key") {
+          headers["x-goog-api-key"] = found.key;
+        } else {
+          headers.Authorization = `Bearer ${found.key}`;
+        }
+      }
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), CATALOGUE_TIMEOUT_MS);
+      try {
+        const response = await fetch(`${baseUrl}/models`, {
+          method: "GET",
+          headers,
+          cache: "no-store",
+          credentials: "omit",
+          redirect: "manual",
+          referrerPolicy: "no-referrer",
+          signal: controller.signal,
+        });
+        if (response.ok) {
+          const models = extractModelIds(await response.json().catch(() => null), provider);
+          if (models.length) {
+            return res.json({ models: models.slice(0, MAX_CATALOGUE_ENTRIES), source: "remote" });
+          }
+        }
+      } catch {
+        /* the fallback below is the answer */
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+  }
+  res.json({ models: STATIC_MODELS[provider] ?? [], source: "offline", error: "bridge_unavailable" });
+}));
+
+app.post(`${PHONE_BRIDGE_PREFIX}/clear`, handle(async (req, res) => {
+  if (!requirePhoneToken(req)) {
+    return res.status(401).json({ error: "unauthorized" });
+  }
+  if (!sameOwner(req)) {
+    return res.status(403).json({ error: "cross_origin_refused" });
+  }
+  // Cleared from what is on disk now, not from what this request started
+  // with: the revision moves forward from the latest bytes, so a concurrent
+  // save is merged by ordering rather than overwritten, and a file that will
+  // not open stops the clear instead of emptying a stand-in over it.
+  let saved;
+  try {
+    saved = withPhoneConfigLock(() => {
+      const fresh = readPhoneStateStrict();
+      if (!fresh.ok) {
+        const failed = new Error("the shared file could not be read; nothing was written");
+        failed.code = "settings_unreadable";
+        throw failed;
+      }
+      const current = fresh.state;
+      return writePhoneStateFile({
+        ...current,
+        origin: "web",
+        messages: [],
+        revision: current.revision >= 2_147_483_647 ? 2_147_483_647 : current.revision + 1,
+        updatedAt: Date.now(),
+      });
+    });
+  } catch (error) {
+    const status = error?.code === "settings_unreadable" ? 400 : 503;
+    return res.status(status).json({ error: error?.code ?? "save_failed" });
+  }
+  const snapshot = publicPhoneState(saved);
+  phoneLastRevision = snapshot.revision;
+  res.json({ state: snapshot });
+}));
+
+/**
+ * A completion signed with the stored credential, so a key on disk can serve
+ * a page that never holds it. The page sends only the prompt and the history;
+ * the key stays where it is. Mirrors the guards the terminal's own provider
+ * client applies: a bounded prompt, an endpoint this agent may be pointed at,
+ * no cookies or redirects carrying the key elsewhere, and a credential only
+ * for a provider that asks for one.
+ */
+app.post(`${PHONE_BRIDGE_PREFIX}/complete`, (req, res) => {
+  if (!requirePhoneToken(req)) {
+    res.status(401).json({ error: "unauthorized" });
+    return;
+  }
+  if (!sameOwner(req)) {
+    res.status(403).json({ error: "cross_origin_refused" });
+    return;
+  }
+  void (async () => {
+    const record = req.body && typeof req.body === "object" && !Array.isArray(req.body) ? req.body : {};
+    const prompt = typeof record.prompt === "string" ? record.prompt : "";
+    if (!prompt.trim()) {
+      res.status(400).json({ error: "missing_prompt" });
+      return;
+    }
+    if (prompt.length > PHONE_MAX_PROMPT) {
+      res.status(400).json({ error: "prompt_too_large" });
+      return;
+    }
+    let state;
+    try {
+      state = readPhoneState();
+    } catch (error) {
+      res.status(503).json({ error: "agent_unavailable", detail: String(error?.message ?? error) });
+      return;
+    }
+    const settings = state.settings;
+    if (!settings.model) {
+      res.status(409).json({ error: "missing_credentials", detail: "no model configured" });
+      return;
+    }
+    if (!endpointAllowed(settings.baseUrl)) {
+      res.status(400).json({ error: "invalid_endpoint" });
+      return;
+    }
+    const found = phoneStoredKey(settings.provider);
+    if (BASE_PROVIDERS[settings.provider]?.requiresKey && !found.key) {
+      res.status(409).json({ error: "missing_credentials" });
+      return;
+    }
+    if (res.writableEnded || res.destroyed) return;
+    res.writeHead(200, {
+      "cache-control": "no-store",
+      "content-type": "application/x-ndjson; charset=utf-8",
+      "referrer-policy": "no-referrer",
+      "x-content-type-options": "nosniff",
+      "x-frame-options": "DENY",
+    });
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), PHONE_COMPLETE_TIMEOUT_MS);
+    res.on("close", () => {
+      clearTimeout(timer);
+      controller.abort();
+    });
+    const frame = (payload) => {
+      if (res.writableEnded || res.destroyed) return;
+      res.write(`${JSON.stringify(payload)}\n`);
+    };
+    try {
+      const history = phoneHistory(record);
+      const text = await phoneComplete(settings, found.key, prompt, history, controller.signal);
+      frame({ type: "delta", text });
+      frame({ type: "done", text });
+    } catch (error) {
+      frame({ type: "error", error: error instanceof Error && error.message ? error.message : "provider_error" });
+    } finally {
+      clearTimeout(timer);
+      if (!res.writableEnded) res.end();
+    }
+  })().catch((error) => {
+    console.error(`ethos-web POST /__phone/complete: ${error?.message ?? error}`);
+    if (!res.headersSent) {
+      res.status(503).json({ error: "agent_unavailable", detail: String(error?.message ?? error) });
+    }
+  });
+});
+
+/**
+ * One provider completion, in the three wire shapes this bridge already speaks
+ * for catalogues: OpenAI-compatible chat completions (which is every vendor
+ * but two), Anthropic messages, and Gemini generateContent. Non-streaming on
+ * purpose — the page draws the answer from the frames this route writes, not
+ * from the provider's own stream — with the same no-cookies, no-redirect,
+ * no-referrer posture as the catalogue fetch above.
+ */
+async function phoneComplete(settings, apiKey, prompt, history, signal) {
+  const definition = BASE_PROVIDERS[settings.provider];
+  const protocol = definition?.protocol ?? "openai_compat";
+  const headers = { Accept: "application/json", "Content-Type": "application/json" };
+  if (apiKey && definition?.requiresKey) {
+    if (definition.auth === "x-api-key") {
+      headers["x-api-key"] = apiKey;
+      headers["anthropic-version"] = ANTHROPIC_VERSION;
+    } else if (definition.auth === "x-goog-api-key") {
+      headers["x-goog-api-key"] = apiKey;
+    } else {
+      headers.Authorization = `Bearer ${apiKey}`;
+    }
+  }
+  const request = (url, body) => fetch(url, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body),
+    cache: "no-store",
+    credentials: "omit",
+    redirect: "manual",
+    referrerPolicy: "no-referrer",
+    signal,
+  });
+  const fail = async (response) => {
+    if (response.status >= 300 && response.status < 400) throw new Error("redirect_refused");
+    throw new Error(`http_${response.status}`);
+  };
+  if (protocol === "anthropic") {
+    const messages = [...history, { role: "user", content: prompt }]
+      .filter((entry) => entry.role === "user" || entry.role === "assistant")
+      .map((entry) => ({ role: entry.role, content: String(entry.content).slice(0, PHONE_MAX_HISTORY_ENTRY) }));
+    const response = await request(`${settings.baseUrl}/messages`, {
+      model: settings.model,
+      max_tokens: 4096,
+      messages,
+    });
+    if (!response.ok) await fail(response);
+    const payload = await response.json().catch(() => null);
+    const blocks = payload && typeof payload === "object" && Array.isArray(payload.content) ? payload.content : [];
+    const text = blocks.filter((block) => block?.type === "text" && typeof block.text === "string").map((block) => block.text).join("");
+    if (!text.trim()) throw new Error("empty_reply");
+    return text;
+  }
+  if (protocol === "google") {
+    const contents = [...history, { role: "user", content: prompt }]
+      .filter((entry) => entry.role === "user" || entry.role === "assistant")
+      .map((entry) => ({
+        role: entry.role === "assistant" ? "model" : "user",
+        parts: [{ text: String(entry.content).slice(0, PHONE_MAX_HISTORY_ENTRY) }],
+      }));
+    const response = await request(
+      `${settings.baseUrl}/models/${encodeURIComponent(settings.model)}:generateContent`,
+      { contents },
+    );
+    if (!response.ok) await fail(response);
+    const payload = await response.json().catch(() => null);
+    const candidates = payload && typeof payload === "object" && Array.isArray(payload.candidates) ? payload.candidates : [];
+    const text = candidates.flatMap((candidate) => {
+      const parts = candidate?.content?.parts;
+      return Array.isArray(parts) ? parts : [];
+    }).filter((part) => typeof part?.text === "string").map((part) => part.text).join("");
+    if (!text.trim()) throw new Error("empty_reply");
+    return text;
+  }
+  const messages = [...history, { role: "user", content: prompt }].map((entry) => ({
+    role: entry.role === "assistant" || entry.role === "system" ? entry.role : "user",
+    content: String(entry.content).slice(0, PHONE_MAX_HISTORY_ENTRY),
+  }));
+  const response = await request(`${settings.baseUrl}/chat/completions`, {
+    model: settings.model,
+    messages,
+    stream: false,
+  });
+  if (!response.ok) await fail(response);
+  const payload = await response.json().catch(() => null);
+  const choice = payload && typeof payload === "object" && Array.isArray(payload.choices) ? payload.choices[0] : null;
+  const content = choice?.message?.content;
+  const text = typeof content === "string" ? content : Array.isArray(content)
+    ? content.filter((part) => typeof part?.text === "string").map((part) => part.text).join("")
+    : "";
+  if (!text.trim()) throw new Error("empty_reply");
+  return text;
+}
 
 /**
  * The build, as a request-time question rather than a startup-time one.

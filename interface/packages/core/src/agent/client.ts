@@ -972,7 +972,36 @@ export class AgentClient {
     const declined = typeof payload.message_id === 'string' ? payload.message_id : '';
     if (!declined) return;
     const reason = typeof payload.reason === 'string' ? payload.reason.slice(0, 120) : '';
+    const statusText = typeof payload.status_text === 'string' && payload.status_text.trim()
+      ? payload.status_text.slice(0, 200)
+      : '';
     const decided = payload.decided !== false;
+    const retrying = payload.retrying === true;
+    const rateLimited = payload.rate_limited === true || payload.waiting === true;
+    // A transient failure that will be retried is a wait, not an answer. Ending
+    // the wait here is what read a 429 as the agent having stopped midway: the
+    // screen showed a failure while the agent was still working. So a waiter
+    // whose question is retrying stays waiting -- its stall guard re-arms on
+    // this sign of life -- and the waiting status travels as an agent event
+    // the surface can draw ("Rate limited (429) -- waiting about 90s...").
+    if (retrying) {
+      for (const waiter of [...this.waiters]) {
+        if (!waiter.asked || waiter.asked !== declined) continue;
+        waiter.onProgress();
+      }
+      this.emit({
+        type: 'agent',
+        kind: rateLimited ? 'message.waiting_rate_limited' : 'message.retrying',
+        payload: {
+          message_id: declined,
+          reason,
+          status: statusText || reason,
+          wait_s: typeof payload.wait_s === 'number' ? payload.wait_s : null,
+          error_kind: typeof payload.error_kind === 'string' ? payload.error_kind : 'retrying',
+        },
+      });
+      return;
+    }
     const code: AgentFailureCode = decided ? 'agent_declined' : 'agent_unanswered';
     for (const waiter of [...this.waiters]) {
       if (!waiter.asked || waiter.asked !== declined) continue;

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from ethos.core.control import ControlPlane
@@ -20,6 +21,13 @@ class _FakeDB:
     async def upsert_env(self, kind: str, key: str, attrs: dict[str, Any], **_: Any) -> None:
         self.rows[key] = dict(attrs)
 
+    async def execute(self, stmt: str, *args: Any) -> str:
+        """The key-by-key merge `ControlPlane._persist` writes for one verb."""
+        attrs = json.loads(args[2])
+        self.rows.setdefault(args[1], {})
+        self.rows[args[1]].update(attrs)
+        return "MERGE 1"
+
 
 def _plane(db: _FakeDB, tmp_path: Any) -> ControlPlane:
     config = make_config(tmp_path)
@@ -27,19 +35,33 @@ def _plane(db: _FakeDB, tmp_path: Any) -> ControlPlane:
 
 
 """
-The verbs of the lifecycle, and the one thing that is not a verb.
+The verbs of the lifecycle, and the two things that are not verbs.
 
-`stopped` in the control table is a record of how the last run ended. Treating
-it as a standing order made the agent unstartable: the process was the only
-restart the design offered, and every start loaded the flag, woke, restored
-its focus, and exited within a second — for good, because nothing could clear
-the flag. The interface's own rule, that `resume` is not a restart [the stop
-somebody chose is the one restart nobody asked for], only works if starting
-the process *is* one.
+`preview` is a mode rather than a hold, and `ending` is this process rather than
+the agent; both are kept apart from the verbs on purpose.
+
+`stopped` used to be a record of how the last run ended rather than an order,
+because a stop ended the process: nothing was left for a resume to restart, and
+a flag every start inherited made the agent wake and exit within a second, for
+good. A stop parks the agent now — the same process, still answering, waiting to
+be resumed — so `resume` clears `stopped` again, and starting the process is no
+longer the only way back. What a *signal* does is still to end the process, and
+that is `ending`, which no surface can set.
 """
 
 
-def test_a_stop_binds_the_running_agent_and_outlives_resume(tmp_path: Any) -> None:
+def test_a_stop_binds_the_running_agent_until_it_is_resumed(tmp_path: Any) -> None:
+    """The Stop/Resume pair, which is a pair only if the second half works.
+
+    A stop used to end the process, which left the surface holding a Resume
+    button with nothing behind it: the process it would have resumed was gone, and
+    the supervisor's replacement had already loaded the flag as `false`. So the
+    agent came back on its own a few seconds after every Stop — the Stop button
+    did not stick — and pressing Resume did nothing at all, because resume was
+    forbidden from clearing the very flag it was supposed to undo. A stop parks
+    the agent now, so resume is the way back and clearing the flag is what it
+    means.
+    """
     import asyncio
 
     db = _FakeDB()
@@ -47,10 +69,59 @@ def test_a_stop_binds_the_running_agent_and_outlives_resume(tmp_path: Any) -> No
     result = asyncio.run(plane.apply_command("stop", "web"))
     assert result["ok"]
     assert plane.stopped, "a stop must bind the agent it stops"
+    assert db.rows["lifecycle"]["stopped"] is True
 
     asyncio.run(plane.apply_command("resume", "web"))
-    assert plane.stopped, "resume is for a paused agent; it is not a restart"
-    assert not plane.paused
+    assert not plane.stopped, "resume is the other half of the stop button"
+    assert db.rows["lifecycle"]["stopped"] is False, \
+        "and the row every surface reads has to say the agent is back"
+
+
+def test_a_resume_releases_a_stop_that_came_with_an_emergency(tmp_path: Any) -> None:
+    """Emergency stop is a hold too, not a latch somebody is locked out of.
+
+    It sets `stopped` as well as the pauses, so a resume that cleared only the
+    pauses left an agent the owner had emergency-stopped unable to be started
+    again from the surface that stopped it.
+    """
+    import asyncio
+
+    db = _FakeDB()
+    plane = _plane(db, tmp_path)
+    asyncio.run(plane.apply_command("emergency_stop", "web"))
+    assert plane.stopped and plane.emergency and plane.paused
+
+    asyncio.run(plane.apply_command("resume", "web"))
+    assert not (plane.stopped or plane.emergency or plane.paused or plane.pause_actions)
+
+
+def test_a_verb_writes_only_the_flags_it_means(tmp_path: Any) -> None:
+    """One writer's verb must not undo another writer's flag [the lost update].
+
+    This row has more than one writer: the bridge writes the verb a surface
+    pressed, this process writes its own reading of it. The write used to replace
+    every flag with this process's snapshot, so answering an *earlier* verb
+    persisted a `stopped: false` that had been read before the stop was pressed,
+    straight over the stop that had just been written — a stop that silently
+    reverts, which reads exactly like a Stop button that does not work.
+    """
+    import asyncio
+
+    db = _FakeDB()
+    bridge = _plane(db, tmp_path)
+    core = ControlPlane(db, str(make_config(tmp_path).paths.run_dir), owns_row=False)
+    asyncio.run(core.load())
+
+    # The surface stops the agent, and this process is still holding the reading
+    # it had before that arrived.
+    asyncio.run(bridge.apply_command("stop", "web"))
+    assert db.rows["lifecycle"]["stopped"] is True
+
+    # A verb that knows nothing about stops must not mention `stopped` at all.
+    asyncio.run(core.apply_command("preview_on", "web"))
+    assert db.rows["lifecycle"]["stopped"] is True, \
+        "a preview must not resurrect a stopped agent"
+    assert db.rows["lifecycle"]["preview"] is True
 
 
 def test_starting_the_process_is_the_restart_of_a_stopped_agent(tmp_path: Any) -> None:
@@ -390,3 +461,20 @@ def test_starting_the_agent_re_writes_the_row_it_reads(tmp_path: Any) -> None:
     assert not started.stopped, "the new process is not stopped"
     assert db.rows["lifecycle"]["stopped"] is False, \
         "and the row every reader trusts now says the same thing"
+
+
+def test_only_a_signal_ends_the_loop(tmp_path: Any) -> None:
+    """`ending` is a fact about this process, and no verb a surface sends sets it.
+
+    It has to be separate from `stopped`, because those two now mean different
+    things: a stop is a hold somebody can take back with the button beside it, and
+    an ending is not something a row in a database gets to decide.
+    """
+    import asyncio
+
+    plane = _plane(_FakeDB(), tmp_path)
+    asyncio.run(plane.apply_command("stop", "web"))
+    assert plane.stopped and not plane.ending, "a surface stop is a hold, not an ending"
+
+    plane.end("signal:SIGTERM")
+    assert plane.ending and plane.stopped, "a signal ends the process, and stops it too"

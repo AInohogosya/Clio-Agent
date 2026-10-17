@@ -188,7 +188,7 @@ class ThreadManager:
                         IntentionStatus.failed.value, f"thread failed: {exc}",
                     )
                 except Exception:
-                    pass
+                    logger.exception("threads.close_intention_failed")
         finally:
             metrics.THREADS_ACTIVE.set(self._running_count())
             # Retire after the result has been published, so a subscriber woken by

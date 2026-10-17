@@ -130,9 +130,15 @@ export function usePhoneSession(
       if (remote.revision <= previous.revision && remote.origin === 'cli') return;
       configRef.current = remote;
       setConfig(remote);
-      if (!publicSettingsEqual(previous.settings, remote.settings)) {
-        client.setSettings(remote.settings);
-        say(t('cliReloaded'), 'success');
+      // Taken verbatim: the remote side already holds the credential tuple it
+      // means, so the provider-change reset for local edits must not run here.
+      // The key is compared too — a redacted snapshot must never read as "the
+      // key was removed", but a real key change must still reach the client.
+      const settingsVisible = !publicSettingsEqual(previous.settings, remote.settings);
+      const keyChanged = previous.settings.apiKey.trim() !== remote.settings.apiKey.trim();
+      if (settingsVisible || keyChanged) {
+        client.replaceSettings(remote.settings);
+        if (settingsVisible) say(t('cliReloaded'), 'success');
       }
       if (!sameHistory(previous.messages, remote.messages)) {
         client.adoptHistory(remote.messages);

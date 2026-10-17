@@ -110,16 +110,36 @@ async complete(
       // leave exactly those questions drawn twice, for good and for a turn no
       // longer in flight to fix them.
       onAssigned?.({ questionId: sentAt });
-      // `sentAt` is handed to the wait as well as checked, because it is the one
-      // thing that ties a "heard you, not answering" back to this question. The
-      // agent is free to decline, and when it does the surface should say the
-      // agent declined rather than sit out the whole stall budget and then
-      // report that it had gone quiet.
-      const reply = await agent.awaitReply(after, signal, alreadyAnswered, sentAt);
-      onAssigned?.({ answerId: reply.id });
-      const text = reply.text.trim();
-      if (!text) throw new AgentRequestError('agent_declined', 'empty');
-      return text;
+      // A retry is a wait, not silence: while the agent waits out a 429 or
+      // retries immediately, the screen keeps the turn pending and names the
+      // pause. Forwarded as streaming text so both surfaces draw it where a
+      // partial reply would go -- the one place a reader is already looking.
+      const stopWaitingStatus = agent.subscribe((event) => {
+        if (event.type !== 'agent') return;
+        if (event.kind !== 'message.waiting_rate_limited' && event.kind !== 'message.retrying') return;
+        const status = typeof event.payload.status === 'string' ? event.payload.status : '';
+        if (status) {
+          try {
+            _onDelta(`\n[${status}]`);
+          } catch {
+            // A status line must never fail a turn waiting on a real answer.
+          }
+        }
+      });
+      try {
+        // `sentAt` is handed to the wait as well as checked, because it is the one
+        // thing that ties a "heard you, not answering" back to this question. The
+        // agent is free to decline, and when it does the surface should say the
+        // agent declined rather than sit out the whole stall budget and then
+        // report that it had gone quiet.
+        const reply = await agent.awaitReply(after, signal, alreadyAnswered, sentAt);
+        onAssigned?.({ answerId: reply.id });
+        const text = reply.text.trim();
+        if (!text) throw new AgentRequestError('agent_declined', 'empty');
+        return text;
+      } finally {
+        stopWaitingStatus();
+      }
     },
 
     async discoverModels(signal?: AbortSignal): Promise<ModelDiscoveryResult> {

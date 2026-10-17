@@ -1,6 +1,6 @@
 import { strict as assert } from 'node:assert';
 import { spawn } from 'node:child_process';
-import { mkdtempSync, rmSync, statSync, writeFileSync, mkdirSync, copyFileSync, readFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, rmSync, statSync, writeFileSync, mkdirSync, copyFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -420,6 +420,36 @@ test('a settings file that cannot be read is refused, never written over', async
   writeFileSync(homeFile, '\n');
   assert.equal((await setDoor({ id: 'discord', enabled: true })).status, 200);
   assert.equal(doorOf(await setupOf(), 'discord').enabled, true);
+});
+
+test('a settings file that cannot be opened right now is refused, never built on', async (t) => {
+  // A permission revoked for a moment is not a missing file: the bytes are
+  // still there, and a save assembled from an empty document would delete every
+  // other door to change one. The write must wait for the file to be readable
+  // again rather than treat the gap as an absence.
+  if (typeof process.getuid === 'function' && process.getuid() === 0) {
+    t.skip('root reads through revoked permissions');
+    return;
+  }
+  await setDoor({
+    id: 'telegram',
+    enabled: true,
+    credentials: { token: '123456:do-not-lose-me' },
+    allowed: ['819012345678'],
+  });
+  const homeFile = join(home, 'channels.yaml');
+  const good = readFileSync(homeFile, 'utf8');
+  chmodSync(homeFile, 0o000);
+  try {
+    const refused = await setDoor({ id: 'discord', enabled: true });
+    assert.equal(refused.status, 400);
+    assert.equal((await refused.json()).error, 'settings_unreadable');
+  } finally {
+    chmodSync(homeFile, 0o600);
+  }
+  // Byte for byte: the gap wrote nothing, and the door that was there still is.
+  assert.equal(readFileSync(homeFile, 'utf8'), good);
+  assert.match(readFileSync(homeFile, 'utf8'), /do-not-lose-me/);
 });
 
 test('a credential can be taken back, and a save that does not mean remove does not', async () => {

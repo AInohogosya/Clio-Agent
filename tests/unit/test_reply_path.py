@@ -629,11 +629,18 @@ def test_a_life_loop_survives_a_cycle_that_raises() -> None:
     class _Control:
         stopped = False
         paused = False
+        ending = False
 
         async def refresh(self) -> None:
             return None
 
         async def wait_resume(self) -> None:
+            await asyncio.sleep(0)
+
+        async def wait_wake(self) -> None:
+            await asyncio.sleep(0)
+
+        async def wait_stop(self) -> None:
             await asyncio.sleep(0)
 
     class _Rhythm:
@@ -654,7 +661,7 @@ def test_a_life_loop_survives_a_cycle_that_raises() -> None:
             cycles["done"] += 1
             if cycles["done"] < 4:
                 raise RuntimeError("no eligible model for tier=T2")
-            self.control.stopped = True
+            self.control.ending = True
 
     life = _Life(LifeDeps(
         config=config, control=_Control(), bus=None, memory=None, self_model=None,
@@ -1043,6 +1050,8 @@ def test_a_paused_agent_keeps_reporting_that_it_is_there(monkeypatch: Any) -> No
     bus = _CollectingBus()
 
     class _Control:
+        ending = False
+
         def __init__(self) -> None:
             self.stopped = False
             self.paused = True
@@ -1058,6 +1067,12 @@ def test_a_paused_agent_keeps_reporting_that_it_is_there(monkeypatch: Any) -> No
         async def wait_resume(self) -> None:
             await asyncio.sleep(0)
 
+        async def wait_wake(self) -> None:
+            await asyncio.sleep(0)
+
+        async def wait_stop(self) -> None:
+            await asyncio.sleep(0)
+
     control = _Control()
 
     class _Life(Life):
@@ -1065,7 +1080,7 @@ def test_a_paused_agent_keeps_reporting_that_it_is_there(monkeypatch: Any) -> No
             return None
 
         async def _cycle(self) -> None:
-            self.control.stopped = True
+            self.control.ending = True
 
     life = _Life(LifeDeps(
         config=config, control=control, bus=bus, memory=None, self_model=None,
@@ -1081,7 +1096,9 @@ def test_a_paused_agent_keeps_reporting_that_it_is_there(monkeypatch: Any) -> No
     assert not control.paused, "the wait must end when the agent is resumed"
 
 
-def test_the_kill_switch_is_re_read_by_the_running_agent(tmp_path: Path) -> None:
+def test_the_kill_switch_is_re_read_by_the_running_agent(
+    tmp_path: Path, monkeypatch: Any,
+) -> None:
     """A stop file dropped mid-run stops the run [H1].
 
     `ControlPlane.refresh` is documented as called at the top of every cycle —
@@ -1089,25 +1106,39 @@ def test_the_kill_switch_is_re_read_by_the_running_agent(tmp_path: Path) -> None
     called it. So the one switch H1 calls always effective was effective until the
     next restart: the host wrote the file, and an agent that was supposed to be
     dead went on living with the file on disk beside it.
+
+    Stopped now means *held* rather than *ended*, so this is the whole shape of a
+    stop: the agent stops thinking, stays reachable, and starts again when the
+    file goes away. Nothing here waits for a restart, which is the point.
+
+    The heartbeat is shortened because a file is noticed on that cadence, and half
+    a minute of it is the test's wall clock rather than the behaviour under test.
     """
     from ethos.core.control import ControlPlane
+
+    monkeypatch.setattr("ethos.engine.life.PARKED_HEARTBEAT_S", 0.05)
 
     config = make_config(tmp_path / "home")
     config.paths.ensure()
 
-    class _Control(ControlPlane):
-        pass
-
-    control = _Control(None, str(config.paths.run_dir))
+    control = ControlPlane(None, str(config.paths.run_dir))
     asyncio.run(control.load())
+
+    cycles = {"done": 0}
 
     class _Life(Life):
         async def wake_up(self) -> None:
             return None
 
         async def _cycle(self) -> None:
-            # The host pulls the switch while the agent is mid-run.
-            (config.paths.run_dir / "stop").write_text("")
+            cycles["done"] += 1
+            if cycles["done"] == 1:
+                # The host pulls the switch while the agent is mid-run.
+                (config.paths.run_dir / "stop").write_text("")
+            elif cycles["done"] >= 4:
+                # The switch is the host's to take back, so only the test ends it.
+                control.ending = True
+                control._after_change()
 
     life = _Life(LifeDeps(
         config=config, control=control, bus=None, memory=None, self_model=None,
@@ -1116,9 +1147,19 @@ def test_the_kill_switch_is_re_read_by_the_running_agent(tmp_path: Path) -> None
         continuity=_Quiet(), consolidation=None, embedder=None, thread_id="self",
     ))
 
-    asyncio.run(asyncio.wait_for(life.life(), timeout=10))
+    async def run() -> None:
+        task = asyncio.ensure_future(life.life())
+        # Held, not ended: the loop is still here with the file on disk.
+        await asyncio.sleep(0.2)
+        assert control.stopped, "the agent must obey a kill switch written while it runs"
+        assert not task.done(), "a stop is a hold, not the end of the loop"
+        assert cycles["done"] == 1, "and a held agent stops thinking"
+        (config.paths.run_dir / "stop").unlink()
+        await asyncio.wait_for(task, timeout=10)
 
-    assert control.stopped, "the agent must obey a kill switch written while it runs"
+    asyncio.run(run())
+
+    assert cycles["done"] >= 4, "removing the file is what lets the agent run again"
 
 
 # --------------------------------------------------------------------------
@@ -1291,7 +1332,9 @@ def test_whitespace_and_overlong_replies_are_kept_or_dropped_not_invented() -> N
         '{"action": "reply_now", "reply_texts": ["one", "two", "three", "four"]}'
     ])).deliberate(_question()))
 
-    assert len(decision.reply_texts) == 3, "the reply stays as long as it was always allowed to be"
+    assert decision.reply_texts == ["one", "two", "three", "four"], (
+        "however many messages the agent wrote is how many it sends"
+    )
 
 
 def test_a_deliberation_that_reads_well_still_answers_the_question() -> None:
@@ -2408,3 +2451,114 @@ def test_the_life_loop_hands_the_deliberation_the_real_catalog() -> None:
 
     life.deps.toolhost = None
     assert life._tool_names() == [], "and no toolhost is no tools, not an error"
+
+
+def test_a_stop_pressed_mid_cycle_ends_that_cycle_at_once(tmp_path: Path) -> None:
+    """The Stop button, thirty minutes later [H1].
+
+    The flags were read at the top of the loop and nowhere else, so a stop pressed
+    while a cycle was in flight took effect whenever that cycle ended. A cycle is
+    a whole deliberation whose model calls each retry six times against a
+    rate-limited provider, and one of those cycles ran for half an hour while the
+    person who pressed Stop watched a button that did nothing — which is not a
+    slow agent, it is a kill switch wired only to the top of the loop.
+    """
+    from ethos.core.control import ControlPlane
+
+    config = make_config(tmp_path / "home")
+    config.paths.ensure()
+    control = ControlPlane(None, str(config.paths.run_dir))
+    asyncio.run(control.load())
+
+    state = {"started": 0, "cancelled": 0, "finished": 0}
+
+    class _Life(Life):
+        async def wake_up(self) -> None:
+            return None
+
+        async def _cycle(self) -> None:
+            state["started"] += 1
+            if state["started"] == 1:
+                # The surface presses Stop while the agent is mid-deliberation.
+                asyncio.ensure_future(control.apply_command("stop", "web"))
+                try:
+                    # What a long cycle looks like from inside: waiting on a
+                    # provider, in a retry loop, with no way to be interrupted.
+                    await asyncio.sleep(30)
+                except asyncio.CancelledError:
+                    state["cancelled"] += 1
+                    # Only the test ends the loop; the stop itself does not.
+                    control.end("test")
+                    raise
+            state["finished"] += 1
+            if state["finished"] >= 2:
+                control.end("test")
+
+    life = _Life(LifeDeps(
+        config=config, control=control, bus=None, memory=None, self_model=None,
+        attention=None, motivation=None, rhythm=RhythmController(config), gateway=None,
+        gsl=None, social=None, comms_out=None, toolhost=None, audit=ListAudit(),
+        continuity=_Quiet(), consolidation=None, embedder=None, thread_id="self",
+    ))
+
+    asyncio.run(asyncio.wait_for(life.life(), timeout=10))
+
+    assert state["cancelled"] == 1, "the cycle in flight must be cut short, not waited out"
+    assert control.stopped, "and the stop still binds the agent"
+
+
+def test_a_stop_pauses_the_agent_and_a_resume_starts_it_again(tmp_path: Path) -> None:
+    """The Stop/Resume pair, end to end: the second button is the first one's undo.
+
+    A stop used to end the life loop, so the process behind the Resume button was
+    gone — the supervisor replaced it within seconds with the flag already cleared
+    by the new process's own start, which left Stop a button that undid itself and
+    Resume a button with nothing to resume. A stop parks now: the same process,
+    still answering, waiting to be resumed.
+    """
+    from ethos.core.control import ControlPlane
+
+    config = make_config(tmp_path / "home")
+    config.paths.ensure()
+    control = ControlPlane(None, str(config.paths.run_dir))
+    asyncio.run(control.load())
+
+    state = {"cycles": 0}
+
+    class _Life(Life):
+        async def wake_up(self) -> None:
+            return None
+
+        async def _cycle(self) -> None:
+            state["cycles"] += 1
+            if state["cycles"] == 1:
+                # Stop, then resume again a few passes later, as a person would.
+                asyncio.ensure_future(control.apply_command("stop", "web"))
+                asyncio.ensure_future(_resume_soon(control))
+            if state["cycles"] >= 3:
+                control.end("test")
+
+    async def _resume_soon(plane: ControlPlane) -> None:
+        await asyncio.sleep(0.2)
+        await plane.apply_command("resume", "web")
+
+    life = _Life(LifeDeps(
+        config=config, control=control, bus=None, memory=None, self_model=None,
+        attention=None, motivation=None, rhythm=RhythmController(config), gateway=None,
+        gsl=None, social=None, comms_out=None, toolhost=None, audit=ListAudit(),
+        continuity=_Quiet(), consolidation=None, embedder=None, thread_id="self",
+    ))
+
+    async def run() -> None:
+        task = asyncio.ensure_future(life.life())
+        await asyncio.sleep(0.1)
+        assert control.stopped, "the stop must have landed on the running agent"
+        assert state["cycles"] == 1, "and a stopped agent stops thinking"
+        assert not task.done(), "a stop is not the end of the process"
+        await asyncio.wait_for(task, timeout=10)
+
+    asyncio.run(run())
+
+    assert state["cycles"] >= 3, \
+        "the resume is the other half of the stop button: the agent is thinking again"
+

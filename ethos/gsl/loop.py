@@ -7,6 +7,7 @@ from typing import Any
 from ethos.config import EthosConfig
 from ethos.engine.rhythm import backoff_seconds
 from ethos.gateway.normalizer import was_truncated
+from ethos.gateway.service import format_wait, rate_limit_wait_for_attempt
 from ethos.gsl.acceptance import changed_paths
 from ethos.gsl.evaluator import ObjectiveChecker
 from ethos.gsl.planner import (
@@ -14,6 +15,7 @@ from ethos.gsl.planner import (
     budget_bucket_for,
     devise,
     is_nothing_could_serve,
+    is_rate_limited_failure,
     make_plan,
     parse_json_block,
     pick_approach,
@@ -234,6 +236,15 @@ class GeneralSolverLoop:
             )
 
         wait_s = self._plan_backoff_s(attempts - 1)
+        if exc.kind == "rate_limited":
+            # A 429 is the provider asking for time: five minutes after the
+            # first one, then an hour, five hours, a day, staying at a day.
+            # The provider's own `Retry-After` lengthens the rung when it asks
+            # for longer. Anything else keeps the short configured backoff,
+            # because a different failure is not one waiting fixes.
+            wait_s = rate_limit_wait_for_attempt(
+                attempts, getattr(exc, "retry_after_s", None),
+            )
         degraded = self._planning_degraded(resume)
         resume[PLAN_DEGRADED] = degraded
         resume[PLAN_RETRY_AFTER] = (
@@ -241,17 +252,23 @@ class GeneralSolverLoop:
         )
         await self._save_resume(intention, resume)
         thoughts = [f"could not {stage} this goal (attempt {attempts}): {exc}"]
+        if exc.kind == "rate_limited":
+            thoughts.append(
+                f"rate limited (429); waiting {format_wait(wait_s)} before asking "
+                "again rather than immediately"
+            )
         if degraded:
             thoughts.append(
                 f"the request has been degraded after {attempts} failures: thinking "
                 "bounded, tier dropped, schema relaxed"
             )
-        if wait_s > 0:
+        if wait_s > 0 and exc.kind != "rate_limited":
             thoughts.append(f"asking again in about {round(wait_s)}s rather than immediately")
         logger.warning(
             "gsl.plan_unavailable", intention=str(intention.id), attempts=attempts,
             stage=stage, kind=exc.kind, degraded=degraded,
-            retry_in_s=round(wait_s, 2), reason=str(exc)[:300],
+            retry_in_s=round(wait_s, 2), waiting=exc.kind == "rate_limited",
+            reason=str(exc)[:300],
         )
         return SolverResult(
             outcome=SolverOutcome.step_failed, plan=plan, thoughts=thoughts,
@@ -353,10 +370,16 @@ class GeneralSolverLoop:
             try:
                 data, c = await self._call(understand, intention, memories)
             except Exception as exc:
-                kind = "no_model" if is_nothing_could_serve(exc) else "unusable"
+                if is_rate_limited_failure(exc):
+                    kind = "rate_limited"
+                else:
+                    kind = "no_model" if is_nothing_could_serve(exc) else "unusable"
                 failed = await self._planning_failed(
                     intention, resume,
-                    PlanUnavailable(f"understanding request failed ({kind}): {exc}", kind=kind),
+                    PlanUnavailable(
+                        f"understanding request failed ({kind}): {exc}", kind=kind,
+                        retry_after_s=getattr(exc, "retry_after_s", None),
+                    ),
                     stage="understand",
                 )
                 failed.cost_usd += cost
@@ -448,6 +471,15 @@ class GeneralSolverLoop:
                 thoughts=[f"strategy switch #{strategy_number} after repeated failures"],
             )
 
+        # A step is decided by a model call, and a model call can be rate
+        # limited: without this gate a 429 would be re-asked at the tick rate,
+        # every cycle burning a full retry budget to be told the same thing.
+        # The gate is set by the rate-limited branch of `_execute_step` below
+        # (and by planning backoffs, which are equally about not calling yet),
+        # and it reads as a named wait on screen rather than as silence.
+        waiting = self._backing_off(resume, f"step {step.id}")
+        if waiting is not None:
+            return waiting
         step_result = await self._execute_step(intention, resume, plan, step, ws)
         cost += step_result.cost_usd
         step_result.cost_usd += cost
@@ -604,6 +636,33 @@ class GeneralSolverLoop:
             # reads, and the step's own failure machinery does what it does for
             # any other unsuccessful action.
             logger.exception("gsl.step_call_failed", step=step.id)
+            if is_rate_limited_failure(exc):
+                # A 429 is time, not a wrong step: wait it out on the same
+                # escalation (five minutes, an hour, five hours, a day) instead
+                # of re-asking at the tick rate. The gate above reads this
+                # timestamp back, so the wait survives restarts and reads on
+                # screen as a wait rather than as a stall.
+                step_counts = resume.setdefault("step_attempts", {})
+                step_failures = int((step_counts or {}).get(step.id, 0)) + 1
+                step_counts[step.id] = step_failures
+                wait_s = rate_limit_wait_for_attempt(
+                    step_failures, getattr(exc, "retry_after_s", None),
+                )
+                resume[PLAN_RETRY_AFTER] = (
+                    datetime.now(UTC) + timedelta(seconds=wait_s)
+                ).isoformat()
+                await self._save_resume(intention, resume)
+                return SolverResult(
+                    outcome=SolverOutcome.step_failed,
+                    thoughts=[
+                        f"rate limited (429); waiting {format_wait(wait_s)} before "
+                        f"retrying this step (attempt {step_failures}): "
+                        f"{type(exc).__name__}: {exc}"[:300],
+                    ],
+                    actions=[],
+                    plan=plan,
+                    cost_usd=cost,
+                )
             return SolverResult(
                 outcome=SolverOutcome.step_failed,
                 thoughts=[

@@ -257,7 +257,10 @@ export function useDuplex(): DuplexController {
       // The browser owns the interface choice while it is the one being used; a
       // terminal that never heard of the agent must not switch this page out
       // from under the reader by writing a default into the shared file.
-      client.setSettings(createSettings({
+      // Adopted verbatim: the remote side already holds the credential tuple it
+      // means, so `replaceSettings` (not the resetting `setSettings`, which is
+      // for local provider edits and would blank e.g. NVIDIA's model) is used.
+      client.replaceSettings(createSettings({
         ...adopted,
         interface: snapshot.settings.interface,
         agentUrl: snapshot.settings.agentUrl,

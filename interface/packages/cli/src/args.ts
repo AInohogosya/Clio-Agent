@@ -18,6 +18,7 @@ export type ErrorCode =
   | 'config_cleanup_failed'
   | 'legacy_key_cleanup_failed'
   | 'config_too_large'
+  | 'config_unreadable'
   | 'unsafe_config_target'
   | 'insecure_config_permissions'
   | 'config_not_owned_by_user'

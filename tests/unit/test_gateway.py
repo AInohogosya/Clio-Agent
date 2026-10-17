@@ -13,7 +13,7 @@ from ethos.gateway.normalizer import estimate_tokens
 from ethos.gateway.providers.anthropic_native import AnthropicNativeProvider
 from ethos.gateway.providers.base import ProviderError
 from ethos.gateway.ratelimit import RateLimiter
-from ethos.gateway.router import CircuitBreaker, ModelRouter, NoModelAvailable
+from ethos.gateway.router import PIN_STREAK_LIMIT, CircuitBreaker, ModelRouter, NoModelAvailable
 from ethos.gateway.service import GatewayService, UnusableResponse
 from ethos.schemas.models import NormalizedResponse, ThinkingBlock, Tier, Usage
 from tests.conftest import FakeProvider, simple_request
@@ -57,7 +57,10 @@ def full_config(tmp_path, monkeypatch):
     # tests below called it over HTTP instead of using the provider they were
     # handed, and failed.
     monkeypatch.setenv("ETHOS_HOME", str(tmp_path / "home"))
-    return load_config("config")
+    cfg = load_config("config")
+    cfg.models.base = None
+    cfg.models.models = [e for e in cfg.models.models if not e.pinned]
+    return cfg
 
 
 def test_router_respects_tier_floor(full_config):
@@ -823,6 +826,189 @@ async def test_gateway_honours_retry_after_before_sleeping(full_config, monkeypa
     response = await service.complete(simple_request(tier=Tier.T3))
     assert response.text == "ok"
     assert slept == [4.0]
+
+
+def _pinned_plus_best_catalogue(full_config):
+    """`full_config` narrowed to a pinned base model in front of one entry.
+
+    One catalogue entry, and the best one the tier has, so the only thing that
+    can decide which model answers is the pin. A test that passed because some
+    other entry scored highest would be testing the score instead, and would go
+    on passing after a change to the pin had broken it.
+    """
+    from ethos.config import BaseModelConfig
+
+    base = BaseModelConfig(
+        provider="openai_compat", model="pinned/base",
+        base_url="https://example.invalid/v1", api_key="k",
+        quality=1.0, tiers=["T1", "T2", "T3"],
+    )
+    catalogue = max(
+        (e for e in full_config.models.models if "T3" in e.tiers),
+        key=lambda e: e.quality,
+    )
+    assert catalogue.quality >= full_config.models.tiers["T3"].floor
+    full_config.models.models = [base.entry(), catalogue]
+    return ModelRouter(full_config, CostCalculator(full_config)), catalogue
+
+
+def test_a_pinned_model_that_cannot_answer_stops_winning_every_selection(full_config):
+    """The silence, as a routing decision.
+
+    A pin put the base model first on every request that got past the static
+    filters, and a model that never answers gets past every static filter: it has
+    a key, it declares the tier, and between cooldowns its breaker is shut. So
+    every request -- including the T3 deliberation that writes a person's reply --
+    went to it first and spent the whole retry ladder there before anything that
+    could answer was tried. When the ladder ran out the message was retired as a
+    deliberate silence, which is the whole of the complaint.
+    """
+    router, catalogue = _pinned_plus_best_catalogue(full_config)
+    request = simple_request(tier=Tier.T3)
+
+    chosen = router.select(request, is_available=lambda e: True)
+    assert chosen.model == "pinned/base", "the pin leads while it is working"
+
+    for _ in range(PIN_STREAK_LIMIT - 1):
+        router.record_failure(chosen)
+    assert router.select(request, is_available=lambda e: True).model == "pinned/base", (
+        "one or two failures is a bad moment, and the retry ladder is the answer "
+        "to a bad moment -- not a reason to stop using the model somebody chose"
+    )
+
+    router.record_failure(chosen)
+    assert router.select(request, is_available=lambda e: True).model == catalogue.model, (
+        "past the streak the pin stops being first, so a model that can answer is"
+    )
+
+
+def test_one_good_answer_restores_the_pin(full_config):
+    """A demotion, not a demotion-plus-permanence.
+
+    The streak counter is cleared by a success, so a base model that has one bad
+    afternoon gets its place back on the next reply rather than being written out
+    of the deployment by an outage that has already ended.
+    """
+    router, catalogue = _pinned_plus_best_catalogue(full_config)
+    request = simple_request(tier=Tier.T3)
+    base = router.select(request, is_available=lambda e: True)
+    for _ in range(PIN_STREAK_LIMIT):
+        router.record_failure(base)
+    assert router.select(request, is_available=lambda e: True).model == catalogue.model
+
+    router.record_success(base)
+    assert router.select(request, is_available=lambda e: True).model == "pinned/base"
+
+
+def test_a_demoted_pin_is_still_used_when_nothing_else_can_answer(full_config):
+    """A tier with one model in it has opted into having nowhere else to go.
+
+    The pin is also what exempts the base model from the tier's quality floor --
+    the shipped floors are opinions about the shipped catalogue, and a pinned
+    entry is what this installation actually has. So a demoted pin that is the
+    only candidate is still the answer, floor and all: answering badly is not the
+    same as not answering, and the retry ladder in front of it is unchanged.
+    """
+    from ethos.config import BaseModelConfig
+
+    base = BaseModelConfig(
+        provider="openai_compat", model="pinned/only",
+        base_url="https://example.invalid/v1", api_key="k",
+        quality=0.10, tiers=["T1", "T2", "T3"],
+    )
+    entry = base.entry()
+    full_config.models.models = [entry]
+    router = ModelRouter(full_config, CostCalculator(full_config))
+    request = simple_request(tier=Tier.T3)
+    for _ in range(PIN_STREAK_LIMIT):
+        router.record_failure(entry)
+
+    assert router.select(request, is_available=lambda e: True).model == "pinned/only"
+
+
+def test_a_demoted_pin_is_preferred_to_a_tier_nobody_can_serve(full_config):
+    """Demotion must not turn an answerable tier into an unanswerable one.
+
+    The demotion drops the base model out of the scored set so the score cannot
+    hand it straight back the lead. If it then raises on the floor the drop has
+    cost the deployment the only model that could answer, which is a worse
+    outcome than the one the demotion was for.
+    """
+    from ethos.config import BaseModelConfig
+
+    base = BaseModelConfig(
+        provider="openai_compat", model="pinned/below-the-floor",
+        base_url="https://example.invalid/v1", api_key="k",
+        quality=0.10, tiers=["T1", "T2", "T3"],
+    )
+    entry = base.entry()
+    below_floor = next(e for e in full_config.models.models if "T3" in e.tiers)
+    full_config.models.models = [
+        entry, below_floor.model_copy(update={"quality": 0.10, "pinned": False}),
+    ]
+    router = ModelRouter(full_config, CostCalculator(full_config))
+    request = simple_request(tier=Tier.T3)
+    for _ in range(PIN_STREAK_LIMIT):
+        router.record_failure(entry)
+
+    assert router.select(request, is_available=lambda e: True).model == "pinned/below-the-floor"
+
+
+async def test_a_retry_that_moved_model_does_not_wait_out_the_old_one(full_config, monkeypatch):
+    """The wait belongs to the model that failed, and it was just left behind.
+
+    A backoff is a debt to a provider that asked for time. Once the retry has
+    moved to a different model that debt is settled by the move -- the new model
+    has not been asked, so it has asked for nothing -- and charging it anyway is
+    time the person waiting for a reply spent on a provider that had already
+    been replaced.
+    """
+    slept: list[float] = []
+
+    async def record(seconds: float) -> None:
+        slept.append(seconds)
+
+    monkeypatch.setattr(asyncio, "sleep", record)
+    broken = FakeProvider(errors=[ProviderError("anthropic", 503, "bad gateway", retryable=True)])
+    working = FakeProvider(responses=[NormalizedResponse(text="ok", usage=Usage())])
+    service = GatewayService(
+        full_config, db=None, providers={"anthropic": broken, "openai": working},
+    )
+    full_config.gateway.retry.jitter = 0.0
+
+    response = await service.complete(simple_request(tier=Tier.T3))
+
+    assert response.text == "ok", "the failover is what has to happen"
+    assert broken.calls == 1 and working.calls == 1
+    assert slept == [], "the model that asked for no time is owed no wait"
+
+
+async def test_a_rate_limit_is_still_waited_out_after_failing_over(full_config, monkeypatch):
+    """The exception that keeps this from being "never sleep on a failover".
+
+    A 429 is the *provider* asking rather than the model, and the model after it
+    is usually on the same provider, so skipping that wait trades a silence for a
+    rate limit -- which is worse than either.
+    """
+    slept: list[float] = []
+
+    async def record(seconds: float) -> None:
+        slept.append(seconds)
+
+    monkeypatch.setattr(asyncio, "sleep", record)
+    limited = FakeProvider(errors=[
+        ProviderError("anthropic", 429, "slow down", retryable=True, retry_after_s=4.0),
+    ])
+    working = FakeProvider(responses=[NormalizedResponse(text="ok", usage=Usage())])
+    service = GatewayService(
+        full_config, db=None, providers={"anthropic": limited, "openai": working},
+    )
+    full_config.gateway.retry.jitter = 0.0
+
+    response = await service.complete(simple_request(tier=Tier.T3))
+
+    assert response.text == "ok"
+    assert slept == [4.0], "a provider that asked for four seconds still gets them"
 
 
 def test_router_can_be_asked_to_leave_a_model_out(full_config):

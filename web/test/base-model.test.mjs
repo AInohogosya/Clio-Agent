@@ -427,6 +427,38 @@ test('a stored key is used when none is typed, for the same vendor only', async 
   }
 });
 
+test('a model change while the file cannot be opened keeps the stored key', async (t) => {
+  // The stored key is carried across a save that types none — but only when the
+  // file can actually be read. A momentarily unreadable file read as absent
+  // would carry nothing across and silently drop the credential the file still
+  // holds, so the save is refused and the key is still there afterwards.
+  if (typeof process.getuid === 'function' && process.getuid() === 0) {
+    t.skip('root reads through revoked permissions');
+    return;
+  }
+  const provider = await startProvider(openAiShape(['a/1']));
+  try {
+    await store('openrouter', 'sk-stored', provider.baseUrl);
+    const file = join(home, 'base_model.yaml');
+    const good = readFileSync(file, 'utf8');
+    assert.match(good, /sk-stored/);
+    chmodSync(file, 0o000);
+    try {
+      const response = await write({ provider: 'openrouter', model: 'stored/other', base_url: provider.baseUrl });
+      assert.equal(response.status, 400);
+      assert.equal((await response.json()).error, 'settings_unreadable');
+    } finally {
+      chmodSync(file, 0o600);
+    }
+    assert.equal(readFileSync(file, 'utf8'), good);
+    // And the key survived: the catalogue is still fetched with it.
+    await discover({ provider: 'openrouter', base_url: provider.baseUrl });
+    assert.equal(provider.seen.at(-1).headers.authorization, 'Bearer sk-stored');
+  } finally {
+    await provider.close();
+  }
+});
+
 test("gemini's shape is read, and its models/ prefix stripped", async () => {
   const provider = await startProvider((response) => {
     response.writeHead(200, { 'content-type': 'application/json' })

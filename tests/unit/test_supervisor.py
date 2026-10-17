@@ -523,6 +523,11 @@ def test_shutdown_is_written_where_the_signal_is(tmp_path: Any, monkeypatch: Any
 
     class _Control:
         stopped = False
+        ended = False
+
+        def end(self, by: str) -> None:
+            self.ended = True
+            self.stopped = True
 
         async def apply_command(self, action: str, by: str) -> dict[str, Any]:
             return {"ok": True, "action": action, "by": by}
@@ -531,7 +536,10 @@ def test_shutdown_is_written_where_the_signal_is(tmp_path: Any, monkeypatch: Any
         control = _Control()
         continuity = _Continuity()
 
-    asyncio.run(_shutdown(_Runtime(), signal.SIGTERM))
+    runtime = _Runtime()
+    asyncio.run(_shutdown(runtime, signal.SIGTERM))
+    assert runtime.control.ended, \
+        "a signal ends the process, which is not what a stop from a surface does"
     assert written, "the ending must be recorded where the signal is handled"
     assert written[0]["state"] == "stopped"
     assert written[0]["stopped_at"], "a record of an ending needs a time on it"

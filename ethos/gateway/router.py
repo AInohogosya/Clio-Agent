@@ -36,6 +36,24 @@ class NoModelAvailable(RuntimeError):
         self.transient = transient
 
 
+# Consecutive failures after which a pinned model stops being asked first.
+#
+# One failure is a bad moment and the retry ladder is the right answer to a bad
+# moment, so the pin survives it. By the third the model is not having a bad
+# moment: it is not working, and a pin that keeps handing every request to a
+# model that cannot answer is not a preference any more, it is an outage with a
+# slower retry ladder in front of it. One success puts the pin straight back, so
+# this is a demotion and not a demotion-plus-permanence.
+#
+# The number is deliberately low. The cost of being wrong in the safe direction
+# -- demoting a model that would have worked -- is one request answered by a
+# catalogue entry instead of the base model, which is what the pin is a
+# preference *within*. The cost of being wrong the other way is every request
+# paying six attempts and the whole backoff curve against the same model before
+# anything that could answer is asked at all.
+PIN_STREAK_LIMIT = 3
+
+
 def entry_key(entry: ModelEntry) -> str:
     """The identity a failure is remembered under: provider and model.
 
@@ -131,6 +149,19 @@ class ModelRouter:
         state.failures_consecutive += 1
         del exc
 
+    def failing_hard(self, entry: ModelEntry) -> bool:
+        """Whether this entry is on a losing streak rather than having a bad moment.
+
+        Read by `select` for the pinned entry alone. The circuit breaker is the
+        wrong instrument for the job: it is keyed to a *window*, so a model
+        failing once every thirty seconds opens it for thirty seconds and closes
+        it again, and every request arriving in between is routed to that model
+        as if nothing were wrong. A streak is not windowed, so it survives the
+        gaps that a model failing steadily produces, and one success clears it.
+        """
+        state = self.breakers.get(entry_key(entry))
+        return state is not None and state.failures_consecutive >= PIN_STREAK_LIMIT
+
     def quality_floor(self, tier: Tier) -> float:
         floor_cfg = self.config.models.tiers.get(tier.value)
         return floor_cfg.floor if floor_cfg else 0.0
@@ -214,15 +245,45 @@ class ModelRouter:
         # entry out-score it would quietly turn the setting into a suggestion.
         # It is checked after the filters and not before, so a pinned model that
         # cannot do what was asked is still skipped rather than used wrongly.
+        #
+        # "Eligible" is the word doing the work, and it used to mean only the
+        # filters above. A model that answers nothing passes every one of them --
+        # it has a key, it declares the tier, its breaker is between cooldowns --
+        # and so was asked first, forever, for every purpose including the T3
+        # deliberation that writes a person's reply. That is where the silence
+        # came from: one base model could not answer, and because the pin outranked
+        # the catalogue rather than merely leading it, every reply paid the whole
+        # retry ladder before anything that could answer was tried, and a ladder
+        # that runs out retires the message as a deliberate silence.
+        #
+        # So the pin is conditional on the model holding up its end.
         pinned = [entry for entry in candidates if entry.pinned]
-        if pinned:
+        if pinned and not self.failing_hard(pinned[0]):
+            return pinned[0]
+        # Demoted, so the base model goes to the back of the queue rather than
+        # merely losing its shortcut: `BaseModelConfig.quality` defaults to 1.0
+        # to mean "this is the model I chose", so scoring a pinned entry alongside
+        # the catalogue hands it the top score anyway and the demotion would only
+        # have been a rename.
+        ranked = [entry for entry in candidates if not entry.pinned]
+        if not ranked:
+            # Nothing to demote it behind. A deployment with one model in this
+            # tier has opted into having nowhere else to go, and a second attempt
+            # at the only model is a better answer than no answer.
             return pinned[0]
         scored = sorted(
-            ((self.score(e, floor), e) for e in candidates),
+            ((self.score(e, floor), e) for e in ranked),
             key=lambda pair: pair[0],
             reverse=True,
         )
         best_score, best = scored[0]
         if best_score == float("-inf"):
+            # Nothing left clears the floor, and a pinned entry is exempt from it
+            # by design -- exemption from that floor is the very thing that made
+            # it the base model's way into this tier. So demotion, which is a
+            # preference to try something else first, must not be what turns a
+            # tier the agent can answer into one it cannot.
+            if pinned:
+                return pinned[0]
             raise NoModelAvailable(f"quality floor {floor} unsatisfiable for tier {tier.value}")
         return best

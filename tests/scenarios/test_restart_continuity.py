@@ -144,7 +144,9 @@ async def test_restart_continuity_across_two_lives(db, tmp_path: Path):
         assert snapshot_mid["state"].get("state") != "stopped", \
             "the snapshot must describe a running agent while it runs"
     finally:
-        deps1.control.stopped = True
+        # `end`, not `stopped`: a stop is a hold the loop parks in, and this is
+        # the test standing in for a process that ends.
+        deps1.control.end("test")
         await asyncio.wait_for(task, timeout=10)
 
     assert deps1.gsl.advances >= 3

@@ -62,7 +62,9 @@ async def test_context_survives_a_restart(db, tmp_path: Path):
             await asyncio.sleep(0.05)
         assert life1.cycles >= 2
     finally:
-        deps1.control.stopped = True
+        # `end`, not `stopped`: a stop is a hold the loop parks in, and this is
+        # the test standing in for a process that ends.
+        deps1.control.end("test")
         await asyncio.wait_for(task, timeout=10)
 
     life2, deps2 = await build_life(db, tmp_path, "ctx-restart")

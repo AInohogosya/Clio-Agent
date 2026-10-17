@@ -149,7 +149,8 @@ async def _pursue(
     cost = 0.0
     if gateway is None:
         return {"status": "no-gateway", "goal": goal, "thoughts": ["gateway unavailable"]}
-    from ethos.gsl.planner import parse_json_block, pick_approach
+    from ethos.gsl.planner import pick_approach
+    from ethos.parse import parse_json_block
 
     knowhow_text = "\n".join(f"- [{m.kind}] {m.summary}" for m in memories[:10]) or "(none)"
     try:

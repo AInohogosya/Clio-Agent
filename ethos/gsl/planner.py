@@ -49,11 +49,18 @@ class PlanUnavailable(RuntimeError):
       exhausted quota, no eligible entry for the tier. Nothing about the request
       is wrong, so relaxing it cannot help, and the honest answer is to say so
       rather than to keep re-asking in a different voice.
+    * `rate_limited` -- a 429: the provider is asking for time, not for a
+      different request. Waited out on the escalation schedule (five minutes,
+      then an hour, five hours, a day) rather than degraded, because a
+      different wording of the same request cannot produce a different answer
+      any sooner.
     """
 
-    def __init__(self, message: str, kind: str = "unusable"):
+    def __init__(self, message: str, kind: str = "unusable",
+                 retry_after_s: float | None = None):
         super().__init__(message)
         self.kind = kind
+        self.retry_after_s = retry_after_s
 
 
 def budget_bucket_for(intention: Any) -> str:
@@ -96,6 +103,26 @@ def is_nothing_could_serve(exc: BaseException) -> bool:
     from ethos.gateway.cost import BudgetExceededError
 
     return isinstance(exc, BudgetExceededError)
+
+
+def is_rate_limited_failure(exc: BaseException) -> bool:
+    """Whether a failure is a 429 rate limit asking for time.
+
+    A status of 429 says it directly. Otherwise the text has to say rate limit
+    without naming a quota, billing or credential problem -- an exhausted quota
+    also arrives as a 429-shaped refusal, and waiting a day for a key that will
+    still be dead is the wrong answer to that one.
+    """
+    if getattr(exc, "status", None) == 429:
+        return True
+    text = str(exc or "")
+    lowered = text.lower()
+    if "429" not in text and "rate limit" not in lowered and "too many requests" not in lowered:
+        return False
+    return not (
+        "quota" in lowered or "billing" in lowered or "insufficient" in lowered
+        or "401" in text or "403" in text
+    )
 
 
 async def _complete_json(gateway: Any, request: ModelRequest) -> dict[str, Any]:
@@ -238,17 +265,23 @@ async def make_plan(
         response = await gateway.complete(request)
     except Exception as exc:
         logger.exception("gsl.plan_failed")
-        # "Nothing could serve this request" and "the answer was not a plan"
-        # are different problems, and the loop's state machine treats them
-        # differently: relaxing a request that no model could serve cannot
-        # help, so the reason has to say which happened. It is not special
-        # treatment for a dead key -- it is the reason a caller can tell a
-        # deployment that needs its key fixed from a model being awkward.
-        kind = "no_model" if is_nothing_could_serve(exc) else "unusable"
+        # "Nothing could serve this request", "wait before asking again" and
+        # "the answer was not a plan" are different problems, and the loop's
+        # state machine treats them differently: relaxing a request that no
+        # model could serve cannot help, and neither can relaxing one the
+        # provider asked to wait on, so the reason has to say which happened.
+        # It is not special treatment for a dead key -- it is the reason a
+        # caller can tell a deployment that needs its key fixed from a model
+        # being awkward from a provider asking for time.
+        if is_rate_limited_failure(exc):
+            kind = "rate_limited"
+        else:
+            kind = "no_model" if is_nothing_could_serve(exc) else "unusable"
         raise PlanUnavailable(
             f"plan request failed ({kind}): {exc}" if kind != "unusable" else
             "plan request failed; no plan to execute",
             kind=kind,
+            retry_after_s=getattr(exc, "retry_after_s", None),
         ) from None
     if was_truncated(response.finish_reason):
         raise PlanUnavailable(

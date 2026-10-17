@@ -414,9 +414,14 @@ export function useAgentSession(
     if (remote.revision <= previous.revision && remote.origin === 'cli') return;
     configRef.current = remote;
     setConfig(remote);
-    if (!publicSettingsEqual(previous.settings, remote.settings)) {
-      client.setSettings(remote.settings);
-      say(t('cliReloaded'), 'success');
+    // Verbatim, not through the provider-change reset for local edits: the
+    // remote side already means the tuple it saved. The key counts as a change
+    // here, so a key set elsewhere reaches this session's link.
+    const settingsVisible = !publicSettingsEqual(previous.settings, remote.settings);
+    const keyChanged = previous.settings.apiKey.trim() !== remote.settings.apiKey.trim();
+    if (settingsVisible || keyChanged) {
+      client.replaceSettings(remote.settings);
+      if (settingsVisible) say(t('cliReloaded'), 'success');
     }
   }), [client, say, t]);
 
