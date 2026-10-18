@@ -70,6 +70,56 @@ class IntentionRecord(BaseModel):
         )
 
 
+#: The stages of commissioned work that somebody is waiting to hear about.
+#:
+#: A policy rather than a list of statuses. `done`, `parked` and `awaiting_review`
+#: are the three the solver loop reaches when work stops moving, and all three are
+#: points at which a person who asked for the work is owed an answer -- one way or
+#: the other. `failed` and `cancelled` are not here because nothing in the loop
+#: writes them: a goal that cannot be verified is parked with a reason rather than
+#: failed, so a list that named them would read as coverage of a path that does
+#: not exist, which is the same mistake the blocked-status query made.
+STAGE_NOTIFIABLE = frozenset({
+    IntentionStatus.done.value,
+    IntentionStatus.parked.value,
+    IntentionStatus.awaiting_review.value,
+})
+
+
+class StageNotice(BaseModel):
+    """Work somebody commissioned reached a stage they are owed an answer about.
+
+    A record of a fact, and -- until `delivered_at` is set -- a debt. It exists
+    because the two facts it carries were both missing: that the work finished,
+    which is what a reply answering "did you do it?" has to draw on rather than
+    infer; and that the word is still owed, which is what gives the loop a pass to
+    spend saying it.
+
+    The words themselves are not here, and deliberately. Everything this program
+    sends to a person is a word the model chose, so a notice says *that* the agent
+    owes somebody something and *about what*, and the composing happens where every
+    other reply is composed.
+    """
+
+    id: UUID = Field(default_factory=uuid4)
+    intention_id: UUID
+    stage: str
+    title: str = ""
+    detail: str = ""
+    person_id: str | None = None
+    channel: str | None = None
+    conversation_key: str | None = None
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    delivered_at: datetime | None = None
+    delivery: dict[str, Any] = Field(default_factory=dict)
+    attempts: int = 0
+    next_attempt_at: datetime | None = None
+
+    @property
+    def owed(self) -> bool:
+        return self.delivered_at is None
+
+
 class Bookmark(BaseModel):
     bookmarked_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     step_id: str | None = None
@@ -192,6 +242,11 @@ class Decision(BaseModel):
     thoughts: list[str] = Field(default_factory=list)
     actions: list[dict[str, Any]] = Field(default_factory=list)
     social: dict[str, Any] | None = None
+    # The stage notice this pass owes somebody an answer about. It travels on the
+    # decision rather than being re-read in `act` for the same reason `social`
+    # does: `decide` chose which debt to pay on this pass, and `act` must pay that
+    # one rather than whichever row the next query happens to return first.
+    stage: dict[str, Any] | None = None
     focus_change: dict[str, Any] | None = None
     rest: bool = False
     sleep: bool = False

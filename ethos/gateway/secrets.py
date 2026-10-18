@@ -3,14 +3,15 @@ from __future__ import annotations
 import os
 import re
 import secrets as pysecrets
-import stat
 from pathlib import Path
 from typing import Any
 
 import pyrage
 import yaml
 
+from ethos.observability import exhaustive
 from ethos.observability.logger import get_logger
+from ethos.platform import restrict_to_user
 
 logger = get_logger("ethos.secrets")
 
@@ -51,6 +52,11 @@ class SecretVault:
         fd = os.open(self.keyfile, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "wb") as fh:
             fh.write(passphrase)
+        # The mode in `os.open` is honoured on POSIX and ignored by NTFS, where a
+        # new file inherits the directory's ACL. This is the passphrase that
+        # decrypts every secret below, so on Windows an unrestrictive mode would
+        # leave it readable by whatever else the account profile grants to.
+        restrict_to_user(self.keyfile)
         return passphrase
 
     def _load(self) -> dict[str, str]:
@@ -73,13 +79,26 @@ class SecretVault:
         fd = os.open(self.store_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "wb") as fh:
             fh.write(blob)
+        # For the same reason as the passphrase above: `0o600` here is a mode
+        # POSIX enforces and Windows ignores, and this file is the ciphertext of
+        # every secret in the store.
+        restrict_to_user(self.store_path)
         self._cache = dict(data)
 
     def set_secret(self, key: str, value: str) -> None:
         data = self._load()
+        existed = key in data
         data[key] = value
         self._save(data)
         logger.info("secrets.set", key=key)
+        # Which secret moved and whether it was new or replaced — never the
+        # value, which the redactor would only catch if it leaked by accident
+        # rather than by design.
+        exhaustive.log_settings_change(
+            actor="settings", what=f"secret.{key}",
+            before=("set" if existed else "absent"), after="set",
+            detail={"replaced": existed},
+        )
 
     def get_secret(self, key: str) -> str:
         data = self._load()
@@ -92,6 +111,9 @@ class SecretVault:
         if key in data:
             del data[key]
             self._save(data)
+            exhaustive.log_settings_change(
+                actor="settings", what=f"secret.{key}", before="set", after="absent",
+            )
 
     def list_keys(self) -> list[str]:
         return sorted(self._load().keys())
@@ -123,9 +145,18 @@ class SecretVault:
         return SECRET_HANDLE_RE.sub(_repl, text)
 
     def ensure_store_permissions(self) -> None:
+        """Tighten both files to their owner, whichever platform this is.
+
+        `restrict_to_user` rather than `os.chmod(path, 0o600)`: NTFS has no mode
+        bits, `os.chmod` there reaches `SetFileAttributes` and can only clear the
+        read-only flag, so the `chmod` succeeded while changing nothing a reader
+        would notice — and any `(mode & 0o077) == 0` check over it passes
+        vacuously. The POSIX answer is `chmod 0600`; the Windows answer is an
+        ACL, read back and verified.
+        """
         for path in (self.store_path, self.keyfile):
             if path.exists():
-                os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
+                restrict_to_user(path)
 
 
 def redact(obj: Any) -> Any:

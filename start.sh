@@ -28,7 +28,14 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
-PY="$ROOT/.venv/bin/python"
+# A virtualenv is `.venv/bin` on POSIX and `.venv/Scripts` on Windows — the
+# spelling is not interchangeable, and a script that looked for the POSIX one on
+# Windows found nothing and reported a virtualenv it had just created as missing.
+if [ -x "$ROOT/.venv/Scripts/python.exe" ]; then
+  PY="$ROOT/.venv/Scripts/python.exe"
+else
+  PY="$ROOT/.venv/bin/python"
+fi
 
 OPEN_BROWSER=1
 WAIT_S="${ETHOS_AGENT_WAIT_S:-180}"
@@ -110,7 +117,7 @@ fi
 if ! command -v uv >/dev/null 2>&1; then
   echo "uv is required to create the virtualenv (https://docs.astral.sh/uv/)." >&2
   echo "Install it, then re-run — or install into an interpreter you already have:" >&2
-  echo "  python3.12 -m venv .venv && .venv/bin/pip install -e ." >&2
+  echo "  python3.12 -m venv .venv && .venv/bin/pip install -e .   # .venv\Scripts\pip on Windows" >&2
   exit 1
 fi
 

@@ -1567,3 +1567,183 @@ async def test_a_model_in_cooldown_is_reported_without_being_asked(full_config, 
 
     assert report["status"] == "in cooldown"
     assert provider.calls == len(reports) - 1, "and it did not spend a request to be told so"
+
+
+async def test_a_dead_loopback_entry_is_removed_from_the_ladder(full_config, monkeypatch):
+    """A keyless loopback endpoint that is not there must not wait in failover.
+
+    This is the shape the logs were full of: the base model answered with
+    reasoning and no content, failover reached for the local entry, and the
+    unrelated server that holds the port answered 404 — which the ladder is
+    deliberately not allowed to route around, so the whole request failed with
+    a candidate still sitting in the catalogue that had never worked once.
+    """
+    from ethos.config import ModelEntry
+
+    cfg = full_config
+    common = {"latency_s": 3.0, "rpm": 10, "tpm": 1000}
+    cfg.models.models = [
+        ModelEntry(provider="openai_compat", model="local-vllm",
+                   base_url="http://127.0.0.1:8000/v1", tiers=["T1"],
+                   quality=0.5, api_key_env="", **common),
+        ModelEntry(provider="openai_compat", model="healthy-local",
+                   base_url="http://localhost:9999/v1", tiers=["T1"],
+                   quality=0.5, api_key_env="", **common),
+        ModelEntry(provider="openai_compat", model="keyed-local",
+                   base_url="http://127.0.0.1:8001/v1", tiers=["T1"],
+                   quality=0.5, api_key_env="LOCAL_KEY", **common),
+        ModelEntry(provider="openai_compat", model="remote",
+                   base_url="https://remote.example/v1", tiers=["T1"],
+                   quality=0.5, api_key_env="", **common),
+    ]
+    monkeypatch.setenv("LOCAL_KEY", "sk-something")
+    service = GatewayService(cfg)
+
+    class _Reply:
+        def __init__(self, status_code: int):
+            self.status_code = status_code
+
+    asked: list[str] = []
+
+    async def _answer(url, timeout=None):
+        asked.append(url)
+        if ":9999" in url:
+            return _Reply(200)
+        return _Reply(404)
+
+    monkeypatch.setattr(service.http, "get", _answer)
+    await service.probe_local_endpoints()
+
+    # Asked only about keyless loopback entries, whatever else the catalogue holds.
+    assert asked == ["http://127.0.0.1:8000/v1/models", "http://localhost:9999/v1/models"]
+    # The dead endpoint is out, everywhere the router and the base-model sync look.
+    assert "local-vllm" not in [e.model for e in service._catalogue]
+    assert "local-vllm" not in [e.model for e in cfg.models.models]
+    # Everything that answered or was none of the probe's business stays.
+    assert [e.model for e in cfg.models.models] == ["healthy-local", "keyed-local", "remote"]
+
+
+async def test_a_pinned_loopback_entry_is_reported_not_removed(full_config, monkeypatch):
+    """The base model stays in the catalogue even when its endpoint is dead.
+
+    A pin is a decision somebody made on purpose, and a decision removed by the
+    gateway is a setting that reads as configured while nothing uses it: the
+    failure has to stay visible at the point the person who made it can see,
+    which is the request that fails, not the catalogue that quietly shrank.
+    """
+    from ethos.config import BaseModelConfig, ModelEntry
+
+    cfg = full_config
+    common = {"latency_s": 3.0, "rpm": 10, "tpm": 1000}
+    cfg.models.models = [
+        ModelEntry(provider="openai_compat", model="local-vllm",
+                   base_url="http://127.0.0.1:8000/v1", tiers=["T1"],
+                   quality=0.5, api_key_env="", **common),
+    ]
+    cfg.models.base = BaseModelConfig(
+        provider="openai_compat", model="local-base",
+        base_url="http://127.0.0.1:8000/v1", api_key="",
+    )
+    cfg.models.models = cfg.models.resolved()
+    service = GatewayService(cfg)
+
+    class _Reply:
+        status_code = 404
+
+    async def _answer(url, timeout=None):
+        return _Reply()
+
+    monkeypatch.setattr(service.http, "get", _answer)
+    await service.probe_local_endpoints()
+
+    assert "local-base" in [e.model for e in cfg.models.models]
+    assert "local-vllm" not in [e.model for e in cfg.models.models]
+
+
+async def test_a_learned_trait_survives_a_new_provider_instance(full_config, tmp_path):
+    """The lesson was paid for; a restart must not unlearn it.
+
+    The traits live in memory on the provider object, and the provider objects
+    are dropped on every restart and every base-model reload -- so a model that
+    thinks by default was discovered again, from scratch, by every fresh
+    process, each discovery paid in a truncated reply. A state file in the
+    agent's own data directory carries the lessons across, and a second
+    instance on the same endpoint starts with them already known.
+    """
+    from ethos.config import QuirksConfig
+    from ethos.gateway.providers.openai_compat import OpenAICompatProvider
+
+    state_path = tmp_path / "learned_model_traits.json"
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_thinking_only_reply("thinking-model"))
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        quirks = QuirksConfig().openai_compat
+        first = OpenAICompatProvider(
+            api_key=None, base_url="https://example.invalid/v1",
+            quirks=quirks, http=http, state_path=state_path,
+        )
+        request = simple_request(tier=Tier.T2, provider_hint="openai_compat")
+        await first.complete(request, "thinking-model")
+        assert state_path.exists(), "the observation was written down"
+
+        second = OpenAICompatProvider(
+            api_key=None, base_url="https://example.invalid/v1",
+            quirks=quirks, http=http, state_path=state_path,
+        )
+        assert "thinking-model" in second._default_thinkers, \
+            "a fresh instance of the same endpoint starts with the lesson"
+
+        # A different endpoint must not inherit an answer about a model name it
+        # never served: the same model name on another host is a different fact.
+        third = OpenAICompatProvider(
+            api_key=None, base_url="https://other.invalid/v1",
+            quirks=quirks, http=http, state_path=state_path,
+        )
+        assert "thinking-model" not in third._default_thinkers
+
+
+async def test_a_learned_refusal_survives_a_new_provider_instance(full_config, tmp_path):
+    """The same guarantee, for the trait learned from a 400."""
+    from ethos.config import QuirksConfig
+    from ethos.gateway.providers.openai_compat import OpenAICompatProvider
+
+    state_path = tmp_path / "learned_model_traits.json"
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, json={
+            "error": {"message": "Unsupported parameter: 'reasoning' is not supported"
+                                 " with this model."},
+        })
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        provider = OpenAICompatProvider(
+            api_key=None, base_url="https://example.invalid/v1",
+            quirks=QuirksConfig().openai_compat, http=http, state_path=state_path,
+        )
+        request = simple_request(tier=Tier.T2, provider_hint="openai_compat", reasoning_budget=400)
+        with pytest.raises(ProviderError):
+            await provider.complete(request, "plain-model")
+
+        again = OpenAICompatProvider(
+            api_key=None, base_url="https://example.invalid/v1",
+            quirks=QuirksConfig().openai_compat, http=http, state_path=state_path,
+        )
+        assert "plain-model" in again._no_reasoning, \
+            "the refusal is remembered before the next request pays for it again"
+
+
+async def test_a_corrupt_trait_file_is_a_missing_one(full_config, tmp_path):
+    """A state file that will not parse is a lesson not yet learned, not an error."""
+    from ethos.config import QuirksConfig
+    from ethos.gateway.providers.openai_compat import OpenAICompatProvider
+
+    state_path = tmp_path / "learned_model_traits.json"
+    state_path.write_text("{not json", encoding="utf-8")
+    async with httpx.AsyncClient() as http:
+        provider = OpenAICompatProvider(
+            api_key=None, base_url="https://example.invalid/v1",
+            quirks=QuirksConfig().openai_compat, http=http, state_path=state_path,
+        )
+        assert provider._default_thinkers == set()

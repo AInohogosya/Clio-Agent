@@ -126,13 +126,6 @@ class ModelRouter:
             )
             for m in config.models.models
         }
-        self._providers_available: set[str] = set()
-
-    def mark_provider_available(self, provider: str, available: bool) -> None:
-        if available:
-            self._providers_available.add(provider)
-        else:
-            self._providers_available.discard(provider)
 
     def breaker_open(self, entry: ModelEntry) -> bool:
         state = self.breakers.get(entry_key(entry))

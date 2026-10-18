@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import json
+import os
+from pathlib import Path
+from typing import Any
+
 import httpx
 
 from ethos.gateway.normalizer import (
@@ -17,7 +22,8 @@ class OpenAICompatProvider(Provider):
 
     name = "openai_compat"
 
-    def __init__(self, api_key: str | None, base_url: str, quirks, http: httpx.AsyncClient, timeout_s: float = 180.0):
+    def __init__(self, api_key: str | None, base_url: str, quirks, http: httpx.AsyncClient, timeout_s: float = 180.0,
+                 state_path: str | Path | None = None):
         super().__init__(api_key, base_url, quirks, http, timeout_s)
         # Which models on this endpoint have taken the reasoning parameter. There
         # is no way to know before asking, and asking wrong is cheap here only
@@ -46,6 +52,87 @@ class OpenAICompatProvider(Provider):
         # then the retry loop's own escalation of `max_tokens` -- worse, but a
         # lever that exists.
         self._no_template_kwargs: set[str] = set()
+        # Everything the three sets above hold was learned by paying for it: a
+        # 400, or a reply of thought and nothing else. Held only in memory, the
+        # lesson was wiped by every restart and every base-model reload --
+        # `sync_base_model` drops the provider objects to rebuild them with a
+        # fresh key -- and a deployment that restarts often paid for the same
+        # discovery many times a day. A small file in the agent's own data
+        # directory carries the lessons across, keyed by endpoint so two
+        # endpoints' answers about the same model name can never be confused.
+        self._state_path = Path(state_path) if state_path else None
+        self._restore_traits()
+
+    # --------------------------------------------------------------- traits
+
+    def _learn(self, learned: set[str], model: str) -> None:
+        """One trait observed about one model: remembered in place and on disk."""
+        if model in learned:
+            return
+        learned.add(model)
+        self._persist_traits()
+
+    def _traits_key(self, model: str) -> str:
+        return f"{self.base_url}|{model}"
+
+    def _restore_traits(self) -> None:
+        if self._state_path is None or not self._state_path.exists():
+            return
+        try:
+            data = json.loads(self._state_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return
+        if not isinstance(data, dict):
+            return
+        prefix = f"{self.base_url}|"
+        for key, traits in data.items():
+            if not key.startswith(prefix) or not isinstance(traits, dict):
+                continue
+            model = key[len(prefix):]
+            if traits.get("no_reasoning"):
+                self._no_reasoning.add(model)
+            if traits.get("default_thinker"):
+                self._default_thinkers.add(model)
+            if traits.get("no_template_kwargs"):
+                self._no_template_kwargs.add(model)
+
+    def _persist_traits(self) -> None:
+        if self._state_path is None:
+            return
+        try:
+            data: dict[str, Any] = {}
+            if self._state_path.exists():
+                loaded = json.loads(self._state_path.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    data = loaded
+        except (OSError, ValueError):
+            data = {}
+        # This endpoint's entries are rebuilt from what this instance knows --
+        # there is exactly one instance per base_url per process -- and every
+        # other endpoint's are carried through untouched.
+        prefix = f"{self.base_url}|"
+        for key in [k for k in data if k.startswith(prefix)]:
+            del data[key]
+        own: dict[str, dict[str, bool]] = {}
+        for model in self._no_reasoning:
+            own[model] = {"no_reasoning": True}
+        for model in self._default_thinkers:
+            own.setdefault(model, {})["default_thinker"] = True
+        for model in self._no_template_kwargs:
+            own.setdefault(model, {})["no_template_kwargs"] = True
+        data.update({self._traits_key(model): traits for model, traits in own.items()})
+        try:
+            self._state_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self._state_path.with_suffix(".tmp")
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(data, fh, sort_keys=True)
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(tmp, self._state_path)
+        except OSError:
+            # A trait that cannot be written is a trait re-learned next time,
+            # which is exactly the state before this file existed.
+            pass
 
     def available(self) -> bool:
         if self.api_key:
@@ -114,14 +201,14 @@ class OpenAICompatProvider(Provider):
             )
         except ProviderError as exc:
             if "reasoning" in payload and self._refuses_parameter(exc, "reasoning"):
-                self._no_reasoning.add(model)
+                self._learn(self._no_reasoning, model)
             if "chat_template_kwargs" in payload and self._refuses_parameter(exc, "chat_template_kwargs"):
-                self._no_template_kwargs.add(model)
+                self._learn(self._no_template_kwargs, model)
             raise
         # A reply of reasoning and nothing else, with no bound in the request,
         # is the model reporting that it thinks by default. Remembered so the
         # next attempt for this model carries the toggle: the service's own
         # lever -- halving a reasoning budget -- has nothing to halve here.
         if not bounded and model not in self._no_template_kwargs and self._spent_it_all_thinking(data):
-            self._default_thinkers.add(model)
+            self._learn(self._default_thinkers, model)
         return response_from_openai_compat(data, self.name, model, build_name_map(request.tools))

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
 from ethos.config import EthosConfig
@@ -11,6 +12,8 @@ from ethos.prompts import (
     EDIT_EXISTING_FILES,
     PLAN_PROMPT,
     STEP_PROMPT,
+    SUCCESS_CHECKS_MATTER,
+    delegation_note,
     dumps,
 )
 from ethos.schemas.memory import MemoryHit
@@ -153,6 +156,14 @@ async def _pursue(
     from ethos.parse import parse_json_block
 
     knowhow_text = "\n".join(f"- [{m.kind}] {m.summary}" for m in memories[:10]) or "(none)"
+    # `delegation_note` reads the work off an intention's fields, and this
+    # worker has a goal string rather than an intention row — so the routing
+    # detection reads the same fields off the shape it is given. Without it the
+    # two plan call sites drift: one teaches delegation and the other does not,
+    # and a thread is exactly where a named sub-agent's work lands.
+    goal_as_intention = SimpleNamespace(
+        title=goal, desired_end_state=goal, constraints=None,
+    )
     try:
         devise_response = await gateway.complete(ModelRequest(
             tier=Tier.T2,
@@ -186,6 +197,8 @@ async def _pursue(
                 ModelMessage(role=Role.system, content=PLAN_PROMPT.format(
                     name=config.self_name, approach=approach.get("summary", ""),
                     commissioned=COMMISSIONED_ALREADY,
+                    success_checks=SUCCESS_CHECKS_MATTER,
+                    delegation=delegation_note(goal_as_intention),
                     title=goal, desired_end_state=goal,
                 )),
                 ModelMessage(role=Role.user, content="Produce the plan JSON."),
@@ -205,7 +218,9 @@ async def _pursue(
                 messages=[
                     ModelMessage(role=Role.system, content=STEP_PROMPT.format(
                         name=config.self_name, commissioned=COMMISSIONED_ALREADY,
-                        editing=EDIT_EXISTING_FILES, title=goal,
+                        editing=EDIT_EXISTING_FILES,
+                        delegation=delegation_note(goal_as_intention),
+                        title=goal,
                         step_id=step.get("id", f"s{i+1}"),
                         step_description=step.get("description", ""),
                         plan_state=dumps(plan_data.get("steps", [])[:5]),

@@ -232,10 +232,11 @@ def test_the_prompts_that_do_the_work_say_it_was_asked_for() -> None:
 
 
 @pytest.mark.parametrize("template,fields", [
-    ("plan", dict(name="Clio", commissioned="C", success_checks="S", approach="a",
-                  title="t", desired_end_state="d")),
-    ("step", dict(name="Clio", commissioned="C", editing="E", title="t", step_id="s1",
-                  step_description="x", plan_state="[]", memories="(none)", tools="(catalog)")),
+    ("plan", dict(name="Clio", commissioned="C", success_checks="S", delegation="D",
+                  approach="a", title="t", desired_end_state="d")),
+    ("step", dict(name="Clio", commissioned="C", editing="E", delegation="D", title="t",
+                  step_id="s1", step_description="x", plan_state="[]", memories="(none)",
+                  tools="(catalog)")),
 ])
 def test_both_prompts_render_with_the_statement(template: str, fields: dict) -> None:
     """A new `.format()` key is a KeyError on the first real intention.
@@ -288,9 +289,9 @@ def test_the_step_prompt_says_to_edit_rather_than_rewrite() -> None:
     # The old invitation is gone, and the useful half of it -- do not abbreviate --
     # is still there, because it is true and it was not the problem.
     body = STEP_PROMPT.format(
-        name="Clio", commissioned="C", editing=EDIT_EXISTING_FILES, title="t",
-        step_id="s1", step_description="x", plan_state="[]", memories="(none)",
-        tools="(catalog)",
+        name="Clio", commissioned="C", editing=EDIT_EXISTING_FILES, delegation="D",
+        title="t", step_id="s1", step_description="x", plan_state="[]",
+        memories="(none)", tools="(catalog)",
     )
     assert "Do not abbreviate a file" in body
     assert "a file\'s entire contents go in" not in body, \

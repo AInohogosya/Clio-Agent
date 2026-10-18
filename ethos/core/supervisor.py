@@ -467,7 +467,7 @@ class Supervisor:
 
 async def run_supervisor(config: EthosConfig | None = None) -> None:
     config = config or load_config()
-    configure_logging(level=os.environ.get("ETHOS_LOG_LEVEL", "INFO"))
+    configure_logging(level=os.environ.get("ETHOS_LOG_LEVEL", "DEBUG"))
     config.paths.ensure()
     supervisor = Supervisor(config)
     await supervisor.run()

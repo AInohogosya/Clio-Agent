@@ -14,6 +14,7 @@ from ethos.prompts import (
     SUCCESS_CHECKS_MATTER,
     UNDERSTAND_PROMPT,
     commissioned_note,
+    delegation_note,
     dumps,
 )
 from ethos.schemas.gsl import Plan, PlanStep
@@ -261,6 +262,7 @@ async def make_plan(
                 name=config.self_name,
                 commissioned=commissioned_note(intention.origin),
                 success_checks=SUCCESS_CHECKS_MATTER,
+                delegation=delegation_note(intention),
                 approach=approach.get("summary", ""),
                 title=intention.title,
                 desired_end_state=intention.desired_end_state or "-",

@@ -133,6 +133,19 @@ models:
     supports_tools: true
     diversity_family: meta
 
+  # A model served on this machine by vLLM (or any OpenAI-compatible local
+  # server). Two things worth knowing before editing this entry:
+  #
+  # * The port. 8000 is also what a dozen unrelated laptop apps bind by
+  #   default, and a server that answers this URL with anything but a model
+  #   catalogue will sit in every failover ladder as a candidate that can only
+  #   answer 404. Move the entry to a port you actually own rather than
+  #   trusting the default.
+  # * The health check. The gateway asks every keyless loopback entry
+  #   `GET /models` once at start-up; an endpoint that does not answer 200 is
+  #   removed from the live catalogue (and logged as
+  #   `gateway.local_endpoints_unavailable`) until the next restart, so start
+  #   the local server before the agent.
   - provider: openai_compat
     model: local-vllm
     base_url: "http://127.0.0.1:8000/v1"

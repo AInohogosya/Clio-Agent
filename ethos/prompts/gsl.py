@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 # The work in front of you was asked for. Do not ask again.
@@ -178,6 +179,176 @@ If you cannot name a check for a step, say what the step is instead of inventing
 one. A check that cannot fail is worse than none: it is a step that reports
 itself done."""
 
+# The sub-agents are co-workers, not a fact about the catalog.
+#
+# `subagent.apex` and `subagent.foundry` were in the tool catalog from the day
+# they were wired in, and the plans did not use them. Nothing in these prompts
+# said what a delegation is for, so the planner treated the sub-agents the way
+# it treats any tool it cannot picture: it planned around them, and the steps
+# did the work by hand -- `shell.run` poking at the same desktop APEX exists to
+# work on, one improvised script at a time. The one time a delegation did run
+# and failed, the failure was read as the end of the sub-agent rather than as
+# its diagnosis: no repair, no re-delegation, and the work fell back to being
+# done by hand while the person who asked for APEX watched it not get used.
+#
+# This text is the working relationship, stated where the plan is chosen:
+# which sub-agent for which job, when delegation is the point rather than an
+# implementation detail, and what a failed delegation calls for -- read the
+# verdict, repair what it names, hand the work back. A sub-agent's failure is
+# information about the environment it ran in; quietly reimplementing its job
+# with shell commands throws that information away and does the work worse.
+#
+# The second failure this text had was the mirror of the first: the agent did
+# use the sub-agents, but only when told to. A request to do something in the
+# browser was answered "I can't do that" -- the capability sat in the catalog
+# behind `subagent.apex` the whole time, and nothing said the catalog was
+# where the agent's reach came from. And the one rule the old text attached was
+# the requester *naming* the worker, which read as the only case in which
+# delegation was expected. So the rule runs the other way now: routing by
+# work-type is the default and is the planner's own decision to make, a name
+# merely settles it, and declining a class of work that has a worker is the
+# failure this text exists to prevent rather than the fallback.
+DELEGATION = """You have sub-agents, and they are not shortcuts -- they are the workers for
+whole classes of job:
+
+- `subagent.foundry` designs, plans and implements software changes in a
+  repository, through a deterministic state machine with sandboxed gates and a
+  merge train. A goal that ends in changed, working code in a repo is Foundry's
+  job; plan the delegation, not the diff.
+- `subagent.apex` drives the real desktop: it observes through accessibility
+  trees and screenshots and executes one verified, fenced step at a time. A
+  goal that ends in something actually changed on this machine's desktop --
+  settings, apps, windows, a page in a browser -- is APEX's job. Opening System
+  Settings by shell commands when APEX is the worker for it is doing the
+  sub-agent's job worse and calling it done.
+
+Routing is yours to decide, and the default is to delegate. A goal whose end
+state sits on the desktop or in a browser -- something to open, click, read
+off the screen or change in a real app -- is delegated to APEX, and a goal
+whose end state is changed, working code in a repository is delegated to
+Foundry, whether or not the person who asked named the sub-agent. Naming the
+worker makes the choice binding; not naming it leaves the choice to you, and
+the choice is still delegation. Waiting to be told which sub-agent to use, or
+asking, is handing the person a routing decision the plan is for.
+
+Never say this work cannot be done while the sub-agent for it is in the
+catalog. "I can't do that" about a browser task, a desktop change or a repo
+change is a claim about your own turn, and it is wrong: the capability is the
+delegation, and the plan that routes the work to its worker has done what the
+plan that declines it has not. A sub-agent that reports `unavailable`, or an
+error naming what stopped it, is a real limit -- report that. Until then the
+work has a worker, and the plan's job is to hand it over.
+
+Delegation steps look like any other step, with the sub-agent's tool named:
+`{"tool_hints": ["subagent.apex"]}`. Write the task for the sub-agent, not for
+yourself: it sees only what you pass it, so the task states the goal, the
+target, and how success will be read back -- the same words you would need to
+hand a colleague who was not in this conversation.
+
+When a delegation comes back `failed`, `blocked` or `unknown`, that verdict is
+the sub-agent telling you what stopped it -- a missing dependency, a refused
+permission, a step it would not take. Read the error, do what it names (install
+the dependency, grant the permission, adjust the task), and delegate again. Do
+not silently switch to doing the work by hand: either repair and re-delegate,
+or say in the report why the sub-agent could not do it and what you did
+instead. Switching quietly is how "use APEX" turns into work APEX was never
+asked to supervise."""
+
+# The delegation text, tightened when the work names its worker.
+#
+# The general text says what each sub-agent is for; this one says what THIS
+# work is for. It is rendered into the plan and step prompts beside the general
+# text, so the model reads both the relationship and the instruction that
+# binds it. Detection is on the words in the intention itself -- title, desired
+# end state, constraints -- because that is what the planner has.
+#
+# Two ways the routing line fires. A person who writes "have APEX change the
+# mode" has already written the routing decision; the only failure left is
+# losing it between the message and the plan, so the sentence says it is
+# binding. But a person who writes "open the browser and turn off autofill"
+# has written the same decision in the work's own terms, and the plans that
+# answered that request with "I can't do that" were reading the general text
+# as permission rather than as a default. So the work's own words count too:
+# a goal that describes a desktop or browser change routes to APEX, one that
+# describes code to land in a repository routes to Foundry, and the sentence
+# for those is the planner's own decision stated back to it -- not an
+# instruction from the requester, which is why it never says "binding".
+_APEX_WORK_CUES = re.compile(
+    r"\b(browser|safari|chrome|firefox|web ?page|desktop|system settings"
+    r"|menu bar|dock|screenshot|click(?:ed|ing|s)?)\b"
+)
+_FOUNDRY_WORK_CUES = re.compile(
+    r"\b(repo|repository|codebase|refactor\w*|pull request|implement\w*"
+    r"|the code|unit tests?|test suite)\b"
+)
+_DELEGATION_ROUTING = """
+
+For this intention specifically: {sentence}"""
+
+
+def delegation_note(intention: Any) -> str:
+    """The delegation text for one intention: the relationship, plus the routing.
+
+    `DELEGATION` is the standing text every plan and step reads. Two things
+    append a routing sentence to it. The first is a name: "have APEX change
+    the mode" is a routing decision the requester already made, and the
+    sentence repeats it as binding. The second is the work itself: a goal
+    that describes a desktop or browser change, or code to land in a
+    repository, names its worker by what it is, and the sentence says which
+    -- because the standing text alone was read as permission rather than
+    default, and the work kept being done by hand (or declined outright)
+    while its worker sat in the catalog. The cue sentence is the planner's
+    own decision stated back to it, so it defers to the plan if the work
+    turns out not to be what it sounds like; the named sentence does not.
+    """
+    text = " ".join(
+        str(part or "")
+        for part in (
+            getattr(intention, "title", ""),
+            getattr(intention, "desired_end_state", ""),
+        )
+    )
+    constraints = getattr(intention, "constraints", None) or {}
+    if isinstance(constraints, dict):
+        text += " " + " ".join(str(v) for v in constraints.values())
+    lowered = text.lower()
+    named = [name for name in ("apex", "foundry") if re.search(rf"\b{name}\b", lowered)]
+    note = DELEGATION
+    if named:
+        names = " or ".join(named)
+        note += _DELEGATION_ROUTING.format(
+            sentence=(
+                f"the person who asked for this work named the sub-agent by name "
+                f"({names}). That choice is binding: the plan routes the work through "
+                f"`subagent.{named[0]}` -- a step that delegates it, not a reimplementation "
+                "of it by hand. If the sub-agent fails, repair what its verdict names and "
+                "delegate again, and say so in the report if it still cannot."
+            ),
+        )
+        return note
+    routed = []
+    if _APEX_WORK_CUES.search(lowered):
+        routed.append(
+            "the work reads as a desktop or browser goal -- something to be seen "
+            "and changed on the real machine. That is APEX's job by what the work "
+            "is, not by being told: route it through `subagent.apex` unless the "
+            "plan shows it is not desktop work after all, and if the sub-agent "
+            "fails, repair what its verdict names and delegate again, saying so "
+            "in the report if it still cannot."
+        )
+    if _FOUNDRY_WORK_CUES.search(lowered):
+        routed.append(
+            "the work reads as a software change to land in a repository -- code "
+            "that has to be designed, implemented and left working. That is "
+            "Foundry's job by what the work is, not by being told: route it "
+            "through `subagent.foundry` unless the plan shows it is not repo "
+            "work after all, and if the sub-agent fails, repair what its verdict "
+            "names and delegate again, saying so in the report if it still cannot."
+        )
+    if routed:
+        note += _DELEGATION_ROUTING.format(sentence=" Also, ".join(routed))
+    return note
+
 UNDERSTAND_PROMPT = """You are {name}, working on this intention:
 
 TITLE: {title}
@@ -226,6 +397,8 @@ Each step must name the primitive tool it needs (or 'think'), and a concrete suc
 
 {success_checks}
 
+{delegation}
+
 APPROACH: {approach}
 
 INTENTION: {title}: {desired_end_state}
@@ -257,7 +430,7 @@ Respond with strict JSON:
 DEGRADED_PLAN = """
 
 This request has already failed several times at the size above, so it is being
-asked more cheaply. Give the shortest plan that is honest about the work:
+asked more cheaply. Give the shortest plan that matches the real work:
 - one to three steps, not seven;
 - one line of description each;
 - `success_check` may be omitted or left empty -- it is used at the end, and a
@@ -265,7 +438,7 @@ asked more cheaply. Give the shortest plan that is honest about the work:
 
 Still do not pad it. A step that is not a real piece of work is worse than a
 short plan: it will be executed, it will fail, and the agent will spend the rest
-of its attempt budget finding out. If the honest answer is one step, give one
+of its attempt budget finding out. If the real answer is one step, give one
 step. If you cannot see how to do this at all, return no steps rather than
 inventing them."""
 
@@ -314,6 +487,8 @@ Take the concrete action this step calls for. Keep `thought` to one line: the
 action itself is what matters here, and a long preamble spends the room the
 arguments need. Do not abbreviate a file to save space — when you are writing one
 in full it goes in `args.content` exactly as it should read.
+
+{delegation}
 
 {editing}
 

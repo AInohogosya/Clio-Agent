@@ -118,6 +118,24 @@ class ChannelAdapter(ABC):
     http: Any = None
     _owns_http: bool = True
 
+    @staticmethod
+    def is_transient(exc: BaseException) -> bool:
+        """Whether a failed `start` or `listen` is worth trying again.
+
+        The host retries a door that failed this way, and gives up immediately on
+        one that did not — because the two failures mean opposite things. A refused
+        token or a malformed webhook URL will be refused identically on the third
+        try, and retrying only delays the error somebody needs to read. A socket
+        that timed out on the way to an API is a fact about that second, not about
+        the configuration, and the alternative — treating it as permanent — is how a
+        twelve-second network blip closes a door for the life of the process.
+
+        `OSError` covers connections refused and reset, DNS failures, and (since it
+        is an `OSError` subclass) `TimeoutError`. Adapters whose library names its
+        network failures something an `OSError` check cannot see override this.
+        """
+        return isinstance(exc, (OSError, TimeoutError))
+
     def _accepts_id(self, user: str | None, channel: str | None) -> bool:
         """Whether this author, in this conversation, is somebody to answer.
 

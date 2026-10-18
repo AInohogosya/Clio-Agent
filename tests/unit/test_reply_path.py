@@ -228,6 +228,194 @@ def test_reply_texts_leave_as_one_message_each() -> None:
     assert len(bus.of(EventKind.MESSAGE_HANDLED)) == 0, "a reply that was sent is not a decline"
 
 
+def test_a_reply_of_any_length_is_delivered_message_by_message() -> None:
+    """A reply is not a pair; it is however many messages were written.
+
+    The reply path used to be described — by its prompt's examples and by its
+    own tests — in the shape of two: an answer and the thought that follows it.
+    Nothing in the path itself ever counted, and this pins the general case:
+    ten texts written is ten messages sent, in order, each naming the question
+    it answers, and the question is finished with exactly once. One text, or
+    three, or any other number, is the same path with less in it.
+    """
+    config = make_config(Path("/tmp/ethos-test-ten-messages"))
+    config.paths.ensure()
+    out = _RecordingOut()
+    message = Message(person_id="owner", channel="web",
+                      conversation_key="web:owner", text="walk me through it")
+    social = _QueueSocial(message)
+    life = Life(LifeDeps(
+        config=config, control=_Quiet(), bus=_CollectingBus(), memory=_Quiet(),
+        self_model=_Quiet(), attention=None, motivation=None, rhythm=_Quiet(),
+        gateway=None, gsl=None, social=social, comms_out=out, toolhost=None,
+        audit=ListAudit(), continuity=_Quiet(), consolidation=None,
+        embedder=None, thread_id="self",
+    ))
+
+    texts = [f"part {n}" for n in range(1, 11)]
+    asyncio.run(life._act_social({
+        "action": "reply_now", "reply_texts": texts, "urgency": "normal",
+        "reason": "it takes what it takes",
+        "ignore_reason": None, "creates_intention": False, "intention_spec": None,
+        "tier_used": "T2",
+    }))
+
+    assert [sent["text"] for sent in out.sent] == texts, \
+        "every message written is a message sent, in the order written"
+    assert all(sent["in_reply_to"] == message.id for sent in out.sent), \
+        "each one names the question it answers, however far down the reply it sits"
+    assert social.handled, "the question is finished with only once the last text is out"
+
+
+def test_a_reply_can_carry_a_gap_between_its_messages(monkeypatch: Any) -> None:
+    """The timing is part of the reply, and it is honoured.
+
+    `reply_delays_s[i]` is the breath before message i — the first entry is
+    nearly always 0 — so a reply written as several messages can arrive the
+    way a person sends several: spaced, rather than one burst. The wait
+    happens inside the turn, immediately before each send, and the message is
+    marked handled only after the last text is out — so a restart mid-reply
+    re-deliberates the question rather than forgetting the tail of the answer.
+    """
+    config = make_config(Path("/tmp/ethos-test-paced"))
+    config.paths.ensure()
+    out = _RecordingOut()
+    message = Message(person_id="owner", channel="web",
+                      conversation_key="web:owner", text="and then?")
+    social = _QueueSocial(message)
+
+    slept: list[float] = []
+
+    async def _record_sleep(delay: float, *args: Any, **kwargs: Any) -> None:
+        slept.append(delay)
+
+    monkeypatch.setattr(asyncio, "sleep", _record_sleep)
+
+    life = Life(LifeDeps(
+        config=config, control=_Quiet(), bus=_CollectingBus(), memory=_Quiet(),
+        self_model=_Quiet(), attention=None, motivation=None, rhythm=_Quiet(),
+        gateway=None, gsl=None, social=social, comms_out=out, toolhost=None,
+        audit=ListAudit(), continuity=_Quiet(), consolidation=None,
+        embedder=None, thread_id="self",
+    ))
+
+    texts = ["Short answer: yes.", "The long version is below.", "Point three is the one that matters."]
+    asyncio.run(life._act_social({
+        "action": "reply_now", "reply_texts": texts, "reply_delays_s": [0, 4, 2],
+        "urgency": "normal", "reason": "it reads better with a beat between them",
+        "ignore_reason": None, "creates_intention": False, "intention_spec": None,
+        "tier_used": "T2",
+    }))
+
+    assert slept == [4, 2], \
+        "the first message goes at once; each gap sits before the message that follows it"
+    assert [sent["text"] for sent in out.sent] == texts, \
+        "the order is the order written, whatever the gaps between them"
+    assert social.handled, "handled only after the last message is out"
+
+
+def test_a_reply_gap_is_clamped_to_the_configured_ceiling(monkeypatch: Any) -> None:
+    """The number came out of a model, and the unit is the model's to get wrong.
+
+    A "2" meant as minutes reads as 7200 in a field named `_s`, and slept
+    inside the turn that is a cycle that answers nobody else while one aside
+    takes its time. So each gap is clamped to `social.reply_gap_max_s`: the
+    reply still arrives in full, only closer together, and a misread unit
+    costs seconds rather than an afternoon.
+    """
+    config = make_config(Path("/tmp/ethos-test-gap-clamp"))
+    config.paths.ensure()
+    config.social.reply_gap_max_s = 5.0
+    out = _RecordingOut()
+    message = Message(person_id="owner", channel="web",
+                      conversation_key="web:owner", text="go on")
+    social = _QueueSocial(message)
+
+    slept: list[float] = []
+
+    async def _record_sleep(delay: float, *args: Any, **kwargs: Any) -> None:
+        slept.append(delay)
+
+    monkeypatch.setattr(asyncio, "sleep", _record_sleep)
+
+    life = Life(LifeDeps(
+        config=config, control=_Quiet(), bus=_CollectingBus(), memory=_Quiet(),
+        self_model=_Quiet(), attention=None, motivation=None, rhythm=_Quiet(),
+        gateway=None, gsl=None, social=social, comms_out=out, toolhost=None,
+        audit=ListAudit(), continuity=_Quiet(), consolidation=None,
+        embedder=None, thread_id="self",
+    ))
+
+    asyncio.run(life._act_social({
+        "action": "reply_now", "reply_texts": ["one", "two"],
+        "reply_delays_s": [0, 7200],
+        "urgency": "normal", "reason": "the unit was not seconds",
+        "ignore_reason": None, "creates_intention": False, "intention_spec": None,
+        "tier_used": "T2",
+    }))
+
+    assert slept == [5.0], "the ceiling is what the wait is, whatever was written"
+    assert len(out.sent) == 2, "clamping paces the reply; it never stops it"
+
+
+def test_a_gap_written_for_a_message_that_was_never_sent_is_not_inherited(monkeypatch: Any) -> None:
+    """Text and gap go together.
+
+    A blank entry is not a message, so it is not sent — and the gap written
+    for it does not land on the message after it either. `["a", "", "b"]` with
+    `[0, 9, 3]` sends `a`, then `b` after the three seconds that were written
+    for `b`; the nine disappears with the blank it belonged to. A negative is
+    a delay before now, which is no delay, and a reply with no gaps written at
+    all is sent as one burst, exactly as before this field existed.
+    """
+    config = make_config(Path("/tmp/ethos-test-gap-alignment"))
+    config.paths.ensure()
+    out = _RecordingOut()
+    message = Message(person_id="owner", channel="web",
+                      conversation_key="web:owner", text="hm?")
+    social = _QueueSocial(message)
+
+    slept: list[float] = []
+
+    async def _record_sleep(delay: float, *args: Any, **kwargs: Any) -> None:
+        slept.append(delay)
+
+    monkeypatch.setattr(asyncio, "sleep", _record_sleep)
+
+    life = Life(LifeDeps(
+        config=config, control=_Quiet(), bus=_CollectingBus(), memory=_Quiet(),
+        self_model=_Quiet(), attention=None, motivation=None, rhythm=_Quiet(),
+        gateway=None, gsl=None, social=social, comms_out=out, toolhost=None,
+        audit=ListAudit(), continuity=_Quiet(), consolidation=None,
+        embedder=None, thread_id="self",
+    ))
+
+    asyncio.run(life._act_social({
+        "action": "reply_now", "reply_texts": ["a", "   ", "b"],
+        "reply_delays_s": [0, 9, 3],
+        "urgency": "normal", "reason": "the blank was never a message",
+        "ignore_reason": None, "creates_intention": False, "intention_spec": None,
+        "tier_used": "T2",
+    }))
+
+    assert [sent["text"] for sent in out.sent] == ["a", "b"]
+    assert slept == [3.0], "each gap stays with the message it was written for"
+
+    slept.clear()
+    out.sent.clear()
+    social.handled = False
+
+    asyncio.run(life._act_social({
+        "action": "reply_now", "reply_texts": ["a", "b"], "reply_delays_s": [0, -3],
+        "urgency": "normal", "reason": "a negative is a delay before now",
+        "ignore_reason": None, "creates_intention": False, "intention_spec": None,
+        "tier_used": "T2",
+    }))
+
+    assert len(out.sent) == 2, "both messages still go out"
+    assert slept == [], "a delay before now is no delay at all"
+
+
 def test_a_reply_of_nothing_but_whitespace_is_not_sent() -> None:
     """An empty answer is nothing, on this path as much as on the review's.
 
@@ -1342,6 +1530,58 @@ def test_whitespace_and_overlong_replies_are_kept_or_dropped_not_invented() -> N
     )
 
 
+def test_reply_delays_are_read_with_the_texts_they_belong_to() -> None:
+    """`reply_delays_s` is optional, and every wrong shape in it means immediate.
+
+    The field spaces a multi-message reply out: the number at index i is the
+    wait before message i. Read alongside the texts rather than after them, so
+    a blank text takes the gap written for it with it and no later message
+    inherits a pause meant for one that was never sent. A non-list, a non-
+    number, a boolean — an `int` to Python and a duration to nobody — and a
+    negative all read as 0, which is the delay that sends at once: the reply
+    is the model's words, and the timing is only ever allowed to make it
+    slower, never to stop it.
+    """
+    decision = _deliberation(
+        ScriptedGateway([
+            '{"action": "reply_now", "reply_texts": ["a", "b", "c"], '
+            '"reply_delays_s": [0, 2.5, 1]}',
+        ]),
+        Path("/tmp/ethos-test-delays-read"),
+    )
+    assert decision.reply_texts == ["a", "b", "c"]
+    assert decision.reply_delays_s == [0.0, 2.5, 1.0]
+
+    decision = _deliberation(
+        ScriptedGateway([
+            '{"action": "reply_now", "reply_texts": ["a", "  ", "b"], '
+            '"reply_delays_s": [0, 9, 3]}',
+        ]),
+        Path("/tmp/ethos-test-delays-alignment"),
+    )
+    assert decision.reply_texts == ["a", "b"]
+    assert decision.reply_delays_s == [0.0, 3.0], \
+        "the gap goes with the message it was written for, not with the next one"
+
+    decision = _deliberation(
+        ScriptedGateway([
+            '{"action": "reply_now", "reply_texts": ["a", "b"], "reply_delays_s": null}',
+        ]),
+        Path("/tmp/ethos-test-delays-null"),
+    )
+    assert decision.reply_delays_s == [0.0, 0.0], "no delays written is a reply sent at once"
+
+    decision = _deliberation(
+        ScriptedGateway([
+            '{"action": "reply_now", "reply_texts": ["a", "b", "c", "d"], '
+            '"reply_delays_s": [0, "x", true, -4]}',
+        ]),
+        Path("/tmp/ethos-test-delays-junk"),
+    )
+    assert decision.reply_delays_s == [0.0, 0.0, 0.0, 0.0], \
+        "a word, a boolean and a negative are no duration at all"
+
+
 def test_a_deliberation_that_reads_well_still_answers_the_question() -> None:
     """The guard is on silence, not on replies.
 
@@ -1763,6 +2003,179 @@ def test_a_request_for_work_becomes_the_next_focus() -> None:
     assert str(settled.intention_id) == commission["intention_id"], \
         "and the focus is not bound to the work that was committed, so `decide` cannot act on it"
     assert settled.title == "add slugify() to code.py"
+
+
+def test_asking_again_resumes_the_work_instead_of_opening_it_again() -> None:
+    """The promise above, asked for twice, is one piece of work.
+
+    `test_a_request_for_work_becomes_the_next_focus` fixed work that was
+    commissioned once and then dropped. This is the other half, and it is the one
+    that bites on a live agent, because a person who asks again is not asking for a
+    second attempt — they are asking why the first did not happen, and the right
+    answer is to carry on with it.
+
+    Answering by writing the promise down a second time is not a tidiness problem.
+    Progress through a goal lives in `intention.resume_state`, so a second
+    intention understands again from nothing, and `_commission_focus` hands the
+    next cycle to it — abandoning whatever the first one had worked out. An agent
+    that volunteers "I'm on it" every few minutes therefore restarts its work
+    faster than it can finish a single stage of it, and from outside that is an
+    agent that says it will do something and never does. It is what happened to a
+    request to run a sub-agent: three intentions with one title, `understanding`
+    written to each in turn, and no plan and no tool call ever made.
+
+    So the second ask adopts the open row, keeps its `resume_state`, and becomes
+    the focus — and the person is still answered in the turn that asked.
+    """
+    config = make_config(Path("/tmp/ethos-test-commission-resumed"))
+    config.paths.ensure()
+    out = _RecordingOut()
+    existing = IntentionRecord(
+        id=uuid4(),
+        kind="commitment",
+        title="Use APEX to change device mode from dark to light",
+        desired_end_state="the device is in light mode",
+        origin="commission",
+        commissioned_by="owner",
+        status="active",
+        priority=0.5,
+        resume_state={"understanding": "the dark-to-light switch is what was asked for"},
+        created_at=datetime(2026, 10, 18, 11, 20, tzinfo=UTC),
+        updated_at=datetime(2026, 10, 18, 11, 24, tzinfo=UTC),
+    )
+    message = Message(
+        person_id="owner", channel="telegram", conversation_key="telegram:owner",
+        text="Please try using APEX. Have APEX change the device mode from dark to light.",
+    )
+
+    class _QueueSocial:
+        def __init__(self) -> None:
+            self.handled = False
+
+        async def pending_inbound(self, limit: int = 5) -> list[Any]:
+            return [] if self.handled else [message]
+
+        async def mark_handled(self, message: Any, decision: Any = None) -> None:
+            self.handled = True
+
+    class _Memory:
+        """A store that already holds the work, and would happily write it again."""
+
+        def __init__(self) -> None:
+            self.created: list[dict[str, Any]] = []
+            self.open = [existing]
+
+        async def create_intention(self, **kwargs: Any) -> Any:
+            self.created.append(kwargs)
+            return uuid4()
+
+        async def find_open_intention(
+            self, title: str, commissioned_by: str | None = None,
+        ) -> Any | None:
+            wanted = " ".join(str(title or "").casefold().split())
+            for intention in self.open:
+                if " ".join(intention.title.casefold().split()) != wanted:
+                    continue
+                if commissioned_by is not None and intention.commissioned_by != commissioned_by:
+                    continue
+                return intention
+            return None
+
+    social = _QueueSocial()
+    memory = _Memory()
+    life = Life(LifeDeps(
+        config=config, control=_Quiet(), bus=_CollectingBus(), memory=memory,
+        self_model=_Quiet(), attention=None, motivation=None, rhythm=_Quiet(),
+        gateway=None, gsl=None, social=social, comms_out=out, toolhost=None,
+        audit=ListAudit(), continuity=_Quiet(), consolidation=None,
+        embedder=None, thread_id="self",
+    ))
+
+    commission = asyncio.run(life._act_social({
+        "action": "reply_now",
+        "reply_texts": ["I'll try APEX."],
+        "urgency": "normal",
+        "reason": "the owner is asking again for the work already in hand",
+        "ignore_reason": None, "creates_intention": True,
+        "intention_spec": {
+            "title": "Use APEX to change device mode from dark to light",
+            "desired_end_state": "the device is in light mode",
+            "deadline_iso": None,
+        },
+        "tier_used": "T2",
+    }))
+
+    assert len(out.sent) == 1, "the person is still answered in the turn that asks again"
+    assert memory.created == [], \
+        "a second row for the same promise: a second attempt at stage one, from nothing"
+    assert commission is not None
+    assert commission["intention_id"] == str(existing.id), \
+        "so the turn committed to something other than the work already in flight"
+
+    settled = life.next_focus(
+        Decision(kind="social", tier="T2", social={"action": "reply_now"}),
+        Outcome(commission=commission),
+    )
+    assert settled is not None and str(settled.intention_id) == str(existing.id), \
+        "and the next cycle works on a fresh row instead of resuming this one"
+
+
+def test_work_that_is_really_new_still_gets_its_own_row() -> None:
+    """The adoption above is narrow on purpose.
+
+    A deployment whose store has no lookup, whose lookup found nothing, or whose
+    lookup could not answer all have to reach the same place: the work is written
+    down. Missing a duplicate costs a redundant row; refusing work a person
+    actually asked for is the worse failure, and this runs in a cycle that has
+    already answered somebody.
+    """
+    config = make_config(Path("/tmp/ethos-test-commission-new-work"))
+    config.paths.ensure()
+
+    class _QueueSocial:
+        def __init__(self) -> None:
+            self.handled = False
+
+        async def pending_inbound(self, limit: int = 5) -> list[Any]:
+            return [] if self.handled else [Message(
+                person_id="owner", channel="web", conversation_key="web:owner",
+                text="build me a snake game",
+            )]
+
+        async def mark_handled(self, message: Any, decision: Any = None) -> None:
+            self.handled = True
+
+    class _Memory:
+        """No lookup at all: the store predates it, or is not the real one."""
+
+        def __init__(self) -> None:
+            self.created: list[dict[str, Any]] = []
+
+        async def create_intention(self, **kwargs: Any) -> Any:
+            self.created.append(kwargs)
+            return uuid4()
+
+    social = _QueueSocial()
+    memory = _Memory()
+    life = Life(LifeDeps(
+        config=config, control=_Quiet(), bus=_CollectingBus(), memory=memory,
+        self_model=_Quiet(), attention=None, motivation=None, rhythm=_Quiet(),
+        gateway=None, gsl=None, social=social, comms_out=_RecordingOut(), toolhost=None,
+        audit=ListAudit(), continuity=_Quiet(), consolidation=None,
+        embedder=None, thread_id="self",
+    ))
+
+    commission = asyncio.run(life._act_social({
+        "action": "reply_now", "reply_texts": ["On it."], "urgency": "normal",
+        "reason": "a new request", "ignore_reason": None, "creates_intention": True,
+        "intention_spec": {"title": "build a snake game", "desired_end_state": "it plays",
+                           "deadline_iso": None},
+        "tier_used": "T2",
+    }))
+
+    assert len(memory.created) == 1, "work nobody had asked for before was not written down"
+    assert memory.created[0]["title"] == "build a snake game"
+    assert commission is not None and commission["title"] == "build a snake game"
 
 
 def test_a_message_that_asked_for_nothing_still_releases_its_focus() -> None:
@@ -2641,6 +3054,35 @@ def test_the_deliberation_is_told_which_tools_the_agent_has() -> None:
         "the reply is written before the work happens, which is why this matters"
     assert "has tools for files, shell, the browser and the network" not in system, \
         "the vague sentence is what it was replaced by"
+
+
+def test_the_deliberation_names_the_sub_agent_capabilities() -> None:
+    """The browser task was declined because the reply path never heard of the sub-agents.
+
+    "Do this task in the web browser" was answered "I can't do that" by an
+    agent whose catalog carried `subagent.apex` -- the same failure as the
+    file one above, one layer further out: the tools bullet said the agent
+    could create a file and run a command, and said nothing about the two
+    capabilities that only arrive by delegation. The reply model writes the
+    words the person reads, so an unmentioned capability is a declined
+    request, and an owner told "I can't" stops asking -- the capability is
+    then never exercised and never found to work, exactly as before.
+    """
+    system = social_deliberation_messages(
+        self_name="Clio",
+        message=Message(person_id="owner", channel="web", conversation_key="web:owner",
+                        text="do this task in the web browser"),
+        focus="(none)", now="2026-01-01T00:00:00+00:00", energy=0.8,
+        commitments="(none)", recent="(none)",
+        tools=[{"name": "fs.write"}, {"name": "subagent.apex"}, {"name": "subagent.foundry"}],
+    )[0]["content"]
+
+    for tool in ("subagent.apex", "subagent.foundry"):
+        assert f"`{tool}`" in system, \
+            f"{tool} is named as a capability, not left to be inferred from a name"
+    assert "drive this machine's desktop and browser" in system
+    assert "Never tell the person {name} cannot do something on the desktop".format(name="Clio") in system, \
+        "the refusal the browser task actually got is the one named and forbidden"
 
 
 def test_the_tool_line_says_nothing_registered_rather_than_inventing_tools() -> None:

@@ -81,17 +81,31 @@ So:
   {name} runs this turn's reply off before taking any action, so a request for work is answered
   by setting `creates_intention` and `intention_spec` -- not by saying what tools {name} does or
   does not have. Never tell the person {name} cannot create a file, read a file, run a command or
-  look something up: those are the tools named above, and the only honest reason not to have done
-  something is that this turn has not done it yet. If the work is genuinely not something these
-  tools can do, say which tool would have done it and why it could not -- that is a real limit
-  worth reporting.
+  look something up: those are the tools named above, and the only reason not to have done
+  something *asked for in this message* is that this turn has not done it yet.
+  The sub-agents in that list are capabilities the same way: when it names `subagent.apex`, {name}
+  can drive this machine's desktop and browser -- open an app, click through a page, change a
+  setting; when it names `subagent.foundry`, {name} can design and land software changes in a
+  repository. Never tell the person {name} cannot do something on the desktop, in a browser, or
+  to code in a repo while the sub-agent for it is in that list: the request is taken on by
+  setting `creates_intention`, and the plan routes it to the worker whose job it is. That reasoning
+  covers only this turn's work -- it is not a licence to report anything else as undone, and the
+  Execution state block below is what says whether earlier work happened. If the work is genuinely
+  not something these tools can do, say which tool would have done it and why it could not -- that
+  is a real limit worth reporting.
 - Say an action is underway only if the Execution state block below shows it was actually journaled.
   That block is a record of what happened, not of what is intended; the focus and the open
   commitments above are intentions, and intentions are not evidence. When the state shows work
-  parked, stalled or failed at planning, say that instead -- what is blocked, and why -- and say
-  it plainly. "I could not start this and here is where it stopped" is a real answer; "I am on it"
-  when nothing has been journaled is a promise {name} has made nothing behind, which is the same
-  failure as the one above it and worse, because the person stops asking.
+  parked, stalled or failed at planning, say that instead -- what is blocked, and why. "I am on
+  it" when nothing has been journaled is a promise {name} has made nothing behind, which is the
+  same failure as the one above it and worse, because the person stops asking.
+- When something did not work, that is the reply: one sentence saying what stopped and what it
+  needs. Do not announce that you are being honest or candid, do not apologise for the failure or
+  for mentioning it, and do not add a line about how you feel about having said so. Telling
+  somebody a thing failed is ordinary conversation -- often it is what they asked about -- so it
+  is said the way any fact is said, and the reply moves on to what they actually wanted. A failure
+  reported once and plainly reads as competence; the same failure reported inside a frame about the
+  reporting reads as an apology, and the frame is the part that is not about them.
 
 Situation:
 - Current focus: {focus}
@@ -101,24 +115,59 @@ Situation:
 - Recent conversation context: {recent}
 
 ## Execution state
-What {name} has actually done, read from its own action journal and its open work. If the block
-below says nothing has been journaled, nothing has: do not narrate work as underway.
+What {name} has actually done, read from its own action journal, its open work and the
+work it has already finished. Three separate lines, and they are separate because they
+answer three different questions:
+
+- **Journaled actions** is a window on the last few minutes. If it says nothing has been
+  journaled, nothing has *in that window* — do not narrate work as underway.
+- **Blocked, stalled or parked** is what {name} cannot get past, and when it applies it is
+  part of the answer rather than something to bury.
+- **Sub-agent delegations** is what {name} actually asked of Foundry and APEX, and what came
+  back, over the last day. This line is the only evidence about sub-agents in the whole
+  prompt: a sub-agent named here was really invoked and the status beside it is that run's
+  verdict; a sub-agent not named here was not invoked at all, however much else is in the
+  journal. A reply that says a sub-agent is running, or reports what a sub-agent did, must
+  come from this line — never from the plan, the focus, or the open commitments above.
+- **Already reached a stage** is work that finished, or stopped short of finished. This is
+  a record of something that happened, and it outranks anything inferred from the other
+  two lines: a quiet journal next to an empty blocked list means nothing about work that
+  is already finished, because a finished intention is in neither of them.
+
+The last line is the one to get right. {name} has said before that it had not done a
+thing it had in fact done, and the reason is always the same shape — the record it was
+given was a window on *now*, and it read the absence of something as the absence of the
+thing. So: when the person asks whether work was done, answer from the stage line and from
+what you can say about it concretely, and say you will go and check if you
+cannot -- "let me look and tell you" is always available. "I have not done that"
+said without looking is not — it is the answer this block exists to stop being the basis
+for.
 
 {execution_state}
 
 {cross_talk}
 
 Decide one action and write the reply {name} would naturally send (concise, plain, human).
-The reply is however many messages it takes: each entry in `reply_texts` is sent as its own
-message, in order. Use several entries only when the parts stand alone — an answer and a
-follow-up thought, or a note that work has started and the answer itself — and keep each one
-short; lines that belong together belong in one entry. Zero messages is fine when the action
-is silence or a question left for later.
+The reply is however many messages it takes — one, three, ten, or none: each entry in
+`reply_texts` is sent as its own message, in order, and no length is special. One entry
+is the ordinary case and is right whenever one message says it. Use several only when
+the parts genuinely stand alone — an answer and a follow-up thought, or a note that
+work has started and the answer itself — and keep each one short; lines that belong
+together belong in one entry. Zero messages is fine when the action is silence or a
+question left for later.
+
+`reply_delays_s` is optional, and spaces a multi-message reply out the way a person
+sends several texts: the number at index i is how many seconds to wait before message
+i is sent, so the first entry is nearly always 0. Use small gaps — one to a few
+seconds — when the messages read better with a breath between them, and leave the
+field out, or use zeros, when the reply should arrive as one burst. A reply of one
+message needs no delays at all.
 
 Respond with strict JSON only:
 {{
   "action": "reply_now" | "reply_later" | "acknowledge" | "act_silently" | "ask_clarification" | "ignore",
   "reply_texts": ["..."],
+  "reply_delays_s": [0],
   "urgency": "low" | "normal" | "high" | "critical",
   "reason": "one line",
   "ignore_reason": {ignore_reasons} ,
@@ -149,6 +198,103 @@ DELIBERATION_OUTPUT_CONTRACT = (
     '"reply_texts". An answer written as prose instead of the object is discarded, and they '
     "are told the agent did not reply."
 )
+
+STAGE_NOTICE_SYSTEM = """You are {name}, about to tell somebody that a piece of work they asked for has
+reached a point worth knowing about.
+
+{name_note}
+
+{nobody_wrote} Nobody has asked you for this. You are opening the conversation because you
+promised somebody you would, and the work has now got there. That is the whole reason for this
+message, and it is a real reason: a person who asked for something is owed the ending of it,
+and they cannot see a table row.
+
+{stage_block}
+
+{cross_talk}
+
+Write the message you would actually send. Rules, all of which are about the same thing — this
+arrives as one short message from somebody they know, not as a status report:
+
+- Say what happened to the work, in your own words. If it is finished, say it is finished. If it
+  stopped short, say that instead, and say what stopped it — a person told a task is parked is
+  owed the reason, and "I could not do it" without the reason is worse than silence. Name it once
+  and in one clause; the reason is not a thing to dwell on or set up.
+- Be specific enough to be worth reading. What was done, or what stopped it. Not "the task has
+  been updated".
+- Do not narrate your own machinery. Nobody asked for verification rungs, check counts,
+  intentions, or plans, and a message about a finished task that reads like a status line is the
+  failure this prompt exists to prevent.
+- Do not apologise for the delay unless the delay is the thing being reported, and do not frame
+  the message around the fact that you are being straightforward about it. The words are the
+  report; nothing else needs saying around them.
+- Nothing is owed but the words. There is no list to tick and no further action required from
+  them; do not ask them to confirm or approve anything they did not ask about.
+
+One message. Two or three sentences is usually right. If there is genuinely nothing worth
+saying — the work stopped for a reason you would only be embarrassed by, or the thing to report
+is not really a stage — say so by returning an empty `text` rather than writing something to
+fill the space.
+
+Respond with strict JSON only:
+{{"text": "..." or ""}}"""
+
+
+def stage_notice_messages(
+    self_name: str,
+    *,
+    stage: str,
+    title: str,
+    detail: str,
+    who: str | None,
+    preview: bool = False,
+    lineage: str = AGENT_LINEAGE,
+) -> list[dict[str, str]]:
+    """The prompt for the one message that pays a stage notice.
+
+    Its own prompt rather than a variation on the deliberation's, and the difference
+    is worth naming: the deliberation answers something somebody asked, and this
+    answers something the agent promised. The person is not waiting for an input,
+    so there is no `action` to choose, no `creates_intention`, and no `intention_spec`
+    — a reply that opens a conversation cannot commission work, and a response
+    carrying an intention here would start something the person never asked for.
+
+    It is also the only prompt in this file that has to work with nobody having
+    written anything, which is why `nobody_wrote` is a slot of its own rather than
+    an assumption made by the surrounding text. The reader has no message in front
+    of it, so the *reason* for the message has to be stated or it will be inferred
+    from the absence of context — and the easiest thing to infer from a prompt with
+    no message in it is that this is a continuation of something that never happened.
+    """
+    spoken = {
+        "done": "The work finished and passed its checks.",
+        "parked": "The work has stopped short of finished and will not be retried on its own.",
+        "awaiting_review": (
+            "The work is finished as far as this program can tell, and the thing "
+            "still outstanding is a person looking at it."
+        ),
+    }.get(stage, f"The work has reached the stage '{stage}'.")
+    stage_block = (
+        f"## What happened\n- Work: {title or '(untitled)'}\n- What happened: {spoken}\n"
+        + (f"- In detail: {detail}\n" if detail else "")
+        + "- Whether they have been told yet: no"
+    )
+    nobody_wrote = (
+        f"You are writing to {who}." if who
+        else "You are writing to the person who asked for this work."
+    )
+    system = STAGE_NOTICE_SYSTEM.format(
+        name=self_name,
+        name_note=DELIBERATION_NAME_NOTE.format(name=self_name, lineage=lineage),
+        nobody_wrote=nobody_wrote,
+        stage_block=stage_block,
+        cross_talk=cross_talk_note(preview=preview),
+    )
+    return [
+        {"role": "system", "content": system},
+        {"role": "user", "content": "Write the message now. Respond with the JSON object only."},
+    ]
+
 
 IGNORE_STREAK_REVIEW = """{name} has ignored {person} {n} times in a row. Reasons so far: {reasons}.
 The message {name} is about to stay silent on now reads:
@@ -196,20 +342,28 @@ def tool_names_line(tools: list[dict[str, Any]] | None) -> str:
 
 def execution_state_block(
     self_name: str, journaled: list[str], blocked: list[str], window_min: float,
-    readable: bool = True,
+    readable: bool = True, stages: list[str] | None = None,
+    delegations: list[str] | None = None, delegation_window_h: float = 24.0,
 ) -> str:
     """The block that says what happened, rendered for one prompt.
 
-    Split out so the renderer is testable without a database, and so the two kinds
-    of fact cannot be silently merged: the journal is what the agent *did*, and
-    the blocked list is what it *could not do*. A prompt that listed them under
-    one heading would be asking the model to infer progress from intentions again,
-    which is the mistake being fixed.
+    Split out so the renderer is testable without a database, and so the
+    distinct kinds of fact cannot be silently merged: the journal is what the
+    agent *did*, the blocked list is what it *could not do*, the stages are
+    what it has *already finished*, and the delegations are what its
+    sub-agents *reported*. A prompt that listed them under one heading would
+    be asking the model to infer progress from intentions again, which is the
+    mistake being fixed — and the third of the three has to be separate for a
+    sharper reason, because it is the only evidence in the whole prompt that a
+    finished thing is finished. Merged in, "no journaled actions and no
+    blocked work" reads as *nothing has happened yet*, which is true of work
+    in flight and false about work completed an hour ago.
 
-    `readable=False` is stated outright rather than left blank. "Nothing has been
-    journaled" and "the journal could not be read" are different facts, and the
-    second is the case where the guardrail in `SocialCognition` has nothing to
-    enforce -- so the block says so instead of implying a clean record.
+    `readable=False` is stated outright rather than left blank. "Nothing has
+    been journaled" and "the journal could not be read" are different facts,
+    and the second is the case where the guardrail in `SocialCognition` has
+    nothing to enforce -- so the block says so instead of implying a clean
+    record.
     """
     if not readable:
         return (
@@ -225,6 +379,37 @@ def execution_state_block(
         lines.extend(f"  - {line}" for line in blocked)
     else:
         lines.append("- Work that is blocked, stalled or parked: none")
+    delegations = delegations or []
+    if delegations:
+        lines.append(
+            f"- Sub-agent delegations in the last {delegation_window_h:g} hours — what "
+            "Foundry and APEX were actually asked to do and what came back. A sub-agent "
+            "named here was invoked; a sub-agent not named here was not invoked at all, "
+            "by anyone, however much else is in the journal above:"
+        )
+        lines.extend(f"  - {line}" for line in delegations)
+    else:
+        lines.append(
+            "- Sub-agent delegations in the last "
+            f"{delegation_window_h:g} hours: none. No sub-agent has been asked to do "
+            "anything in that time — a sub-agent not named above was not invoked at all, "
+            "and saying one is running, or reporting what one did, would be said about "
+            "nothing."
+        )
+    stages = stages or []
+    if stages:
+        lines.append(
+            "- Work that has already reached a stage — this is finished, or has "
+            "stopped short of finished, whichever it says. It is not on this list "
+            "because it is new; it is here because it is done:"
+        )
+        lines.extend(f"  - {line}" for line in stages)
+    else:
+        lines.append(
+            "- Work that has already reached a stage: none recorded in this window. "
+            "This says nothing about older work — if the person asks about "
+            "something from before, that is not evidence it was not done."
+        )
     return "\n".join(lines)
 
 
@@ -252,7 +437,7 @@ def social_deliberation_messages(
         tools=tool_names_line(tools),
         ignore_reasons=json.dumps(IGNORE_REASONS),
         execution_state=execution_state.strip()
-        or execution_state_block(self_name, [], [], 0.0, readable=False),
+        or execution_state_block(self_name, [], [], 0.0, readable=False, stages=[]),
         # Placed here rather than in the header because this is the one prompt
         # whose output is the words a person reads, and it is the only place a
         # fact about some *other* conversation could reach them. A deliberation

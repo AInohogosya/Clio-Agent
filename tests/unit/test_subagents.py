@@ -310,6 +310,95 @@ def test_apex_subprocess_env_names_the_ethos_provider():
     assert env["ETHOS_GATEWAY_URL"] == "http://127.0.0.1:8700"
 
 
+def test_apex_subprocess_exit_codes_map_to_the_status_vocabulary(monkeypatch):
+    """`main.py` only exits 1 when the controller itself crashed before any
+    task reached a terminal state — an environment failure, not a verdict on
+    the desktop task. Reading it as "failed" is how a missing dependency once
+    became a report that a desktop change had been attempted and had failed."""
+    from ethos.subagents.base import STATUS_UNAVAILABLE
+
+    agent = ApexSubAgent(_config_with(), SubagentConfig(name="apex"), gateway=None)
+
+    def make_run(code, out):
+        async def run_command(argv, **kwargs):
+            return code, out, ""
+        return run_command
+
+    async def fake_child_python(started):
+        return Path("/some/venv/python")
+
+    monkeypatch.setattr(agent, "_child_python", fake_child_python)
+    for code, out, expected in [
+        (0, "Task completed with verified effects.", STATUS_DONE),
+        (2, "Task stopped with an outcome-unknown effect", STATUS_OUTCOME_UNKNOWN),
+        (3, "Task is safely blocked", STATUS_BLOCKED),
+        (130, "task failed", STATUS_FAILED),
+    ]:
+        monkeypatch.setattr(agent, "run_command", make_run(code, out))
+        result = asyncio.run(agent._run_subprocess("goal", "hidden", 5, 0.0))
+        assert result.status == expected, (code, result.summary)
+
+    monkeypatch.setattr(agent, "run_command", make_run(
+        1, "ERROR desktop-controller: controller stopped: pyobjc is unavailable",
+    ))
+    crashed = asyncio.run(agent._run_subprocess("goal", "hidden", 5, 0.0))
+    assert crashed.status == STATUS_UNAVAILABLE
+    assert "crashed" in crashed.summary
+    assert "pyobjc" in crashed.summary
+
+
+def test_apex_bootstraps_its_missing_venv_before_the_subprocess(monkeypatch, tmp_path):
+    """No `APEX/.venv` means the subprocess fallback used to inherit this
+    agent's interpreter and crash on the same import that broke in-process
+    mode. The fallback must first create the virtualenv `bootstrap.py`
+    exists to provide."""
+    monkeypatch.setattr(ApexSubAgent, "_bootstrap_attempted", False)
+    (tmp_path / "bootstrap.py").write_text("# bootstrap stub\n")
+    agent = ApexSubAgent(
+        _config_with(), SubagentConfig(name="apex", root=str(tmp_path)), gateway=None,
+    )
+
+    calls: list[list[str]] = []
+
+    async def fake_run_command(argv, **kwargs):
+        calls.append(argv)
+        venv_bin = tmp_path / ".venv" / "bin"
+        venv_bin.mkdir(parents=True, exist_ok=True)
+        (venv_bin / "python").write_text("#!/bin/sh\n")
+        return 0, "[bootstrap] ready", ""
+
+    monkeypatch.setattr(agent, "run_command", fake_run_command)
+    python = asyncio.run(agent._child_python(0.0))
+    assert python == tmp_path / ".venv" / "bin" / "python"
+    assert len(calls) == 1
+    assert calls[0][1].endswith("bootstrap.py")
+    assert "--skip-permissions" in calls[0] and "--skip-api-key" in calls[0]
+
+
+def test_apex_reports_unavailable_when_bootstrap_cannot_help(monkeypatch, tmp_path):
+    """A bootstrap that fails (or never ran) must come back as "unavailable"
+    naming the fix — never as a failed desktop task."""
+    monkeypatch.setattr(ApexSubAgent, "_bootstrap_attempted", False)
+    (tmp_path / "bootstrap.py").write_text("# bootstrap stub\n")
+    agent = ApexSubAgent(
+        _config_with(), SubagentConfig(name="apex", root=str(tmp_path)), gateway=None,
+    )
+
+    calls: list[list[str]] = []
+
+    async def failing_run_command(argv, **kwargs):
+        calls.append(argv)
+        return 1, "[bootstrap] ERROR: pip install failed", ""
+
+    monkeypatch.setattr(agent, "run_command", failing_run_command)
+    result = asyncio.run(agent._run_subprocess("goal", "hidden", 5, 0.0))
+    assert result.status == "unavailable"
+    assert "bootstrap.py" in result.summary
+    # One attempt per process: a failed install is not retried inside the
+    # delegation that needed its result.
+    assert len(calls) == 1
+
+
 # ---- the shim, served -------------------------------------------------------
 
 class _StubService:

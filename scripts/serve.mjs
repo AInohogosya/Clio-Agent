@@ -53,14 +53,24 @@ import { spawn, spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import http from "node:http";
 import { createRequire } from "node:module";
+import os from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const WEB = join(ROOT, "web");
 const INTERFACE = join(ROOT, "interface");
+// A virtualenv is `bin/` on POSIX and `Scripts/` on Windows, and its interpreter
+// is `python` on one and `python.exe` on the other. Both are derived from the
+// platform rather than assumed, because the POSIX spelling is a path that does
+// not exist on Windows: a start-up that looked for `.venv/bin/python` there
+// would create a perfectly good virtualenv and then report that the agent had
+// not installed a command into it.
+const WINDOWS = process.platform === "win32";
 const VENV = join(ROOT, ".venv");
-const PYTHON = join(VENV, "bin", "python");
+const VENV_BIN = join(VENV, WINDOWS ? "Scripts" : "bin");
+const PYTHON = join(VENV_BIN, WINDOWS ? "python.exe" : "python");
+const ETHOS = join(VENV_BIN, WINDOWS ? "ethos.exe" : "ethos");
 const INDEX_HTML = join(INTERFACE, "packages", "web", "dist", "index.html");
 const BRIDGE_ENTRY = join(WEB, "server", "index.mjs");
 
@@ -83,7 +93,13 @@ function die(message, hint) {
 function findTool(name) {
   const beside = join(dirname(process.execPath), name);
   if (existsSync(beside)) return beside;
-  const probe = spawnSync(name, ["--version"], { stdio: "ignore" });
+  // A `.cmd`/`.bat` shim (`npm` on Windows) cannot be spawned without a shell
+  // after Node's command-injection fix, and `spawnSync("npm", ...)` would come
+  // back `EINVAL` — read here as "not found" for a tool that is right there. The
+  // shell probe is a fixed string with no untrusted input, so it is safe.
+  const probe = WINDOWS
+    ? spawnSync(`${name} --version`, { stdio: "ignore", shell: true })
+    : spawnSync(name, ["--version"], { stdio: "ignore" });
   return probe.error?.code === "ENOENT" ? null : name;
 }
 
@@ -112,26 +128,35 @@ function step(label, command) {
 
 // npm, resolved once. Reached over `npm start`, so npm is on PATH by definition — but
 // the interpreter running this file is not necessarily beside it (an nvm Node with a
-// Homebrew npm, or the reverse), so both places are tried.
-const npm = findTool("npm");
+// Homebrew npm, or the reverse), so both places are tried. `npm_execpath` is the one
+// spelling that works everywhere: it is the CLI's own JavaScript, run by this very
+// interpreter, with no PATH lookup and no `.cmd` shell shim — and on Windows a
+// `spawnSync("npm", …)` without a shell is refused for exactly that shim.
+function npmCommand() {
+  const execpath = process.env.npm_execpath;
+  if (execpath && existsSync(execpath)) return [process.execPath, execpath];
+  const found = findTool("npm");
+  return found ? [found] : null;
+}
+const npm = npmCommand();
 if (!npm) die("npm was not found. Install Node, which includes it, and try again.");
 
 // ---------------------------------------------------------------- 1. the Node side
 
 function prepareNode() {
   if (!existsSync(join(WEB, "node_modules"))) {
-    step("installing the bridge's dependencies", [npm, "install", "--prefix", WEB]);
+    step("installing the bridge's dependencies", [...npm, "install", "--prefix", WEB]);
   }
   if (existsSync(INDEX_HTML)) return;
 
   if (!existsSync(join(INTERFACE, "node_modules"))) {
-    step("installing the interface's dependencies", [npm, "install", "--prefix", INTERFACE]);
+    step("installing the interface's dependencies", [...npm, "install", "--prefix", INTERFACE]);
   }
   // `core` before `web`: the page builds against core's emitted types, and building
   // them together fails in a way that reads like a bug in the interface rather than
   // an ordering mistake.
-  step("building the interface", [npm, "run", "build", "--workspace", "@project-phone/core", "--prefix", INTERFACE]);
-  step("building the interface page", [npm, "run", "build", "--workspace", "@project-phone/web", "--prefix", INTERFACE]);
+  step("building the interface", [...npm, "run", "build", "--workspace", "@project-phone/core", "--prefix", INTERFACE]);
+  step("building the interface page", [...npm, "run", "build", "--workspace", "@project-phone/web", "--prefix", INTERFACE]);
   if (!existsSync(INDEX_HTML)) {
     die(
       "the interface build finished but produced no index.html, so there is no page to serve.",
@@ -162,7 +187,9 @@ function preparePython() {
       step(`creating the Python 3.12 virtualenv with ${uv}`, [uv, "venv", VENV, "--python", "3.12"]);
       step("installing the agent", [uv, "pip", "install", "--python", PYTHON, "-e", ".[dev]"]);
     } else {
-      const system = findTool("python3.12") ?? findTool("python3");
+      const system = WINDOWS
+        ? (findTool("python") ?? findTool("py") ?? findTool("python3"))
+        : (findTool("python3.12") ?? findTool("python3"));
       if (!system) {
         die(
           "there is no virtualenv here and no way to make one: neither uv nor python3 was found.",
@@ -172,16 +199,16 @@ function preparePython() {
       step(`creating a virtualenv with ${system}`, [system, "-m", "venv", VENV]);
       step("installing the agent", [PYTHON, "-m", "pip", "install", "-e", ".[dev]"]);
     }
-  } else if (!existsSync(join(VENV, "bin", "ethos"))) {
+  } else if (!existsSync(ETHOS)) {
     step("installing the agent", [PYTHON, "-m", "pip", "install", "-e", ".[dev]"]);
   }
   // The console script is what `ethos stop` and `make` reach for, and this function's
   // whole purpose is that a person never has to activate anything to get one. An
   // install that "succeeded" without producing it has not finished.
-  if (!existsSync(join(VENV, "bin", "ethos"))) {
+  if (!existsSync(ETHOS)) {
     die(
       "the agent is installed in .venv but there is no `ethos` command in it.",
-      `   Look in ${join(VENV, "bin")}. If the project was installed somewhere else, remove .venv and run this again.`,
+      `   Look in ${VENV_BIN}. If the project was installed somewhere else, remove .venv and run this again.`,
     );
   }
 }
@@ -214,7 +241,11 @@ function resolvePort() {
         return {};
       }
     };
-    const home = process.env.ETHOS_HOME || join(process.env.HOME ?? "", ".ethos");
+    // `os.homedir()` rather than `$HOME`: Windows sets `USERPROFILE`, so reading
+    // `HOME` there yields "" and the agent's home becomes `/.ethos` — a path that
+    // never exists, which reads as "no override on file" and so silently resolves
+    // the port from the shipped config instead of the deployment's own.
+    const home = process.env.ETHOS_HOME || join(os.homedir(), ".ethos");
     const merged = { ...readYaml(join(configDir, "channels.yaml")), ...readYaml(join(home, "channels.yaml")) };
     const port = merged?.web?.http_port;
     if (Number.isInteger(port) && port > 0) return port;
@@ -256,20 +287,65 @@ function probePort(port, timeoutMs = 2000) {
 /**
  * The pid listening on a loopback port, or null.
  *
- * The filter is one argument, `-tiTCP:<port>`, because lsof reads `TCP:8720` as a
- * protocol-and-address pair and `8720` on its own as a *file* to look up — and it
- * exits 0 either way, having simply found nothing. Split into two arguments it
- * answers nothing at all, which is a null that looks exactly like a free port.
+ * On POSIX it is `lsof`, whose filter is one argument, `-tiTCP:<port>`, because
+ * lsof reads `TCP:8720` as a protocol-and-address pair and `8720` on its own as a
+ * *file* to look up — and it exits 0 either way, having simply found nothing.
+ * Split into two arguments it answers nothing at all, which is a null that looks
+ * exactly like a free port.
+ *
+ * Windows has no `lsof`. `netstat -ano` prints one row per socket with the
+ * owning pid in the last column, which is read here for the row that is
+ * LISTENING on the port. `netstat` ships with Windows and needs no PATH
+ * surgery, and the answer is the same one lsof gives on the other platform.
  */
 function pidOnPort(port) {
+  if (WINDOWS) {
+    for (const { port: localPort, pid } of windowsListeners()) {
+      if (localPort === port) return pid;
+    }
+    return null;
+  }
   const found = spawnSync("lsof", [`-tiTCP:${port}`, "-sTCP:LISTEN"], { encoding: "utf8" });
   if (found.error) return null;
   const pid = Number((found.stdout ?? "").trim().split("\n")[0]);
   return Number.isInteger(pid) && pid > 1 ? pid : null;
 }
 
+/** Every TCP listener on Windows, as pid/port pairs, from `netstat -ano`. */
+function windowsListeners() {
+  const found = spawnSync("netstat", ["-ano", "-p", "tcp"], { encoding: "utf8" });
+  if (found.error || typeof found.stdout !== "string") return [];
+  const listeners = [];
+  for (const line of found.stdout.split(/\r?\n/)) {
+    // Proto  Local Address          Foreign Address        State       PID
+    // TCP    127.0.0.1:8720         0.0.0.0:0              LISTENING   1234
+    const columns = line.trim().split(/\s+/);
+    if (columns[0] !== "TCP" || columns[3] !== "LISTENING") continue;
+    const local = columns[1] ?? "";
+    const port = Number(local.slice(local.lastIndexOf(":") + 1));
+    const pid = Number(columns[4]);
+    if (Number.isInteger(port) && port > 0 && Number.isInteger(pid) && pid > 1) {
+      listeners.push({ port, pid });
+    }
+  }
+  return listeners;
+}
+
 /** A pid's own command line, or nothing — the whole of it, however long. */
 function pidCommand(pid) {
+  if (WINDOWS) {
+    // `tasklist` names the image but not its arguments, and the two questions
+    // this feeds — "is it the bridge?" and "is it the agent?" — are about how the
+    // process was invoked. The CIM instance carries the full command line; a
+    // member that has gone is an empty answer rather than an error.
+    const found = spawnSync(
+      "powershell",
+      ["-NoProfile", "-NonInteractive", "-Command",
+       `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}").CommandLine`],
+      { encoding: "utf8" },
+    );
+    return found.error ? "" : (found.stdout ?? "").trim();
+  }
   const found = spawnSync("ps", ["-p", String(pid), "-o", "command="], { encoding: "utf8" });
   return found.error ? "" : (found.stdout ?? "").trim();
 }
@@ -300,11 +376,17 @@ function describePid(pid) {
  * the console script, so those two are the whole of it.
  */
 function isBridgeCommand(command) {
-  return command.includes(BRIDGE_ENTRY) || command.includes("web/server/index.mjs");
+  // A Windows command line separates with `\` where a POSIX one uses `/`, and
+  // the supervisor starts the bridge by absolute path — so both spellings of the
+  // same tail are accepted rather than the one this file happens to be running on.
+  const normalised = command.replace(/\\/g, "/");
+  return normalised.includes(BRIDGE_ENTRY.replace(/\\/g, "/"))
+    || normalised.includes("web/server/index.mjs");
 }
 
 function isAgentCommand(command) {
-  return /(?:-m\s+ethos\b|\/ethos\b|^\S*\/ethos\b|^ethos\b)/.test(command);
+  const normalised = command.replace(/\\/g, "/");
+  return /(?:-m\s+ethos\b|\/ethos\b|^ethos\b)/.test(normalised);
 }
 
 /** Whether a pid belongs to a session this script is entitled to end. */
@@ -371,9 +453,10 @@ function stopRunningAgent() {
     say("-- the supervisor is gone; anything it left behind is dealt with below");
     return;
   }
+  const endIt = WINDOWS ? `taskkill /PID ${pid} /T /F` : `kill ${pid}`;
   die(
     `the agent already running (supervisor pid ${pid}) would not stop, and a new one would fight it for every port.`,
-    "   End it yourself with `kill " + pid + "`, or read what it is saying first: `ethos logs`.",
+    `   End it yourself with \`${endIt}\`, or read what it is saying first: \`ethos logs\`.`,
   );
 }
 
@@ -425,28 +508,60 @@ async function freePort(port, { keepServedPage = false } = {}) {
     // listener and its database connections on the way out, and the kill is for
     // the one that does not — a session that will not let go of its own port is
     // not a reason to fail a start-up that can take it by force.
-    run(["kill", String(pid)], { optional: true });
+    signalPid(pid);
     for (let waited = 0; waited < 6000 && (await probePort(port)).listening; waited += 250) {
       await sleep(250);
     }
     if ((await probePort(port)).listening && isOurs(pid)) {
-      run(["kill", "-9", String(pid)], { optional: true });
+      signalPid(pid, { force: true });
       for (let waited = 0; waited < 4000 && (await probePort(port)).listening; waited += 250) {
         await sleep(250);
       }
     }
   }
   if ((await probePort(port)).listening) {
+    const findIt = WINDOWS ? `netstat -ano | findstr :${port}` : `lsof -iTCP:${port} -sTCP:LISTEN`;
     die(
       `something is still holding ${port} and will not let go of it.`,
-      `   Find it with \`lsof -iTCP:${port} -sTCP:LISTEN\`, or start on another port: ETHOS_WEB_PORT=8721 npm start`,
+      `   Find it with \`${findIt}\`, or start on another port: ETHOS_WEB_PORT=8721 npm start`,
     );
   }
 }
 
-/** Whether a pid is still alive, asked of the kernel rather than of a ps listing. */
+/** Whether a pid is still alive, asked of the kernel without sending a signal. */
 function alive(pid) {
-  return spawnSync("kill", ["-0", String(pid)]).status === 0;
+  try {
+    // Signal 0 is not delivered; it only asks whether the process could be
+    // signalled. Node exposes it on every platform, including the Windows one
+    // where shelling out to `kill -0` finds no such program.
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    // `EPERM` is a process that exists but belongs to another account, which is
+    // still alive; only `ESRCH` means it is gone.
+    return error?.code === "EPERM";
+  }
+}
+
+/**
+ * Ask a pid to stop, then end it, the way its platform spells "stop".
+ *
+ * POSIX has both a polite signal and an unignorable one. Windows has neither:
+ * every signal `process.kill` accepts there becomes `TerminateProcess`, so the
+ * "graceful" and "forced" calls are the same one, and the tree under the pid has
+ * to be taken down separately with `taskkill /T` — a bridge that leaves its
+ * Chromium children behind is a bridge that keeps the port.
+ */
+function signalPid(pid, { force = false } = {}) {
+  if (WINDOWS) {
+    spawnSync("taskkill", ["/PID", String(pid), "/T", ...(force ? ["/F"] : [])], { stdio: "ignore" });
+    return;
+  }
+  try {
+    process.kill(pid, force ? "SIGKILL" : "SIGTERM");
+  } catch {
+    /* already gone */
+  }
 }
 
 /**
@@ -458,12 +573,12 @@ function alive(pid) {
  */
 async function endPid(pid, why) {
   say(`-- stopping ${describePid(pid)}: ${why}`);
-  run(["kill", String(pid)], { optional: true });
+  signalPid(pid);
   for (let waited = 0; waited < 6000 && alive(pid); waited += 250) {
     await sleep(250);
   }
   if (alive(pid)) {
-    run(["kill", "-9", String(pid)], { optional: true });
+    signalPid(pid, { force: true });
     for (let waited = 0; waited < 4000 && alive(pid); waited += 250) {
       await sleep(250);
     }
@@ -481,6 +596,17 @@ async function endPid(pid, why) {
  * ours are the ones the sweep stops.
  */
 function ourListeningPids() {
+  if (WINDOWS) {
+    const seen = new Set();
+    const pids = [];
+    for (const { pid } of windowsListeners()) {
+      if (!seen.has(pid) && isOurs(pid)) {
+        seen.add(pid);
+        pids.push(pid);
+      }
+    }
+    return pids;
+  }
   const found = spawnSync("lsof", ["-tiTCP", "-sTCP:LISTEN"], { encoding: "utf8" });
   if (found.error) return [];
   return (found.stdout ?? "")

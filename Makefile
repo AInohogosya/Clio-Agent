@@ -1,20 +1,28 @@
 .PHONY: install up db-up db-down db-status migrate seed doctor run run-dev status stop logs test test-unit test-integration test-scenarios test-bridge lint interface-install interface-build interface-dev interface tui agent clean
 
-PY := .venv/bin/python
+VENV := .venv
+
+# A virtualenv puts its interpreter in `bin/` on POSIX and in `Scripts/` on
+# Windows, so the POSIX spelling is a path that does not exist on Windows and one
+# that a target written in terms of it would rebuild on every invocation. Both
+# are asked for rather than assumed; `bin` stays the fallback so an empty tree
+# still produces a sensible prerequisite. Override either way it is wrong:
+# `make PY=".venv/Scripts/python.exe" up`.
+PY := $(shell if [ -x "$(VENV)/Scripts/python.exe" ]; then echo "$(VENV)/Scripts/python.exe"; else echo "$(VENV)/bin/python"; fi)
 
 # `ethos up` is the recommended way to start the agent, and it is this target's
 # whole job — creating the virtualenv first when there is not one yet, so `make
 # up` works on a fresh clone the way `./start.sh` still does. `pip install -e .`
 # in any interpreter, then `ethos up`, is the same thing without make.
-.venv/bin/python:
+$(PY):
 	$(MAKE) install
 
-up: .venv/bin/python
+up: $(PY)
 	$(PY) -m ethos up
 
 install:
-	uv venv .venv --python 3.12 || true
-	uv pip install --python .venv/bin/python -e ".[dev]"
+	uv venv $(VENV) --python 3.12 || true
+	uv pip install --python $(PY) -e ".[dev]"
 
 db-up:
 	scripts/ensure_postgres.sh up

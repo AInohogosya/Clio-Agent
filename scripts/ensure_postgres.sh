@@ -10,13 +10,15 @@
 #
 #   1. Docker, via docker-compose.yml (pgvector/pgvector:pg16) — the documented
 #      path, and the one the Makefile talks about.
-#   2. A local PostgreSQL 16: already installed, or installed from Homebrew.
-#      The cluster lives in data/pgdata — gitignored, beside the agent's other
-#      local state, and bound to 127.0.0.1 only. It is left alone by `make
-#      clean`, because it holds the agent's memory; drop it with
+#   2. A local PostgreSQL 16: already installed, or installed from Homebrew on
+#      macOS or from the distro's package manager on Linux. The cluster lives in
+#      data/pgdata — gitignored, beside the agent's other local state, and bound
+#      to 127.0.0.1 only. It is left alone by `make clean`, because it holds the
+#      agent's memory; drop it with
 #      `scripts/ensure_postgres.sh stop && rm -rf data/pgdata`.
 #
-# The only writes outside this repo are the Homebrew packages themselves.
+# The only writes outside this repo are the Homebrew or distro packages
+# themselves, and the pgvector build.
 #
 # Usage: scripts/ensure_postgres.sh [up|stop|status]
 
@@ -151,9 +153,15 @@ can_connect() {
       -d "$PGDATABASE" -tAc 'SELECT 1' >/dev/null 2>&1 && return 0
   fi
   # No psql (the docker path, before any local install): the project's own
-  # driver is the next best witness.
-  if [ -x "$ROOT/.venv/bin/python" ]; then
-    DSN="$dsn" "$ROOT/.venv/bin/python" -c '
+  # driver is the next best witness. Both venv layouts are checked, because
+  # `bin` is a directory Windows does not create and this script runs under
+  # Git-Bash there as happily as under bash anywhere else.
+  local venv_py=""
+  for candidate in "$ROOT/.venv/bin/python" "$ROOT/.venv/Scripts/python.exe"; do
+    if [ -x "$candidate" ]; then venv_py="$candidate"; break; fi
+  done
+  if [ -n "$venv_py" ]; then
+    DSN="$dsn" "$venv_py" -c '
 import asyncio, os, asyncpg
 async def main():
     conn = await asyncpg.connect(os.environ["DSN"])
@@ -183,10 +191,17 @@ usable_sdk() {
 
 find_pg_bin() {
   local candidate
+  # The Homebrew prefixes are macOS; `/usr/lib/postgresql/<major>/bin` is where
+  # Debian, Ubuntu and everything derived from them put it, and `/usr/pgsql-<major>/bin`
+  # is the Fedora/RHEL/Arch shape. A Linux box with PostgreSQL installed has a
+  # perfectly good server on PATH, and a probe that only looked in the two macOS
+  # prefixes answered "not installed" about it.
   for candidate in \
     "$PG_BIN" \
     /opt/homebrew/opt/postgresql@${PG_MAJOR}/bin \
     /usr/local/opt/postgresql@${PG_MAJOR}/bin \
+    /usr/lib/postgresql/${PG_MAJOR}/bin \
+    /usr/pgsql-${PG_MAJOR}/bin \
     /opt/homebrew/bin /usr/local/bin /usr/bin; do
     if [ -n "$candidate" ] && [ -x "$candidate/postgres" ] &&
       "$candidate/postgres" --version 2>/dev/null | grep -qE "PostgreSQL\) ${PG_MAJOR}\."; then
@@ -225,17 +240,61 @@ install_postgres_homebrew() {
   find_pg_bin
 }
 
+# Linux, where Homebrew is not how PostgreSQL arrives. `pgvector` is a single C
+# extension, so a distro that ships the server's `-dev` package plus a build
+# toolchain gets the same result as macOS: the server from the package manager,
+# the extension compiled against it. Only the server is installed here — the
+# extension is `ensure_pgvector`'s job on every platform.
+install_postgres_distro() {
+  local major="$PG_MAJOR"
+  # sudo only when not already root: a container or a CI runner is root and has
+  # no sudo, and asking for it there is a failure about the wrong thing.
+  local elevate=()
+  if [ "$(id -u)" != "0" ] && have sudo; then elevate=(sudo); fi
+  if have apt-get; then
+    say "installing postgresql-${major} via apt (one time, a few minutes)"
+    "${elevate[@]}" apt-get update -qq || return 1
+    "${elevate[@]}" apt-get install -y -qq \
+      "postgresql-${major}" "postgresql-server-dev-${major}" build-essential git \
+      || return 1
+  elif have dnf; then
+    say "installing postgresql-server via dnf (one time, a few minutes)"
+    "${elevate[@]}" dnf install -y -q \
+      "postgresql-server" "postgresql${major}-devel" gcc make git || return 1
+  elif have pacman; then
+    say "installing postgresql via pacman (one time, a few minutes)"
+    "${elevate[@]}" pacman -Sy --noconfirm postgresql || return 1
+  else
+    return 1
+  fi
+  find_pg_bin
+}
+
 ensure_postgres_install() {
   if find_pg_bin; then
     return 0
   fi
-  if ! install_postgres_homebrew; then
-    die "no PostgreSQL ${PG_MAJOR} on this machine, and homebrew is not installed.
+  # Homebrew first because that is where a macOS checkout normally has it, then
+  # the distro package managers, which are the same idea on Linux: install the
+  # server, then `ensure_pgvector` compiles the extension against it. Neither is
+  # assumed, and a machine with neither is told how to fix it in the words of the
+  # machine it actually is.
+  if install_postgres_homebrew || install_postgres_distro; then
+    return 0
+  fi
+  if have brew; then
+    die "no PostgreSQL ${PG_MAJOR} on this machine, and none could be installed.
    Fix it with one of:
      brew install postgresql@${PG_MAJOR}    # what this script would do for you
      install Docker Desktop                 # start.sh then uses docker-compose.yml
      export ETHOS_DSN=postgresql://user:pass@host:5432/db   # a Postgres you already run"
   fi
+  die "no PostgreSQL ${PG_MAJOR} on this machine, and none could be installed.
+   Fix it with one of:
+     apt-get install postgresql-${PG_MAJOR} postgresql-server-dev-${PG_MAJOR} build-essential git
+     dnf install postgresql-server postgresql${PG_MAJOR}-devel gcc make git
+     install Docker                          # this script then uses docker-compose.yml
+     export ETHOS_DSN=postgresql://user:pass@host:5432/db   # a Postgres you already run"
 }
 
 # pgvector is a C extension, and Homebrew's current formula is built for newer

@@ -115,6 +115,26 @@ class TelegramAdapter(ChannelAdapter):
             return False
         return True
 
+    @staticmethod
+    def is_transient(exc: BaseException) -> bool:
+        """Network blips are worth another go; a refusal by Telegram is not.
+
+        The library raises `NetworkError` for both a 502 from the API and a chat that
+        no longer exists, and it makes `BadRequest` a *subclass* of `NetworkError` —
+        so the obvious `isinstance(exc, NetworkError)` retries a permanently
+        impossible request until the attempt budget runs out, every time, for a door
+        that was never going to open. Checking `BadRequest` out first is what keeps
+        the retry curve pointed at the failures it can actually fix.
+
+        The import is deferred for the same reason the one in `start` is: this
+        module has to be importable without the library present.
+        """
+        from telegram import error as tg_error
+
+        if isinstance(exc, tg_error.BadRequest):
+            return False
+        return isinstance(exc, (OSError, TimeoutError, tg_error.NetworkError))
+
     async def start(self) -> None:
         # All three from `telegram.ext`, and that is not tidiness. `Application`,
         # `MessageHandler` and `filters` have never been top-level names in

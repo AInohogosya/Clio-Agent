@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import errno
 import hashlib
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -19,7 +20,14 @@ from ethos.comms.adapters.telegram import TelegramAdapter
 from ethos.comms.adapters.web import WebAdapter
 from ethos.comms.adapters.whatsapp import WhatsappAdapter
 from ethos.comms.webhook import WebhookReceiver
-from ethos.config import ChannelsConfig, EthosConfig, channels_path, config_dir, load_config
+from ethos.config import (
+    ChannelsConfig,
+    EthosConfig,
+    channels_path,
+    config_dir,
+    load_channels_config,
+)
+from ethos.observability import exhaustive
 from ethos.observability.logger import get_logger
 from ethos.schemas.events import EventKind
 from ethos.schemas.messages import Message
@@ -42,6 +50,43 @@ WATCH_INTERVAL_S = 2.0
 # long a door could be shut on a stamp that was wrong. Sixteen seconds at the default
 # interval, for one parse — cheap enough to be worth the certainty.
 RESCAN_EVERY_POLLS = 8
+
+# How hard to try, before a door is written off until the configuration changes.
+#
+# This exists because of a failure that looks like misconfiguration and is not. A
+# `502` from an API followed by one timed-out read is a fact about those two
+# seconds; treated as permanent it closed a Telegram door that had worked all
+# morning, and nothing reopened it — `ethos-comms` stayed alive and healthy, so the
+# supervisor, which restarts children that *exit*, never heard about it. The bot
+# answered `getMe` again on the next attempt and the door was fine.
+#
+# Four attempts over roughly seven seconds covers that without turning a genuinely
+# broken door into a long stall: the first retry is a second out, which is inside
+# the window most of these blips last, and the last wait is capped so the doors
+# queued behind this one are not held open indefinitely.
+# How hard to try, before a door is written off until a later poll.
+#
+# This exists because of a failure that looks like misconfiguration and is not. A
+# `502` from an API followed by one timed-out read is a fact about those two
+# seconds; treated as permanent it closed a Telegram door that had worked all
+# morning, and nothing reopened it — `ethos-comms` stayed alive and healthy, so the
+# supervisor, which restarts children that *exit*, never heard about it. The bot
+# answered `getMe` again on the next attempt and the door was fine.
+#
+# These are the first and last waits of an exponential that grows per consecutive
+# failure, not a fixed cooldown. The fast end is what recovers the blip above
+# without anybody noticing; the slow end is what stops a revoked token writing a
+# traceback thirty times a minute, because a log that manufactures its own noise is
+# a log nobody reads — which is how the original outage stayed invisible for forty
+# minutes.
+DOOR_RETRY_BASE_S = 2.0
+DOOR_RETRY_MAX_S = 300.0
+
+# Where a *permanent* failure enters the same curve. Sixty seconds is not a
+# guess about how long a revoked token stays revoked; it is a guess about how long
+# somebody waits before deciding the agent is broken. The door still comes back on
+# its own the moment the token is fixed.
+DOOR_RETRY_PERMANENT_S = 60.0
 
 
 def _channel_files_stamp(config: EthosConfig) -> tuple:
@@ -160,6 +205,17 @@ class CommsHost:
         # to get right and a reload must not quietly change the answer.
         self._listen = True
         self._started = False
+        # Doors that are configured, present in `adapters`, and shut. Kept so a door
+        # that lost a fight with the network on startup is retried on a later poll
+        # rather than being written off until somebody edits the configuration. The
+        # retry inside `_start_one` covers a blip lasting seconds; this covers the
+        # door that was still down when that budget ran out.
+        self._failed: set[str] = set()
+        # When each shut door may be tried again, by `time.monotonic`. Paired with
+        # `_failed` so a door nobody is retrying costs nothing to check.
+        self._retry_after: dict[str, float] = {}
+        # Consecutive failed attempts per door, which is what the growth above counts.
+        self._strikes: dict[str, int] = {}
         # Present only when a push channel asked for it. One listener for all of
         # them, because a tunnel exposes one URL and one port is one thing to
         # forward.
@@ -700,9 +756,7 @@ class CommsHost:
         self._fingerprint = plan.fingerprint()
         self._started = True
         for name in list(self.adapters):
-            await self._start_one(name)
-        if listen:
-            for name in list(self.adapters):
+            if await self._start_one(name) and listen:
                 await self._listen_one(name)
         await self._apply_receiver(plan)
 
@@ -726,7 +780,7 @@ class CommsHost:
         plan = self.plan(channels)
         fingerprint = plan.fingerprint()
         if fingerprint == self._fingerprint:
-            return False
+            return await self._retry_shut_doors()
 
         closing: list[str] = []
         for name in list(self.adapters):
@@ -746,7 +800,8 @@ class CommsHost:
 
         if self._listen:
             for name in opening:
-                await self._listen_one(name)
+                if name not in self._failed:
+                    await self._listen_one(name)
         await self._apply_receiver(plan)
 
         # Only now, once the doors are the ones that were asked for. Until this line
@@ -759,43 +814,136 @@ class CommsHost:
             opened=sorted(opening), closed=sorted(closing),
             listening=self._listen, receiver=bool(plan.wants_receiver),
         )
+        exhaustive.log_settings_change(
+            actor="settings", what="channels.reload",
+            before=sorted(self.adapters), after=sorted(plan.adapters),
+            detail={"opened": sorted(opening), "closed": sorted(closing)},
+        )
         return True
 
-    async def _start_one(self, name: str) -> None:
+    async def _start_one(self, name: str) -> bool:
         """Start one adapter, and never let its failure cost another door its start.
 
         Telegram refusing to send because its token was revoked is not a reason for
         WhatsApp to stop listening, so every exception ends here rather than
         unwinding the loop around it.
+
+        One attempt, not a retry loop, and that is load-bearing. The doors are
+        opened in sequence, so a wait here is a wait for every door queued behind
+        this one — an inline backoff turns one dead channel into a stalled reload
+        that stops a healthy one being opened at all. A door that fails is recorded
+        shut and `_retry_shut_doors` picks it up on a later poll, which costs the
+        other doors nothing.
+
+        Returns whether the door opened. False is a *door that is shut*, which the
+        caller acts on — it does not go on to `listen`, because polling a door that
+        never initialised produces a second, misleading failure about an uninitialised
+        updater and buries the one that actually explains the outage.
         """
         adapter = self.adapters.get(name)
         if adapter is None:
-            return
+            return False
         try:
             await adapter.start()
-            logger.info("comms.adapter_started", adapter=name)
-        except OSError as exc:
-            # The one failure the start/listen split is *for*. `_listen=False` says
-            # this process sends and does not hold the doors, and `ethos-comms` is
-            # already holding them — so a port that is taken is the design working,
-            # not a fault. It was logged as an error with a traceback on every start,
-            # which is how a wall of red in the log teaches somebody to stop reading
-            # the log, and the log is where the start-up failures worth reading are.
-            if not self._listen and exc.errno == errno.EADDRINUSE:
+        except Exception as exc:
+            if isinstance(exc, OSError) and exc.errno == errno.EADDRINUSE and not self._listen:
+                # The one failure the start/listen split is *for*. `_listen=False` says
+                # this process sends and does not hold the doors, and `ethos-comms` is
+                # already holding them — so a port that is taken is the design working,
+                # not a fault. It was logged as an error with a traceback on every
+                # start, which is how a wall of red in the log teaches somebody to
+                # stop reading the log, and the log is where the start-up failures
+                # worth reading are.
                 logger.info("comms.adapter_door_held_elsewhere", adapter=name)
-            else:
-                logger.exception("comms.adapter_start_failed", adapter=name)
-        except Exception:
+                return False
+            # When this process *is* the listener, a taken port is a real fault and
+            # arrives here with everything else.
             logger.exception("comms.adapter_start_failed", adapter=name)
+            self._mark_shut(name, transient=adapter.is_transient(exc))
+            return False
+        logger.info("comms.adapter_started", adapter=name)
+        self._mark_open(name)
+        return True
 
-    async def _listen_one(self, name: str) -> None:
+    async def _listen_one(self, name: str) -> bool:
         adapter = self.adapters.get(name)
         if adapter is None:
-            return
+            return False
         try:
             await adapter.listen()
-        except Exception:
+        except Exception as exc:
             logger.exception("comms.adapter_listen_failed", adapter=name)
+            self._mark_shut(name, transient=adapter.is_transient(exc))
+            return False
+        self._mark_open(name)
+        return True
+
+    def _mark_shut(self, name: str, *, transient: bool) -> None:
+        """Record a door that is configured and closed, and when to try it again.
+
+        The wait grows with consecutive failures, and `transient` decides where in
+        that curve this failure starts. A door that lost one startup race with a
+        flaky network should be back within seconds, and a door whose token has
+        been revoked will fail identically every time it is tried — starting that
+        one at the fast end writes a traceback every few seconds, and a log that
+        manufactures its own noise is a log nobody reads, which is how the outage
+        this exists to prevent stayed invisible for forty minutes.
+
+        So the two cases differ only in where they enter the curve, not in whether
+        they are ever retried: a revoked token is a fact an operator can change
+        from outside, and the door should come up by itself when they do.
+        """
+        strikes = self._strikes.get(name, 0) + 1
+        self._strikes[name] = strikes
+        base = DOOR_RETRY_BASE_S if transient else DOOR_RETRY_PERMANENT_S
+        self._failed.add(name)
+        self._retry_after[name] = time.monotonic() + min(
+            base * 2 ** (strikes - 1), DOOR_RETRY_MAX_S)
+
+    def _mark_open(self, name: str) -> None:
+        self._failed.discard(name)
+        self._retry_after.pop(name, None)
+        self._strikes.pop(name, None)
+
+    async def _retry_shut_doors(self) -> bool:
+        """Try the doors that are configured and still shut. True if one opened.
+
+        The recovery half of the fix, and the half that outlives a single start: a
+        network that was down when the process came up, a machine resuming from
+        sleep with no route yet, an API having a bad hour. None of those are fixed
+        by editing the configuration, and without this they stayed shut for the life
+        of the process — which is the failure this exists to end.
+
+        It deliberately ignores the fingerprint. Every other path through `reconcile`
+        is about the configuration having changed, and this is the one case where it
+        has not changed and something still needs doing, which is precisely what a
+        fingerprint cannot see.
+
+        Each door's wait is its own and was already decided when it failed, so a
+        door that is down is retried on its own schedule rather than on the poll's.
+        """
+        now = time.monotonic()
+        due = sorted(
+            name for name in self._failed
+            if name in self.adapters and now >= self._retry_after.get(name, 0.0)
+        )
+        if not due:
+            return False
+        reopened: list[str] = []
+        for name in due:
+            if not await self._start_one(name):
+                logger.info("comms.shut_door_still_shut", door=name,
+                            retry_in_s=round(self._retry_after[name] - time.monotonic(), 1))
+                continue
+            if self._listen and not await self._listen_one(name):
+                logger.info("comms.shut_door_still_shut", door=name,
+                            retry_in_s=round(self._retry_after[name] - time.monotonic(), 1))
+                continue
+            reopened.append(name)
+        if reopened:
+            logger.info("comms.shut_doors_reopened", doors=reopened)
+            return True
+        return False
 
     async def _close_one(self, name: str) -> None:
         """Close one door, and forget it either way.
@@ -807,6 +955,7 @@ class CommsHost:
         """
         adapter = self.adapters.pop(name, None)
         self._signatures.pop(name, None)
+        self._mark_open(name)
         if adapter is None:
             return
         try:
@@ -886,9 +1035,17 @@ class CommsHost:
                 continue
             stamp, polls = current, 0
             try:
-                fresh = load_config().channels
+                # The doors alone, not the whole configuration. A reload that
+                # parsed everything would let a broken file that holds no door
+                # — models, people, pricing — hold these shut, which is how a
+                # run of unreadable reloads once pointed at channels.yaml while
+                # the proof was somewhere else entirely.
+                fresh = load_channels_config()
             except Exception:
-                logger.warning("comms.channels_reload_unreadable")
+                # With the traceback, not without. An event name that says only
+                # "unreadable" leaves a person staring at channels.yaml when the
+                # exception says which file actually failed.
+                logger.exception("comms.channels_reload_unreadable")
                 continue
             if self._fingerprint is None or fresh is None:
                 continue
@@ -917,6 +1074,24 @@ def inbound_to_bus(bus: Any, social: Any) -> InboundHandler:
     """The canonical inbound pipeline: record, then publish as a percept event."""
 
     async def handler(message: Message) -> None:
+        # Every message a person sends, in full, before anything downstream can
+        # drop or truncate it: who, on which channel, when, and every field the
+        # adapter carried.
+        exhaustive.log_user_action(
+            actor=message.sender_who(),
+            action="message.send",
+            channel=message.channel,
+            detail={
+                "message_id": str(message.id),
+                "person_id": message.person_id,
+                "conversation_key": message.conversation_key,
+                "sender_name": message.sender_name,
+                "sender_username": message.sender_username,
+                "text": message.text,
+                "is_untrusted": message.person_id is None,
+                "message": message.model_dump(mode="json"),
+            },
+        )
         await social.record_inbound(message)
         await bus.publish(
             EventKind.INBOUND_MSG,

@@ -107,7 +107,7 @@ export function IntentionNode({ node, depth, t, now, language, onClose }: Intent
           </div>
           {closable ? (
             <button
-              className="shrink-0 self-center rounded-md border border-transparent px-2 py-1 text-[0.68rem] text-[var(--ink-faint)] opacity-0 transition hover:border-[var(--danger-line)] hover:text-[var(--danger)] group-hover:opacity-100 focus:opacity-100"
+              className="shrink-0 self-center rounded-md border border-transparent px-2 py-1 text-[0.68rem] text-[var(--ink-faint)] opacity-100 transition hover:border-[var(--danger-line)] hover:text-[var(--danger)] group-hover:opacity-100 focus:opacity-100"
               onClick={() => onClose(node.id)}
               title={t('intentionClose')}
               type="button"

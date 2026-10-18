@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from ethos.db import Database, decode_env_attrs
+from ethos.observability import exhaustive
 from ethos.observability.logger import get_logger
 
 logger = get_logger("ethos.core.control")
@@ -296,6 +297,10 @@ class ControlPlane:
         self._after_change(before)
         await self._persist(changed)
         logger.info("control.command", action=action, by=by)
+        exhaustive.log_settings_change(
+            actor=by, what=f"lifecycle.{action}",
+            before=before, after=self.snapshot(),
+        )
         return {"ok": True, "action": action, "by": by}
 
     def end(self, by: str = "signal") -> None:

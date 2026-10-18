@@ -51,6 +51,20 @@ models:
   # rather than a rule they have to trust.
   "nvidia/nemotron-3.5-super-vl:free": { input: 0.0, cached_input: 0.0, cache_write: 0.0, output: 0.0 }
 
+  # The Nemotron 3 Super hosted endpoint is NVIDIA's free developer API access,
+  # governed by the NVIDIA API Trial Terms — the same fact the `free_base_urls`
+  # entry below states for the endpoint. Stated here by name as well, because
+  # this is the model a base_model.yaml pins by default, and a pin priced at a
+  # guess is a spend report built on a fiction.
+  # Source: https://build.nvidia.com/nvidia/nemotron-3-super-120b-a12b
+  "nvidia/nemotron-3-super-120b-a12b": { input: 0.0, cached_input: 0.0, cache_write: 0.0, output: 0.0 }
+
+  # Step 5 preview, on the same NVIDIA developer endpoint as the Nemotron above
+  # (`https://integrate.api.nvidia.com/v1`, named under `free_base_urls`), priced
+  # by name for the same reason: a base model pinned to it charges by name, and
+  # the price table is the one place that says what a name costs.
+  "stepfun-ai/step-5-preview": { input: 0.0, cached_input: 0.0, cache_write: 0.0, output: 0.0 }
+
   # Groq. Llama 3.3 70B moved behind a sales quote on 2026-08-26; these are the
   # last published self-serve rates.
   # Source: https://groq.com/pricing

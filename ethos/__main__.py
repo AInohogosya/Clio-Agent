@@ -427,6 +427,10 @@ def worker() -> None:
         embedder = build_role_embedder("worker", config)
         memory = MemoryStore(db, embedder, config)
         gateway_service = GatewayService(config, db=db, embedder=embedder)
+        # A delegated thread runs the same solver loop the core does, so it fails
+        # over the same ladder: a dead local entry here would strand a thread on
+        # a 404 the loop must not route around.
+        await gateway_service.probe_local_endpoints()
         gateway = DirectGateway(gateway_service)
 
         async def handle(event) -> None:

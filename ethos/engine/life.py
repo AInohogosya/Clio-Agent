@@ -3,14 +3,14 @@ from __future__ import annotations
 import asyncio
 import time
 from collections import deque
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
 from ethos.config import EthosConfig
 from ethos.engine.attention import Attention
 from ethos.engine.drives import DriveInputs, Motivation
-from ethos.engine.rhythm import RhythmController
+from ethos.engine.rhythm import RhythmController, backoff_seconds
 from ethos.engine.states import State, StateMachine
 from ethos.engine.workspace import WorkspaceAssembler
 from ethos.gateway.service import format_wait as _format_retry_wait
@@ -18,7 +18,8 @@ from ethos.observability import metrics
 from ethos.observability.logger import bind_context, get_logger
 from ethos.schemas.context import TurnKind
 from ethos.schemas.events import Event, EventKind, Percept
-from ethos.schemas.gsl import Decision, Focus, Outcome, SolverOutcome
+from ethos.schemas.gsl import Decision, Focus, Outcome, SolverOutcome, StageNotice
+from ethos.schemas.messages import Urgency
 from ethos.schemas.reverie import ReverieResult
 from ethos.social.conversation import open_conversations, render_conversations
 
@@ -42,6 +43,28 @@ PARKED_HEARTBEAT_S = 30.0
 # of the agent's own reasoning if something ever wants a longer look, while
 # being a number of strings rather than an unbounded number of them.
 THOUGHT_BUFFER = 256
+
+
+def _stage_as_dict(notice: StageNotice) -> dict[str, Any]:
+    """A stage notice as the plain dict `Decision.stage` carries.
+
+    Not `as_dict()`, which is the one-line rendering for a prompt and drops the
+    address. The decision has to cross into `act` and come back out to the store
+    and to the outbound pipeline, so it needs `notice_id` to settle the row,
+    `person_id` and `channel` to deliver on, and `attempts` to work out the wait —
+    the delivery address is the point, not a detail of the rendering.
+    """
+    return {
+        "notice_id": str(notice.id),
+        "intention_id": str(notice.intention_id),
+        "stage": notice.stage,
+        "title": notice.title,
+        "detail": notice.detail,
+        "person_id": notice.person_id,
+        "channel": notice.channel,
+        "conversation_key": notice.conversation_key,
+        "attempts": notice.attempts,
+    }
 
 
 def _tail(buffer: deque[str], n: int) -> list[str]:
@@ -460,6 +483,34 @@ class Life:
             self._inbound_deferrals = 0
             return Decision(kind="advance_goal", tier="T2", rationale="advance current intention")
 
+        # A word somebody is owed, spent on the pass after the one that earned it.
+        #
+        # This branch did not exist, and the absence is the whole of the second
+        # complaint. The loop had exactly two ways to speak: answer a message that
+        # arrived, or be a solver step that happened to call `comm.send`. So a
+        # person who said "tell me when it's done" got told when it was done only
+        # if some step's model, unprompted, decided to mention it -- a coin the
+        # person never sees and cannot predict, which is what "sometimes" is from
+        # the outside. The intention carried the outcome and the episode log
+        # carried the fact, and nothing anywhere joined them to the conversation.
+        #
+        # It sits below an inbound message and above working a goal, and both of
+        # those placements are load-bearing. Below the message, because a person
+        # who has just written is owed an answer more than the agent is owed its
+        # own follow-up. Above the goal, because a goal holds focus until it
+        # reaches a terminal state, so a branch below it is a branch this loop
+        # never reaches: a task that runs for a day would keep the notice out of
+        # every pass for a day. It is one pass and one model call per stage, so
+        # what it costs a goal is bounded and what it costs a promise is not
+        # keeping it.
+        owed = await self._due_stage_notice()
+        if owed is not None:
+            self.states.transition(State.NOTIFYING, "a stage somebody is owed an answer on")
+            return Decision(
+                kind="notify", tier="T2", stage=_stage_as_dict(owed),
+                rationale=f"tell {owed.person_id} that '{owed.title}' reached {owed.stage}",
+            )
+
         # A social focus exists to answer one message. With no message pending
         # there is nothing to deliberate, so this used to return a decision that
         # matched no branch in `act` -- a cycle spent entirely on producing
@@ -581,6 +632,8 @@ class Life:
         elif decision.kind == "social" and decision.social is not None:
             commissioned = await self._act_social(decision.social)
             outcome.commission = commissioned
+        elif decision.kind == "notify" and decision.stage is not None:
+            outcome.ok = await self._notify_stage(decision.stage)
         elif decision.kind == "mind_wander":
             await self._mind_wander()
         elif decision.kind == "reverie":
@@ -692,15 +745,23 @@ class Life:
         if decision.creates_intention and decision.intention_spec:
             spec = decision.intention_spec
             title = str(spec.get("title") or "commission").strip() or "commission"
-            intention_id = await self.memory.create_intention(
-                title=title,
-                desired_end_state=spec.get("desired_end_state", ""),
-                kind="commitment",
-                origin="commission",
-                commissioned_by=message.person_id,
-                deadline=_deadline_from_spec(spec.get("deadline_iso")),
-            )
-            commission = {"intention_id": str(intention_id), "title": title}
+            adopted = await self._already_commissioned(title, message.person_id)
+            if adopted is not None:
+                # The work is already on the books and the person is asking again
+                # because it has not visibly happened. Adopting the open row is
+                # the whole fix; see `_already_commissioned` for what creating a
+                # second one costs.
+                commission = {"intention_id": str(adopted.id), "title": adopted.title}
+            else:
+                intention_id = await self.memory.create_intention(
+                    title=title,
+                    desired_end_state=spec.get("desired_end_state", ""),
+                    kind="commitment",
+                    origin="commission",
+                    commissioned_by=message.person_id,
+                    deadline=_deadline_from_spec(spec.get("deadline_iso")),
+                )
+                commission = {"intention_id": str(intention_id), "title": title}
         # What this turn has to say, one message per text.
         #
         # A deliberation writes its reply as a list of short texts, and the list
@@ -713,12 +774,31 @@ class Life:
         # The fix that holds is not the join but the reference: every text is sent
         # carrying `in_reply_to=message.id`, so each delivery names the question it
         # answers and no text is an answer to nothing. What that buys back is the
-        # shape the agent chose — a thought and its aside arrive as the two messages
-        # they were written as, the way a person sends them — and what it keeps is
-        # the invariant the join existed for: nothing is dropped, nothing is decided
-        # twice, and every message on the surface answers the message it followed.
+        # shape the agent chose — a thought and its aside arrive as the messages
+        # they were written as, however many of those there are, the way a person
+        # sends them — and what it keeps is the invariant the join existed for:
+        # nothing is dropped, nothing is decided twice, and every message on the
+        # surface answers the message it followed.
         # An entry with no words in it is not a message, so it is not sent as one.
-        texts = [text.strip() for text in decision.reply_texts if text and text.strip()]
+        #
+        # Each text can also name the breath before it: `reply_delays_s[i]` is how
+        # long to wait before text i goes out, so a reply written as several
+        # messages can arrive the way a person sends several — a gap between them
+        # rather than one burst. The wait happens here, inside the turn, and not
+        # on a timer elsewhere, because the turn is the only thing that knows the
+        # reply is not finished: the message is marked handled only after the last
+        # text is out, so a restart mid-reply re-deliberates rather than
+        # forgetting the tail. Each gap is clamped to `reply_gap_max_s`, because
+        # the number came out of a model and a misread unit must cost seconds,
+        # not an afternoon of a held message.
+        pairs: list[tuple[str, float]] = []
+        for index, text in enumerate(decision.reply_texts):
+            if not text or not text.strip():
+                continue
+            delays = decision.reply_delays_s
+            delay = float(delays[index]) if index < len(delays) else 0.0
+            pairs.append((text.strip(), max(0.0, delay)))
+        texts = [text for text, _ in pairs]
         # Nothing to say is the same decision either way round: whether the action
         # was `act_silently` or a reply that turned out to be blank, the turn ends
         # in a declared silence and nothing goes out.
@@ -739,7 +819,12 @@ class Life:
                     decision.reason = str(failed["reason"])[:500]
             await self._announce_decline(message, decision)
             return commission
-        for text in texts:
+        gap_ceiling = max(0.0, float(self.config.social.reply_gap_max_s))
+        for index, (text, delay) in enumerate(pairs):
+            if index and delay > 0:
+                waited = min(delay, gap_ceiling)
+                logger.info("life.reply_paced", gap_s=round(waited, 2), next=text[:80])
+                await asyncio.sleep(waited)
             await self.deps.comms_out.send(
                 person_id=message.person_id,
                 channel=message.channel,
@@ -751,6 +836,233 @@ class Life:
             await self._record_outbound_turn(message, text)
         await self.deps.social.mark_handled(message, decided)
         return commission
+
+    async def _already_commissioned(self, title: str, commissioned_by: str | None) -> Any | None:
+        """The open row for this same work, when the owner is asking for it again.
+
+        Asking twice is what a person does when the first ask did not visibly
+        happen, and it used to be answered by writing the promise down twice. The
+        cost was not the table. Progress through a goal lives in
+        `intention.resume_state`, so a second intention is a second attempt at
+        stage one: it understands again, plans again, and steps again from
+        nothing — and `_commission_focus` hands the next cycle to it, abandoning
+        whatever the first one had worked out.
+
+        That is not a slow agent. It is an agent that cannot finish, because every
+        time it tells the owner the work is under way it has also thrown away the
+        part where it found out what the work is. One request to run a sub-agent
+        produced three intentions with the same title, `understanding` written to
+        each in turn, no plan ever made and no tool ever called — the work
+        restarted at a rate faster than a single stage could be completed.
+
+        So the promise is made once and resumed. The row that is already open
+        keeps its `resume_state`, gets the focus, and the reply answers the person
+        who asked rather than the bookkeeping behind it.
+
+        Returns `None` — which is the ordinary case, and the one where work really
+        is new — when nothing open matches. A store without the lookup, or one
+        that could not answer, degrades to creating the row: the duplicate is a
+        lesser failure than refusing work that was genuinely asked for, and this
+        runs inside a cycle that has already answered somebody.
+        """
+        finder = getattr(self.memory, "find_open_intention", None)
+        if finder is None:
+            return None
+        try:
+            existing = await finder(title, commissioned_by=commissioned_by)
+        except Exception:
+            logger.warning("life.commission_lookup_failed", title=title[:120])
+            return None
+        if existing is None:
+            return None
+        resume = existing.resume_state or {}
+        logger.info(
+            "life.commission_resumed",
+            intention=str(existing.id),
+            title=existing.title,
+            status=existing.status,
+            understood=bool(resume.get("understanding")),
+            planned=bool(resume.get("plan")),
+        )
+        return existing
+
+    # ----------------------------------------------------- stage notices
+
+    async def _due_stage_notice(self) -> Any | None:
+        """The oldest word this agent still owes somebody, or None.
+
+        Asked of the store rather than tracked here, because it has to survive a
+        restart: the debt is somebody's, not this process's, and an agent that
+        forgets it on restart has kept the record of the work and lost the reason
+        to speak. The store also bounds how often it is retried, so a channel that
+        cannot deliver comes back on a curve rather than every tick.
+
+        A notice with nobody to deliver to is skipped rather than attempted. The
+        store already declines to write one for work nobody commissioned, so this
+        is the belt to that braces: a row without an address cannot be sent on,
+        and taking a pass to discover that would spend the pass and leave the debt.
+        """
+        getter = getattr(self.memory, "due_stage_notices", None)
+        if getter is None or not hasattr(self.deps.social, "compose_stage_notice"):
+            # A store without notices, or a social layer without the composer, is a
+            # deployment that has neither. Taking the pass and failing in `act`
+            # would spend a cycle to produce nothing and leave the debt owed, which
+            # is the same silent drop the branch exists to remove — so the branch
+            # does not open at all.
+            return None
+        try:
+            due = await getter(limit=1)
+        except Exception:
+            logger.warning("life.stage_notice_read_failed")
+            return None
+        if not due:
+            return None
+        notice = due[0]
+        return notice if getattr(notice, "person_id", None) else None
+
+    async def _notify_stage(self, stage: dict[str, Any]) -> bool:
+        """Say the one thing this stage notice is for, in the agent's own words.
+
+        Four things happen here and each is a decision rather than plumbing.
+
+        **The words are composed, not assembled.** `compose_stage_notice` asks the
+        model, against a prompt written for opening a conversation rather than
+        answering one. Nothing in this program sends a person a sentence nobody
+        chose, and that is not a style preference: the transcript cannot tell a
+        composed line from a real reply, so a canned one is indistinguishable from
+        a lie told with a straight face.
+
+        **The send names the intention.** That is what makes the promised-update
+        rules apply downstream -- the digest window and the unanswered check are
+        both skipped, because both ask whether the agent is *starting* a
+        conversation, and this is not one. It is the answer to something it already
+        said.
+
+        **"Sent" is not the same as delivered, and only the first clears the
+        debt.** A send that comes back `held`, `suppressed` or `failed` leaves the
+        notice owed, with the reason recorded and a wait set — because a promise
+        that failed once should be tried again and a promise that fails forever
+        should stop being tried at the tick rate, and both need the row to say
+        which happened.
+
+        **The debt is eventually abandoned, explicitly.** Past the attempt cap the
+        notice is marked delivered with the exhaustion recorded rather than left
+        owed. That is the one outcome that is not "the person was told", and it is
+        chosen over the alternative on purpose: an unbounded retry loop is an
+        outage that looks like a notification, and a settled row is a thing an
+        operator can see and act on, where a row stuck at `attempts: 400` is not.
+        """
+        notice_id = stage.get("notice_id")
+        text = await self.deps.social.compose_stage_notice(stage, preview=self._preview())
+        if not text:
+            return await self._settle_stage_notice(
+                notice_id, stage, delivered=False,
+                detail="there was nothing worth saying",
+            )
+        person_id = stage.get("person_id")
+        channel = stage.get("channel") or "web"
+        try:
+            result = await self.deps.comms_out.send(
+                person_id=person_id,
+                channel=channel,
+                text=text,
+                urgency=Urgency.normal.value,
+                conversation_key=stage.get("conversation_key"),
+                in_reply_to=None,
+                intention_id=stage.get("intention_id"),
+            )
+        except Exception as exc:
+            logger.warning("life.stage_notice_send_failed", error=str(exc)[:200])
+            return await self._settle_stage_notice(
+                notice_id, stage, delivered=False, detail=f"the send raised: {exc}"[:200],
+            )
+        status = str((result or {}).get("status") or "sent")
+        if status in ("sent", "queued"):
+            # `queued` clears the debt because the words are on their way and the
+            # digest owns them from here; a queued entry that the digest later
+            # refuses is a gap in the digest's own gates, not in the notice.
+            await self._settle_stage_notice(
+                notice_id, stage, delivered=True, detail=text,
+                delivery={"status": status, "detail": (result or {}).get("detail")},
+            )
+            await self._record_outbound_notice_turn(stage, text)
+            return True
+        await self._settle_stage_notice(
+            notice_id, stage, delivered=False, detail=f"{status}: {text}"[:300],
+            delivery=result,
+        )
+        return False
+
+    async def _settle_stage_notice(
+        self, notice_id: Any, stage: dict[str, Any], *, delivered: bool,
+        detail: str = "", delivery: dict[str, Any] | None = None,
+    ) -> bool:
+        """Settle one notice, with the wait or the exhaustion worked out here.
+
+        The store counts the attempt and stamps the next one; the curve is decided
+        in one place so every path that fails a notice waits the same amount. The
+        attempt cap is the one thing here that is not about waiting: past it the
+        notice is settled as owed-and-abandoned, which stops the retry and leaves
+        the reason in the row.
+        """
+        setter = getattr(self.memory, "mark_stage_notice", None)
+        if setter is None or notice_id is None:
+            return delivered
+        attempts = int(stage.get("attempts") or 0) + 1
+        cfg = self.config.social
+        payload = {"detail": detail, **(delivery or {})}
+        if delivered:
+            try:
+                await setter(notice_id, delivered=True, delivery=payload)
+            except Exception:
+                logger.warning("life.stage_notice_settle_failed")
+                return False
+            return True
+        if attempts >= int(cfg.stage_notice_max_attempts):
+            payload["abandoned"] = (
+                f"gave up after {attempts} attempts; the person was never told"
+            )
+            logger.warning(
+                "life.stage_notice_abandoned", attempts=attempts,
+                stage=str(stage.get("stage") or ""), detail=detail[:200],
+            )
+            try:
+                await setter(notice_id, delivered=True, delivery=payload)
+            except Exception:
+                logger.warning("life.stage_notice_settle_failed")
+            return False
+        wait_s = backoff_seconds(
+            attempts - 1,
+            base_s=float(cfg.stage_notice_backoff_s),
+            max_s=float(cfg.stage_notice_backoff_max_s),
+            jitter=float(cfg.stage_notice_backoff_jitter),
+        )
+        try:
+            await setter(
+                notice_id, delivered=False, delivery=payload,
+                next_attempt_at=datetime.now(UTC) + timedelta(seconds=wait_s),
+            )
+        except Exception:
+            logger.warning("life.stage_notice_defer_failed")
+        return False
+
+    async def _record_outbound_notice_turn(self, stage: dict[str, Any], text: str) -> None:
+        """Keep the message in the agent's own thread, as any other send is.
+
+        Without this the agent's record of the conversation and the transcript
+        disagree about whether it said the thing — which is the same class of gap
+        as a sent message the agent cannot see, and produces the identical
+        symptom: a reply asserting something was never done.
+        """
+        await self._append_turn(
+            TurnKind.outbound.value,
+            f"told {stage.get('person_id') or 'someone'} "
+            f"'{str(stage.get('title') or '')[:80]}' reached {stage.get('stage')}",
+            detail={"text": text, "person_id": stage.get("person_id"),
+                    "channel": stage.get("channel"),
+                    "intention_id": stage.get("intention_id")},
+            conversation_key=stage.get("conversation_key"),
+        )
 
     # ------------------------------------------------- conversation context
 

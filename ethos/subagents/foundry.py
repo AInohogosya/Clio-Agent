@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from ethos.observability.logger import get_logger
+from ethos.platform import venv_python
 from ethos.subagents.base import (
     STATUS_BLOCKED,
     STATUS_DONE,
@@ -139,8 +140,7 @@ class FoundrySubAgent(SubAgent):
 
     def _python_and_env(self, workdir: str | None) -> tuple[Path, dict[str, str], Path]:
         repo = self.repo_root(workdir)
-        venv_python = self.root / ".venv" / "bin" / "python"
-        python = venv_python if venv_python.exists() else Path(sys.executable)
+        python = venv_python(self.root) or Path(sys.executable)
         env = self.child_env({
             "FOUNDRY_LLM_PROVIDER": "openai",
             "FOUNDRY_LLM_ENDPOINT": f"{self.gateway_url()}/v1",
@@ -212,10 +212,9 @@ class FoundrySubAgent(SubAgent):
             info["available"] = True
             info["import"] = "in-process"
         except Exception as exc:
-            cli = self.root / ".venv" / "bin" / "python"
-            fallback = cli if cli.exists() else Path(sys.executable)
+            cli = venv_python(self.root) or Path(sys.executable)
             info["available"] = (self.root / "src" / "foundry").is_dir()
-            info["import"] = f"unavailable ({exc}); subprocess via {fallback}"
+            info["import"] = f"unavailable ({exc}); subprocess via {cli}"
         return info
 
 

@@ -30,10 +30,12 @@ from ethos.prompts import (
     REFLECT_PROMPT,
     STEP_PROMPT,
     commissioned_note,
+    delegation_note,
     dumps,
 )
 from ethos.schemas.context import TurnKind
 from ethos.schemas.gsl import (
+    STAGE_NOTIFIABLE,
     Bookmark,
     IntentionRecord,
     IntentionStatus,
@@ -772,6 +774,7 @@ class GeneralSolverLoop:
                     name=self.config.self_name,
                     commissioned=commissioned_note(intention.origin),
                     editing=EDIT_EXISTING_FILES,
+                    delegation=delegation_note(intention),
                     title=intention.title,
                     step_id=step.id,
                     step_description=step.description,
@@ -990,7 +993,12 @@ class GeneralSolverLoop:
                     f"did not pass, so this step is not finished"
                 )
                 logger.warning("gsl.step_check_failed_result", step=step.id,
-                               check=step.success_check.get("type"))
+                               check=step.success_check.get("type"),
+                               # The evidence is what turns a run of these
+                               # warnings into a diagnosis: a check that failed
+                               # with "command not found" is a bad check, and one
+                               # that failed with a real diff is a bad step.
+                               detail=detail[-200:] or None)
                 return SolverResult(
                     outcome=SolverOutcome.step_failed,
                     thoughts=[note, thought] + ([f"check said: {detail}"] if detail else []),
@@ -1086,6 +1094,15 @@ class GeneralSolverLoop:
             await self.memory.update_intention(
                 intention.id, status=IntentionStatus.awaiting_review.value,
             )
+            # A rung-3 review is a stage somebody is owed an answer about: the work
+            # is finished as far as this program can tell, and the thing outstanding
+            # is a person. Not announced -- the sentence is not this loop's to
+            # write -- but owed, so the record carries who.
+            await self._notice_stage(
+                intention, IntentionStatus.awaiting_review.value,
+                "; ".join(verification.issues or [])[:400]
+                or "the work is finished and is waiting on a person to look at it",
+            )
             return SolverResult(
                 outcome=SolverOutcome.awaiting_review, verification=verification,
                 thoughts=["awaiting human review of commissioned criteria"],
@@ -1109,6 +1126,19 @@ class GeneralSolverLoop:
             # ordinary reply path, so it was indistinguishable in the
             # transcript from a reply the agent had actually thought about.
             # Nothing is announced; the record is there to be asked about.
+            #
+            # The debt is a separate thing from the sentence, and dropping the
+            # sentence did not drop it. Removing the canned line left nothing behind
+            # to say a person who asked to be told had been told, and nothing to
+            # give the loop a reason to speak -- so a verified goal ended in a
+            # table row and the person waited. The notice carries no words: it
+            # records that the work reached `done`, who is owed the saying of it,
+            # and that nobody has said it yet.
+            await self._notice_stage(
+                intention, IntentionStatus.done.value,
+                f"verified at rung {verification.rung_reached} on "
+                f"{verification.objective.checks_run if verification.objective else 0} check(s)",
+            )
             ran = (verification.objective.checks_run if verification.objective else 0)
             return SolverResult(
                 outcome=SolverOutcome.goal_done, verification=verification,
@@ -1345,6 +1375,41 @@ class GeneralSolverLoop:
         await self.memory.open_question(
             f"How should I approach '{intention.title}' next time? ({reason})", priority=0.7,
         )
+        await self._notice_stage(intention, IntentionStatus.parked.value, reason)
+
+    async def _notice_stage(
+        self, intention: IntentionRecord, stage: str, detail: str = "",
+    ) -> None:
+        """Write down that commissioned work reached a stage its commissioner is owed.
+
+        The row is the only thing in this system that knows both of the facts a
+        person needs: that the work stopped where it did, and that they have not
+        been told. `closed_reason` holds the first and `stage_notices` the second,
+        and they were not joined anywhere -- which is why a task that had finished
+        for hours was invisible to the reply path, and why nothing ever gave the
+        agent a reason to open the conversation and say so.
+
+        So this is called at each of the three places work stops: verified `done`,
+        `parked`, and `awaiting_review`. It is deliberately not the place a
+        sentence is composed. Everything this program sends to a person is a word
+        the model chose, so what is written here is a debt and its subject; the
+        words are composed downstream, where every other reply is composed.
+
+        Failures are logged and stepped over rather than raised: a notice that
+        could not be written must not be the reason a goal cannot be closed.
+        """
+        if stage not in STAGE_NOTIFIABLE:
+            return
+        try:
+            notice = await self.memory.record_stage_notice(intention, stage, detail)
+        except Exception:
+            logger.warning("gsl.stage_notice_failed", intention=str(intention.id), stage=stage)
+            return
+        if notice is not None:
+            logger.info(
+                "gsl.stage_reached", intention=str(intention.id), stage=stage,
+                person=notice.person_id, delivered=notice.delivered_at is not None,
+            )
 
     async def _save_resume(self, intention: IntentionRecord, resume: dict[str, Any]) -> None:
         bookmark = Bookmark(

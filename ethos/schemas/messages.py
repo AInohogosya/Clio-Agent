@@ -152,6 +152,16 @@ IGNORE_REASONS: list[str] = [r.value for r in IgnoreReason]
 class SocialDecision(BaseModel):
     action: SocialAction
     reply_texts: list[str] = Field(default_factory=list)
+    # How long to wait before each reply text is sent, in seconds, aligned by
+    # index with `reply_texts`: the number at index i is the gap before message
+    # i goes out, so the first entry is nearly always 0 and the rest are the
+    # breaths between a multi-message reply. Optional in both directions — a
+    # shorter list pads with zeros and an absent one sends everything at once —
+    # because a model that ignores the field still wrote a reply that should be
+    # delivered. Life clamps each entry to `social.reply_gap_max_s`, so a
+    # misread unit ("minutes" written as seconds) costs at most the ceiling per
+    # gap rather than a stalled cycle.
+    reply_delays_s: list[float] = Field(default_factory=list)
     urgency: str = Urgency.normal.value
     reason: str = ""
     ignore_reason: str | None = None

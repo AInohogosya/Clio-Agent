@@ -14,6 +14,7 @@ import pytest
 from ethos.config import EmbeddingConfig, EthosConfig, PathsConfig
 from ethos.db import Database
 from ethos.gateway.embeddings import HashingEmbedder
+from ethos.observability import exhaustive
 from ethos.schemas.models import (
     ModelMessage,
     ModelRequest,
@@ -320,6 +321,27 @@ def config(tmp_path: Path) -> EthosConfig:
 @pytest.fixture()
 def embedder() -> HashingEmbedder:
     return HashingEmbedder(1024)
+
+
+@pytest.fixture(autouse=True)
+def exhaustive_log_sandbox(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """The exhaustive sink pointed at the suite's own scratch space, always.
+
+    Left alone, every record the suite's gateway, comms and control code emits —
+    fake model calls, fake lifecycle changes, fixture messages from fixture
+    people — lands in `~/.ethos/data/logs/exhaustive-<date>.jsonl`: the same
+    file the running agent's archivist reads. A test run leaves hundreds of
+    forged lines beside the owner's real ones, and from the file alone the two
+    cannot be told apart — a stop the UI logged and a stop a fixture logged are
+    the same line with a different pid. Redirected rather than disabled, so a
+    test that wants to assert on what it recorded still can, into a directory
+    the run owns and empties with it.
+    """
+    sandbox = tmp_path / "exhaustive-logs"
+    monkeypatch.setattr(exhaustive, "_default_dir", sandbox)
+    # For processes a test spawns, which import the module afresh: the patch
+    # above covers this process, the variable covers its children.
+    monkeypatch.setenv("ETHOS_EXHAUSTIVE_LOG_DIR", str(sandbox))
 
 
 @pytest.fixture(scope="session")

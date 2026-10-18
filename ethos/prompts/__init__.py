@@ -19,6 +19,7 @@ from ethos.prompts.gsl import (
     UNDERSTAND_PROMPT,
     VERIFIER_PROMPT,
     commissioned_note,
+    delegation_note,
     dumps,
 )
 from ethos.prompts.identity import (
@@ -44,8 +45,8 @@ __all__ = [
     "EDIT_EXISTING_FILES", "MESSAGE_CARE", "IGNORE_STREAK_REVIEW", "social_deliberation_messages",
     "streak_review_messages",
     "DEVISE_PROMPT", "EVALUATE_PROMPT", "DEGRADED_PLAN", "PLAN_PROMPT", "REFLECT_PROMPT", "STEP_PROMPT",
-    "SUCCESS_CHECKS_MATTER",
-    "UNDERSTAND_PROMPT", "VERIFIER_PROMPT", "dumps",
+    "SUCCESS_CHECKS_MATTER", "DELEGATION",
+    "UNDERSTAND_PROMPT", "VERIFIER_PROMPT", "delegation_note", "dumps",
     "AUTONOMY_NOTE", "DEFAULT_VALUES", "HARD_LIMIT_TEXT", "SELF_DESCRIPTION_TEMPLATE",
     "REACH_NOTE", "CROSS_TALK_CLOSED", "CROSS_TALK_OPEN", "cross_talk_note",
     "build_identity_kernel",

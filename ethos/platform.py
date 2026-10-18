@@ -40,6 +40,7 @@ import importlib.util
 import os
 import subprocess
 import sys
+from pathlib import Path
 from typing import Any
 
 __all__ = [
@@ -57,6 +58,7 @@ __all__ = [
     "read_acl",
     "restrict_to_user",
     "uvicorn_loop",
+    "venv_python",
 ]
 
 IS_WINDOWS = sys.platform == "win32"
@@ -150,6 +152,31 @@ def uvicorn_loop() -> str:
     fallback is a supported configuration rather than a spelling of "none".
     """
     return "asyncio" if IS_WINDOWS else "uvloop"
+
+
+# ----------------------------------------------------------- virtual environments
+
+
+def venv_python(root: str | os.PathLike[str]) -> Path | None:
+    """The interpreter of the virtualenv in `root`, whichever layout it used.
+
+    A virtualenv puts its interpreter in `bin/` on POSIX and in `Scripts/` on
+    Windows, and names it `python` on one and `python.exe` on the other. So
+    `root / ".venv" / "bin" / "python"` is a path that simply does not exist on
+    Windows, and the two spellings are not interchangeable the way a slash and a
+    backslash are. Nothing here raises on the wrong one either: a caller that
+    wrote it out by hand fell through to `sys.executable` silently, which runs
+    the sub-process on the wrong interpreter and says nothing about it.
+
+    Returns the path, or `None` when there is no virtualenv in `root` — so the
+    caller keeps deciding for itself what to fall back to, and this stays a
+    question rather than a policy.
+    """
+    base = Path(root) / ".venv"
+    for candidate in (base / "Scripts" / "python.exe", base / "bin" / "python"):
+        if candidate.exists():
+            return candidate
+    return None
 
 
 # ------------------------------------------------------------------- processes

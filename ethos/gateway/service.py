@@ -4,7 +4,9 @@ import asyncio
 import os
 import time
 from collections.abc import Iterable
+from datetime import UTC, datetime
 from typing import Any
+from uuid import uuid4
 
 import httpx
 
@@ -22,7 +24,7 @@ from ethos.gateway.providers.openai_compat import OpenAICompatProvider
 from ethos.gateway.providers.openai_native import OpenAINativeProvider
 from ethos.gateway.ratelimit import RateLimiter
 from ethos.gateway.router import ModelRouter, NoModelAvailable, entry_key
-from ethos.observability import metrics
+from ethos.observability import exhaustive, metrics
 from ethos.observability.logger import get_logger
 from ethos.platform import uvicorn_loop
 from ethos.pricing import CostBreakdown
@@ -271,6 +273,72 @@ class GatewayService:
         )
         self.providers.clear()
 
+    async def probe_local_endpoints(self, timeout_s: float = 2.0) -> None:
+        """
+        Asks each keyless loopback catalogue entry whether its endpoint exists.
+
+        A catalogue entry with no credential and a loopback base_url always reads
+        as "available" — `available()` cannot tell an unauthenticated endpoint
+        from one that is not there, and loopback is the one place *not* there is
+        the common case: nothing was ever started, or something *else* took the
+        port. Port 8000 on a laptop is exactly that. The entry then sits in the
+        failover ladder as a candidate that answers every attempt with a 404, and
+        because a 404 is deliberately not routed around, the ladder stops there:
+        one dead local entry turned a recoverable miss on the base model into a
+        failed request, a thousand times over.
+
+        So the endpoint is asked, once, at start-up, the cheap question every
+        OpenAI-compatible host answers: `GET /models`. Anything that does not
+        answer 200 — nothing listening, or something unrelated listening — is out
+        of the catalogue for the life of the process, and the removal is logged.
+        The shipped file is not edited: a vLLM started after this probe would be
+        picked up by a restart, and an entry carrying a key is left alone, since
+        a credential failure is how the loop already says "this one is wrong".
+
+        Idempotent, and cheap to call more than once: one loopback round trip per
+        distinct base_url, whatever the number of entries on it.
+        """
+        import ipaddress
+        from urllib.parse import urlsplit
+
+        answers: dict[str, str | None] = {}
+        excluded: list[str] = []
+        for entry in list(self._catalogue):
+            if entry.pinned or entry.provider != "openai_compat":
+                continue
+            base_url = entry.base_url or ""
+            if not base_url:
+                continue
+            host = urlsplit(base_url).hostname or ""
+            lowered = host.rstrip(".").lower()
+            try:
+                is_local = (
+                    lowered in ("localhost",) or lowered.endswith(".localhost")
+                    or ipaddress.ip_address(host).is_loopback
+                )
+            except ValueError:
+                continue
+            if not is_local or entry.api_key_env or self._api_key_for(entry):
+                continue
+            if base_url not in answers:
+                try:
+                    probe = await self.http.get(f"{base_url}/models", timeout=timeout_s)
+                    answers[base_url] = None if probe.status_code == 200 else f"HTTP {probe.status_code}"
+                except Exception as exc:
+                    answers[base_url] = exc_brief(exc)
+            if answers[base_url] is None:
+                continue
+            excluded.append(f"{entry.model} @ {base_url} ({answers[base_url]})")
+            self._catalogue.remove(entry)
+            if entry in self.config.models.models:
+                self.config.models.models.remove(entry)
+        if excluded:
+            logger.warning(
+                "gateway.local_endpoints_unavailable",
+                excluded=excluded,
+                action="removed from the live catalogue until restart; the shipped config is unchanged",
+            )
+
     def _api_key_for(self, entry: Any) -> str:
         """
         The credential for one model: the environment first, then the base model.
@@ -304,12 +372,18 @@ class GatewayService:
             "openai": "https://api.openai.com/v1",
             "google": "https://generativelanguage.googleapis.com",
         }.get(entry.provider, entry.base_url or "")
-        instance = cls(
-            api_key=api_key or None,
-            base_url=entry.base_url or default_base,
-            quirks=getattr(self.config.quirks, entry.provider),
-            http=self.http,
-        )
+        kwargs: dict[str, Any] = {
+            "api_key": api_key or None,
+            "base_url": entry.base_url or default_base,
+            "quirks": getattr(self.config.quirks, entry.provider),
+            "http": self.http,
+        }
+        # Learned traits (a refused `reasoning` parameter, a model that thinks by
+        # default) survive restarts and base-model reloads in the agent's own
+        # data directory, so the lesson is bought once rather than every run.
+        if cls is OpenAICompatProvider:
+            kwargs["state_path"] = self.config.paths.data_dir / "learned_model_traits.json"
+        instance = cls(**kwargs)
         self.providers[key] = instance
         return instance
 
@@ -769,6 +843,11 @@ class GatewayService:
             raise ValueError("T0 (reflex) cognition must not call the model gateway")
         self.sync_base_model()
         if not self.config.models.models:
+            exhaustive.log_model_failure(
+                request, request_id=uuid4().hex, requested_at=datetime.now(UTC),
+                model=request.model_hint or "", provider=request.provider_hint or "",
+                error="gateway has no models configured",
+            )
             raise RuntimeError("gateway has no models configured")
 
         # Cheapest possible call on the cheapest configured route. This is not
@@ -776,8 +855,15 @@ class GatewayService:
         # a floor so a request against a completely exhausted budget fails here
         # rather than after a round-trip. It was a flat $0.05, which is a real
         # amount of money and a number with no connection to the request.
-        await self.spend.check(request.budget_bucket, self._cheapest_expected_cost(request))
-
+        try:
+            await self.spend.check(request.budget_bucket, self._cheapest_expected_cost(request))
+        except BudgetExceededError as exc:
+            exhaustive.log_model_failure(
+                request, request_id=uuid4().hex, requested_at=datetime.now(UTC),
+                model=request.model_hint or "", provider=request.provider_hint or "",
+                error=f"budget exceeded before dispatch: {exc}",
+            )
+            raise
         retry = self.config.gateway.retry
         max_attempts = 1 + max(0, retry.max_retries)
         tried: set[str] = set()
@@ -787,6 +873,10 @@ class GatewayService:
         # about the request rather than the provider, so that attempt n+1 is not
         # the same bytes as attempt n.
         attempt_request = request
+        # One id ties the request record to every attempt, response or failure
+        # recorded for it in the exhaustive log.
+        request_id = uuid4().hex
+        requested_at = datetime.now(UTC)
 
         for attempt in range(max_attempts):
             # Re-read per attempt rather than once: after a failure the entry can
@@ -805,6 +895,10 @@ class GatewayService:
 
             start = time.monotonic()
             response: NormalizedResponse | None = None
+            exhaustive.log_model_request(
+                attempt_request, request_id=request_id,
+                model=entry.model, provider=entry.provider,
+            )
             try:
                 response = await provider.complete(attempt_request, entry.model)
                 self._readable(response)
@@ -825,6 +919,11 @@ class GatewayService:
                 if scope == _MODEL_SCOPED or getattr(exc, "counts_against_model", True):
                     self.router.record_failure(entry, exc)
                 await self._note_failure(attempt_request, entry, exc, response)
+                exhaustive.log_model_failure(
+                    attempt_request, request_id=request_id, requested_at=requested_at,
+                    model=entry.model, provider=entry.provider,
+                    error=f"{type(exc).__name__}: {exc}", attempt=attempt + 1,
+                )
                 last_error = exc
                 # "Not retryable" is still fatal, with one exception: a
                 # credential failure is not retryable *as a retry*, but it is
@@ -919,6 +1018,10 @@ class GatewayService:
             response.provider = entry.provider
             response.model = entry.model
             response.latency_ms = latency_ms
+            exhaustive.log_model_response(
+                attempt_request, response,
+                request_id=request_id, requested_at=requested_at,
+            )
             breakdown = self.costs.compute(
                 entry.model, response.usage,
                 provider=entry.provider, base_url=entry.base_url or "",
@@ -1146,6 +1249,10 @@ async def serve(config: EthosConfig, db: Database | None = None) -> None:
     import uvicorn
 
     service = GatewayService(config, db=db)
+    # Before serving: the same reason the core asks first. A request that arrives
+    # over the socket is routed the moment it lands, and a dead local entry in
+    # the ladder is a 404 waiting for it.
+    await service.probe_local_endpoints()
     app = create_gateway_app(service)
     socket_path = config.gateway.socket_path
     use_socket = os.name == "posix" and os.access(os.path.dirname(socket_path) or "/", os.W_OK)

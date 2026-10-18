@@ -11,7 +11,7 @@
 
 <p align="center">
   <code>3.0.0-beta.3</code> · <code>released 2026-10-03 JST</code> · <code>Python ≥ 3.12</code> ·
-  <code>PostgreSQL 16 + pgvector</code> · <code>Linux / macOS</code> ·
+  <code>PostgreSQL 16 + pgvector</code> · <code>Linux / macOS / Windows</code> ·
   <code>no license yet — all rights reserved</code>
 </p>
 
@@ -133,7 +133,7 @@ Two things about the scope are worth stating plainly up front:
 | Python | 3.12 or newer (`pyproject.toml` sets `requires-python = ">=3.12"`) |
 | PostgreSQL | 16 with the `pgvector` and `pg_trgm` extensions — [installed for you](#postgres-brought-up-not-assumed), or point `ETHOS_DSN` at your own |
 | Node.js | 20 or newer — **only** for the interface bridge and `interface/`. The agent runs without it. |
-| Platform | Linux and macOS are the tested paths. `scripts/ensure_postgres.sh` uses Homebrew, so the no-Docker path is macOS-first; on Linux use Docker or a local cluster. |
+| Platform | Linux, macOS and Windows. `scripts/ensure_postgres.sh` installs PostgreSQL from Homebrew on macOS and from `apt`/`dnf`/`pacman` on Linux, so the no-Docker path is no longer macOS-only; Docker is the documented path on either. |
 
 Two dependencies download more than a wheel:
 
@@ -296,12 +296,14 @@ have to install anything first. `scripts/ensure_postgres.sh` is idempotent and t
 
 1. **an existing database** at `$ETHOS_DSN` — if one is already there, it is left alone;
 2. **Docker** — `docker compose up -d db` (`pgvector/pgvector:pg16`), when the daemon runs;
-3. **a local PostgreSQL 16** — installed from Homebrew if needed, with pgvector built against it, a
-   fresh cluster in `data/pgdata`, the `ethos` role and database, and the `vector` and `pg_trgm`
-   extensions. It listens on `127.0.0.1:5433` only.
+3. **a local PostgreSQL 16** — installed from Homebrew on macOS or from the distro's package manager
+   (`apt-get`, `dnf`, `pacman`) on Linux if needed, with pgvector built against it, a fresh cluster in
+   `data/pgdata`, the `ethos` role and database, and the `vector` and `pg_trgm` extensions. It listens
+   on `127.0.0.1:5433` only.
 
-The first run of that path installs Homebrew packages and compiles pgvector once, which takes a few
-minutes; after that startup is a no-op. To manage the cluster by hand:
+The first run of that path installs the server packages and compiles pgvector once, which takes a few
+minutes; after that startup is a no-op. A machine with none of the above is told the command for the
+package manager it actually has. To manage the cluster by hand:
 
 ```bash
 scripts/ensure_postgres.sh status     # is it running, is anything listening
@@ -557,6 +559,68 @@ Quiet hours, the daily budget, and `repeat_window_h` all still apply to these se
 day is not ready for is queued for the window rather than lost, and a step that reports on every
 action spends the day's messages doing it. Set the key `false` to put mid-task updates back in the
 digest with everything else.
+
+And **a promised update queued for the window is no longer held at the flush.**
+`_enqueue_digest` kept neither the intention nor the fact that there had been one, so by the time
+the flush asked whether the agent was *starting* a conversation, a solver step's "it's done" was an
+anonymous queued string — and the longest-running entry in the system was exactly the one that could
+not go out. Blocked for the `awaiting_reply_h` after the agent's own "on it", and blocked again on
+every subsequent flush, until the person happened to write back.
+
+### It said it had not done things it had done, and it did not come and say
+
+Two complaints, one cause: **nothing durable recorded that commissioned work had reached a stage
+the person who commissioned it was waiting for.** Everything downstream of that fact was either
+missing or reading something else.
+
+**The reply path had no evidence of finished work.** `Execution state` is the one block the
+deliberation draws on for what the agent has actually done, and it carried two things: the
+`action_journal` inside a fifteen-minute window, and the list of work that is *blocked*. A closed
+intention is in neither — `done` and `parked` are terminal and every query filters on the open
+statuses. So work completed an hour ago was invisible, while the prompt said to treat that block as
+a record of what happened. That is right about work in flight and wrong about everything finished
+before the window, and the model resolves it the way it always resolves a block that says nothing:
+towards the line that looks like the current state. Hence "I have not done that" about something
+that was done.
+
+It is worth being precise about the shape of the mistake, because the block was built to prevent
+the opposite one. `SocialCognition._withhold_unearned_progress` exists so the agent cannot claim
+work is *underway* with nothing behind it, and it works. The gap was underneath it: the evidence
+was a window on *now*, and the absence of something in a window on now was being read as the absence
+of the thing. The block now carries a third line — work that has already reached a stage — and the
+prompt says what it is for: the only evidence in the whole prompt that a finished thing is finished,
+and it outranks anything inferred from the other two.
+
+**The loop had no way to speak first.** Its only two routes to a message were answering a message that
+arrived, and being a solver step that happened to include a `comm.send` action. So a person who said
+"tell me when it's done" heard about it when some step's model, unprompted, decided to mention it —
+a coin the person never sees and cannot predict, which is what *sometimes* is from the outside.
+
+So `Life.decide` has a pass for a word somebody is owed. It sits below an inbound message and above
+working a goal, and both placements are load-bearing: a person who has just written is owed an answer
+more than the agent is owed its own follow-up, and a goal holds focus until it terminates — so a
+branch below it is a branch the loop never reaches, and a task that runs for a day would keep the
+notice out of every pass for a day. It enters the `NOTIFYING` state that was in the state machine, in
+the awake set and in the tick table with nothing behind it, because nothing ever spoke first.
+
+**The words are composed, not assembled.** `_finish_goal` used to write `Done: <title>. <end state>`
+to whoever commissioned the work, and that line was removed — correctly, because everything this
+program sends to a person is a word the model chose, and a composed sentence arriving through the
+ordinary reply path is indistinguishable in the transcript from a reply the agent had thought about.
+But removing the *sentence* did not remove the *debt*: it left nothing to say a person who asked to
+be told had been told, and nothing to give the loop a reason to speak. So a stage notice carries no
+words. It records that the work reached the stage, who is owed the saying of it, and that nobody has
+said it yet; the message is then composed by the model against a prompt written for opening a
+conversation rather than answering one.
+
+**And the debt is bounded.** A notice is idempotent on `(intention_id, stage)`, so a cycle that
+re-enters the same terminal state announces nothing twice. A send that comes back held, suppressed
+or failed leaves the notice owed with the reason recorded and a wait set, because a promise that
+failed once should be tried again — and past `social.stage_notice_max_attempts` the notice is settled
+with the exhaustion in the row rather than left owed. That last one is the outcome that is *not*
+"the person was told", and it is chosen over the alternative on purpose: an unbounded retry loop is an
+outage wearing a notification's clothes, spending a pass and a model call every few seconds for as
+long as the fault lasts, while a settled row is something an operator can see and act on.
 
 ### Who knows what, which is not a thing the block said
 

@@ -11,11 +11,13 @@ from __future__ import annotations
 
 import asyncio
 import errno
+import time
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from ethos.comms.adapters.base import ChannelAdapter
 from ethos.comms.host import CommsHost, _Plan
 
 REPO_CONFIG = Path(__file__).resolve().parents[2] / "config"
@@ -41,8 +43,13 @@ class Recorder:
         return (self.events.count(("start", name)), self.events.count(("listen", name)))
 
 
-class FakeAdapter:
-    """An adapter that reports what was done to it and to whom."""
+class FakeAdapter(ChannelAdapter):
+    """An adapter that reports what was done to it and to whom.
+
+    A real subclass, because the host asks every adapter whether a failure was
+    transient before deciding how soon to try the door again. A stand-in that did
+    not answer would leave that decision untested by every test in this file.
+    """
 
     name = "fake"
 
@@ -414,7 +421,7 @@ async def test_a_file_that_will_not_parse_leaves_every_door_exactly_as_it_was(
     def _unreadable() -> Any:
         raise ValueError("channels.yaml: mapping values are not allowed here")
 
-    monkeypatch.setattr("ethos.comms.host.load_config", _unreadable)
+    monkeypatch.setattr("ethos.comms.host.load_channels_config", _unreadable)
     watcher = asyncio.create_task(host.watch_channels(interval=0.01))
     try:
         await asyncio.sleep(0.1)
@@ -532,23 +539,23 @@ async def test_a_close_that_is_interrupted_still_takes_the_poller_with_it():
 async def test_a_poll_reads_the_configuration_only_when_the_files_have_moved(monkeypatch: pytest.MonkeyPatch):
     """The common poll has to be cheap, because it is the common poll.
 
-    Re-reading the configuration parses every file in it and rebuilds every model —
-    tens of milliseconds, every two seconds, for as long as the agent runs, in two
-    processes. Skipping the read while both files are untouched is the difference
-    between a watcher and a tax, and it is observable: the read is what decides
-    whether anything is reconciled at all.
+    Re-reading the doors is two files and one validation, but it still parses,
+    and this loop runs for as long as the agent does, in two processes. Skipping
+    the read while both files are untouched is the difference between a watcher
+    and a tax, and it is observable: the read is what decides whether anything
+    is reconciled at all.
     """
     from ethos.comms import host as host_module
 
     reads = 0
-    real_load = host_module.load_config
+    real_load = host_module.load_channels_config
 
     def _counted() -> Any:
         nonlocal reads
         reads += 1
         return real_load()
 
-    monkeypatch.setattr(host_module, "load_config", _counted)
+    monkeypatch.setattr(host_module, "load_channels_config", _counted)
     recorder = Recorder()
     host = _host(_telegram_only(monkeypatch), recorder)
     _planned(host, {"telegram": ("telegram", "test-token")})
@@ -583,14 +590,14 @@ async def test_the_configuration_is_read_again_periodically_even_when_the_files_
 
     monkeypatch.setattr(host_module, "RESCAN_EVERY_POLLS", 3)
     reads = 0
-    real_load = host_module.load_config
+    real_load = host_module.load_channels_config
 
     def _counted() -> Any:
         nonlocal reads
         reads += 1
         return real_load()
 
-    monkeypatch.setattr(host_module, "load_config", _counted)
+    monkeypatch.setattr(host_module, "load_channels_config", _counted)
     recorder = Recorder()
     host = _host(_telegram_only(monkeypatch), recorder)
     _planned(host, {"telegram": ("telegram", "test-token")})
@@ -681,3 +688,253 @@ def test_the_watcher_interval_is_short_enough_to_be_invisible_and_long_enough_to
     from ethos.comms.host import WATCH_INTERVAL_S
 
     assert 0.5 <= WATCH_INTERVAL_S <= 5.0
+
+
+# -------------------------------------------------------------- a shut door, shut
+# by nothing anybody did. The outage this covers was a 502 and a timed-out read on
+# one startup: `start` raised, the exception was logged, the door stayed shut for
+# the life of the process, and the process itself never exited so nothing
+# restarted it. Four messages sat in Telegram's queue for forty minutes.
+
+
+class FlakyAdapter(FakeAdapter):
+    """A door that fails to open a fixed number of times before it opens."""
+
+    def __init__(self, recorder: Recorder, name: str, *, failures: int = 1,
+                 exc: BaseException | None = None, **_: Any) -> None:
+        super().__init__(recorder, name)
+        self.failures = failures
+        self.exc = exc if exc is not None else OSError(111, "Connection refused")
+        self.attempts = 0
+
+    async def start(self) -> None:
+        self.attempts += 1
+        self.recorder.record("start", self.name)
+        if self.attempts <= self.failures:
+            raise self.exc
+
+
+def _host_with(config: Any, recorder: Recorder, adapters: dict[str, FakeAdapter]) -> CommsHost:
+    """A host whose plan keeps handing back the *same* adapters, so state survives.
+
+    `_planned` builds fresh ones per call, which is right for watching a reload
+    replace a door and wrong for this: whether a door comes back is a fact about
+    one object failing to open and then succeeding.
+    """
+    host = _host(config, recorder)
+    signatures = {name: (name,) for name in adapters}
+
+    def _plan(_channels: Any) -> _Plan:
+        return _Plan(adapters=dict(adapters), signatures=dict(signatures))
+
+    host.plan = _plan  # type: ignore[method-assign]
+    return host
+
+
+async def _due(host: CommsHost, door: str) -> None:
+    """Make a shut door due now, rather than waiting out its real backoff."""
+    host._retry_after[door] = 0.0
+
+
+async def test_a_door_the_network_shut_is_reopened_by_itself(monkeypatch: pytest.MonkeyPatch):
+    """The outage, in miniature: a start that failed comes back with no restart.
+
+    Nothing about the configuration changed between the failure and the recovery,
+    which is exactly why the fingerprint alone could not fix it — the fingerprint
+    only knows that the *answer* to "what is configured" is unchanged, and the
+    thing that was wrong was never the configuration.
+    """
+    recorder = Recorder()
+    adapter = FlakyAdapter(recorder, "telegram", failures=1)
+    host = _host_with(_telegram_only(monkeypatch), recorder, {"telegram": adapter})
+    await host.start(listen=True)
+    try:
+        assert "telegram" in host._failed, "the door that failed to start is shut"
+        assert recorder.started("telegram") == (1, 0), "and it was not also polled"
+
+        await _due(host, "telegram")
+        assert await host.reconcile(host.channels) is True
+        assert "telegram" not in host._failed
+        assert recorder.started("telegram") == (2, 1), "retried, and opened, and listens"
+    finally:
+        await host.stop()
+
+
+async def test_a_door_that_never_opened_is_not_polled_for(monkeypatch: pytest.MonkeyPatch):
+    """`listen` after a failed `start` is a second error about the wrong thing.
+
+    The real one said the token timed out. The follow-up said the updater was not
+    initialised, which reads like a programming fault and sent the search the wrong
+    way. A shut door is not polled, so there is no second error to misread.
+    """
+    recorder = Recorder()
+    adapter = FlakyAdapter(recorder, "telegram", failures=99)
+    host = _host_with(_telegram_only(monkeypatch), recorder, {"telegram": adapter})
+    await host.start(listen=True)
+    try:
+        assert recorder.events == [("start", "telegram")]
+        assert "telegram" in host._failed
+    finally:
+        await host.stop()
+
+
+async def test_a_refusal_is_retried_far_more_slowly_than_a_network_blip(monkeypatch: pytest.MonkeyPatch):
+    """Both are retried. Only one of them is retried in seconds.
+
+    A revoked token fails identically forever, so the fast end of the curve would
+    write a traceback every few seconds for as long as the operator was asleep. A
+    dropped connection is the same fact twice in a row, so it gets the fast end.
+    """
+    from ethos.comms.host import DOOR_RETRY_BASE_S, DOOR_RETRY_PERMANENT_S
+
+    recorder = Recorder()
+    flaky = FlakyAdapter(recorder, "telegram", failures=99,
+                         exc=OSError(111, "Connection refused"))
+    refused = FlakyAdapter(recorder, "telegram", failures=99,
+                          exc=ValueError("token revoked"))
+
+    # The clock is read *before* the attempt, because the wait is set during it and
+    # anything measured afterwards has already spent the time being measured.
+    now = time.monotonic()
+    host = _host_with(_telegram_only(monkeypatch), recorder, {"telegram": flaky})
+    await host.start(listen=True)
+    flaky_wait = host._retry_after["telegram"] - now
+    await host.stop()
+
+    now = time.monotonic()
+    host = _host_with(_telegram_only(monkeypatch), recorder, {"telegram": refused})
+    await host.start(listen=True)
+    refused_wait = host._retry_after["telegram"] - now
+    await host.stop()
+
+    assert 0 < flaky_wait <= DOOR_RETRY_BASE_S * 1.5, "a blip is worth coming straight back for"
+    assert DOOR_RETRY_PERMANENT_S <= refused_wait, "a refusal is not"
+    assert refused_wait > flaky_wait * 10
+
+
+async def test_a_revoked_token_still_opens_by_itself_once_it_is_fixed(monkeypatch: pytest.MonkeyPatch):
+    """Slowly retried is not the same as abandoned.
+
+    The token is fixed from outside the process — somebody revoking a leaked one
+    and issuing a new one is the whole reason this path exists — so a door that
+    failed permanently must still recover with no restart and no config edit.
+    """
+    recorder = Recorder()
+    adapter = FlakyAdapter(recorder, "telegram", failures=1, exc=ValueError("token revoked"))
+    host = _host_with(_telegram_only(monkeypatch), recorder, {"telegram": adapter})
+    await host.start(listen=True)
+    try:
+        assert "telegram" in host._failed
+        await _due(host, "telegram")
+        assert await host.reconcile(host.channels) is True
+        assert "telegram" not in host._failed
+        assert recorder.started("telegram") == (2, 1)
+    finally:
+        await host.stop()
+
+
+async def test_a_shut_door_is_left_alone_until_its_own_clock_runs_out(monkeypatch: pytest.MonkeyPatch):
+    """Backoff that only holds for the first failure is not backoff.
+
+    Each failed attempt has to push the next one further out, or a door that is
+    down is retried on the poll's cadence forever and the curve is decorative.
+    """
+    from ethos.comms.host import DOOR_RETRY_BASE_S, DOOR_RETRY_MAX_S
+
+    recorder = Recorder()
+    adapter = FlakyAdapter(recorder, "telegram", failures=99)
+    host = _host_with(_telegram_only(monkeypatch), recorder, {"telegram": adapter})
+
+    now = time.monotonic()
+    await host.start(listen=True)
+    # The first attempt's wait is part of what is under test, so it is read from
+    # the startup rather than from the first retry.
+    waits = [host._retry_after["telegram"] - now]
+    try:
+        for _ in range(4):
+            await _due(host, "telegram")
+            now = time.monotonic()
+            await host.reconcile(host.channels)
+            waits.append(host._retry_after["telegram"] - now)
+
+        assert waits == sorted(waits), f"the wait must grow between attempts: {waits}"
+        assert len(set(waits)) == len(waits), f"every attempt waits longer: {waits}"
+        assert waits[0] <= DOOR_RETRY_BASE_S * 1.5, "and the first is the fast one"
+        assert max(waits) <= DOOR_RETRY_MAX_S * 1.5, "and it is capped, not unbounded"
+    finally:
+        await host.stop()
+
+
+async def test_one_door_being_shut_does_not_cost_the_others_their_start(monkeypatch: pytest.MonkeyPatch):
+    """The property the retry must not break on its way past.
+
+    Retrying is easy to implement by waiting, and waiting inside a sequential
+    open is a wait for every door queued behind the broken one. Doors here open in
+    order, so the healthy one is asserted to have opened before the broken one was
+    ever retried.
+    """
+    recorder = Recorder()
+    good = FakeAdapter(recorder, "cli")
+    bad = FlakyAdapter(recorder, "telegram", failures=1)
+    host = _host_with(_telegram_only(monkeypatch), recorder, {"cli": good, "telegram": bad})
+    await host.start(listen=True)
+    try:
+        assert recorder.events.index(("start", "cli")) < recorder.events.index(("start", "telegram"))
+        assert recorder.events.count(("start", "telegram")) == 1, "opened once, not retried inline"
+        assert recorder.started("cli") == (1, 1), "the healthy door is unaffected"
+    finally:
+        await host.stop()
+
+
+async def test_a_broken_file_that_holds_no_door_does_not_hold_the_doors_shut(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    """The reload reads the doors, not the whole configuration.
+
+    The watcher once reloaded by building the entire configuration, so a file
+    that holds no door — models, people, pricing — that would not parse kept
+    every door shut for as long as it stayed broken, under an event name that
+    pointed at channels.yaml. The doors are read on their own now, so this
+    breaks a strictly-validated unrelated section and expects the door to open
+    anyway.
+    """
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("ETHOS_HOME", str(home))
+    monkeypatch.setenv("ETHOS_CONFIG_DIR", str(REPO_CONFIG))
+    monkeypatch.setenv("TEST_TG_TOKEN", "test-token")
+    monkeypatch.chdir(tmp_path)
+
+    # A copy of the shipped configuration, with one section that holds no door
+    # broken on disk. `models.yaml` is the right file to break: it is read and
+    # strictly validated by a full configuration load, and the narrow one never
+    # opens it.
+    config_copy = tmp_path / "config"
+    config_copy.mkdir()
+    for src in REPO_CONFIG.glob("*.yaml"):
+        (config_copy / src.name).write_bytes(src.read_bytes())
+    (config_copy / "models.yaml").write_text("tiers: [unclosed\n", encoding="utf-8")
+    monkeypatch.setenv("ETHOS_CONFIG_DIR", str(config_copy))
+
+    recorder = Recorder()
+    monkeypatch.setattr(
+        "ethos.comms.host.TelegramAdapter",
+        lambda token, **kwargs: FakeAdapter(recorder, "telegram", token=token, **kwargs),
+    )
+    host = _host(_telegram_only(monkeypatch, enabled=False), recorder)
+    await host.start(listen=True)
+    watcher = asyncio.create_task(host.watch_channels(interval=0.05))
+    try:
+        (home / "channels.yaml").write_text(
+            "telegram:\n  enabled: true\n  token: 'from-the-file'\n", encoding="utf-8"
+        )
+        for _ in range(100):
+            if "telegram" in host.adapters:
+                break
+            await asyncio.sleep(0.05)
+        assert "telegram" in host.adapters, "the broken section did not hold the door shut"
+    finally:
+        watcher.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await watcher
+        await host.stop()

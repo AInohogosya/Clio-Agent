@@ -13,6 +13,7 @@ from ethos.observability.logger import get_logger
 from ethos.prompts.deliberation import (
     execution_state_block,
     social_deliberation_messages,
+    stage_notice_messages,
     streak_review_messages,
 )
 from ethos.schemas.messages import (
@@ -71,6 +72,20 @@ DELIBERATION_REASONING_BUDGET = 400
 # reach one, so it can ask for more rather than ask the same thing again. Bounded
 # to a single extra attempt -- two is a habit, three is a bill.
 DELIBERATION_ESCALATED_MAX_TOKENS = 24_000
+
+# The ceiling on a stage notice, and it is small on purpose.
+#
+# A stage notice is two or three sentences about one thing that happened, so the
+# room a deliberation needs is not remotely what this does: the deliberation is
+# reasoning about a person's words and this is the agent reporting on its own.
+# Eight thousand tokens of headroom here would be an invitation to think at length
+# about a message somebody is waiting on, which is the same shape of failure as a
+# reasoning model spending a whole deliberation budget and returning nothing --
+# except here it costs the one pass that was going to say it. Small, unbudgeted
+# for thinking, and never escalated: there is at most one owed word per stage, so
+# a retry that failed to arrive has to be retried on the next cycle rather than
+# by asking the same question again inside this one.
+STAGE_NOTICE_MAX_TOKENS = 900
 
 # And the contract restated at the end of the second ask, because room alone does
 # not fix an answer of the wrong shape.
@@ -215,25 +230,47 @@ class _ExecutionState:
     guardrail that fires on missing evidence is a guardrail that silences the
     agent whenever the database is briefly unreachable, and that is a worse outage
     than the one it is guarding against.
+
+    `stages` is the third kind of fact, and it is neither of the other two. The
+    journal says what the agent did a moment ago and the blocked list says what it
+    cannot do; a stage says what already finished. It is here because a reply
+    answering "did you do it?" has no other evidence to answer from, and without
+    it the honest answer and a guess from an empty block are the same shape.
     """
 
-    __slots__ = ("readable", "journaled", "blocked", "window_min")
+    __slots__ = (
+        "readable", "journaled", "blocked", "stages", "window_min",
+        "delegations", "delegation_names",
+    )
 
     def __init__(self, readable: bool, journaled: list[str], blocked: list[str],
-                 window_min: float):
+                 window_min: float, stages: list[str] | None = None,
+                 delegations: list[str] | None = None,
+                 delegation_names: set[str] | None = None):
         self.readable = readable
         self.journaled = journaled
         self.blocked = blocked
+        self.stages = stages or []
         self.window_min = window_min
+        self.delegations = delegations or []
+        # The sub-agents with a delegation that is either still running or
+        # finished inside the journal's own window — the set a "running now"
+        # claim about a named sub-agent has to be a member of.
+        self.delegation_names = delegation_names or set()
 
     @property
     def something_happened(self) -> bool:
         return bool(self.journaled)
 
-    def block(self, self_name: str) -> str:
+    @property
+    def something_finished(self) -> bool:
+        return bool(self.stages)
+
+    def block(self, self_name: str, delegation_window_h: float = 24.0) -> str:
         return execution_state_block(
             self_name, self.journaled, self.blocked, self.window_min,
-            readable=self.readable,
+            readable=self.readable, stages=self.stages,
+            delegations=self.delegations, delegation_window_h=delegation_window_h,
         )
 
 
@@ -247,7 +284,16 @@ class _ExecutionState:
 # commission *is*, which the turn is built to make.
 #
 # So this matches present progressive and the completed-tense assertions that
-# describe work already in flight, and nothing else.
+# describe work already in flight, and nothing else. The delegation shapes are
+# here because they are the ones the transcript actually caught the agent
+# saying: "Running APEX once more now", "the APEX run is going now" — sentences
+# the original patterns read as neither "I'm working on" nor "on it", and so
+# replies about a sub-agent that had not been invoked sailed through the one
+# check that could have stopped them. A sub-agent's name in an underway claim
+# is also what makes the claim *checkable*: `_withhold_unearned_progress` uses
+# the names this matches to require a matching journal row, which a claim about
+# "the work" in general cannot be pinned to.
+_DELEGATED = r"(?:apex|foundry|the sub-agent|a sub-agent)"
 _ONGOING_WORK = re.compile(
     r"\b(?:i'?m|i am)\s+(?:now\s+)?(?:working on|working through|on it|looking into|"
     r"taking a (?:look|crack) at|getting (?:started|on)|started on|started working|"
@@ -255,9 +301,49 @@ _ONGOING_WORK = re.compile(
     r"|\b(?:i'?ll|i will)\s+(?:get|start|begin)\s+(?:that|this|it|them|on it|going|right)\b"
     r"|\balready\s+(?:on it|under way|underway|started)\b"
     r"|\bon it\b"
-    r"|\bin progress\b",
+    r"|\bin progress\b"
+    # Delegation shapes: "running APEX now", "running it through Foundry",
+    # "spawning APEX on it", "kicking off a Foundry run".
+    r"|\brunning\s+(?:\w+\s+){0,2}?(?:apex|foundry)\b"
+    r"|\b(?:apex|foundry)\s+run\s+(?:is\s+|was\s+)?(?:going|running|under ?way|in flight)\b"
+    rf"|\bdelegat(?:ing|ed)\s+(?:it\s+|this\s+|that\s+)?to\s+{_DELEGATED}\b"
+    r"|\b(?:spawning|kick(?:ing)?\s+off)\s+(?:\w+\s+){0,2}?(?:apex|foundry)\b"
+    # The sub-agent as the sentence's subject, working in the present:
+    # "Foundry is building the deploy now", "APEX is running the switch now".
+    # The verb list is closed on purpose — "APEX is designed to ..." and
+    # "Foundry is optional" describe, and must pass.
+    rf"|\b(?:apex|foundry)\s+is\s+(?:now\s+)?(?:building|running|working|doing|"
+    r"handling|executing|deploying|installing|changing|fixing|driving|taking)\b",
     re.IGNORECASE,
 )
+
+# The sub-agent names a reply can pin an underway claim to. A claim that names
+# one of these is a claim about a journal row with a tool to match, so the
+# guardrail can demand the row instead of taking the claim on faith.
+_SUBAGENT_NAMES = frozenset({"apex", "foundry"})
+
+
+def subagents_named(text: str) -> set[str]:
+    """The sub-agents a reply text names, lowercased and none invented."""
+    return {
+        name.lower()
+        for name in re.findall(r"\b(apex|foundry)\b", text or "", re.IGNORECASE)
+        if name.lower() in _SUBAGENT_NAMES
+    }
+
+
+def _human_age(delta: timedelta) -> str:
+    """An age a person can read, coarse on purpose: minutes under the hour."""
+    seconds = max(0.0, delta.total_seconds())
+    if seconds < 90:
+        return "just now"
+    minutes = round(seconds / 60)
+    if minutes < 60:
+        return f"{minutes} min"
+    hours = minutes / 60
+    if hours < 24:
+        return f"{hours:.1f} h"
+    return f"{hours / 24:.1f} d"
 
 
 def claims_work_is_underway(text: str) -> bool:
@@ -370,7 +456,9 @@ class SocialCognition:
             commitments=commitments,
             recent=recent,
             tools=tools,
-            execution_state=state.block(name),
+            execution_state=state.block(
+                name, float(self.config.social.execution_state_delegation_window_h),
+            ),
             preview=preview,
         )
         data, cut_off, ceiling, failure, user_action = await self._ask(prompt_messages, tier, consequential)
@@ -424,9 +512,13 @@ class SocialCognition:
             ignore_reason = IgnoreReason.no_response_needed.value
         if action != SocialAction.ignore:
             ignore_reason = None
+        reply_texts, reply_delays = _reply_texts_and_delays(
+            data.get("reply_texts"), data.get("reply_delays_s"),
+        )
         decision = SocialDecision(
             action=action,
-            reply_texts=_reply_texts(data.get("reply_texts")),
+            reply_texts=reply_texts,
+            reply_delays_s=reply_delays,
             urgency=str(data.get("urgency", Urgency.normal.value)),
             reason=str(data.get("reason", ""))[:300],
             ignore_reason=ignore_reason,
@@ -468,21 +560,30 @@ class SocialCognition:
     async def _execution_state(self, focus_title: str | None) -> _ExecutionState:
         """What has actually happened, read from the records rather than recalled.
 
-        Two queries, and the order of the fields in the result is the point of
+        Four queries, and the order of the fields in the result is the point of
         the method: the journal first, because it is the only thing here that can
-        support a claim that work is underway, and the blocked work second,
-        because it is the context in which a claim would be false.
+        support a claim that work is underway; the blocked work second, because it
+        is the context in which a claim would be false; the sub-agent delegations
+        third, because they are the only evidence about what Foundry and APEX
+        were asked to do and what came back; and the finished work last, because
+        it is the evidence for the opposite claim — the one that says a thing was
+        done.
 
-        Both are read, not inferred. The journal is `action_journal`, which is
+        All four are read, not inferred. The journal is `action_journal`, which is
         written for every action the guardian allowed through, so a step that ran
         is there whether or not it succeeded -- and a step that did not run is
         absent, which is exactly the distinction the guardrail needs and the one
         a focus title cannot make.
 
-        A failure to read either is recorded as unreadable rather than as empty.
-        Those are different, and conflating them is the failure this whole change
-        is about: "nothing was journaled" is evidence, "I could not look" is not,
-        and the second one must not be allowed to withhold anybody's words.
+        A failure to read the journal is recorded as unreadable rather than as
+        empty. Those are different, and conflating them is the failure this whole
+        change is about: "nothing was journaled" is evidence, "I could not look" is
+        not, and the second one must not be allowed to withhold anybody's words.
+        The other three degrade to empty instead, because none carries the
+        guardrail: an unreadable list of blocked work should not be presented as a
+        clean one, but a reply is still answerable without it, and refusing to
+        speak because a side table was unreachable would be the agent going mute
+        over something it can answer perfectly well.
         """
         window = max(0.0, float(self.config.social.execution_state_window_min))
         if self.db is None:
@@ -500,8 +601,145 @@ class SocialCognition:
         journaled = [
             f"{row['tool'] or 'unknown'} -> {row['status'] or 'unknown'}" for row in rows
         ]
+        delegations, delegation_names = await self._delegation_state(window)
         blocked = await self._blocked_work(focus_title)
-        return _ExecutionState(True, journaled, blocked, window)
+        stages = await self._finished_work()
+        return _ExecutionState(
+            True, journaled, blocked, window, stages, delegations, delegation_names,
+        )
+
+    async def _delegation_state(
+        self, journal_window_min: float,
+    ) -> tuple[list[str], set[str]]:
+        """What the sub-agents were actually asked to do, and what came back.
+
+        The action journal already records every `subagent.*` call — begin at
+        `ts_start`, verdict at `end` — but only the journal's own short window
+        reaches the reply prompt, and a delegation is usually not *recent*: a
+        desktop run blocks for as long as the work takes, and the person asking
+        about it an hour later is asking about a row the reply prompt never saw.
+        From the agent's side that read as a sub-agent that had never been used,
+        and the reply invented one from the focus instead — the "running APEX
+        now" a journal with no APEX row in it should have made impossible to
+        say.
+
+        So delegations get their own window and their own line in the prompt,
+        carrying the sub-agent's verdict verbatim from the journal digest. The
+        second return value is the set of sub-agents whose delegation is either
+        still `running` or finished inside the journal window — the evidence a
+        present-tense claim about a named sub-agent is checked against, since
+        "running now" is a claim about the journal and not about the plan.
+        """
+        window_h = max(0.0, float(self.config.social.execution_state_delegation_window_h))
+        limit = int(self.config.social.execution_state_max_delegations)
+        if self.db is None or window_h <= 0 or limit <= 0:
+            return [], set()
+        since = datetime.now(UTC) - timedelta(hours=window_h)
+        try:
+            rows = await self.db.fetch(
+                "SELECT tool, status, ts_start, result_digest FROM action_journal "
+                "WHERE tool LIKE 'subagent.%' AND ts_start >= $1 "
+                "ORDER BY ts_start DESC LIMIT $2",
+                since, limit,
+            )
+        except Exception:
+            logger.warning("social.execution_state_delegations_failed")
+            return [], set()
+        journal_since = datetime.now(UTC) - timedelta(minutes=journal_window_min)
+        names: set[str] = set()
+        lines: list[str] = []
+        for row in rows:
+            tool = str(row["tool"] or "")
+            # `subagent.<name>` — the run tool's own name. `subagent.status` is
+            # a lookup, not a delegation, and it would crowd the line out with
+            # rows that say nothing about work.
+            name = tool.removeprefix("subagent.")
+            if not name or name == "status":
+                continue
+            status = str(row["status"] or "unknown")
+            started = row["ts_start"]
+            age = ""
+            try:
+                delta = datetime.now(UTC) - started
+                age = _human_age(delta)
+                if status == "running" or started >= journal_since:
+                    names.add(name)
+            except (TypeError, ValueError):
+                pass
+            digest = row["result_digest"]
+            if isinstance(digest, str):
+                try:
+                    digest = json.loads(digest)
+                except ValueError:
+                    digest = {}
+            verdict = ""
+            if isinstance(digest, dict):
+                verdict = " ".join(str(digest.get("summary") or "").split())[:220]
+            when = f", started {age} ago" if age else ""
+            lines.append(
+                f"{name}: {status}{when}"
+                + (f" — {verdict}" if verdict else "")
+            )
+        return lines, names
+
+    async def _finished_work(self) -> list[str]:
+        """Work that has already reached a stage, read from the stage notices.
+
+        The third reader, and the one that closes the gap the other two leave.
+        `action_journal` is a window on the last few minutes and the blocked list
+        is a window on work that stopped — a *finished* intention belongs to
+        neither, because `done` is terminal and every query here filters on the
+        open statuses. So the prompt was shown a journal that had gone quiet and a
+        work list with nothing outstanding, and told to treat the absence as the
+        fact, which is exactly right for work in flight and exactly wrong for work
+        already completed: the person asking whether it had been done was answered
+        from an empty block.
+
+        The notices are read rather than the intentions because the notice is the
+        row that says both things at once — that the stage was reached, and whether
+        the person has been told — and a reply that has to say "it is finished" has
+        no use for the second half but cannot do without the first.
+
+        Undelivered notices are listed first. One that is still owed is a debt the
+        reply is being written while it stands, and the prompt has to be able to
+        see that as distinct from work that has already been reported.
+        """
+        if self.db is None:
+            return []
+        limit = int(self.config.social.execution_state_max_stages)
+        if limit <= 0:
+            return []
+        since = datetime.now(UTC) - timedelta(
+            hours=max(0.0, float(self.config.social.execution_state_stage_window_h)),
+        )
+        try:
+            rows = await self.db.fetch(
+                "SELECT stage, title, detail, delivered_at FROM stage_notices "
+                "WHERE created_at >= $1 ORDER BY created_at DESC LIMIT $2",
+                since, limit,
+            )
+        except Exception:
+            # Its own warning rather than the journal's: a reply that cannot read
+            # finished work is not the same failure as a reply that cannot read the
+            # journal, and conflating them would let one unavailable table silence
+            # the guardrail that the other one is there to raise.
+            logger.warning("social.execution_state_stages_failed")
+            return []
+        spoken = {"done": "finished", "parked": "stopped short", "awaiting_review": "finished, waiting on you"}
+        lines: list[str] = []
+        for row in rows:
+            stage = str(row["stage"] or "")
+            phrase = spoken.get(stage, stage)
+            title = str(row["title"] or "")[:120]
+            detail = " ".join(str(row["detail"] or "").split())[:200]
+            said = "already told them" if row["delivered_at"] is not None else "not told them yet"
+            line = f"- {title}: {phrase} ({stage}); {said}"
+            if detail:
+                line += f" — {detail}"
+            lines.append(line)
+        owed = [ln for ln in lines if "not told them yet" in ln]
+        said_lines = [ln for ln in lines if ln not in owed]
+        return (owed + said_lines)[:limit]
 
     async def _blocked_work(self, focus_title: str | None) -> list[str]:
         """Work that is parked, stalled at planning, or otherwise not moving.
@@ -594,16 +832,63 @@ class SocialCognition:
         Both outcomes are logged. A guardrail that fires silently is a guardrail
         that looks like the model having a bad day.
         """
-        if not state.readable or state.something_happened:
+        if not state.readable:
             return
-        if not any(claims_work_is_underway(text) for text in decision.reply_texts):
+        texts = [text for text in decision.reply_texts if claims_work_is_underway(text)]
+        if not texts:
             return
-        kept = [text for text in decision.reply_texts if not claims_work_is_underway(text)]
-        withheld = len(decision.reply_texts) - len(kept)
-        note = (
-            f"{withheld} reply text(s) claimed work that is underway with nothing "
-            f"journaled in the last {state.window_min:g} minutes; withheld"
-        )
+        # A claim that names a sub-agent is checkable in a way a claim about
+        # "the work" is not: the journal has a row per delegation, with the
+        # sub-agent's own name in the tool. Requiring that row is the fix for
+        # the shape the transcript caught — "Running APEX once more now" sent
+        # while the only journaled action was an unrelated `shell.run`. Under
+        # the old rule any journaled action blessed any underway claim, so a
+        # sub-agent that had never been invoked was narrated as running off the
+        # strength of a lookup the agent had made hours before. The row has to
+        # be the delegation itself: still running, or finished inside the
+        # journal's window. Anything older is a past run, and a present-tense
+        # claim about it is as unearned as no row at all.
+        kept = list(decision.reply_texts)
+        kept_delays = list(decision.reply_delays_s)
+        withheld_named = 0
+        withheld_general = 0
+
+        def _unearned(text: str) -> bool:
+            nonlocal withheld_named, withheld_general
+            named = subagents_named(text)
+            if named:
+                if named <= state.delegation_names:
+                    return False
+                withheld_named += 1
+                return True
+            if state.something_happened:
+                return False
+            withheld_general += 1
+            return True
+
+        # Text and its gap go together: a text withheld here takes the delay
+        # written for it with it, so what remains is still aligned by index and
+        # no later message inherits a pause meant for one that was never sent.
+        kept_with_delays = [
+            (text, delay) for text, delay in zip(
+                kept, kept_delays + [0.0] * len(kept), strict=False,
+            ) if not _unearned(text)
+        ]
+        kept = [text for text, _ in kept_with_delays]
+        kept_delays = [delay for _, delay in kept_with_delays]
+        withheld = withheld_named + withheld_general
+        if not withheld:
+            return
+        if withheld_named:
+            note = (
+                f"{withheld_named} reply text(s) claimed a sub-agent was running with no "
+                f"matching delegation in the journal (checked: {', '.join(sorted(_SUBAGENT_NAMES))})"
+            )
+        else:
+            note = (
+                f"{withheld_general} reply text(s) claimed work that is underway with nothing "
+                f"journaled in the last {state.window_min:g} minutes"
+            )
         if state.blocked:
             note += f" (blocked: {state.blocked[0][:160]})"
         logger.warning(
@@ -611,6 +896,7 @@ class SocialCognition:
             window_min=state.window_min,
         )
         decision.reply_texts = kept
+        decision.reply_delays_s = kept_delays
         decision.reason = f"{decision.reason}; {note}" if decision.reason else note
         if not kept:
             # Nothing left to say, and the action cannot stand on its own any
@@ -857,6 +1143,84 @@ class SocialCognition:
             for row in rows
         )
 
+    # ------------------------------------------------- stage notices
+
+    async def compose_stage_notice(self, notice: Any, preview: bool = False) -> str | None:
+        """The words for one stage notice, or nothing.
+
+        A method beside `deliberate` rather than a call site, for the reason the
+        rest of this file exists: everything this program sends to a person is a
+        word the model chose, and a stage notice is a message like any other. So
+        the composing happens here, against a prompt written for the job, and the
+        caller gets back either text it can send or `None` meaning there was
+        nothing worth saying.
+
+        `None` and `""` are the same answer and the caller treats them the same
+        way, because the two arrive from different failures — a model that declined
+        to write, and a model that could not be reached — and the difference is
+        logged rather than pushed onto the caller, which has one question to ask:
+        is there a message to send.
+
+        Not bounded by `MAX_DELIBERATION_ATTEMPTS` or gated behind the tier ladder.
+        A reply answers somebody who is waiting; this speaks to somebody who has
+        said nothing at all, and there is at most one owed word per stage, so the
+        retry that bounds a queue of unanswered messages has nothing to bound here.
+        A small ceiling and no escalation is the honest shape for it: the whole
+        point of this pass is that it happens at all, and a stage notice that took
+        three tries to compose was three tries too many.
+        """
+        if self.gateway is None:
+            logger.warning("social.stage_notice_no_gateway")
+            return None
+        name = self.config.self_name
+        if self.self_model is not None:
+            try:
+                name = await self.self_model.get("name", self.config.self_name)
+            except Exception:
+                pass
+        messages = stage_notice_messages(
+            self_name=name,
+            stage=str(getattr(notice, "stage", "") or ""),
+            title=str(getattr(notice, "title", "") or ""),
+            detail=str(getattr(notice, "detail", "") or ""),
+            who=str(getattr(notice, "person_id", "") or "") or None,
+            preview=preview,
+        )
+        request = ModelRequest(
+            tier=Tier.T2,
+            purpose="social.stage_notice",
+            budget_bucket="discretionary",
+            consequence_class="routine",
+            messages=[
+                ModelMessage(role=Role.system, content=messages[0]["content"]),
+                ModelMessage(role=Role.user, content=messages[1]["content"]),
+            ],
+            max_tokens=STAGE_NOTICE_MAX_TOKENS,
+        )
+        try:
+            response = await self.gateway.complete(request)
+        except Exception as exc:
+            logger.warning(
+                "social.stage_notice_call_failed",
+                stage=str(getattr(notice, "stage", "") or ""),
+                reason=f"{type(exc).__name__}: {exc}"[:200],
+            )
+            return None
+        data = _parse_json(response.text or "")
+        text = data.get("text")
+        if not isinstance(text, str):
+            text = _prose_body(response.text)
+            text = text if isinstance(text, str) else None
+        text = " ".join(text.split()) if text else ""
+        if not text:
+            logger.info(
+                "social.stage_notice_nothing_to_say",
+                stage=str(getattr(notice, "stage", "") or ""),
+                finish_reason=response.finish_reason,
+            )
+            return None
+        return text
+
     async def record_ignore(self, person_id: str | None, reason: str | None) -> dict[str, Any]:
         """Counts a silence against the person's streak, once, where it happens.
 
@@ -1085,13 +1449,42 @@ def _reply_texts(raw: Any) -> list[str]:
     an entry with no words in it is not a reply, and counting it as one is
     what let a blank answer through as though it were a real one.
     """
-    if not isinstance(raw, list):
-        return []
+    return _reply_texts_and_delays(raw, None)[0]
+
+
+def _reply_texts_and_delays(
+    raw_texts: Any, raw_delays: Any,
+) -> tuple[list[str], list[float]]:
+    """The reply and its per-message gaps, paired the way they were written.
+
+    The delays are optional and every way a model can write them wrong ends in
+    the same place: an immediate reply. A non-list, a non-number in a slot, a
+    negative (a delay before *now* is no delay), or a `true` — which is an int
+    to Python and not a duration to anybody — are all read as 0. The pairing is
+    by index into the raw list, *before* blank texts are dropped, so a gap the
+    model wrote for a message goes with that message and not with the one after
+    it: `["a", "", "b"]` with `[0, 9, 3]` sends `a`, then `b` after 3s, and the
+    9 belongs to the blank that was never sent.
+    """
     texts: list[str] = []
-    for entry in raw:
-        if isinstance(entry, str) and entry.strip():
-            texts.append(entry.strip())
-    return texts
+    delays: list[float] = []
+    raw_list = raw_texts if isinstance(raw_texts, list) else []
+    for index, entry in enumerate(raw_list):
+        if not (isinstance(entry, str) and entry.strip()):
+            continue
+        texts.append(entry.strip())
+        delays.append(_one_delay(raw_delays, index))
+    return texts, delays
+
+
+def _one_delay(raw_delays: Any, index: int) -> float:
+    """The gap the model wrote for message `index`, or 0 when it wrote none."""
+    if not isinstance(raw_delays, list) or index >= len(raw_delays):
+        return 0.0
+    value = raw_delays[index]
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0.0
+    return max(0.0, float(value))
 
 
 _JSON_WHITESPACE = " \t\r\n"

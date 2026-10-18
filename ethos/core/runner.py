@@ -291,6 +291,11 @@ class CoreRuntime:
     async def start(self) -> None:
         config = self.config
         config.paths.ensure()
+        # Before anything that thinks: a catalogue entry whose loopback endpoint
+        # is not there would otherwise sit in every failover ladder as a
+        # candidate that can only answer 404, and a 404 is the one failure the
+        # ladder is not allowed to route around.
+        await self.gateway_service.probe_local_endpoints()
         await self.bus.start()
         await self.control.load()
         self._wire_bus()
@@ -340,7 +345,10 @@ class CoreRuntime:
 
 async def run_core(config: EthosConfig | None = None, *, listen_channels: bool = False) -> None:
     config = config or load_config()
-    configure_logging(level=os.environ.get("ETHOS_LOG_LEVEL", "INFO"))
+    # DEBUG by default: the structured stream should carry every event the
+    # program emits, not just the ones worth a console line. The exhaustive
+    # sink (observability.exhaustive) is independent of this level either way.
+    configure_logging(level=os.environ.get("ETHOS_LOG_LEVEL", "DEBUG"))
     setup_tracing("ethos-core")
     config.paths.ensure()
     db = await connect_database(config)

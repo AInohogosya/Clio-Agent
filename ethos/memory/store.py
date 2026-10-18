@@ -19,6 +19,7 @@ from ethos.schemas.gsl import (
     DecisionRecord,
     IntentionRecord,
     IntentionStatus,
+    StageNotice,
 )
 from ethos.schemas.memory import MemoryHit
 
@@ -31,6 +32,17 @@ _OPEN_INTENTION_STATUSES = (
     IntentionStatus.in_progress.value, IntentionStatus.waiting.value,
     IntentionStatus.awaiting_review.value,
 )
+
+# How far along a goal each open status means, lowest first. Used only to pick
+# which of several rows for the same work to keep (`find_open_intention`), where
+# the wrong pick throws away a plan or a bookmark and the right one costs nothing.
+_INTENTION_PROGRESS = {
+    IntentionStatus.proposed.value: 0,
+    IntentionStatus.active.value: 1,
+    IntentionStatus.waiting.value: 2,
+    IntentionStatus.awaiting_review.value: 2,
+    IntentionStatus.in_progress.value: 3,
+}
 
 
 def _env_entity_dict(row: Any) -> dict[str, Any]:
@@ -398,6 +410,55 @@ class MemoryStore:
         )
         return [self._row_to_intention(r) for r in rows]
 
+    async def find_open_intention(
+        self,
+        title: str,
+        commissioned_by: str | None = None,
+    ) -> IntentionRecord | None:
+        """The open intention that already *is* this piece of work, if there is one.
+
+        A person asks for the same thing twice because the first time did not
+        visibly happen, and the right answer to the second request is to carry on
+        with the first — not to open a second row for it. The two are the same
+        promise, and an agent holding two rows for one promise has made two.
+
+        The cost is not a cluttered table. Progress through a goal lives in
+        `resume_state`, so a fresh intention starts again at `understand` however
+        far the old one got, and the agent can promise the same work on every pass
+        and get no closer to the step that does it. That is what was observed: one
+        request to run a sub-agent, three intentions titled identically, no plan
+        and no tool call, because each reply the agent volunteered reset the work
+        it had just said it was doing.
+
+        Matching is on the title, casefolded and whitespace-collapsed, and only
+        among open work for the same commissioner — deliberately literal. Two
+        different pieces of work do not share a title by accident, and a fuzzy
+        match here would merge genuinely distinct commitments, which is a worse
+        failure than the duplicate this prevents. Closed intentions are excluded
+        for the same reason: work that is `done` or `parked` was concluded, and
+        being asked for again is new work, not a resurrection.
+
+        The furthest-along match wins, so adopting one never throws away progress.
+        """
+        wanted = " ".join(str(title or "").casefold().split())
+        if not wanted:
+            return None
+        rows = await self.db.fetch(
+            "SELECT * FROM intentions WHERE status = ANY($1::text[]) "
+            "AND ($2::text IS NULL OR commissioned_by = $2::text) "
+            "ORDER BY updated_at DESC",
+            list(_OPEN_INTENTION_STATUSES), commissioned_by,
+        )
+        matches = [
+            self._row_to_intention(r) for r in rows
+            if " ".join(str(r["title"] or "").casefold().split()) == wanted
+        ]
+        if not matches:
+            return None
+        return max(matches, key=lambda i: (
+            _INTENTION_PROGRESS.get(i.status, 99), i.updated_at.timestamp(),
+        ))
+
     async def list_attentionable_intentions(self, limit: int = 50) -> list[IntentionRecord]:
         """The open work the drives are allowed to choose between.
 
@@ -436,6 +497,158 @@ class MemoryStore:
         undated.sort(key=lambda r: (-float(r["priority"] or 0.5), r["created_at"]))
         chosen = dated + undated[: max(0, limit - len(dated))]
         return [self._row_to_intention(r) for r in chosen]
+
+    # ------------------------------------------------------- stage notices
+
+    async def record_stage_notice(
+        self, intention: IntentionRecord, stage: str, detail: str = "",
+    ) -> StageNotice | None:
+        """Record that commissioned work reached a stage somebody is owed an answer on.
+
+        The channel and conversation are resolved here, from the last thing that
+        person actually said, rather than stored on the intention and looked up
+        later. Two reasons, and they are different. The first is durability: a row
+        that carries its own address stays correct across a restart and does not
+        depend on which conversation that person has used since. The second is that
+        the person who commissioned the work and the conversation they commissioned
+        it on are the same by construction -- the intention is created out of one
+        inbound message -- so the newest inbound row from them is the address the
+        answer belongs at.
+
+        `None` for work nobody asked for. There is nobody to owe a word to, and a
+        notice with no address would be a debt the loop keeps trying to pay into a
+        void.
+
+        Idempotent on `(intention_id, stage)`: the solver loop reaches the same
+        terminal state on more than one path, and a stage that arrives once must
+        not be announced once per path. The unique constraint enforces that, and
+        the conflict is swallowed here so a re-entry reads as the row it already
+        has rather than as a failure.
+        """
+        if intention.commissioned_by is None:
+            return None
+        person_id = str(intention.commissioned_by)
+        channel: str | None = None
+        conversation_key: str | None = None
+        try:
+            row = await self.db.fetchrow(
+                "SELECT channel, conversation_key FROM messages "
+                "WHERE direction = 'inbound' AND person_id = $1 "
+                "ORDER BY ts DESC LIMIT 1",
+                person_id,
+            )
+        except Exception:
+            logger.warning("memory.stage_notice_address_failed", person=person_id)
+            row = None
+        if row is not None:
+            channel = row["channel"]
+            conversation_key = row["conversation_key"] or None
+        notice = StageNotice(
+            intention_id=intention.id, stage=stage, title=intention.title or "",
+            detail=detail[:600], person_id=person_id, channel=channel,
+            conversation_key=conversation_key,
+        )
+        try:
+            await self.db.execute(
+                "INSERT INTO stage_notices (id, intention_id, stage, title, detail, "
+                "person_id, channel, conversation_key) "
+                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8) "
+                "ON CONFLICT (intention_id, stage) DO NOTHING",
+                notice.id, notice.intention_id, notice.stage, notice.title,
+                notice.detail, notice.person_id, notice.channel, notice.conversation_key,
+            )
+        except Exception:
+            logger.warning("memory.stage_notice_write_failed", intention=str(intention.id))
+            return None
+        existing = await self.get_stage_notice(intention.id, stage)
+        if existing is None:
+            logger.warning(
+                "memory.stage_notice_missing", intention=str(intention.id), stage=stage,
+            )
+        return existing or notice
+
+    async def get_stage_notice(self, intention_id: UUID, stage: str) -> StageNotice | None:
+        row = await self.db.fetchrow(
+            "SELECT * FROM stage_notices WHERE intention_id = $1 AND stage = $2",
+            intention_id, stage,
+        )
+        return self._row_to_stage_notice(row) if row is not None else None
+
+    async def list_stage_notices(
+        self, *, only_owed: bool = False, since: datetime | None = None, limit: int = 20,
+    ) -> list[StageNotice]:
+        """Stage notices, newest first.
+
+        Three callers with three questions, and the parameters are the three
+        questions rather than three methods: what is still owed, what finished
+        recently enough to be worth quoting back to somebody asking about it, and
+        nothing in particular.
+        """
+        rows = await self.db.fetch(
+            "SELECT * FROM stage_notices "
+            "WHERE (NOT $1 OR delivered_at IS NULL) "
+            "AND ($2::timestamptz IS NULL OR created_at >= $2) "
+            "ORDER BY created_at DESC LIMIT $3",
+            only_owed, since, int(limit),
+        )
+        return [self._row_to_stage_notice(r) for r in rows]
+
+    async def due_stage_notices(self, limit: int = 1) -> list[StageNotice]:
+        """The debts that are owed *and* due to be tried again.
+
+        `next_attempt_at` is what keeps a notice nobody can deliver -- a dead
+        channel, a withdrawn address -- from being retried at the tick rate. It is
+        null until the first failure, so a fresh notice is due immediately, and a
+        notice whose wait has not elapsed is not returned at all rather than
+        returned and skipped.
+        """
+        rows = await self.db.fetch(
+            "SELECT * FROM stage_notices "
+            "WHERE delivered_at IS NULL "
+            "AND (next_attempt_at IS NULL OR next_attempt_at <= now()) "
+            "ORDER BY created_at ASC LIMIT $1",
+            int(limit),
+        )
+        return [self._row_to_stage_notice(r) for r in rows]
+
+    async def mark_stage_notice(
+        self, notice_id: UUID, *, delivered: bool,
+        delivery: dict[str, Any] | None = None,
+        next_attempt_at: datetime | None = None,
+    ) -> None:
+        """Settle a notice one way or the other, and record which.
+
+        `delivered=False` does not discard the row. It counts the attempt, keeps
+        the reason, and sets the next time to try -- a debt that survives a failed
+        send is the whole point of keeping it in a table rather than in a log
+        line. What stops the retrying is the caller, which passes
+        `delivered=True` with the exhaustion recorded in `delivery`, so "stopped
+        asking" is a decision with a record rather than a row quietly aging.
+        """
+        if delivered:
+            await self.db.execute(
+                "UPDATE stage_notices SET delivered_at = now(), delivery = $2::jsonb, "
+                "attempts = attempts + 1, next_attempt_at = NULL WHERE id = $1",
+                notice_id, json.dumps(delivery or {}),
+            )
+            return
+        await self.db.execute(
+            "UPDATE stage_notices SET attempts = attempts + 1, delivery = $2::jsonb, "
+            "next_attempt_at = $3 WHERE id = $1",
+            notice_id, json.dumps(delivery or {}), next_attempt_at,
+        )
+
+    @staticmethod
+    def _row_to_stage_notice(row: Any) -> StageNotice:
+        return StageNotice(
+            id=row["id"], intention_id=row["intention_id"], stage=row["stage"],
+            title=row["title"] or "", detail=row["detail"] or "",
+            person_id=row["person_id"], channel=row["channel"],
+            conversation_key=row["conversation_key"], created_at=row["created_at"],
+            delivered_at=row["delivered_at"],
+            delivery=decode_json_value(row["delivery"]) or {},
+            attempts=int(row["attempts"] or 0), next_attempt_at=row["next_attempt_at"],
+        )
 
     async def update_intention(self, intention_id: UUID, **fields: Any) -> None:
         allowed = {

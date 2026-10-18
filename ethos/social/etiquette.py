@@ -273,7 +273,7 @@ class OutboundPipeline:
         entry = self.digests.setdefault(
             person_id,
             {"channel": channel, "key": key_for(channel, person_id), "texts": [],
-             "queued_at": time.monotonic(), "urgency": urgency},
+             "queued_at": time.monotonic(), "urgency": urgency, "intention_ids": []},
         )
         # Once, not once per call. Two cycles reaching the same conclusion inside
         # one window is one thing to tell somebody, and the flush joins these with
@@ -283,6 +283,10 @@ class OutboundPipeline:
             return {"status": "duplicate", "digest_size": len(entry["texts"])}
         entry["texts"].append(text)
         entry["urgency"] = max(entry["urgency"], urgency, key=lambda u: Urgency(u).weight())
+        if intention_id is not None:
+            ids = entry.setdefault("intention_ids", [])
+            if str(intention_id) not in ids:
+                ids.append(str(intention_id))
         await self._record(
             person_id, channel, text, urgency, entry["key"], None, intention_id,
             status="queued", detail="digest batching window",
@@ -302,7 +306,20 @@ class OutboundPipeline:
             # the batched note now sitting behind an unanswered reply. So the entry
             # stays queued rather than being delivered on top of it, and goes out
             # when the person comes back or the window is long since up.
-            if await self._held_back(entry["key"]):
+            #
+            # Unless the batch is a promised update. The gate asks whether the
+            # agent is *starting* a conversation, and a note that names the
+            # intention it is about is not one — it is the answer to something the
+            # agent already said. The distinction was lost here rather than at the
+            # enqueue: `_enqueue_digest` kept neither the intention nor the fact
+            # that there had been one, so by the time this gate was asked about a
+            # solver step's update it was an anonymous queued string, and the
+            # longest-running entry in the system was exactly the one that could
+            # not be delivered — the agent's own "it's done" note, blocked for the
+            # `awaiting_reply_h` after its own "I'll do it", and blocked again on
+            # every subsequent flush until the person happened to write back.
+            promised = bool(entry.get("intention_ids"))
+            if not promised and await self._held_back(entry["key"]):
                 continue
             texts = entry["texts"]
             del self.digests[person_id]
@@ -323,8 +340,14 @@ class OutboundPipeline:
                 await self._record(person_id, entry["channel"], merged, entry["urgency"],
                                    entry["key"], None, None, status="suppressed", detail=why)
                 continue
+            # The first intention named, so the delivered row is attributed to the
+            # work it is about rather than filed as a message with no subject. A
+            # batch can mix a promised update with something else; one id is the
+            # honest answer to "which work is this about" and claiming all of them
+            # would be worse than naming one.
             await self._deliver(
-                person_id, entry["channel"], merged, entry["urgency"], entry["key"], None, None,
+                person_id, entry["channel"], merged, entry["urgency"], entry["key"], None,
+                (entry.get("intention_ids") or [None])[0],
             )
             sent += 1
         return sent

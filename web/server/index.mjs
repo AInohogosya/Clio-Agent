@@ -1148,6 +1148,81 @@ function fsyncWritten(file) {
 }
 
 /**
+ * The exhaustive log, from the one writer in this deployment that is not the agent.
+ *
+ * Every Python-side writer records what it did — a message received, a secret
+ * set, a lifecycle button pressed — as one JSON line in
+ * `data/logs/exhaustive-<date>.jsonl`. This process changes the same world: it
+ * takes the owner's chat messages, and it owns the base model and the agent's
+ * name. Those writes used to be invisible in the record, so a base-model switch
+ * mid-session read as the agent abruptly thinking with a different model and
+ * nothing more — and an instruction sent from the browser was present only as
+ * the replies it provoked. Same file, same line shape, and the same redaction,
+ * as `ethos/observability/exhaustive.py`: a record that carried a live
+ * credential would not be a more complete record.
+ *
+ * Never throws: a log line that could fail the write it describes is a worse
+ * failure than a lost line.
+ */
+const EXHAUSTIVE_LOG_DIR = process.env.ETHOS_EXHAUSTIVE_LOG_DIR
+  ? path.resolve(expandHome(process.env.ETHOS_EXHAUSTIVE_LOG_DIR))
+  : path.join(AGENT_HOME, 'data', 'logs');
+
+const EXHAUSTIVE_REDACTED = '[REDACTED]';
+const EXHAUSTIVE_SECRET_PATTERNS = [
+  /sk-[A-Za-z0-9_-]{16,}/g,
+  /xox[baprs]-[A-Za-z0-9-]{10,}/g,
+  /ghp_[A-Za-z0-9]{20,}/g,
+  /gho_[A-Za-z0-9]{20,}/g,
+  /AIza[A-Za-z0-9_-]{30,}/g,
+  /\d{6,12}:[A-Za-z0-9_-]{30,}/g,
+  /eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}/g,
+  /(api[_-]?key|token|password|secret)['"]?\s*[:=]\s*['"]?[^\s'"]{8,}/gi,
+  /Bearer\s+[A-Za-z0-9_./-]{16,}/g,
+  /\{\{secret:[A-Za-z0-9_./-]+?\}\}/g,
+];
+
+function redactExhaustive(value) {
+  if (typeof value === 'string') {
+    for (const pattern of EXHAUSTIVE_SECRET_PATTERNS) value = value.replace(pattern, EXHAUSTIVE_REDACTED);
+    return value;
+  }
+  if (Array.isArray(value)) return value.map(redactExhaustive);
+  if (value && typeof value === 'object') {
+    const out = {};
+    for (const [key, item] of Object.entries(value)) {
+      out[key] = /password|secret|api_?key|token/i.test(key) ? EXHAUSTIVE_REDACTED : redactExhaustive(item);
+    }
+    return out;
+  }
+  return value;
+}
+
+function logExhaustive(kind, payload) {
+  try {
+    const now = new Date();
+    const ts = `${now.toISOString().slice(0, 19)}+00:00`;
+    const entry = {
+      ts,
+      minute: ts.slice(0, 16),
+      kind,
+      pid: process.pid,
+      process: path.basename(process.argv[1] ?? ''),
+      ...redactExhaustive(payload),
+    };
+    const sorted = {};
+    for (const key of Object.keys(entry).sort()) sorted[key] = entry[key];
+    fs.mkdirSync(EXHAUSTIVE_LOG_DIR, { recursive: true });
+    fs.appendFileSync(
+      path.join(EXHAUSTIVE_LOG_DIR, `exhaustive-${now.toISOString().slice(0, 10)}.jsonl`),
+      `${JSON.stringify(sorted)}\n`,
+    );
+  } catch {
+    /* the write the record describes has already happened */
+  }
+}
+
+/**
  * Writes the base model, keeping a stored key unless a new one was given.
  *
  * Written to a sibling temporary file and renamed, so the gateway — which may be
@@ -1156,12 +1231,22 @@ function fsyncWritten(file) {
  * accounts between the write and a following chmod.
  */
 function writeBaseModel(body) {
+  // Before anything can refuse or write: what the agent thinks with now, in the
+  // key-safe shape a surface sees, so the record of the change says what moved
+  // and never the credential itself.
+  const before = readBaseModel();
   if (body?.enabled === false) {
     try {
       fs.unlinkSync(BASE_MODEL_FILE);
     } catch (error) {
-      if (error?.code !== "ENOENT") throw error;
+      if (error?.code !== 'ENOENT') throw error;
     }
+    logExhaustive('settings.change', {
+      actor: 'web',
+      what: 'base_model',
+      before,
+      after: { ...NO_BASE_MODEL },
+    });
     return { ...NO_BASE_MODEL };
   }
 
@@ -1258,7 +1343,9 @@ function writeBaseModel(body) {
     console.error(`ethos-web base model not written — ${detail}`);
     return { error: "home_unwritable", detail };
   }
-  return { ...readBaseModel(), configured: true };
+  const after = readBaseModel();
+  logExhaustive('settings.change', { actor: 'web', what: 'base_model', before, after });
+  return { ...after, configured: true };
 }
 
 /**
@@ -1308,12 +1395,19 @@ function readIdentity() {
  * moment is a name that was never chosen.
  */
 function writeIdentity(body) {
+  const before = readIdentity();
   if (body?.enabled === false) {
     try {
       fs.unlinkSync(IDENTITY_FILE);
     } catch (error) {
-      if (error?.code !== "ENOENT") throw error;
+      if (error?.code !== 'ENOENT') throw error;
     }
+    logExhaustive('settings.change', {
+      actor: 'web',
+      what: 'identity',
+      before,
+      after: { ...NO_IDENTITY },
+    });
     return { ...NO_IDENTITY };
   }
 
@@ -1343,7 +1437,9 @@ function writeIdentity(body) {
     console.error(`ethos-web agent name not written — ${detail}`);
     return { error: "home_unwritable", detail };
   }
-  return readIdentity();
+  const after = readIdentity();
+  logExhaustive('settings.change', { actor: 'web', what: 'identity', before, after });
+  return after;
 }
 
 /**
@@ -2718,6 +2814,23 @@ async function queueMessage(text, person, address, channel = "web") {
     // `known`, not `owner`: the attention scorer weights senders by class and
     // has never heard of a class called "owner", so the name was scoring zero.
     sender_class: "known",
+  });
+  // What the comms host records for a message that arrived through an adapter —
+  // here because this path *is* an adapter: the row and the event above are the
+  // agent's copy of the message, and without this line the exhaustive record
+  // holds only the replies it provoked, never the instruction that caused them.
+  logExhaustive('user.action', {
+    actor: who,
+    action: 'message.send',
+    channel,
+    detail: {
+      message_id: messageId,
+      person_id: who,
+      conversation_key: conversationKey,
+      direction: 'inbound',
+      text: content,
+      is_untrusted: false,
+    },
   });
   return { id: messageId };
 }

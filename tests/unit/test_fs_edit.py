@@ -279,8 +279,9 @@ def test_the_step_prompt_demonstrates_the_edit_and_the_shell_and_not_only_one() 
         "the file edit comes first, since that is the one being under-used"
 
     body = STEP_PROMPT.format(
-        name="Clio", commissioned="C", editing="E", title="t", step_id="s1",
-        step_description="x", plan_state="[]", memories="(none)", tools="(catalog)",
+        name="Clio", commissioned="C", editing="E", delegation="D", title="t",
+        step_id="s1", step_description="x", plan_state="[]", memories="(none)",
+        tools="(catalog)",
     )
     assert "not interchangeable" in body, "and the two are told apart explicitly"
     assert "whole-file rewrite" in body, \

@@ -14,7 +14,14 @@ shim on loopback).
 In-process mode runs APEX's `ControlPlane` on this loop; subprocess mode
 drives `python main.py --goal ...` and maps its documented exit codes. APEX
 needs native desktop permissions (macOS TCC), which is why `auto` mode falls
-back to subprocess rather than failing a delegation over an import.
+back to subprocess rather than failing a delegation over an import. The
+fallback is only real if the child can run at all: APEX's native dependencies
+(pyobjc, mss, pyautogui) live in `APEX/.venv`, so when that virtualenv is
+missing it is bootstrapped — idempotently, non-interactively — before the
+subprocess starts. Handing the child this agent's own interpreter instead is
+how a missing dependency came back as "the desktop task failed": the child
+crashed on the same import that broke in-process mode, before it had touched
+the desktop, and its exit code was read as a verdict on a task it never ran.
 """
 
 from __future__ import annotations
@@ -25,6 +32,7 @@ from pathlib import Path
 from typing import Any
 
 from ethos.observability.logger import get_logger
+from ethos.platform import venv_python
 from ethos.subagents.base import (
     STATUS_BLOCKED,
     STATUS_DONE,
@@ -38,12 +46,17 @@ from ethos.subagents.base import (
 
 logger = get_logger("ethos.subagents.apex")
 
-# APEX's own terminal vocabulary, mapped once. `main.py` documents these exit
-# codes; `TaskMode` uses the same distinction between "safely stopped" and
-# "outcome unknown, never retry blind".
+# APEX's own terminal vocabulary, mapped once. `main.py` returns 0 for a
+# verified completion, 2 for an outcome-unknown stop, 3 for a safe block and
+# 130 for a failed or operator-stopped task. Exit 1 is different: it is the
+# crash path — an exception that escaped `run_controller` before any task
+# reached a terminal state — so it means the controller never delivered a
+# verdict, which is "unavailable" and not "failed". Reading it as a failed
+# task is how a missing pyobjc import became a report that a desktop change
+# had been attempted and had failed.
 _EXIT_CODES = {
     0: STATUS_DONE,
-    1: STATUS_FAILED,
+    1: STATUS_UNAVAILABLE,
     2: STATUS_OUTCOME_UNKNOWN,
     3: STATUS_BLOCKED,
     130: STATUS_FAILED,
@@ -148,11 +161,66 @@ class ApexSubAgent(SubAgent):
 
     # ---- subprocess -------------------------------------------------------
 
+    # One bootstrap attempt per process: a failed pip install will not get
+    # better by being retried inside the delegation that needs its result.
+    _bootstrap_attempted = False
+    BOOTSTRAP_TIMEOUT_S = 600.0
+
+    async def _child_python(self, started: float) -> Path | None:
+        """An interpreter that can actually run APEX, bootstrapping one if needed.
+
+        In-process mode imports APEX into this process, so it inherits this
+        agent's interpreter whatever that interpreter has. The subprocess
+        fallback used to inherit the same interpreter when `APEX/.venv` was
+        missing — which made it crash with the very dependency error that
+        triggered the fallback, seconds before the child could have touched
+        the desktop. `bootstrap.py` exists to create the virtualenv the child
+        needs, so the fallback falls back to something that can run.
+        """
+        python = venv_python(self.root)
+        if python is not None:
+            return python
+        bootstrap = self.root / "bootstrap.py"
+        if not bootstrap.is_file() or ApexSubAgent._bootstrap_attempted:
+            return None
+        ApexSubAgent._bootstrap_attempted = True
+        budget = max(
+            60.0, min(self.BOOTSTRAP_TIMEOUT_S, self.timeout_s() - (time.monotonic() - started)),
+        )
+        logger.info("subagent.apex_bootstrap_started", root=str(self.root))
+        # `--skip-permissions` keeps the native TCC dialogs for the real run,
+        # and `--skip-api-key` because the child reaches the model through the
+        # gateway bridge, not a credential of its own.
+        try:
+            code, out, _ = await self.run_command(
+                [str(sys.executable), str(bootstrap),
+                 "--skip-permissions", "--skip-api-key", "--no-dev"],
+                cwd=self.root, timeout_s=budget,
+            )
+        except TimeoutError:
+            logger.warning("subagent.apex_bootstrap_timeout", seconds=budget)
+            return None
+        python = venv_python(self.root)
+        if code == 0 and python is not None:
+            logger.info("subagent.apex_bootstrap_done")
+            return python
+        logger.warning("subagent.apex_bootstrap_failed", exit=code, output=out[-800:])
+        return None
+
     async def _run_subprocess(
         self, task: str, mode: str, max_steps: int, started: float,
     ) -> SubAgentResult:
-        venv_python = self.root / ".venv" / "bin" / "python"
-        python = venv_python if venv_python.exists() else Path(sys.executable)
+        python = await self._child_python(started)
+        if python is None:
+            return self.timed(SubAgentResult(
+                agent=self.name, status=STATUS_UNAVAILABLE,
+                summary=(
+                    "apex could not run: APEX/.venv is missing and bootstrapping "
+                    "it did not succeed; run APEX/bootstrap.py to install its "
+                    "native dependencies"
+                ),
+                mode="subprocess",
+            ), started)
         env = self.child_env({
             "LLM_PROVIDER": "ethos",
             "ETHOS_GATEWAY_URL": self.gateway_url(),
@@ -177,11 +245,26 @@ class ApexSubAgent(SubAgent):
                 summary=f"apex exceeded its {timeout:.0f}s ceiling", mode="subprocess",
             ), started)
         status = _EXIT_CODES.get(code, STATUS_FAILED)
+        detail = {"exit_code": code, "output": out[-4000:]}
+        if status is STATUS_UNAVAILABLE:
+            # The controller died before any task could be given a verified
+            # verdict, so the honest sentence names the crash, not the task.
+            # Quoting its own last line keeps the cause — a missing dependency,
+            # a refused permission — attached to the failure it produced.
+            last_line = next(
+                (line for line in reversed(out.splitlines()) if line.strip()), "",
+            )
+            status_summary = (
+                f"apex crashed before it could report a task outcome "
+                f"(exit {code}): {last_line[-300:]}"
+            )
+        else:
+            status_summary = f"desktop task ended with exit code {code} ({status})"
         return self.timed(SubAgentResult(
             agent=self.name,
             status=status,
-            summary=f"desktop task ended with exit code {code} ({status})",
-            detail={"exit_code": code, "output": out[-4000:]},
+            summary=status_summary,
+            detail=detail,
             mode="subprocess",
         ), started)
 
@@ -214,15 +297,30 @@ class ApexSubAgent(SubAgent):
     async def health(self) -> dict[str, Any]:
         info: dict[str, Any] = {"root": str(self.root), "mode": self.settings.mode}
         try:
-            self._import_plane()
+            (_planner, _config_cls, _runtime, _safety, ScreenMode, _plane,
+             create_screen_controller) = self._import_plane()
+            # The planner modules importing is not the health the caller is
+            # asking about. A delegation that cannot reach the desktop is the
+            # failure that was observed: the planner imports cleanly, the run
+            # starts, and `create_screen_controller` raises on the native
+            # pyobjc dependency the planner never touches — so a registry that
+            # checked only the import plane reported APEX available while
+            # every actual run died on contact. Constructing the hidden-mode
+            # controller here is the same import chain a real run takes, and
+            # the constructor only imports and initializes state — nothing is
+            # put on the display until `install()`.
+            create_screen_controller(ScreenMode.HIDDEN)
             info["available"] = True
             info["import"] = "in-process"
         except Exception as exc:
-            python = self.root / ".venv" / "bin" / "python"
+            python = venv_python(self.root)
             info["available"] = (self.root / "main.py").is_file()
             info["import"] = (
                 f"unavailable ({exc}); subprocess via "
-                f"{python if python.exists() else sys.executable}"
+                + (
+                    str(python) if python is not None
+                    else "bootstrap of APEX/.venv (run APEX/bootstrap.py)"
+                )
             )
         return info
 

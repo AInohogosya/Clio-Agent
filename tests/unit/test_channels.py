@@ -12,6 +12,7 @@ from typing import Any
 import pytest
 
 from ethos.comms.adapters import telegram as telegram_adapter_module
+from ethos.comms.adapters.base import ChannelAdapter
 from ethos.comms.adapters.telegram import TelegramAdapter, _display_name, _handle
 from ethos.comms.adapters.whatsapp import WhatsappAdapter, normalize_phone
 from ethos.comms.webhook import WebhookReceiver, meta_signature
@@ -710,8 +711,14 @@ def _core_style_config(monkeypatch: pytest.MonkeyPatch, telegram: bool = True):
     return config
 
 
-class RecordingAdapter:
-    """An adapter that reports which halves of itself were opened."""
+class RecordingAdapter(ChannelAdapter):
+    """An adapter that reports which halves of itself were opened.
+
+    A real subclass rather than a duck-typed stand-in, because the host now asks
+    every adapter whether a failure is transient before deciding whether to try
+    again — a double that did not answer that question would be testing a host
+    that no longer exists.
+    """
 
     name = "recording"
 
@@ -2181,3 +2188,37 @@ async def test_discord_needs_no_webhook_because_it_has_no_door(monkeypatch: pyte
         assert host.receiver is None
     finally:
         await host.stop()
+
+
+def test_telegram_counts_a_bad_gateway_as_worth_retrying_and_a_deleted_chat_as_not():
+    """The classification that decides how fast a broken door is tried again.
+
+    `BadRequest` subclasses `NetworkError` in this library, so anything that keys
+    off the parent alone retries a chat that no longer exists on the fast curve,
+    forever. That is the same log-spam failure as retrying a revoked token eagerly,
+    arrived at by accident rather than by choice, which is why it is pinned here.
+    """
+    from telegram import error as tg_error
+
+    assert TelegramAdapter.is_transient(OSError(111, "Connection refused")) is True
+    assert TelegramAdapter.is_transient(TimeoutError("read")) is True
+    assert TelegramAdapter.is_transient(tg_error.TimedOut("read")) is True
+    assert TelegramAdapter.is_transient(tg_error.NetworkError("502 Bad Gateway")) is True
+
+    assert TelegramAdapter.is_transient(tg_error.BadRequest("chat not found")) is False
+    assert TelegramAdapter.is_transient(ValueError("token revoked")) is False
+
+
+def test_the_default_classification_treats_a_socket_as_transient_and_a_config_as_not():
+    """The default every adapter that has not overridden this inherits.
+
+    The line it draws is "did the network get in the way", because that is the only
+    question the host can answer without knowing anything about the channel — and
+    `OSError` is the shape that answer arrives in for every HTTP adapter here.
+    """
+    from ethos.comms.adapters.base import ChannelAdapter
+
+    assert ChannelAdapter.is_transient(OSError(111, "Connection refused")) is True
+    assert ChannelAdapter.is_transient(TimeoutError()) is True
+    assert ChannelAdapter.is_transient(ValueError("no token configured")) is False
+    assert ChannelAdapter.is_transient(KeyError("channels")) is False

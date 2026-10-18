@@ -109,7 +109,17 @@ class Attention:
                     summary=percept.summary[:400],
                 )),
             ],
-            max_tokens=120,
+            # A ceiling, not a reservation: the answer is three floats of JSON,
+            # so the ceiling costs nothing the answer does not spend. The old 120
+            # was smaller than the reasoning of the base model this deployment
+            # thinks with — the reply came back as thought and nothing else,
+            # `finish_reason: length`, and a refine paid six attempts across the
+            # catalogue to return None. The reasoning bound is what actually
+            # holds: thinking is capped inside the ceiling, the way the
+            # deliberation prompt bounds its own, and an endpoint that refuses
+            # the parameter is remembered by the provider rather than fatal.
+            max_tokens=1024,
+            reasoning_budget=300,
         )
         try:
             response = await self.gateway.complete(request)

@@ -529,6 +529,67 @@ class SocialConfig(BaseModel):
     # How much blocked or stalled work to name. The rest is a query away and does
     # not change what the reply should say.
     execution_state_max_blocked: int = 5
+    # How much finished work to name, and how far back.
+    #
+    # This is the pair the first two windows above cannot cover, and it exists
+    # because the journal is a window on what the agent is doing and the blocked
+    # list is a window on what it cannot do — neither of which is evidence about
+    # what it already finished. A closed intention is in neither, so work completed
+    # a while ago read to the one prompt that writes replies as work that had not
+    # happened, which is a gap in the record rather than a gap in the work.
+    #
+    # Generous on purpose and for the same reason the journal's window is short
+    # but deliberate: a person asking "did you ever finish that?" is asking about
+    # something old, and the answer has to still be there when they do.
+    execution_state_max_stages: int = 5
+    execution_state_stage_window_h: float = 72.0
+    # How far back sub-agent delegations are read for the reply prompt, and how
+    # many to name.
+    #
+    # The journal's own window is about what is happening *right now*, and a
+    # delegation is usually not: `subagent.apex` blocks for as long as the
+    # desktop work takes, and its verdict — done, blocked, failed, and above
+    # all *why* — is the fact a later reply most needs and had no way to see.
+    # A person told "running APEX now" who asks again an hour later is asking
+    # about a delegation that happened outside the journal's window, so the
+    # delegation record gets a window of its own, long enough to cover the
+    # conversation the delegation happened inside.
+    execution_state_delegation_window_h: float = 24.0
+    execution_state_max_delegations: int = 5
+    # How hard the loop tries to say a word somebody is owed, and how long it
+    # waits between tries.
+    #
+    # The promise was made deliberately and the stage arrived deliberately, so
+    # giving up is a last resort and the numbers are sized for the case that
+    # justifies it: a channel whose adapter refuses the address, or a model that
+    # will not compose the words. Both are real and neither is fixed by trying
+    # again, and a debt retried at the tick rate is an outage wearing a
+    # notification's clothes -- the loop spends a pass and a model call on it
+    # every few seconds for as long as the fault lasts, which is the same shape
+    # of failure the planning backoff exists to prevent one layer down.
+    #
+    # Five attempts across roughly half an hour of waiting is enough to ride out a
+    # model outage and a brief channel failure, and few enough that a permanent
+    # one is stopped before it has cost anything anybody would notice. Past the cap
+    # the notice is settled as abandoned, with the reason in the row: visible to
+    # an operator, rather than a row quietly incrementing forever.
+    stage_notice_max_attempts: int = 5
+    stage_notice_backoff_s: float = 60.0
+    stage_notice_backoff_max_s: float = 1800.0
+    stage_notice_backoff_jitter: float = 0.25
+    # The longest breath a multi-message reply may take between two of its own
+    # messages, in seconds.
+    #
+    # The reply can be any number of messages, and each may name the gap before
+    # it — but the gap came out of a model, and a model that writes "2" meaning
+    # minutes where the field reads seconds must cost the reply seconds, not
+    # the whole afternoon: a gap of 7200 slept inside the turn is a cycle that
+    # stops answering anybody else while one person's aside takes its time.
+    # Thirty seconds is several times longer than any gap a person's own
+    # texting rhythm would call natural, so the clamp only ever bites on a
+    # mistake — and when it bites, the reply still arrives, only closer
+    # together.
+    reply_gap_max_s: float = 30.0
 
 
 class RetrievalWeights(BaseModel):
@@ -1895,3 +1956,35 @@ def get_config() -> EthosConfig:
 
 def reset_config_cache() -> None:
     get_config.cache_clear()
+
+
+def load_channels_config(config_dir_override: str | Path | None = None) -> ChannelsConfig:
+    """
+    The doors alone, read exactly the way `load_config` reads them.
+
+    `load_config` builds the whole configuration — models, people, pricing, the
+    catalogue — because that is what a *process start* needs. The channel
+    watcher needs two files, and asking it to parse everything is what let a
+    failure anywhere else in the configuration hold the doors shut: a run of
+    `channels_reload_unreadable` whose true cause was in a file that holds no
+    door at all, invisible because the event named none of them.
+
+    So this reads what a door is made of and nothing else: the shipped
+    `channels.yaml`, the home overlay merged over it key by key under the same
+    `ETHOS_HOME` and `paths.home` rules `load_config` applies, and the same
+    `ChannelsConfig` validation. A door that opens from here opens identically
+    from the full load, because it is the same file and the same model — only
+    the blast radius of somebody else's typo is gone.
+    """
+    cfg_dir = config_dir(config_dir_override)
+    main = _read_yaml(cfg_dir / "ethos.yaml")
+    # The home the doors overlay is read from, decided the way `load_config`
+    # decides it: the environment wins over the shipped file, and the shipped
+    # file's own `paths.home` wins over the default.
+    home = str((main.get("paths") or {}).get("home") or "~/.ethos")
+    if home_env := os.environ.get("ETHOS_HOME"):
+        home = home_env
+    channels = _read_yaml(cfg_dir / CHANNELS_FILENAME)
+    if overlay := read_overlay(channels_path(home)):
+        channels = _merge_section(channels, overlay)
+    return ChannelsConfig(**channels)

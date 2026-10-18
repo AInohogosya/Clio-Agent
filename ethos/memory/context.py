@@ -248,10 +248,21 @@ class ContextLayer:
                     ModelMessage(role=Role.system, content=messages[0]["content"]),
                     ModelMessage(role=Role.user, content=messages[1]["content"]),
                 ],
-                max_tokens=300,
+                # The same geometry as `attention.refine`: a one-line answer
+                # under a ceiling that a default-thinking base model can spend
+                # entirely on thought. `max_tokens` is a ceiling and not a
+                # reservation, so the larger number costs nothing the reply does
+                # not use, and the reasoning bound is what keeps the ceiling
+                # from being consumed before the line arrives.
+                max_tokens=1024,
+                reasoning_budget=300,
             ))
         except Exception:
-            logger.warning("context.narrate_call_failed")
+            # The reason under the warning is the whole diagnosis here: a
+            # timeout, a 429, a model that answered nothing, a JSON line that
+            # would not parse are four different problems wearing one event
+            # name, and without the traceback the log cannot tell them apart.
+            logger.exception("context.narrate_call_failed")
             return None
         self.cost_usd += float(response.cost_usd or 0.0)
         data = parse_json_block(response.text or "")
