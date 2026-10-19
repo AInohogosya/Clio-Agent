@@ -123,12 +123,12 @@ class RetryConfig(BaseModel):
     is a fraction of what a wasted goal looks like.
     """
 
-    max_retries: int = 5
+    max_retries: int = 20
     backoff_s: float = 1.5
     # Exponential growth without a ceiling turns the last attempts into minutes
     # of holding a request open, which is a different failure from the one being
     # retried. Capped so the budget stays worth spending.
-    max_backoff_s: float = 30.0
+    max_backoff_s: float = 300.0
     # Fraction of the delay to add at random. Without it every request that
     # failed in the same window comes back in the same window and fails again
     # together, which is the opposite of what a retry is for.
@@ -1571,7 +1571,7 @@ class SubagentConfig(BaseModel):
     # repo root. Empty means inherited.
     cwd: str = ""
     enabled: bool = True
-    timeout_s: float = 3600.0
+    timeout_s: float = 86400.0
     # Extra environment variables handed to a child process, on top of the
     # ones the bridge sets to route the child's model calls through this
     # agent's gateway.

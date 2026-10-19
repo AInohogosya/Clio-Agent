@@ -169,12 +169,13 @@ class FoundrySubAgent(SubAgent):
             except TimeoutError:
                 return self.timed(SubAgentResult(
                     agent=self.name, status=STATUS_TIMEOUT,
-                    summary=f"foundry exceeded its {timeout:.0f}s ceiling", mode="subprocess",
+                    summary=f"foundry exceeded its {timeout:.0f}s ceiling for task: {task[:80]}{'...' if len(task) > 80 else ''}",
+                    mode="subprocess",
                 ), started)
             if code != 0:
                 return self.timed(SubAgentResult(
                     agent=self.name, status=STATUS_FAILED,
-                    summary=f"foundry {' '.join(argv[2:4])} exited {code}",
+                    summary=f"foundry {' '.join(argv[2:4])} exited {code} for task: {task[:80]}{'...' if len(task) > 80 else ''}",
                     detail={"output": out[-4000:]}, mode="subprocess",
                 ), started)
         status_summary = extract_json_object(out) or {}

@@ -88,7 +88,7 @@ class FoundryRunTool(Tool):
     # layer cutting the call off with no result. It only exists so a wedged
     # child cannot hold the step open forever, and it is deliberately above the
     # default 3600s budget so the sub-agent's own accounting is what reports.
-    timeout_s = 3900.0
+    timeout_s = 86400.0
     input_schema = {
         "type": "object",
         "properties": {
@@ -130,7 +130,7 @@ class ApexRunTool(Tool):
     # Same relationship to the sub-agent's own budget as `subagent.foundry`:
     # above its 900s default, so APEX reports its own `blocked`/`failed`
     # verdict rather than being cut off here with nothing to say.
-    timeout_s = 1200.0
+    timeout_s = 86400.0
     input_schema = {
         "type": "object",
         "properties": {
