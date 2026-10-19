@@ -22,7 +22,14 @@ class OpenAICompatProvider(Provider):
 
     name = "openai_compat"
 
-    def __init__(self, api_key: str | None, base_url: str, quirks, http: httpx.AsyncClient, timeout_s: float = 180.0,
+    # 600s, not the base class' 120s: this provider does not stream, so a
+    # long generation sends no bytes until it is finished and the read
+    # timeout is a whole-completion deadline. Measured T2 calls on the
+    # routed models regularly run past three minutes (the largest observed
+    # success was ~385s); a 180s ceiling turned every one of those into an
+    # `HTTP 0: timeout` whose retry paid for the same generation twice.
+    def __init__(self, api_key: str | None, base_url: str, quirks, http: httpx.AsyncClient,
+                 timeout_s: float = 600.0,
                  state_path: str | Path | None = None):
         super().__init__(api_key, base_url, quirks, http, timeout_s)
         # Which models on this endpoint have taken the reasoning parameter. There

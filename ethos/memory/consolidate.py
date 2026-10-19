@@ -224,6 +224,12 @@ class ConsolidationDAG:
         }
         since = now - timedelta(days=1)
         episodes = await self.memory.episodes_since(since, self.config.memory.consolidation.max_episodes)
+        # Drop this loop's own bookkeeping records. `run_nightly` files a
+        # `kind="consolidation"` episode at the end of every pass, so without
+        # this filter the next night clusters them together and asks the
+        # model to distill facts from "[consolidation] nightly consolidation
+        # completed" — a junk fact written into the store each night.
+        episodes = [e for e in episodes if e.get("kind") != "consolidation"]
         if episodes:
             vectors = [e["embedding"] or [0.0] * self.config.gateway.embedding.dim for e in episodes]
             labels = hdbscan_like_cluster(

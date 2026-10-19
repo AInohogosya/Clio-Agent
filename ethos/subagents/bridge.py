@@ -23,6 +23,7 @@ from typing import Any
 
 from ethos.observability.logger import get_logger
 from ethos.schemas.models import ModelMessage, ModelRequest, Role
+from ethos.schemas.tools import ToolCall
 
 logger = get_logger("ethos.subagents.bridge")
 
@@ -43,16 +44,23 @@ def _message_from_raw(raw: dict[str, Any]) -> ModelMessage:
     """
     role_name = str(raw.get("role", "user"))
     role = Role(role_name) if role_name in _KNOWN_ROLES else Role.user
-    message = ModelMessage(role=role, content=raw.get("content") or None)
     tool_call = raw.get("tool_call")
-    if isinstance(tool_call, dict):
-        args = tool_call.get("args")
-        message.tool_call_id = str(tool_call.get("id") or "call_0")
-        message.tool_calls = [{
-            "id": str(tool_call.get("id") or "call_0"),
-            "name": str(tool_call.get("name") or ""),
-            "arguments": args if isinstance(args, dict) else {},
-        }]
+    # `ToolCall` objects must be built here, in the constructor. A pydantic
+    # model does not validate plain assignment by default, so handing it a
+    # list of raw dicts after construction leaves the dicts as dicts — and
+    # the first provider that reads `call.id` on one of them raises
+    # AttributeError for every subsequent turn of the tool loop.
+    message = ModelMessage(
+        role=role,
+        content=raw.get("content") or None,
+        tool_calls=[
+            ToolCall(
+                id=str(tool_call.get("id") or "call_0"),
+                name=str(tool_call.get("name") or ""),
+                arguments=tool_call.get("args") if isinstance(tool_call.get("args"), dict) else {},
+            )
+        ] if isinstance(tool_call, dict) else [],
+    )
     if raw.get("tool_call_id"):
         message.tool_call_id = str(raw["tool_call_id"])
     return message
