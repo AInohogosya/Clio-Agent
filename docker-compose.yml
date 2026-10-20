@@ -1,0 +1,22 @@
+name: ethos-main
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: ethos-db
+    environment:
+      POSTGRES_USER: ethos
+      POSTGRES_PASSWORD: ethos
+      POSTGRES_DB: ethos
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - ethos_main_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ethos -d ethos"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  ethos_main_pgdata:

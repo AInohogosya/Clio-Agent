@@ -1,0 +1,344 @@
+# Contact points.
+#
+# Every one of these is a way *in*, never a way the agent gets to choose: a
+# channel adapter is a door, not a decision. Which doors exist is a deployment
+# question, so each one is off unless it is deliberately turned on.
+#
+# **This file is not the only place a door is configured.** A credential may also
+# be written to `channels.yaml` in the agent's own home — `~/.ethos/channels.yaml`
+# by default, and `$ETHOS_HOME/channels.yaml` where that is set — and that file is
+# merged over this one key by key, so it can turn one door on without repeating
+# the other five. It is there because this directory is meant to be committed and
+# a bot token is not; and because each `*_env` field below names the *variable* a
+# credential may live in, which is no use at all to a person who installed the
+# agent on a laptop and has nowhere but a form to put one. A value in the
+# environment wins over a value in a file, so a deployment with an
+# `EnvironmentFile` keeps working after somebody pastes a token into a screen.
+#
+# There is no need to edit anything here to get going: **Settings → Messaging** in
+# the browser writes the home file, `phone channels set telegram.enabled true`
+# writes it from a terminal, and `./start.sh doctor` reports which doors are open
+# and what each is still missing.
+#
+# The web channel is two different things and both are configured here:
+#
+#   http_port — the interface bridge (`node web/server/index.mjs`), which serves
+#               the browser interface and the API it reads. The interface's terminal
+#               client talks to the same port, so the browser and the terminal are
+#               always looking at one agent rather than two copies of its state.
+#               The `ETHOS_WEB_PORT` environment variable overrides it when set.
+#
+#   ws_port   — the adapter socket inside the comms process, for any surface that
+#               speaks the agent's channel protocol directly. Nothing in this
+#               repository uses it by default; it exists so a surface can be
+#               added without changing the bridge.
+#
+# Whichever doors are open, everything that arrives comes to the same place:
+# `SocialCognition.record_inbound` writes the row and `EventBus.publish` puts a
+# percept on the bus, so a browser, a terminal, a Telegram message and a WhatsApp
+# message are scored by one attention model and answered by one deliberation.
+#
+# Each adapter also records who the words came from, as that platform spells the
+# sender's name: a Telegram `@handle` and display name, a WhatsApp profile name,
+# a Discord display name, a Slack profile (with the `users:read` scope), the
+# display name on an email's `From`. That is what the agent reads as the sender
+# rather than a chat id. It is kept in two columns beside `person_id` rather than
+# replacing it, because `person_id` is the address a reply is sent to and has to
+# stay exactly as the channel's adapters wrote it.
+#
+# **Accepting messages is a separate setting from naming them.** Every door below
+# has an allowlist that admits nobody when it is empty, and every one of them has
+# `accept_from_anyone` for the agent that is meant to be talked to by the public.
+# They are two switches because they mean opposite things: an empty allowlist is
+# usually "nobody has been configured yet", and reading that as "everybody is
+# welcome" would turn a bot token into a published endpoint for an agent holding
+# a shell.
+#
+# The two new arrivals are Discord and Slack. Discord is a socket rather than a
+# door, and Slack is a door sharing WhatsApp's, which is the only structural
+# difference between them and the two channels that were here already.
+#
+# LINE, Microsoft Teams and Google Chat join them, and all three are doors
+# sharing the same receiver — the differences between them are credentials, not
+# shape:
+#
+#   line       The only one of the eight whose signature is an HMAC with no
+#              timestamp in it, so it is the one door where a captured request
+#              can be replayed forever. The per-event dedupe is what covers that.
+#
+#   teams      The only door whose inbound proof is a token rather than a
+#              signature, because Teams registers your bot with Microsoft's
+#              identity platform and mints you a credential rather than signing
+#              the body. Its sends need a *per-conversation* URL that arrives in
+#              the message, so an unsolicited message after a restart is refused
+#              until somebody writes in again — see `service_url_hosts` and the
+#              adapter's docstring.
+#
+#   googlechat The only door whose credentials are a service account rather than a
+#              token: Google issues no long-lived token to a non-interactive
+#              caller, so this holds an email and a PEM private key and signs its
+#              own assertion to get an hour of access. The private key is
+#              environment-only — it does not fit in a form field.
+
+cli:
+  enabled: true
+  socket: "~/.ethos/run/cli.sock"
+
+web:
+  enabled: true
+  http_port: 8720
+  ws_port: 8710
+  # Unset by default. A token on the adapter socket makes it refuse anything else;
+  # the interface bridge binds to loopback and is trusted for the same reason the
+  # agent trusts a terminal on the same machine.
+  auth_token_env: ETHOS_WEB_TOKEN
+
+telegram:
+  # Long-polling, not a webhook, so this is the channel that works with no
+  # public URL at all: put a bot token in TELEGRAM_BOT_TOKEN, turn this on,
+  # message the bot, and it will tell you your chat id.
+  enabled: false
+  token_env: TELEGRAM_BOT_TOKEN
+  # The token itself, for a deployment that keeps it in a file rather than in a
+  # variable — which is what an interface writes when somebody pastes one into
+  # Settings → Messaging. Empty here means "look at the variable, and at the
+  # agent's home". Never both: the variable wins, so a token in this file on a
+  # machine that exports the variable is a token nothing reads.
+  token: ""
+  # Empty admits nobody, and the bot says so when it is refused rather than
+  # staying silent — a bot a person just added and that answers nothing is
+  # indistinguishable from a broken one.
+  allowed_chat_ids: []
+  # Answer anybody who messages the bot, allowlist or not. Off by default, and it
+  # is a separate switch rather than "an empty list means yes" on purpose:
+  # "nobody has been configured yet" and "everybody is welcome" are opposite
+  # sentences, and only one of them is what somebody who installed an agent to
+  # talk to the public meant to write down. There is no list of everybody who
+  # might write, which is what makes this the useful setting for a public agent.
+  #
+  # Settings → Messaging → "Answer anyone" writes this for you, and
+  # `phone channels set telegram.acceptFromAnyone true` writes it from a
+  # terminal.
+  accept_from_anyone: false
+  # A group turns every member's words into one sender and one broadcast reply.
+  # Still refused under accept_from_anyone: the reply goes to everyone in the room,
+  # which is not a conversation however public the agent is.
+  allow_groups: false
+
+whatsapp:
+  # The Cloud API has no polling: Meta POSTs to a callback URL declared in the
+  # dashboard, so this needs `webhook` below turned on and the port tunneled.
+  # Local development: `cloudflared tunnel --url http://127.0.0.1:8730`, then
+  # paste that URL followed by /hooks/whatsapp into the app's webhook
+  # configuration.
+  enabled: false
+  path: "/hooks/whatsapp"
+  phone_number_id_env: WHATSAPP_PHONE_NUMBER_ID
+  access_token_env: WHATSAPP_ACCESS_TOKEN
+  # The app secret, not the access token. Inbound requests are signed with it,
+  # and it is the one value Meta shows once when the app is created.
+  app_secret_env: WHATSAPP_APP_SECRET
+  # Any string you choose. Meta echoes it back once to prove the URL is yours,
+  # and it is the only thing standing between a stranger and a webhook that can
+  # make this agent start a conversation.
+  verify_token_env: WHATSAPP_VERIFY_TOKEN
+  graph_version: "v23.0"
+  # E.164 digits, no leading `+`. Empty admits nobody.
+  allowed_phone_numbers: []
+  # Answer anybody who messages the business number. This is the door where it
+  # matters most: the number is published, so "whoever found it" is a population
+  # no allowlist can enumerate, which is the whole reason this setting exists
+  # rather than a longer list. Off by default, because a business number that
+  # replies to every stranger is not the same thing as an agent that talks to
+  # the public — somebody has to have decided that is what this is for.
+  accept_from_anyone: false
+
+slack:
+  # Like WhatsApp and unlike Telegram: a POST to a URL declared in the app's
+  # Event Subscriptions, so this needs `webhook` turned on and the port
+  # tunneled. Same receiver and the same tunnel as WhatsApp — a second push
+  # channel is a second *path*, not a second port.
+  enabled: false
+  path: "/hooks/slack"
+  # The `xoxb-` token the bot posts with.
+  bot_token_env: SLACK_BOT_TOKEN
+  # The app-level signing secret, not the bot token. Every inbound request is
+  # signed with it, and Slack shows it once when the app is created.
+  signing_secret_env: SLACK_SIGNING_SECRET
+  # Subscribe the app to the `message.channels` and `message.im` event — the
+  # `app_mention` one alone hears nothing in a direct message, and a bot with
+  # only that scope is a bot that is connected and silent.
+  #
+  # User ids (`U…`) or channel ids (`C…`/`D…`). Empty admits nobody. A person's
+  # address in `people.yaml` is the *channel* they are reached in, because a
+  # reply has to go back to the conversation it was asked in.
+  allowed_ids: []
+  # Answer anybody in the workspace. Off by default.
+  #
+  # Naming senders on Slack needs the `users:read` scope, which is a separate
+  # thing from admitting them: without it the bot answers perfectly well and
+  # everything it hears is attributed to `U03ABCDEF`. Slack's `message` event
+  # carries no profile, so the name is a separate API call and there is no way to
+  # get it from the webhook body alone.
+  accept_from_anyone: false
+
+discord:
+  # Neither of the two above: Discord has no callback URL, so the only way to
+  # see a message as it is written is to hold the gateway socket open. That
+  # makes this the one channel here with a real listener in `listen`, and — like
+  # the Telegram poller — exactly one process may open it.
+  #
+  # What a dropped connection costs, stated plainly: a message sent while this
+  # process is disconnected is not seen. The gateway can replay from a sequence
+  # number, but a half-correct implementation of that is worse than none, because
+  # it would replay messages the agent already answered.
+  enabled: false
+  token_env: DISCORD_BOT_TOKEN
+  # Gateway intents, as the sum of three bits. `MESSAGE_CONTENT` is the one that
+  # matters and the one the developer portal has off by default: without it
+  # Discord delivers message events with empty text and no error anywhere, which
+  # is indistinguishable from a channel where nobody is speaking.
+  #
+  #   GUILD_MESSAGES   1 << 9  =    512
+  #   DIRECT_MESSAGES  1 << 12 =   4096
+  #   MESSAGE_CONTENT  1 << 15 =  32768
+  intents: 37376
+  # User ids (`U…`) or channel ids (`C…`/`D…`). Empty admits nobody. The address
+  # in `people.yaml` is the channel, for the same reason Slack's is.
+  allowed_ids: []
+  # Answer anybody the bot can see. Off by default, and the door where it is most
+  # dangerous: a bot holding MESSAGE_CONTENT reads every message in every channel
+  # it has been added to, so an unfiltered Discord agent answers rooms it was
+  # dropped into.
+  accept_from_anyone: false
+
+line:
+  # A POST to a URL declared in the Messaging API console, like Slack and WhatsApp
+  # and unlike Telegram — so this needs `webhook` turned on and the port tunneled.
+  # Same receiver, same tunnel, one more path.
+  #
+  # There is no verification handshake here, which is unusual: LINE's console has
+  # a "Verify" button that GETs the URL once to see whether it answers. That GET
+  # is answered with a constant `OK`, and it grants nothing — a forged probe gets
+  # an answer it could have computed itself.
+  enabled: false
+  path: "/hooks/line"
+  # **Two secrets, both called "secret" on the console, and swapping them is
+  # invisible.** The channel *access token* authorises what goes out; the channel
+  # *secret* is what every inbound request is signed with. Getting them the wrong
+  # way round is a 401 on every delivery with nothing in the log to say which was
+  # wrong, so the two are named for their direction here rather than for the
+  # screen they appear on.
+  channel_access_token_env: LINE_CHANNEL_ACCESS_TOKEN
+  channel_secret_env: LINE_CHANNEL_SECRET
+  # User ids: `U` plus 32 hex characters, from `events[].source.userId` in a
+  # webhook body. Empty admits nobody.
+  #
+  # Group and room conversations are refused outright rather than listed here. A
+  # room is a conversation rather than a person, and a reply to one goes to
+  # everybody in it — so this door answers one person at a time, which is the same
+  # line Telegram draws with `allow_groups`.
+  allowed_ids: []
+  # Answer anybody who messages the bot. Off by default, and here the credential
+  # is nearly public: the bot's user id is a fixed 33-character string and its
+  # display name is a first name.
+  accept_from_anyone: false
+
+teams:
+  # A POST to the messaging endpoint declared in the Bot Framework, so this needs
+  # `webhook` turned on and the port tunneled.
+  #
+  # Unlike every other door here, Teams will only talk to a bot that has been
+  # registered at <https://dev.botframework.com>, and both directions follow from
+  # that. Inbound is authenticated by a Microsoft-signed token that must name this
+  # bot's App ID in its audience — there is no signature on the body to check.
+  # Outbound exchanges the App ID and app password for a connector token once an
+  # hour.
+  enabled: false
+  path: "/hooks/teams"
+  app_id_env: TEAMS_APP_ID
+  # The app password, which is Microsoft's word for a client secret. It is not an
+  # account password and no user sits behind it — so treat it like an API key:
+  # rotate it from the same portal you registered the bot in.
+  app_password_env: TEAMS_APP_PASSWORD
+  # Azure AD object ids, from `from.id` in an Activity. Teams writes them as
+  # `29:…` on most tenants and as a bare GUID on others, so both are accepted.
+  #
+  # The *address* for this door is a conversation rather than a person, because
+  # every member of a personal chat has a different one and a reply has to go
+  # back to the thread it was asked in. It is found in `conversation.id`.
+  allowed_ids: []
+  # Where a conversation's `serviceUrl` may point, as host suffixes — the check
+  # that stops a value in a request body deciding where the agent's words are
+  # POSTed. Narrow on purpose; a sovereign cloud or a customer-hosted channel
+  # adds its own host here rather than by loosening the check somewhere else.
+  service_url_hosts:
+    - "trafficmanager.net"
+    - "botframework.com"
+  # Answer anybody in any chat the bot is in. Off by default.
+  accept_from_anyone: false
+
+googlechat:
+  # A POST to the HTTP endpoint configured in the Chat API console, so this needs
+  # `webhook` turned on and the port tunneled.
+  #
+  # **The credentials are a service account, not a token.** Google issues no
+  # long-lived credential to a non-interactive caller, so this holds an email and
+  # a PEM private key and signs a short-lived assertion to exchange for an hour of
+  # access. Those are the two values in the service-account JSON you downloaded
+  # from the Cloud console.
+  enabled: false
+  path: "/hooks/googlechat"
+  client_email_env: GOOGLE_CHAT_CLIENT_EMAIL
+  # **Environment-only.** A PEM private key is about 1700 characters and the
+  # settings screen caps a credential at 1024, so a form field for it would
+  # accept a paste and silently store nothing. Export it instead; a literal `\n`
+  # is read as a newline, because that is the only way a PEM key survives an env
+  # file, a systemd unit or a shell.
+  private_key_env: GOOGLE_CHAT_PRIVATE_KEY
+  # What the Chat app was configured with as its **authentication audience**, and
+  # nothing here can derive it: copy it out of the Chat API configuration screen.
+  # It is either the Cloud project number or the endpoint URL, and which one it is
+  # decides which *kind* of token Google signs its requests with — both are
+  # accepted here, and this value is what pins either of them to this deployment.
+  # Get it wrong and every delivery is refused with a 401 that says only that the
+  # audience did not match.
+  audience_env: GOOGLE_CHAT_AUDIENCE
+  # A sender's `users/…` resource name or their email address, from
+  # `message.sender.name` or `user.email`. Both are in the event, and which one
+  # is there depends on whether your Workspace domain lets Chat share addresses.
+  #
+  # The address for this door is a *space*: the Chat API will not send to a
+  # person, so a direct message's `spaces/…` id is what a reply is addressed to.
+  allowed_ids: []
+  # Answer anybody who mentions the app or messages it directly. Off by default.
+  #
+  # Note that even turned on, a Chat app on an HTTP endpoint hears only @mentions
+  # and direct messages — every other message in a space it sits in is not
+  # delivered to it at all, and hearing those needs Workspace Events and a Pub/Sub
+  # subscription, which is a different transport. "The bot is in the room and it
+  # is quiet" is a configuration fact, not a fault in this file.
+  accept_from_anyone: false
+
+webhook:
+  # One loopback listener shared by every channel that has to be pushed to.
+  # Loopback is deliberate: reaching it from outside is the tunnel's job, which
+  # is a smaller thing to get right than terminating TLS here.
+  #
+  # Five doors need this: WhatsApp, Slack, LINE, Microsoft Teams and Google Chat.
+  # All five POST to a URL declared in a console somewhere else, so none of them
+  # can be polled and all of them answer on this one port, told apart by path.
+  # Telegram, Discord and email need no listener at all — one polls, one holds a
+  # socket, one fetches over IMAP.
+  enabled: false
+  host: "127.0.0.1"
+  port: 8730
+  max_body_bytes: 262144
+
+email:
+  enabled: false
+  address_env: ETHOS_EMAIL_ADDRESS
+  password_env: ETHOS_EMAIL_PASSWORD
+  imap_host_env: ETHOS_EMAIL_IMAP_HOST
+  smtp_host_env: ETHOS_EMAIL_SMTP_HOST
+  poll_interval_s: 60

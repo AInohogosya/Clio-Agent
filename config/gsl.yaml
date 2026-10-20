@@ -1,0 +1,67 @@
+# Output budgets for the solver loop: how much the model may say per call.
+#
+# The loop asks for its next action as JSON text rather than through native tool
+# calling, so a step's tool arguments are part of the response. A coding step
+# therefore has to fit a whole source file inside `step_tokens`, plus the JSON
+# envelope around it. These were previously hardcoded at 1500/2000 and are now
+# sized for the work: at 2000, no real file fit, the response was cut off
+# mid-JSON, and the step was recorded as done having called nothing.
+#
+# Being cut off is now a failure rather than a silent success, so a ceiling set
+# too low here costs a retry instead of quietly accomplishing nothing.
+
+understand_tokens: 2000
+devise_tokens: 2000
+plan_tokens: 8000
+step_tokens: 16000
+reflect_tokens: 1500
+
+# A step that called no tool is a failure, not a done step.
+allow_empty_step: false
+# Never pad a plan out with invented steps to reach some minimum length.
+min_real_plan_steps: 1
+
+# ------------------------------------------------------------------
+# Whether the code it wrote works.
+#
+# A coding task used to finish its plan and be reported done without a single
+# test, linter or compiler being run. Nothing checked it: a commission arrives
+# with no success criteria, an empty criteria list scored as a pass, and rung 2
+# of the ladder was a model reading a summary of the plan's own step
+# descriptions, free to pass it.
+#
+# These four are the difference. `verify_code` derives checks from the files the
+# work actually touched -- a syntax check on each of them, then the project's own
+# test command where it has one -- and runs them. `verify_step_checks` runs the
+# `success_check` every plan step has always carried and the loop has always
+# ignored, so a step that broke the thing it was fixing is a failed step rather
+# than a completed one. `unverified_is_failure` makes "code changed and nothing
+# could be checked" a failure instead of a pass, which is the case that is not a
+# bug in the work but a fact about the machine it was built on.
+verify_code: true
+verify_step_checks: true
+unverified_is_failure: true
+# Per command, and per goal. A verification run holds the cycle open, so these
+# are ceilings on the checking rather than on the work.
+code_check_timeout_s: 180
+code_check_max_commands: 3
+
+# How long a goal may fail to be planned.
+#
+# A plan call that comes back unusable used to be retried on the next cycle with
+# the identical request, at the tick rate, forever: nothing in the resume state
+# counted the failures, so no threshold was crossed and no ceiling was reached.
+# These are the thresholds. Three failures degrade the request (thinking bounded,
+# tier dropped, schema relaxed), six park the intention so the loop has nothing
+# left to retry and the reason is recorded where a person can be told it.
+plan_attempts_before_degrade: 3
+plan_attempts_before_park: 6
+# The wait between attempts. Applied between cycles, not inside one: sleeping in
+# the solver would hold the life loop open for the length of the wait.
+plan_backoff_s: 15
+plan_backoff_max_s: 240
+plan_backoff_jitter: 0.25
+# What a degraded plan call may spend thinking. On endpoints that bill reasoning
+# inside max_tokens this is the difference between a plan arriving and a plan
+# arriving as `finish_reason: length` and no steps at all.
+degraded_reasoning_budget: 2000

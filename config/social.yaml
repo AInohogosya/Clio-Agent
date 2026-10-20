@@ -1,0 +1,17 @@
+# What the deliberation is told about what the agent has actually done.
+#
+# The reply a person reads was written by a deliberation that could see what the
+# agent was focused on and what it had agreed to do, but nothing it had actually
+# done. So a goal whose planning calls had failed six times and parked it read,
+# from inside that prompt, the same as one about to begin — and the answer was
+# "on it", to somebody waiting for work that was never coming.
+#
+# These are the bounds on reading the journal and the intentions when it decides
+# whether to say so.
+
+# How far back the action journal is read. Deliberately longer than a life cycle:
+# cycles pass with nothing due, and a gap between them is not evidence that the
+# agent stopped working.
+execution_state_window_min: 15
+execution_state_max_actions: 6
+execution_state_max_blocked: 5

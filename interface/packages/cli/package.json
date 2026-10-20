@@ -1,0 +1,26 @@
+{
+  "name": "@project-phone/cli",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "phone": "./dist/index.js"
+  },
+  "scripts": {
+    "tui": "tsx src/index.ts",
+    "phone": "tsx src/index.ts",
+    "build": "tsc -p tsconfig.json && chmod +x dist/index.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build --workspace @project-phone/core && npm run build && node --test"
+  },
+  "dependencies": {
+    "@project-phone/core": "1.0.0",
+    "ink": "^5.1.0",
+    "react": "^18.3.1",
+    "string-width": "^7.2.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.18",
+    "tsx": "^4.19.2"
+  }
+}

@@ -1,0 +1,48 @@
+retrieval:
+  weights:
+    cosine: 0.40
+    bm25: 0.15
+    recency: 0.15
+    importance: 0.20
+    strength: 0.10
+  recency_half_life_h: 168
+  mmr_lambda: 0.7
+  candidate_k: 48
+  top_k: 24
+
+spacing:
+  strength_boost: 0.3
+  strength_cap: 1.0
+  half_life_multiplier: 1.5
+
+decay:
+  demote_strength: 0.05
+  demote_importance: 0.3
+  archive_after_days: 365
+  commitments_exempt: true
+
+episode:
+  default_half_life_h: 72
+  default_importance: 0.5
+
+consolidation:
+  cluster_min_size: 3
+  max_episodes: 400
+  contradiction_confidence: 0.5
+  run_at: "04:00"
+
+context:
+  max_turns: 48
+  narrate_every: 12
+  narrative_max_lines: 12
+  max_chars: 6000
+  detail_chars: 600
+  persist_turns: 30
+  history_turns: 12
+  narration_tier: T1
+  narrate_on_focus_change: true
+  social_salience: 0.85
+  failure_salience: 0.75
+  action_salience: 0.5
+  thought_salience: 0.3
+  event_salience: 0.35

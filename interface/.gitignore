@@ -1,0 +1,12 @@
+/target
+/.agent
+*.swp
+.DS_Store
+node_modules/
+packages/*/dist/
+.env
+.env.*
+*.log
+/.config/
+config.json
+*.config.json

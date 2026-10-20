@@ -1,0 +1,19 @@
+{
+  "name": "ethos",
+  "version": "3.1.0",
+  "private": true,
+  "description": "Clio Agent 3: an autonomous agent, and the interface bridge that shows it working",
+  "type": "module",
+  "scripts": {
+    "start": "node scripts/serve.mjs",
+    "start:interface": "node scripts/serve.mjs --interface",
+    "build": "node scripts/serve.mjs --build-only",
+    "test": "npm test --prefix web && npm test --prefix interface",
+    "test-bridge": "npm test --prefix web",
+    "test-interface": "npm test --prefix interface",
+    "lint": "npm run lint --prefix interface"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

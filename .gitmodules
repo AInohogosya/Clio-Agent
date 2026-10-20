@@ -1,0 +1,6 @@
+[submodule "APEX"]
+	path = APEX
+	url = https://github.com/AInohogosya/APEX.git
+[submodule "Foundry"]
+	path = Foundry
+	url = https://github.com/AInohogosya/Foundry.git

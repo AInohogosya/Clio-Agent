@@ -1,0 +1,20 @@
+anthropic:
+  system_as_blocks: true
+  cache_control: true
+  max_cache_breakpoints: 4
+  thinking: true
+  max_tools: 64
+openai:
+  responses_api: true
+  automatic_prompt_caching: true
+  reasoning_efforts: [low, medium, high]
+  max_tools: 128
+google:
+  sanitize_declarations: true
+  system_instruction: true
+  max_declarations: 32
+  unsupported_schema_keys: [additionalProperties, $schema, $defs, oneOf, exclusiveMinimum, exclusiveMaximum]
+openai_compat:
+  chat_completions: true
+  parallel_tool_calls: true
+  max_tools: 128
