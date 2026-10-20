@@ -381,6 +381,77 @@ async def test_gateway_retries_retryable_errors(full_config):
     del MagicMock
 
 
+async def test_a_long_wait_is_not_logged_as_a_rate_limit(full_config, monkeypatch):
+    """`rate_limited_waiting` is a fact about a 429, not about a slow retry.
+
+    The event used to fire for any wait at or above the long-wait threshold and
+    hardcode `status: 429`. A reply that reasoned without answering therefore
+    appeared in the log as a provider rate limit.
+    """
+    from ethos.gateway import service as service_module
+
+    events: list[tuple[str, dict]] = []
+
+    def _capture(event, **fields):
+        events.append((event, fields))
+
+    monkeypatch.setattr(service_module.logger, "warning", _capture)
+    provider = FakeProvider(errors=[
+        UnusableResponse("the model reasoned without answering", counts_against_model=False),
+        None,
+    ])
+    provider.responses = [
+        NormalizedResponse(text="recovered", usage=Usage(input_tokens=50, output_tokens=5)),
+    ]
+    service = GatewayService(full_config, db=None, providers={"anthropic": provider})
+    monkeypatch.setattr(service, "_delay_before_retry", lambda *a, **k: 15.0)
+
+    async def _no_sleep(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(service, "_sleep_before_retry", _no_sleep)
+
+    response = await service.complete(simple_request(tier=Tier.T3))
+
+    assert response.text == "recovered"
+    names = [name for name, _ in events]
+    assert "gateway.rate_limited_waiting" not in names
+    retry = next(fields for name, fields in events if name == "gateway.retry")
+    assert retry["waiting"] is True
+    assert retry["retry_in_s"] == 15.0
+
+
+async def test_a_rate_limit_is_logged_as_one(full_config, monkeypatch):
+    """The other direction: a real 429 still produces the waiting event."""
+    from ethos.gateway import service as service_module
+
+    events: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        service_module.logger, "warning",
+        lambda event, **fields: events.append((event, fields)),
+    )
+    provider = FakeProvider(errors=[
+        ProviderError("anthropic", 429, "slow down", retryable=True),
+        None,
+    ])
+    provider.responses = [
+        NormalizedResponse(text="recovered", usage=Usage(input_tokens=50, output_tokens=5)),
+    ]
+    service = GatewayService(full_config, db=None, providers={"anthropic": provider})
+    monkeypatch.setattr(service, "_delay_before_retry", lambda *a, **k: 1.0)
+
+    async def _no_sleep(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(service, "_sleep_before_retry", _no_sleep)
+
+    response = await service.complete(simple_request(tier=Tier.T3))
+
+    assert response.text == "recovered"
+    waiting = next(fields for name, fields in events if name == "gateway.rate_limited_waiting")
+    assert waiting["status"] == 429
+
+
 async def test_gateway_no_retry_on_hard_errors(full_config):
     """A 400 is about the request, and no amount of asking again changes it.
 

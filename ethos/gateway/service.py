@@ -970,7 +970,13 @@ class GatewayService:
                         f"tier={attempt_request.tier.value} after excluding "
                         f"{len(tried)} model(s): {exc}"
                     ) from exc
-                if delay >= LONG_WAIT_THRESHOLD_S or rate_limited:
+                if rate_limited:
+                    # This event is named for what it is. It used to fire for
+                    # any long wait and stamp `status: 429` on it, so a reply
+                    # that merely reasoned without answering was recorded as a
+                    # rate limit -- a fact about the provider that was not
+                    # true, in the one log somebody would use to decide whether
+                    # the provider was the problem.
                     logger.warning(
                         "gateway.rate_limited_waiting",
                         attempt=attempt + 1,
@@ -978,7 +984,7 @@ class GatewayService:
                         provider=entry.provider,
                         model=entry.model,
                         purpose=attempt_request.purpose,
-                        status=429,
+                        status=getattr(exc, "status", 429),
                         retry_after_s=retry_after_of(exc),
                         wait_in_s=round(delay, 2),
                         waiting=True,

@@ -703,10 +703,20 @@ class GeneralSolverLoop:
         """
         spy = _CostSpy(self.gateway)
         try:
+            # The same degradation `make_plan` applies from the same counter.
+            # It used to be computed only in the failure handler and reported
+            # in the thoughts as "tier dropped" while this call kept asking a
+            # consequential goal at T3, so a deployment whose only T3 model was
+            # rate-limited retried it until the five-hour rung instead of
+            # trying the T2 models that were still answering.
+            degraded = self._planning_degraded(resume)
             approaches = await devise(
                 spy, self.config, intention, resume.get("understanding", "-"),
                 knowhow, lessons,
-                tier=Tier.T3 if resume.get("consequential") else Tier.T2,
+                tier=(
+                    Tier.T2 if degraded or not resume.get("consequential")
+                    else Tier.T3
+                ),
                 knowhow_limit=10,
             )
         except Exception as exc:

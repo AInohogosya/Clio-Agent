@@ -215,6 +215,22 @@ def test_future_promises_and_finished_facts_are_still_not_matched() -> None:
         assert not claims_work_is_underway(text), text
 
 
+def test_an_immediate_work_promise_is_matched() -> None:
+    """The promise sent while planning was backed off, in the agent's own words.
+
+    Nothing was journaled. The reply still said the folder and the build would
+    move now, which is a claim about this turn and is exactly what the journal
+    can settle. "After lunch" remains outside the rule.
+    """
+    for text in (
+        "I'll get the folder created and the build moving now.",
+        "I'll have the build going now.",
+        "I will get the report ready.",
+    ):
+        assert claims_work_is_underway(text), text
+    assert not claims_work_is_underway("I'll get some rest after lunch.")
+
+
 def test_subagent_names_are_read_off_the_reply() -> None:
     """The names a claim pins itself to, and nothing invented."""
     assert subagents_named("Running APEX once more now") == {"apex"}

@@ -10,6 +10,7 @@ from ethos.gateway.secrets import redact
 from ethos.guardian.classifier import (
     SideEffects,
     classify_tool,
+    is_concrete_path,
 )
 from ethos.observability.logger import get_logger
 from ethos.parse import parse_json_block
@@ -264,10 +265,19 @@ class GuardianGate:
         commissioned_by: str | None,
         thread_id: str,
     ) -> GateDecision:
-        targets = [Path(p).expanduser() for p in effects.paths if p] or [
-            Path(str(args.get("path", ""))).expanduser()
+        # A target the trash can actually take. `Path("")` is `.` and a
+        # non-existent path cannot be moved, so neither is a target: the old
+        # fallback made `rm -f` on a name that had already gone fail the whole
+        # shell command, and a prose echo could become the target in the first
+        # place. Concrete means named (not a glob, expansion or `~`), and the
+        # fast path below additionally requires that it still exists.
+        targets = [
+            Path(p).expanduser() for p in effects.paths if is_concrete_path(p)
         ]
-        targets = [t for t in targets if str(t)]
+        if not targets:
+            raw = args.get("path") or args.get("to_path")
+            if isinstance(raw, str) and is_concrete_path(raw):
+                targets = [Path(raw).expanduser()]
         protected = None
         for target in targets:
             try:
@@ -332,13 +342,20 @@ class GuardianGate:
             )
 
         if effects.is_destructive() and "delete" in effects.categories:
-            if not targets or not targets[0]:
+            # A delete of something that is already gone is a no-op, not a
+            # failure. The trash was raising `cannot trash non-existent path`
+            # here, which turned `rm -f` with a stale or prose-derived name
+            # into a failed tool call.
+            target = next(
+                (t for t in targets if t.exists() or t.is_symlink()), None,
+            )
+            if target is None:
                 return GateDecision(
                     Verdict.ALLOW, GatePath.FAST,
-                    "destructive command with no concrete path target",
+                    "destructive command with no existing concrete path target",
                 )
             entry = await self.trash.move(
-                targets[0], kind="fast_path",
+                target, kind="fast_path",
                 reason=reason, intention_id=intention_id, thread_id=thread_id,
             )
             try:
@@ -348,7 +365,7 @@ class GuardianGate:
             await self.audit.append(
                 actor=thread_id, category="guardian",
                 summary="fast path: agent-owned destructive op moved to trash (30d)",
-                details={"target": str(targets[0]), "trash_entry": entry.id, "tool": tool},
+                details={"target": str(target), "trash_entry": entry.id, "tool": tool},
             )
             return GateDecision(
                 Verdict.TRANSFORM, GatePath.FAST,

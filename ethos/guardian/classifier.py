@@ -348,6 +348,87 @@ def _redirect_target(output: object) -> str | None:
     return None
 
 
+# Commands whose arguments are text, not filesystem operands. `echo` prints
+# them, `printf` formats them, and `test` / `[` compare them: a path inside one
+# of those strings is a character in a sentence, not a thing the command will
+# touch. This distinction is load-bearing rather than cosmetic. The Desktop
+# writability probe of 2026-10-20 combined an `rm` with
+# `echo "VERDICT: FAIL - ~/Desktop does not exist"`, and the gate was handed
+# the sentence as a delete target, tried to move it to the trash, and failed
+# the whole `shell.run` with `cannot trash non-existent path`. A command that
+# says something about a path is not a command that acts on it.
+_TEXT_ONLY_COMMANDS = frozenset({
+    "echo", "printf", "test", "[", "[[", "true", "false", ":",
+})
+
+
+def _iter_path_nodes(node: object, *, skip_words: bool = False):
+    """Yield the nodes whose words are path operands, in command context.
+
+    A new `command` node starts its own context, which is what makes a command
+    substitution inside an echo string still count: the words of the outer echo
+    are prose and are skipped, while the `rm` executed by `$(...)` is a command
+    of its own and its operands are paths exactly as they would be at the top
+    level.
+    """
+    kind = getattr(node, "kind", None)
+    if kind == "command":
+        parts = getattr(node, "parts", []) or []
+        base = ""
+        for part in parts:
+            if getattr(part, "kind", None) == "word":
+                base = _command_base(getattr(part, "word", "") or "")
+                break
+        inside = base in _TEXT_ONLY_COMMANDS
+        for part in parts:
+            yield from _iter_path_nodes(part, skip_words=inside)
+        for part in getattr(node, "list", []) or []:
+            yield from _iter_path_nodes(part, skip_words=skip_words)
+        return
+    if kind == "redirect":
+        yield node
+        return
+    if kind == "word":
+        if not skip_words:
+            yield node
+        for part in getattr(node, "parts", []) or []:
+            yield from _iter_path_nodes(part, skip_words=skip_words)
+        return
+    for child in getattr(node, "parts", []) or []:
+        yield from _iter_path_nodes(child, skip_words=skip_words)
+    for child in getattr(node, "list", []) or []:
+        yield from _iter_path_nodes(child, skip_words=skip_words)
+
+
+def _redirect_is_concrete(target: str) -> bool:
+    """Whether a redirect target names a path rather than an expansion.
+
+    `> "$log"` writes wherever the variable points, and that value is not
+    knowable here. Keeping the literal token as a path made the gate try to
+    trash a file named `$log`, which is the same class of mistake as reading
+    prose as a target.
+    """
+    value = target.strip("\"'")
+    return bool(value) and not value.startswith("$") and not _DESCRIPTOR_RE.match(value)
+
+
+def is_concrete_path(token: str) -> bool:
+    """A path the guardian can act on: named, existing is checked separately.
+
+    Patterns, expansions, `~` and the relative dots are not paths a trash move
+    can be built from. `Path("~").expanduser()` is the home directory and
+    `Path(".")` is wherever the process happens to stand, so a gate that
+    treated either as the target of an `rm` would move the wrong thing -- or
+    fail the tool, which is what `Path("")` did.
+    """
+    value = (token or "").strip().strip("\"'")
+    if not value or value.startswith("$"):
+        return False
+    if value in _UNRESOLVED_TOKENS:
+        return False
+    return "*" not in value and "?" not in value
+
+
 def extract_paths(command: str) -> list[str]:
     try:
         parsed = bashlex.parse(command)
@@ -356,7 +437,7 @@ def extract_paths(command: str) -> list[str]:
     paths: list[str] = []
     if parsed:
         for tree in parsed:
-            for node in _walk(tree):
+            for node in _iter_path_nodes(tree):
                 kind = getattr(node, "kind", None)
                 if kind == "word":
                     word = getattr(node, "word", None)
@@ -364,7 +445,7 @@ def extract_paths(command: str) -> list[str]:
                         paths.append(word)
                 elif kind == "redirect":
                     target = _redirect_target(getattr(node, "output", None))
-                    if target is not None:
+                    if target is not None and _redirect_is_concrete(target):
                         paths.append(target)
     else:
         for token in command.split():
@@ -372,7 +453,7 @@ def extract_paths(command: str) -> list[str]:
                 paths.append(token)
     for match in _REDIRECT_RE.finditer(command):
         target = match.group(1)
-        if target and not _DESCRIPTOR_RE.match(target):
+        if target and _redirect_is_concrete(target):
             paths.append(target)
     return _unique(paths)
 

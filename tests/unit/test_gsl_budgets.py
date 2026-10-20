@@ -296,3 +296,52 @@ def test_the_step_prompt_says_to_edit_rather_than_rewrite() -> None:
     assert "Do not abbreviate a file" in body
     assert "a file\'s entire contents go in" not in body, \
         "the sentence that taught it to write files whole"
+
+
+# --------------------------------------------------------------------------
+# Devise degrades with the plan request it shares a failure counter with
+
+
+class _DeviseIntention:
+    id = "00000000-0000-0000-0000-0000000000bb"
+    title = "build the coding agent"
+    commissioned_by = "owner"
+    origin = "commission"
+    desired_end_state = "the agent exists"
+    budget_usd = None
+    spent_usd = 0.0
+
+
+async def test_devise_drops_to_t2_after_repeated_planning_failures(tmp_path, monkeypatch) -> None:
+    """`plan_degraded` is not a note; it changes the request.
+
+    The failure handler computed it, wrote it to the resume blob and said "tier
+    dropped" in its own thoughts, while devise still asked at T3 because it read
+    only `consequential`. On 2026-10-20 the only T3 model was returning 429, so
+    the commissioned build never reached the T2 models that were answering, and
+    the loop waited out the five-hour rung instead.
+    """
+    from ethos.gsl import loop as loop_module
+    from ethos.gsl.loop import GeneralSolverLoop
+    from ethos.schemas.models import Tier
+
+    solver = GeneralSolverLoop.__new__(GeneralSolverLoop)
+    solver.config = make_config(tmp_path)
+    solver.gateway = object()
+    seen: dict[str, object] = {}
+
+    async def fake_devise(_gateway, _config, _intention, _understanding, _knowhow,
+                          _lessons, *, tier, knowhow_limit):
+        seen["tier"] = tier
+        return [{
+            "id": "a1", "summary": "do it", "expected_value": 0.5,
+            "estimated_cost_usd": 0.0, "reversible": True,
+        }]
+
+    monkeypatch.setattr(loop_module, "devise", fake_devise)
+
+    await solver._devise_with_cost(
+        _DeviseIntention(), {"consequential": True, "plan_attempts": 3}, [], [],
+    )
+
+    assert seen["tier"] == Tier.T2

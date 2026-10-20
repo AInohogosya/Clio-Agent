@@ -310,6 +310,15 @@ _ONGOING_WORK = re.compile(
     r"taking a (?:look|crack) at|getting (?:started|on)|started on|started working|"
     r"already (?:started|began|been))\b"
     r"|\b(?:i'?ll|i will)\s+(?:get|start|begin)\s+(?:that|this|it|them|on it|going|right)\b"
+    # "I'll get the folder created", "I'll have the build moving now": still
+    # first person and still about work this turn, even though the auxiliary is
+    # future-tense. The older branch only matched a pronoun object, so the
+    # sentence sent while planning was in a five-hour backoff -- "I'll get the
+    # folder created and the build moving now" -- was a promise the journal
+    # could not support and the guardrail did not recognise. "I'll run APEX
+    # after lunch" stays a promise about later and is deliberately not matched.
+    r"|\b(?:i'?ll|i will)\s+(?:get|have)\s+(?:the\s+)?[\w-]+"
+    r"(?:\s+[\w-]+){0,4}\s+(?:created|built|done|started|going|moving|ready|underway|set up)\b"
     r"|\balready\s+(?:on it|under way|underway|started)\b"
     r"|\bon it\b"
     r"|\bin progress\b"

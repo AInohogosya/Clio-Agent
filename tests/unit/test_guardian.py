@@ -108,6 +108,38 @@ def test_classify_tool_fs_delete():
     assert effects.is_destructive()
 
 
+def test_echo_prose_is_not_read_as_a_delete_target():
+    """A sentence printed beside an `rm` is not one of its operands.
+
+    The Desktop writability probe of 2026-10-20 paired `rm -f "$probe"` with
+    `echo "VERDICT: FAIL - ~/Desktop does not exist"`. The slash in the echoed
+    sentence made it a path, and the gate tried to trash the sentence.
+    """
+    command = (
+        'set -u\n'
+        'if [ ! -d "$HOME/Desktop" ]; then '
+        'echo "VERDICT: FAIL - ~/Desktop does not exist"; exit 2; fi\n'
+        'probe="$HOME/Desktop/.clio-probe-$(date +%s)-$$"\n'
+        'echo "probe: $probe"\n'
+        'rm -f "$probe" || { echo "VERDICT: FAIL - cannot remove probe"; exit 5; }\n'
+        'echo "VERDICT: OK - ~/Desktop is writable"\n'
+    )
+    assert extract_paths(command) == []
+
+
+def test_a_variable_redirect_target_is_not_a_concrete_path():
+    """`> "$log"` is a destination the parser cannot know, not a file named `$log`."""
+    assert extract_paths(': > "$probe"') == []
+    assert extract_paths(': > "$probe" 2>&1') == []
+
+
+def test_a_quoted_path_with_spaces_is_still_an_operand():
+    """Skipping prose must not cost quoted paths, which is why the command is asked."""
+    assert extract_paths('rm -f "/tmp/a file with spaces.txt"') == [
+        "/tmp/a file with spaces.txt",
+    ]
+
+
 def test_classify_tool_http_money():
     effects = classify_tool("http.request", {"url": "https://api.example.com", "spend_usd": 3.5})
     assert effects.money_usd == 3.5
@@ -181,6 +213,34 @@ async def test_gate_fast_path_moves_to_trash(gate: GuardianGate, tmp_path: Path)
     assert decision.undo_ref is not None
     audit_summaries = [e["summary"] for e in gate.audit.entries]
     assert any("fast path" in s for s in audit_summaries)
+
+
+async def test_gate_allows_the_probe_that_used_to_fail(gate: GuardianGate):
+    """The exact command from 2026-10-20 must reach the shell, not the trash.
+
+    It removes a variable-named probe and echoes a sentence about `~/Desktop`;
+    neither is a concrete delete target, so the destructive fast path has
+    nothing to move and the command runs.
+    """
+    command = (
+        'probe="$HOME/Desktop/.clio-probe-$(date +%s)-$$"\n'
+        'echo "probe: $probe"\n'
+        'rm -f "$probe" || { echo "VERDICT: FAIL - cannot remove probe"; exit 5; }\n'
+        'echo "VERDICT: OK - ~/Desktop is writable"\n'
+    )
+    decision = await gate.review("shell.run", {"command": command}, reason="probe")
+    assert decision.verdict == Verdict.ALLOW
+    assert decision.path == GatePath.FAST
+
+
+async def test_gate_does_not_fail_rm_of_a_missing_path(gate: GuardianGate, tmp_path: Path):
+    """A delete of a name that is already gone is a no-op, not a TrashError."""
+    missing = tmp_path / "already-gone.txt"
+    decision = await gate.review(
+        "shell.run", {"command": f"rm -f {missing}"}, reason="clean stale build",
+    )
+    assert decision.verdict == Verdict.ALLOW
+    assert decision.path == GatePath.FAST
 
 
 async def test_gate_due_process_rejects_unsupported_reason(config, tmp_path: Path):

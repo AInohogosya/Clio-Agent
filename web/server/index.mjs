@@ -1214,7 +1214,14 @@ function logExhaustive(kind, payload) {
     for (const key of Object.keys(entry).sort()) sorted[key] = entry[key];
     fs.mkdirSync(EXHAUSTIVE_LOG_DIR, { recursive: true });
     fs.appendFileSync(
-      path.join(EXHAUSTIVE_LOG_DIR, `exhaustive-${now.toISOString().slice(0, 10)}.jsonl`),
+      // The same file name the Python writer uses (`%Y%m%d`, UTC): one log,
+      // whichever process happened to record the event. A dashed date here
+      // split the web bridge's writes into a second file that the reader of
+      // the agent's exhaustive log never opened.
+      path.join(
+        EXHAUSTIVE_LOG_DIR,
+        `exhaustive-${now.toISOString().slice(0, 10).replaceAll('-', '')}.jsonl`,
+      ),
       `${JSON.stringify(sorted)}\n`,
     );
   } catch {
