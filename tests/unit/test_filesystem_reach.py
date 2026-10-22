@@ -39,6 +39,7 @@ from ethos.toolhost.server import ToolContext
 from ethos.toolhost.tools.fs import (
     FsEditTool,
     FsListTool,
+    FsMkdirTool,
     FsMoveTool,
     FsReadTool,
     FsStatTool,
@@ -113,6 +114,61 @@ async def test_a_tool_reaches_a_directory_outside_every_configured_root(
     elif name == "read":
         assert result["text"] == "body"
     assert result is not None
+
+
+async def test_mkdir_creates_a_directory_and_its_parents(tmp_path: Path) -> None:
+    host = _host(tmp_path / "agent-home")
+    target = tmp_path / "desktop" / "Docs" / "nested"
+    result = await FsMkdirTool().run({"path": str(target)}, CTX, host)
+    assert result == {"path": str(target), "created": True, "is_dir": True}
+    assert target.is_dir()
+
+
+async def test_mkdir_on_an_existing_directory_is_idempotent(tmp_path: Path) -> None:
+    host = _host(tmp_path / "agent-home")
+    target = tmp_path / "Docs"
+    target.mkdir()
+    result = await FsMkdirTool().run({"path": str(target)}, CTX, host)
+    assert result["created"] is False
+    assert target.is_dir()
+
+
+async def test_mkdir_refuses_to_stand_in_for_a_file(tmp_path: Path) -> None:
+    """The exact Docs failure: a file named like the wanted folder.
+
+    Creating the directory silently over the file would destroy it, and
+    treating the file as the directory is how the next write produced
+    ``FileExistsError`` instead of work.
+    """
+    host = _host(tmp_path / "agent-home")
+    target = tmp_path / "Docs"
+    target.write_text("not a folder", encoding="utf-8")
+    with pytest.raises(FileExistsError) as raised:
+        await FsMkdirTool().run({"path": str(target)}, CTX, host)
+    assert "fs.write" in str(raised.value)
+    assert target.is_file()
+    assert target.read_text(encoding="utf-8") == "not a folder"
+
+
+async def test_write_refuses_a_directory_path_with_a_usable_error(tmp_path: Path) -> None:
+    host = _host(tmp_path / "agent-home")
+    target = tmp_path / "Docs"
+    target.mkdir()
+    with pytest.raises(IsADirectoryError) as raised:
+        await FsWriteTool().run({"path": str(target), "content": "x"}, CTX, host)
+    assert "fs.mkdir" in str(raised.value)
+
+
+async def test_write_refuses_a_file_as_parent_with_a_usable_error(tmp_path: Path) -> None:
+    host = _host(tmp_path / "agent-home")
+    parent = tmp_path / "Docs"
+    parent.write_text("file", encoding="utf-8")
+    with pytest.raises(NotADirectoryError) as raised:
+        await FsWriteTool().run(
+            {"path": str(parent / "README.md"), "content": "x"}, CTX, host,
+        )
+    assert "parent" in str(raised.value)
+    assert parent.is_file()
 
 
 async def test_write_creates_directories_it_has_never_seen(tmp_path: Path) -> None:

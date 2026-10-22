@@ -251,13 +251,14 @@ class _ExecutionState:
 
     __slots__ = (
         "readable", "journaled", "blocked", "stages", "window_min",
-        "delegations", "delegation_names",
+        "delegations", "delegation_names", "progress",
     )
 
     def __init__(self, readable: bool, journaled: list[str], blocked: list[str],
                  window_min: float, stages: list[str] | None = None,
                  delegations: list[str] | None = None,
-                 delegation_names: set[str] | None = None):
+                 delegation_names: set[str] | None = None,
+                 progress: list[str] | None = None):
         self.readable = readable
         self.journaled = journaled
         self.blocked = blocked
@@ -268,6 +269,7 @@ class _ExecutionState:
         # finished inside the journal's own window — the set a "running now"
         # claim about a named sub-agent has to be a member of.
         self.delegation_names = delegation_names or set()
+        self.progress = progress or []
 
     @property
     def something_happened(self) -> bool:
@@ -282,6 +284,7 @@ class _ExecutionState:
             self_name, self.journaled, self.blocked, self.window_min,
             readable=self.readable, stages=self.stages,
             delegations=self.delegations, delegation_window_h=delegation_window_h,
+            progress=self.progress,
         )
 
 
@@ -621,9 +624,84 @@ class SocialCognition:
         delegations, delegation_names = await self._delegation_state(window)
         blocked = await self._blocked_work(focus_title)
         stages = await self._finished_work()
+        progress = await self._open_work_progress()
         return _ExecutionState(
             True, journaled, blocked, window, stages, delegations, delegation_names,
+            progress,
         )
+
+    async def _open_work_progress(self) -> list[str]:
+        """Open work with its last recorded action, not just the last 15 minutes.
+
+        The journal window is deliberately short, and reading its silence as
+        "this never started" was the failure: a task whose last action was forty
+        minutes ago is stalled, not unborn. This line keeps the distinction the
+        reply needs, from the intention and its own journal rows.
+        """
+        if self.db is None:
+            return []
+        limit = int(self.config.social.execution_state_max_blocked)
+        if limit <= 0:
+            return []
+        try:
+            rows = await self.db.fetch(
+                "SELECT i.title, i.status, i.created_at, i.resume_state, "
+                "(SELECT max(j.ts_start) FROM action_journal j "
+                " WHERE j.intention_id = i.id) AS last_action, "
+                "(SELECT j.tool FROM action_journal j "
+                " WHERE j.intention_id = i.id ORDER BY j.ts_start DESC LIMIT 1) "
+                " AS last_tool, "
+                "(SELECT j.status FROM action_journal j "
+                " WHERE j.intention_id = i.id ORDER BY j.ts_start DESC LIMIT 1) "
+                " AS last_status "
+                "FROM intentions i WHERE i.status IN "
+                "('proposed','active','in_progress','waiting','awaiting_review') "
+                "ORDER BY i.priority DESC NULLS LAST, i.updated_at DESC LIMIT $1",
+                limit,
+            )
+        except Exception:
+            logger.warning("social.execution_state_progress_failed")
+            return []
+        lines: list[str] = []
+        now = datetime.now(UTC)
+        for row in rows:
+            title = str(row["title"] or "")[:120]
+            status = str(row["status"] or "")
+            last_action = row["last_action"]
+            if last_action is None:
+                try:
+                    age = _human_age(now - row["created_at"])
+                except (TypeError, ValueError):
+                    age = "unknown"
+                lines.append(
+                    f"[{status}] {title}: no action recorded since it was created {age} ago"
+                )
+                continue
+            try:
+                age = _human_age(now - last_action)
+            except (TypeError, ValueError):
+                age = "unknown"
+            line = (
+                f"[{status}] {title}: last action {row['last_tool'] or 'unknown'} "
+                f"({row['last_status'] or 'unknown'}) {age} ago"
+            )
+            resume = row["resume_state"]
+            if isinstance(resume, str):
+                try:
+                    resume = json.loads(resume)
+                except ValueError:
+                    resume = {}
+            steps = ((resume or {}).get("plan") or {}).get("steps") or []
+            for step in steps:
+                if not isinstance(step, dict) or step.get("status") == "done":
+                    continue
+                step_id = str(step.get("id") or "")
+                description = " ".join(str(step.get("description") or "").split())[:100]
+                if description:
+                    line += f"; current step {step_id}: {description}"
+                break
+            lines.append(line)
+        return lines[:limit]
 
     async def _delegation_state(
         self, journal_window_min: float,

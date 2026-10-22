@@ -805,3 +805,24 @@ def test_work_nobody_asked_for_is_not_a_debt() -> None:
     intention = IntentionRecord(id=uuid4(), title="a venture of my own")
 
     assert asyncio.run(store.record_stage_notice(intention, "done")) is None
+
+
+def test_open_work_progress_separates_stalled_from_never_started() -> None:
+    """The journal window is short; the progress line is not the same fact.
+
+    Saying "the training hasn't started" because the last fifteen minutes were
+    quiet was false when the task had been running for hours. The block has to
+    carry the last action for open work so the reply can tell stalled from
+    unborn.
+    """
+    block = execution_state_block(
+        "Clio", journaled=[], blocked=[], window_min=15.0, stages=[],
+        progress=[
+            "[in_progress] Train a 30K model: last action shell.run (ok) 40 min ago; "
+            "current step s2: Run the training script",
+        ],
+    )
+    flat = " ".join(block.split())
+    assert "Open work and its last recorded action" in flat
+    assert "40 min ago" in flat
+    assert "does not mean the work never started" in flat

@@ -221,6 +221,7 @@ async def test_tool_catalog_matches_primitive_spec(harness):
         "shell.run", "shell.job", "shell.session_open", "shell.session_write",
         "shell.session_read", "shell.session_close",
         "fs.read", "fs.write", "fs.edit", "fs.move", "fs.delete", "fs.list", "fs.stat",
+        "fs.mkdir",
         "code.exec", "code.reset",
         "browser.visit", "browser.click", "browser.type", "browser.extract",
         "browser.screenshot", "browser.close",

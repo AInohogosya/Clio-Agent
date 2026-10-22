@@ -348,3 +348,33 @@ async def test_devise_drops_to_t2_after_repeated_planning_failures(tmp_path, mon
     )
 
     assert seen["tier"] == Tier.T2
+
+
+def test_the_shipped_plan_floor_does_not_reject_a_one_step_plan() -> None:
+    """A simple task can be one step; requiring three makes it unplannable.
+
+    Beta 3 raised this floor from 1 to 3 while its own comment said plans must
+    never be padded. The Docs task then returned a valid one-step plan and was
+    rejected twice before it could start.
+    """
+    import yaml
+
+    config = yaml.safe_load(
+        (Path(__file__).resolve().parents[2] / "config" / "gsl.yaml").read_text()
+    )
+    assert config["min_real_plan_steps"] == 1
+
+
+def test_the_plan_prompt_does_not_promise_a_fixed_minimum() -> None:
+    from ethos.prompts.gsl import PLAN_PROMPT
+
+    assert "3 to 7 steps" not in PLAN_PROMPT
+    assert "as many steps as the work needs" in PLAN_PROMPT
+
+
+def test_the_step_prompt_has_a_folder_action_that_is_not_fs_write() -> None:
+    from ethos.prompts.gsl import STEP_PROMPT
+
+    flat = " ".join(STEP_PROMPT.split())
+    assert "fs.mkdir" in flat
+    assert "creates a folder" in flat

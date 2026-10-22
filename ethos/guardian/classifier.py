@@ -558,6 +558,7 @@ TOOL_CATEGORIES: dict[str, set[str]] = {
     "fs.read": set(),
     "fs.list": set(),
     "fs.write": {"write"},
+    "fs.mkdir": {"write"},
     "fs.edit": {"write"},
     "fs.move": {"move"},
     "fs.delete": {"delete", "irreversible"},

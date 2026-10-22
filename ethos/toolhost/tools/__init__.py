@@ -4,6 +4,7 @@ from ethos.toolhost.tools.fs import (
     FsDeleteTool,
     FsEditTool,
     FsListTool,
+    FsMkdirTool,
     FsMoveTool,
     FsReadTool,
     FsStatTool,
@@ -38,8 +39,8 @@ from ethos.toolhost.tools.threads import ThreadSpawnTool
 
 __all__ = [
     "CodeExecTool", "CodeResetTool", "CommSendTool",
-    "FsDeleteTool", "FsEditTool", "FsListTool", "FsMoveTool", "FsReadTool",
-    "FsStatTool", "FsWriteTool",
+    "FsDeleteTool", "FsEditTool", "FsListTool", "FsMkdirTool", "FsMoveTool",
+    "FsReadTool", "FsStatTool", "FsWriteTool",
     "HttpTool",
     "IntentCloseTool", "IntentCreateTool", "IntentGetTool", "IntentListTool", "IntentUpdateTool",
     "MemoryRecordTool", "MemoryRememberFactTool", "MemorySearchTool", "OpenQuestionTool",

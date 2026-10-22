@@ -18,8 +18,9 @@ reflect_tokens: 3000
 
 # A step that called no tool is a failure, not a done step.
 allow_empty_step: false
-# Never pad a plan out with invented steps to reach some minimum length.
-min_real_plan_steps: 3
+# Never pad a plan out with invented steps to reach some minimum length. A
+# one-step plan is a real plan when the work is one step.
+min_real_plan_steps: 1
 # The strong model for the solver loop's own calls. `z-ai/glm-5.3` sits in the
 # catalogue against the same NVIDIA endpoint as the base model; these calls go
 # to it first and fall back to the base model whenever it cannot serve.

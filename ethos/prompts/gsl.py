@@ -173,7 +173,9 @@ For a step that changes code, the check that tells you is the project's own:
 `{"type": "command", "command": "pytest -q"}`, or `npm test`, or `go test
 ./...`, whatever this project is actually run with. Put it in the last step that
 touches the code, and let it fail. For a step that writes a file, check the file
--- `file_exists`, or `file_contains` for a string that has to be in it.
+-- `file_exists`, or `file_contains` for a string that has to be in it. For a
+step that creates a folder, check the folder with `test -d`; do not put its
+creation in the check.
 
 If you cannot name a check for a step, say what the step is instead of inventing
 one. A check that cannot fail is worse than none: it is a step that reports
@@ -189,7 +191,8 @@ the loop now refuses such a check rather than running it.
 The file-check spellings are exact: `file_exists` takes `path`; `file_contains`
 takes `path` and `text`; a command check takes `command` and `expect`. For a
 step that writes a file, the action is `fs.write` with the whole content and
-the check is `file_exists` on that path.
+the check is `file_exists` on that path. A step that creates a folder uses
+`fs.mkdir`; `fs.write` is for files, not for standing in for a directory.
 """
 
 # The sub-agents are co-workers, not a fact about the catalog.
@@ -430,7 +433,7 @@ Respond with strict JSON:
 # state names. So the plan prompt carries all three, and states the two rules
 # that keep them from being ignored: cover every stage, and treat a constraint as
 # binding rather than as advice.
-PLAN_PROMPT = """You are {name}. Build a short-horizon plan of 3 to 7 steps for this approach.
+PLAN_PROMPT = """You are {name}. Build a short-horizon plan of as many steps as the work needs, up to 7, for this approach.
 Each step must name the primitive tool it needs (or 'think'), and a concrete success check.
 
 {commissioned}
@@ -613,7 +616,12 @@ the job it is named for; reach past these two when neither fits.
 
 A step that creates a file that does not exist yet is an `fs.write` step:
   {{"tool": "fs.write", "args": {{"path": "...", "content": "<the whole file>"}}}}
-Not `fs.edit` (it needs something to edit), and not `shell.run` with `cat >`."""
+Not `fs.edit` (it needs something to edit), and not `shell.run` with `cat >`.
+
+A step that creates a folder is an `fs.mkdir` step:
+  {{"tool": "fs.mkdir", "args": {{"path": "..."}}}}
+Not `fs.write` (it creates a file, even when the path was meant to be a
+folder), and not `shell.run` with `mkdir` unless a tool is genuinely missing."""
 
 EVALUATE_PROMPT = """You are {name}. Evaluate the step outcome against the success check.
 

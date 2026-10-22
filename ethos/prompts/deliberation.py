@@ -355,6 +355,7 @@ def execution_state_block(
     self_name: str, journaled: list[str], blocked: list[str], window_min: float,
     readable: bool = True, stages: list[str] | None = None,
     delegations: list[str] | None = None, delegation_window_h: float = 24.0,
+    progress: list[str] | None = None,
 ) -> str:
     """The block that says what happened, rendered for one prompt.
 
@@ -369,6 +370,11 @@ def execution_state_block(
     finished thing is finished. Merged in, "no journaled actions and no
     blocked work" reads as *nothing has happened yet*, which is true of work
     in flight and false about work completed an hour ago.
+
+    `progress` is the other half of the journal's window problem: an open
+    intention whose last action was forty minutes ago is not a task that never
+    started, and the journal line above is too short to say so. Each entry names
+    the open work, when it last acted, and what it is waiting on.
 
     `readable=False` is stated outright rather than left blank. "Nothing has
     been journaled" and "the journal could not be read" are different facts,
@@ -385,6 +391,16 @@ def execution_state_block(
         f"- Journaled actions in the last {window_min:g} minutes: "
         + ("; ".join(journaled) if journaled else "none"),
     ]
+    progress = progress or []
+    if progress:
+        lines.append(
+            "- Open work and its last recorded action — this is what says whether "
+            "it started. The journal window above is short, so an empty journal "
+            "does not mean the work never started:"
+        )
+        lines.extend(f"  - {line}" for line in progress)
+    else:
+        lines.append("- Open work: none")
     if blocked:
         lines.append("- Work that is blocked, stalled or parked:")
         lines.extend(f"  - {line}" for line in blocked)

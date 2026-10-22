@@ -100,6 +100,42 @@ class FsReadTool(Tool):
                 "total_lines": len(lines)}
 
 
+class FsMkdirTool(Tool):
+    name = "fs.mkdir"
+    description = (
+        "Create a directory, including missing parents. Use this for a folder: "
+        "`fs.write` creates files, not folders. Creating a directory that "
+        "already exists is a no-op; creating one where a file already has that "
+        "name is refused, because the file is not a folder and replacing it "
+        "would be a different action."
+    )
+    timeout_s = 30.0
+    input_schema = {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string"},
+            "parents": {
+                "type": "boolean",
+                "description": "create missing parent directories too (default true)",
+            },
+        },
+        "required": ["path"],
+    }
+
+    async def run(self, args: dict[str, Any], ctx: ToolContext, host: Toolhost) -> Any:
+        path = _resolve(host, str(args["path"]))
+        if path.exists() or path.is_symlink():
+            if path.is_dir():
+                return {"path": str(path), "created": False, "is_dir": True}
+            raise FileExistsError(
+                f"refusing to create directory {path}: a file already exists "
+                f"there. Use `fs.write` to change that file, or `fs.move` / "
+                f"`fs.delete` first if it is in the way."
+            )
+        path.mkdir(parents=bool(args.get("parents", True)), exist_ok=False)
+        return {"path": str(path), "created": True, "is_dir": True}
+
+
 class FsWriteTool(Tool):
     name = "fs.write"
     description = (
@@ -150,6 +186,17 @@ class FsWriteTool(Tool):
                 f"{path.stat().st_size} bytes. Use `fs.edit` to change part of "
                 f"it, or pass overwrite: true to replace it deliberately -- the "
                 f"response will then carry a diff of what was replaced."
+            )
+        if path.is_dir():
+            raise IsADirectoryError(
+                f"{path} is a directory; use `fs.mkdir` when you mean a folder "
+                f"and give `fs.write` the path of a file inside it"
+            )
+        if path.parent.exists() and not path.parent.is_dir():
+            raise NotADirectoryError(
+                f"cannot write {path}: its parent {path.parent} is a file, not "
+                f"a directory. Move or delete that file first, or choose a "
+                f"file path inside a real directory."
             )
         original = path.read_text(encoding="utf-8", errors="replace") if existed else ""
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -417,5 +464,6 @@ class FsStatTool(Tool):
 
 __all__ = [
     "FsReadTool", "FsWriteTool", "FsEditTool", "FsMoveTool", "FsDeleteTool",
-    "FsListTool", "FsStatTool", "apply_search_replace", "apply_unified_diff",
+    "FsListTool", "FsStatTool", "FsMkdirTool",
+    "apply_search_replace", "apply_unified_diff",
 ]

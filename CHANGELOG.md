@@ -1,5 +1,15 @@
 # Clio Agent 3
 
+## v3.1.0-beta.4
+
+Beta 4 fixes the failures behind the 2026-10-22 Docs task and the false "not started" report on the 30K training task.
+
+- Filesystem: added `fs.mkdir` for creating folders (including missing parents). A directory that already exists is an idempotent success; a file with that name is refused rather than treated as the folder. `fs.write` now refuses a directory path with an `IsADirectoryError` that names `fs.mkdir`, and refuses a file as its parent with a `NotADirectoryError`, instead of surfacing a bare `FileExistsError` after the model has already committed to the action.
+- Planning: restored `gsl.min_real_plan_steps` from 3 to 1. A valid one-step plan is no longer rejected as "too short", and the plan prompt asks for as many steps as the work needs up to seven instead of starting at three.
+- GSL checks: folder creation is an action (`fs.mkdir`), not a success check. Checks may inspect a folder with `test -d`; a check that creates the folder is still rejected, but the prompt no longer suggests the rejected shape.
+- Social context: the deliberation's execution-state block now lists open work with its last recorded action and current plan step, alongside the short journal window. A quiet journal no longer reads as "this task never started" when its last action was forty minutes ago.
+- Tests: filesystem coverage for folder creation and the directory/file confusion, plan-floor and prompt assertions, and the new open-work progress line.
+
 ## v3.1.0
 
 Aligned with the NEXT AGENT philosophy requirements (NA-P1 through NA-P3, NA-H1 through NA-H5).
