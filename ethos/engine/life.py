@@ -1652,9 +1652,15 @@ class Life:
         """
         if self.deps.consolidation is None:
             return
+        done = self._consolidation_done_tonight
+        if done is None:
+            last = await self.memory.last_consolidation_at()
+            if last is not None:
+                done = self.deps.rhythm.local_time(last).date().isoformat()
         if not self.deps.rhythm.due_daily(
-            self.config.memory.consolidation.run_at, self._consolidation_done_tonight,
+            self.config.memory.consolidation.run_at, done,
         ):
+            self._consolidation_done_tonight = done
             return
         try:
             await self.deps.consolidation.run_nightly()

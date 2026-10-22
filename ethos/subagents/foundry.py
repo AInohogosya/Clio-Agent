@@ -97,6 +97,7 @@ class FoundrySubAgent(SubAgent):
             purpose=self.purpose(),
             timeout_s=self.timeout_s(),
             metadata={"thread_id": str(self.repo_root(workdir))},
+            model_hint=self.config.subagents.model_hint or None,
         )
         summary = await asyncio.to_thread(
             self._orchestrate, Orchestrator, config, provider, task, max_cycles,
@@ -187,6 +188,7 @@ class FoundrySubAgent(SubAgent):
         started = time.monotonic()
         max_cycles = opts.get("max_cycles")
         mode = self.settings.mode
+        await self._ensure_git_baseline(self.repo_root(workdir))
         if mode in ("inprocess", "auto") and self.gateway is not None:
             try:
                 return await self._run_inprocess(task, workdir, max_cycles, started)
@@ -205,6 +207,56 @@ class FoundrySubAgent(SubAgent):
                         summary="foundry run failed", error=str(exc), mode="inprocess",
                     ), started)
         return await self._run_subprocess(task, workdir, max_cycles, started)
+
+    @staticmethod
+    async def _ensure_git_baseline(repo: Path) -> None:
+        """Give Foundry a git history to branch from.
+
+        Foundry isolates every task in a worktree and merges the branches back,
+        which is the whole point of it -- but every one of those operations
+        starts with `git -C <repo>`. Handed a fresh directory, the first task
+        dies in `worktree.create` with "not a git repository", after the plan
+        has already been paid for. The fix belongs here, at the seam: a
+        baseline commit in an empty directory costs nothing and gives the
+        factory the base it needs.
+        """
+        def _run() -> None:
+            import subprocess
+
+            def git(*args: str) -> subprocess.CompletedProcess[str]:
+                return subprocess.run(
+                    ["git", "-C", str(repo), *args],
+                    capture_output=True, text=True, timeout=60,
+                )
+
+            if not repo.is_dir():
+                repo.mkdir(parents=True, exist_ok=True)
+            if git("rev-parse", "--git-dir").returncode != 0:
+                git("init", "-b", "main")
+            # Foundry's G000 audits every file in the working tree against the
+            # task's allowlist, so interpreter bytecode that appears when a
+            # gate runs its tests counts as work outside the task -- a gate
+            # that failed every time for a reason no implementer can fix.
+            # Build and tool state belong in .gitignore, in every repo.
+            ignore = repo / ".gitignore"
+            wanted = ("__pycache__/", "*.pyc", ".pytest_cache/", ".foundry/",
+                      ".venv/")
+            existing = ignore.read_text() if ignore.exists() else ""
+            missing = [line for line in wanted if line not in existing.splitlines()]
+            if missing:
+                prefix = "" if not existing or existing.endswith("\n") else "\n"
+                ignore.write_text(existing + prefix + "\n".join(missing) + "\n")
+            if git("rev-parse", "--verify", "HEAD").returncode != 0:
+                git("add", "-A")
+                git(
+                    "-c", "user.name=Foundry", "-c", "user.email=foundry@local",
+                    "commit", "--allow-empty", "-m", "foundry baseline",
+                )
+
+        try:
+            await asyncio.to_thread(_run)
+        except Exception:
+            logger.warning("subagent.foundry_git_baseline_failed", repo=str(repo))
 
     async def health(self) -> dict[str, Any]:
         info: dict[str, Any] = {"root": str(self.root), "mode": self.settings.mode}

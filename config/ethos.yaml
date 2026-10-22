@@ -75,6 +75,10 @@ subagents:
   # the base model's name, so they inherit it.
   model_name: ""
   tier: T2
+  # The model sub-agents' own calls are pinned to. Foundry's role outputs are
+  # strict JSON schemas; the small base model could not satisfy the planner's
+  # and repeated the same invalid object through all three schema repairs.
+  model_hint: gemma4:31b-cloud
   agents:
     - name: foundry
       # Deterministic, gate-verified software factory. Takes a product
@@ -94,4 +98,12 @@ subagents:
       mode: auto
       root: ""
       timeout_s: 900.0
+      # Hidden mode is refused by macOS privacy (app_data) on this machine,
+      # so a delegation that does not name a mode used to die in 3 seconds on
+      # a TCC error. Visible is the mode this deployment can actually run.
+      env:
+        APEX_MODE: visible
+        # APEX's planner sees 50K+ token prompts; the NVIDIA endpoint 504s on
+        # those and lightning plans badly. Ollama Cloud answers them in seconds.
+        LLM_MODEL: gemma4:31b-cloud
 

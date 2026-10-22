@@ -233,8 +233,10 @@ def test_the_prompts_that_do_the_work_say_it_was_asked_for() -> None:
 
 @pytest.mark.parametrize("template,fields", [
     ("plan", dict(name="Clio", commissioned="C", success_checks="S", delegation="D",
-                  approach="a", title="t", desired_end_state="d")),
+                  approach="a", title="t", desired_end_state="d",
+                  constraints="K", success_criteria="R")),
     ("step", dict(name="Clio", commissioned="C", editing="E", delegation="D", title="t",
+                  intention_end_state="d", constraints="K",
                   step_id="s1", step_description="x", plan_state="[]", memories="(none)",
                   tools="(catalog)")),
 ])
@@ -290,7 +292,8 @@ def test_the_step_prompt_says_to_edit_rather_than_rewrite() -> None:
     # is still there, because it is true and it was not the problem.
     body = STEP_PROMPT.format(
         name="Clio", commissioned="C", editing=EDIT_EXISTING_FILES, delegation="D",
-        title="t", step_id="s1", step_description="x", plan_state="[]",
+        title="t", intention_end_state="d", constraints="K",
+        step_id="s1", step_description="x", plan_state="[]",
         memories="(none)", tools="(catalog)",
     )
     assert "Do not abbreviate a file" in body

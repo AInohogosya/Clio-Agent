@@ -44,12 +44,19 @@ models:
   # the same numbers, kept here so an offline start still prices them exactly.
   "deepseek/deepseek-chat": { input: 0.32, output: 0.89 }
   "z-ai/glm-5.3-flash": { input: 0.049, cached_input: 0.018, output: 0.65 }
+  "gemma4:31b-cloud": { input: 0.0, cached_input: 0.0, cache_write: 0.0, output: 0.0 }
   "z-ai/glm-5.3": { input: 0.079, cached_input: 0.078, output: 4.80 }
 
   # Free by name. Listed explicitly as well as being recognised from the `:free`
   # suffix, because an entry that reads as zero is a fact a reader can check
   # rather than a rule they have to trust.
   "nvidia/nemotron-3.5-super-vl:free": { input: 0.0, cached_input: 0.0, cache_write: 0.0, output: 0.0 }
+
+  # The 3.5 Lightning endpoint on the same NVIDIA developer API. Priced by name
+  # because it is the model the current base_model.yaml pins; without this row
+  # the pricing test correctly reports that a catalogue model has no known rate.
+  # Source: https://build.nvidia.com/nvidia/nemotron-3.5-lightning-30b-a3b
+  "nvidia/nemotron-3.5-lightning-30b-a3b": { input: 0.0, cached_input: 0.0, cache_write: 0.0, output: 0.0 }
 
   # The Nemotron 3 Super hosted endpoint is NVIDIA's free developer API access,
   # governed by the NVIDIA API Trial Terms — the same fact the `free_base_urls`

@@ -388,3 +388,20 @@ def test_a_directory_that_is_read_only_still_counts_as_reachable() -> None:
     """`/usr` is normal, not a gap. A gap is the user reaching it and me not."""
     read_only = ReachEntry("/usr", True, True, False, True, "")
     assert read_only.reachable
+
+
+async def test_list_with_an_empty_glob_lists_the_directory(tmp_path: Path) -> None:
+    """`glob: ""` is "no filter", not a pattern `Path.glob` should choke on.
+
+    A model that fills every schema field with an empty string is common
+    enough that the tool has to read it that way; before this, the step failed
+    with "Unacceptable pattern: ''" and the model could not tell why.
+    """
+    directory = tmp_path / "notes"
+    directory.mkdir()
+    (directory / "a.txt").write_text("x", encoding="utf-8")
+    host = _host(tmp_path / "agent-home")
+
+    out = await FsListTool().run({"path": str(directory), "glob": ""}, CTX, host)
+
+    assert any(entry.endswith("a.txt") for entry in out["entries"])

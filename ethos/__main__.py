@@ -210,10 +210,22 @@ def gateway() -> None:
     install_fast_loop()
     config = load_config()
     config.paths.ensure()
-    db: Database | None = None
-    if os.environ.get("ETHOS_NO_DB") != "1":
-        db = asyncio.run(connect_database(config))
-    asyncio.run(serve(config, db))
+
+    # The pool and the server share one loop. Connecting in one `asyncio.run`
+    # and serving in another leaves every pooled connection bound to a loop that
+    # has since closed; asyncpg refuses a query on a connection another loop is
+    # driving, so the first `model_calls` write after start-up raised
+    # "another operation is in progress" -- and the same cross-loop use could
+    # take the gateway down with SIGSEGV in its transport. `toolhost` was fixed
+    # this way first; this is the same bug in the one other command that opened
+    # a database outside the loop it then served on.
+    async def _run() -> None:
+        db: Database | None = None
+        if os.environ.get("ETHOS_NO_DB") != "1":
+            db = await connect_database(config)
+        await serve(config, db)
+
+    asyncio.run(_run())
 
 
 @app.command()

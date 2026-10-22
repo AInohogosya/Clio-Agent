@@ -378,9 +378,12 @@ class FsListTool(Tool):
 
     async def run(self, args: dict[str, Any], ctx: ToolContext, host: Toolhost) -> Any:
         path = _resolve(host, str(args["path"]))
-        pattern = args.get("glob", "*")
+        # An empty string is what a model sends for "no filter", and
+        # `Path.glob("")` raises rather than listing the directory.
+        asked = str(args.get("glob") or "").strip()
+        pattern = asked or "*"
         entries = []
-        if args.get("glob") and not path.is_dir():
+        if asked and not path.is_dir():
             matches = sorted(path.parent.glob(pattern)) if path.parent.exists() else []
             entries = [str(m) for m in matches if os.path.abspath(str(m)) == str(path)] or \
                       [str(m) for m in path.parent.glob(pattern)][:500]

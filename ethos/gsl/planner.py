@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from ethos.config import EthosConfig
@@ -16,6 +17,8 @@ from ethos.prompts import (
     commissioned_note,
     delegation_note,
     dumps,
+    render_constraints,
+    render_success_criteria,
 )
 from ethos.schemas.gsl import Plan, PlanStep
 from ethos.schemas.memory import MemoryHit
@@ -154,6 +157,7 @@ async def understand(
     data = await _complete_json(gateway, ModelRequest(
         tier=tier,
         purpose="gsl.understand",
+        model_hint=config.gsl.model_hint or None,
         budget_bucket=budget_bucket_for(intention),
         consequence_class="consequential" if consequential_hint else "routine",
         messages=[
@@ -195,6 +199,7 @@ async def devise(
     data = await _complete_json(gateway, ModelRequest(
         tier=tier,
         purpose="gsl.devise",
+        model_hint=config.gsl.model_hint or None,
         budget_bucket=budget_bucket_for(intention),
         messages=[
             ModelMessage(role=Role.system, content=DEVISE_PROMPT.format(
@@ -232,6 +237,39 @@ def pick_approach(approaches: list[dict[str, Any]]) -> dict[str, Any] | None:
     )
 
 
+_PLACEHOLDER_TOKENS = ("your-repo", "your_repo", "yourusername", "your-username",
+                       "example.com", "<path>", "<file>", "REPLACE_ME")
+
+
+def _reject_invented_checks(steps: list[PlanStep]) -> None:
+    """A check that cannot run on this machine is a plan that cannot verify.
+
+    Lightning-shaped plans invent absolute paths under other users' home
+    directories (`/Users/ashton/...`) and placeholder repo names
+    (`github.com/your-repo/...`). The step then runs fine and its check fails
+    forever, which reads downstream as the work failing when the plan is what
+    was wrong. Rejected at plan time, the model is asked again -- the same
+    repair loop every other plan defect goes through.
+    """
+    import getpass
+    user = getpass.getuser()
+    for step in steps:
+        check = step.success_check if isinstance(step.success_check, dict) else {}
+        text = json.dumps(check) if check else ""
+        for token in _PLACEHOLDER_TOKENS:
+            if token in text:
+                raise PlanUnavailable(
+                    f"step {step.id} success check contains the placeholder "
+                    f"{token!r}; name the real path or repository"
+                )
+        for match in re.findall(r"/Users/([A-Za-z0-9._-]+)/", text):
+            if match != user and match not in ("Shared",):
+                raise PlanUnavailable(
+                    f"step {step.id} success check references /Users/{match}/, "
+                    f"which is not a directory on this machine (user is {user})"
+                )
+
+
 async def make_plan(
     gateway: Any, config: EthosConfig, intention: Any, approach: dict[str, Any],
     strategy_number: int = 1, plan_attempts: int = 0,
@@ -255,6 +293,7 @@ async def make_plan(
     request = ModelRequest(
         tier=Tier.T1 if degraded else Tier.T2,
         purpose="gsl.plan",
+        model_hint=config.gsl.model_hint or None,
         budget_bucket=budget_bucket_for(intention),
         reasoning_budget=config.gsl.degraded_reasoning_budget if degraded else None,
         messages=[
@@ -266,6 +305,10 @@ async def make_plan(
                 approach=approach.get("summary", ""),
                 title=intention.title,
                 desired_end_state=intention.desired_end_state or "-",
+                constraints=render_constraints(getattr(intention, "constraints", None)),
+                success_criteria=render_success_criteria(
+                    getattr(intention, "success_criteria", None)
+                ),
             ) + (DEGRADED_PLAN if degraded else "")),
             ModelMessage(role=Role.user, content="Produce the plan JSON."),
         ],
@@ -318,6 +361,7 @@ async def make_plan(
             f"model returned {len(steps)} usable plan step(s); "
             f"at least {config.gsl.min_real_plan_steps} required"
         )
+    _reject_invented_checks(steps)
     return Plan(
         approach_id=str(approach.get("id", f"approach-{strategy_number}")),
         approach=str(approach.get("summary", "")),

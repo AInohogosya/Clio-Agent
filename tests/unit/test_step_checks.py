@@ -223,3 +223,70 @@ async def test_the_thought_names_the_check_that_failed_not_just_that_something_d
     check_named = [t for t in result.thoughts if "file_exists" in t]
     assert check_named, result.thoughts
     assert json.dumps(result.actions), "and the actions that were taken are still there"
+
+
+async def test_a_file_check_accepts_the_spellings_plans_actually_write(
+    tmp_path: Path,
+) -> None:
+    """`file_path` and `expected` were what the model wrote; the checker ignored them.
+
+    The schema never fixed these key names, so a plan that said
+    `{"type": "file_contains", "file_path": "...", "expected": "..."}` was
+    resolved as the empty path -- the current directory -- and passed without
+    opening the file. The aliases are accepted because the plan's intent is not
+    ambiguous; the empty-path guard below is what stops the old silent pass.
+    """
+    target = tmp_path / "written.py"
+    target.write_text("def plan(self, task: str) -> str:\n", encoding="utf-8")
+
+    result = await _run(tmp_path, {
+        "type": "file_contains",
+        "file_path": str(target),
+        "expected": "def plan(self, task: str) -> str:",
+    })
+
+    assert result.outcome.value == "step_done"
+
+
+async def test_a_file_check_with_no_path_does_not_pass_on_the_cwd(tmp_path: Path) -> None:
+    """An empty path is the current directory, and the check must not pass on it."""
+    result = await _run(tmp_path, {"type": "file_exists"})
+
+    assert result.outcome.value == "step_failed", (
+        "a malformed file check must not be a verified step"
+    )
+    assert any("success check" in t for t in result.thoughts), result.thoughts
+
+
+async def test_a_check_that_performs_the_work_is_refused(tmp_path: Path) -> None:
+    """The `cat > file` in a check is the work, and the work is not a check.
+
+    A plan that put the whole write in `success_check` and left the action as
+    `ls` was recorded as a verified step every time: the checker created the
+    file, then reported success. The step is now failed with the command in the
+    evidence so the next attempt moves it into the action.
+    """
+    target = tmp_path / "created-by-the-check.txt"
+    result = await _run(tmp_path, {
+        "type": "command",
+        "command": f"cat > {target} << 'EOF'\nhello\nEOF\n",
+        "expect": "exit_zero",
+    })
+
+    assert result.outcome.value == "step_failed"
+    assert not target.exists(), "the check must not have been allowed to write"
+    assert any("perform" in t or "read-only" in t for t in result.thoughts), result.thoughts
+
+
+async def test_a_read_only_command_with_stderr_redirection_still_runs(
+    tmp_path: Path,
+) -> None:
+    """`>&2` is a diagnostic, not a file write, and must stay runnable."""
+    result = await _run(tmp_path, {
+        "type": "command",
+        "command": "echo 'assert 1 == 2' >&2; exit 1",
+        "expect": "exit_zero",
+    })
+
+    assert result.outcome.value == "step_failed"
+    assert any("1 == 2" in t for t in result.thoughts), result.thoughts

@@ -422,6 +422,9 @@ class _Memory:
     async def record_episode(self, **_: Any) -> str:
         return "episode"
 
+    async def last_consolidation_at(self) -> Any:
+        return None
+
     async def get_intention(self, _: Any) -> Any:
         return None
 

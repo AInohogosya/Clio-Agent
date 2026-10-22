@@ -150,8 +150,17 @@ def uvicorn_loop() -> str:
     written its "serving" log line. `"asyncio"` is uvicorn's own default and exists
     on every platform uvicorn supports, including the Windows selector loop, so the
     fallback is a supported configuration rather than a spelling of "none".
+
+    macOS asks for the same fallback. uvloop 0.23.0 crashes the gateway with
+    SIGSEGV in `uv_tcp_init_ex` while accepting a connection on macOS/Python 3.12
+    (crash reports at `~/Library/Logs/DiagnosticReports/python3.12-*.ips`, fault
+    in `__pyx_f_6uvloop_4loop___tcp_init_uv_handle`). A segfault takes the whole
+    gateway with it, so the events-loop speedup is not worth the outage: the
+    asyncio loop is the supported fallback rather than a degraded mode.
     """
-    return "asyncio" if IS_WINDOWS else "uvloop"
+    if IS_WINDOWS or sys.platform == "darwin":
+        return "asyncio"
+    return "uvloop"
 
 
 # ----------------------------------------------------------- virtual environments

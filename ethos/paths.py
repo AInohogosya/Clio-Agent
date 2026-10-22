@@ -89,7 +89,7 @@ def resolve(path: str | os.PathLike[str], *, base: Path | None = None) -> Path:
     verbatim. Symlink resolution is the filesystem's job, done by the kernel at
     the moment of access, where it cannot disagree with the record.
     """
-    candidate = Path(path).expanduser()
+    candidate = Path(os.path.expandvars(path)).expanduser()
     if candidate.is_absolute():
         return candidate
     return ((base or user_home()) / candidate).resolve()

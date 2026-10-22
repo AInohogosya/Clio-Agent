@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import time
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -32,6 +33,7 @@ from ethos.prompts import (
     commissioned_note,
     delegation_note,
     dumps,
+    render_constraints,
 )
 from ethos.schemas.context import TurnKind
 from ethos.schemas.gsl import (
@@ -58,6 +60,49 @@ STEP_FAILURES_BEFORE_SWITCH = 2
 _RUNNABLE_CHECKS = frozenset({
     "command", "file_exists", "file_contains", "syntax", "json_field",
 })
+
+# A check that writes is not a check. Plans put the whole `cat > file` (or
+# `mkdir`, or `pip install`) in `success_check` and left the step's own action
+# as a no-op `ls`; the checker then performed the work and the step was
+# recorded as verified by a command that was never the step. These are the
+# obvious mutations, matched so a read-only command with `2>&1` still passes.
+_MUTATING_CHECK = re.compile(
+    r"(?:^|[;&|]\s*)(?:mkdir|touch|rm|mv|cp|tee|chmod|chown"
+    r"|pip\s+install|python\s+-m\s+pip|npm\s+install|yarn\s+add"
+    r"|git\s+(?:add|commit|push|checkout|reset|merge|stash))\b"
+    r"|\b(?:cat|printf|echo|tee)\b[^\n]*>(?![&12])"
+    r"|(?:^|[^0-9&])>>?\s*[^&|]",
+)
+
+def _describe_actions(actions: list[dict[str, Any]] | None, limit: int = 6) -> str:
+    """What the step's own tool calls did, for the check-repair prompt.
+
+    A repaired check has to be grounded in something that actually happened;
+    asked only about a failing check, the model rewrites it from imagination
+    (`file_exists` on a path the step never used) and the loop fails again for
+    the same invented reason.
+    """
+    lines: list[str] = []
+    for action in (actions or [])[:limit]:
+        tool = str(action.get("tool", "?"))
+        args = action.get("args") or {}
+        target = (
+            args.get("path") or args.get("command") or args.get("url")
+            or args.get("app_id") or args.get("query") or ""
+        )
+        result = str(action.get("result", ""))
+        outcome = "ok" if action.get("ok", True) else "failed"
+        lines.append(
+            f"- {tool}({str(target)[:160]}) -> {outcome}: {result[:160]}"
+        )
+    return "\n".join(lines) or "(none recorded)"
+
+
+def _same_check(candidate: dict[str, Any], original: dict[str, Any]) -> bool:
+    """Whether two checks are the same claim, ignoring key order."""
+    keys = {k: v for k, v in candidate.items() if v not in (None, "")}
+    return keys == {k: v for k, v in original.items() if v not in (None, "")}
+
 
 # Keys in `resume_state` that only this module reads. Named because the state
 # machine has three of them and a dict literal with three string keys in it is
@@ -423,7 +468,7 @@ class GeneralSolverLoop:
                 cost_usd=cost,
             )
 
-        if "plan" not in resume:
+        if not resume.get("plan"):
             # The backoff is checked before the call, not after it. A goal whose
             # plan has failed three times has earned an interval, and spending a
             # model call to find out that the interval has not elapsed is the
@@ -770,6 +815,7 @@ class GeneralSolverLoop:
     async def _execute_step(self, intention: IntentionRecord, resume: dict[str, Any],
                            plan: Plan, step: Any, ws: Any) -> SolverResult:
         cost = 0.0
+        attempt_index = int((resume.get("step_attempts") or {}).get(step.id, 0))
         # Situation and carried context are what make a step the *next* step
         # rather than the first. They were assembled every cycle by
         # `Life._assemble_workspace` and then dropped here, so a step could only
@@ -786,6 +832,7 @@ class GeneralSolverLoop:
         request = ModelRequest(
             tier=Tier.T3 if resume.get("consequential") else Tier.T2,
             purpose="gsl.step",
+            model_hint=self.config.gsl.model_hint or None,
             budget_bucket=budget_bucket_for(intention),
             cache_prefix_blocks=3,
             messages=[
@@ -797,6 +844,10 @@ class GeneralSolverLoop:
                     editing=EDIT_EXISTING_FILES,
                     delegation=delegation_note(intention),
                     title=intention.title,
+                    intention_end_state=intention.desired_end_state or "-",
+                    constraints=render_constraints(
+                        getattr(intention, "constraints", None)
+                    ),
                     step_id=step.id,
                     step_description=step.description,
                     plan_state=dumps(plan_state),
@@ -809,6 +860,43 @@ class GeneralSolverLoop:
         )
         try:
             data, cost, truncated = await self._complete_with_cost(request)
+            # One repair turn. A small model answering a step prompt sometimes
+            # returns prose, or a `thought` with no `actions` array, and the
+            # plain reading of that is "no action" -- which fails the step and
+            # burns an attempt on what was only a formatting slip. Re-ask once
+            # with its own answer quoted back and the schema restated, the way
+            # the plan path already repairs itself.
+            first = dumps(data)[:1200]
+            if (
+                not truncated and not self._usable_actions(data)
+                and data.get("done") is not True
+                and not self.config.gsl.allow_empty_step
+            ):
+                repair = ModelRequest(
+                    tier=request.tier,
+                    purpose=request.purpose,
+                    budget_bucket=request.budget_bucket,
+                    cache_prefix_blocks=request.cache_prefix_blocks,
+                    messages=[
+                        *request.messages,
+                        ModelMessage(role=Role.user, content=(
+                            "Your answer was not a usable action for this "
+                            "step: it carried no `actions` entries a tool can "
+                            f"run. Your answer was: {first}\n\n"
+                            "Answer again with strict JSON only — "
+                            '{"thought": "...", "actions": [{"tool": "...", '
+                            '"args": {...}}], "done": false} — using a tool '
+                            "name from the Tools block. Use `fs.write` with "
+                            "`path` and `content` to create a new file; use "
+                            "`shell.run` with `command` to run something."
+                        )),
+                    ],
+                    max_tokens=request.max_tokens,
+                )
+                data2, cost2, truncated2 = await self._complete_with_cost(repair)
+                cost += cost2
+                if data2.get("actions") or data2.get("done") is True:
+                    data, truncated = data2, truncated2
         except Exception as exc:
             # A tool that raises is recorded as a tool that failed (below); the
             # model call this step is decided by raised the same way and took the
@@ -911,7 +999,17 @@ class GeneralSolverLoop:
                 intention_id=str(intention.id),
                 reason=f"step {step.id}: {step.description[:120]}",
                 commissioned_by=intention.commissioned_by,
-                idempotency_key=f"{intention.id}:{plan.strategy_number}:{step.id}:{len(executed)}",
+                # The attempt belongs in the key. Replaying the *same* call is
+                # what the journal is for, but a retry after a failed attempt
+                # is a different action with different intent: with only
+                # strategy/step/index in the key, every retry of a step
+                # replayed the first attempt's result instead of doing the
+                # work again, so the check failed against a file the replayed
+                # call never wrote.
+                idempotency_key=(
+                    f"{intention.id}:{plan.strategy_number}:{step.id}:"
+                    f"{attempt_index}:{len(executed)}"
+                ),
             )
             # A tool is asked for its opinion on whether it worked, and it
             # answers with `ok=False` and an error. A tool that *raises* is a
@@ -1030,8 +1128,9 @@ class GeneralSolverLoop:
             ):
                 evidence = check_result.get("evidence") or {}
                 detail = str(
-                    evidence.get("stderr") or evidence.get("stdout")
-                    or evidence.get("errors") or evidence.get("path") or ""
+                    evidence.get("error") or evidence.get("stderr")
+                    or evidence.get("stdout") or evidence.get("errors")
+                    or evidence.get("path") or ""
                 ).strip()[-600:]
                 note = (
                     f"the step's own success check ({step.success_check.get('type')}) "
@@ -1044,6 +1143,31 @@ class GeneralSolverLoop:
                                # with "command not found" is a bad check, and one
                                # that failed with a real diff is a bad step.
                                detail=detail[-200:] or None)
+                # The tools all succeeded and the check is what failed. Twice
+                # now the pattern has been the check, not the work: a plan
+                # invented `~/snake_rl`, expected `~/Downloads/snake_dqn.pth`
+                # before any download happened, ran `npm test` on a Python
+                # repo. Each of those burned both step attempts, a strategy
+                # switch and a fresh plan -- on work that was actually done.
+                # So the check itself is repaired first: one rewrite per
+                # failure, capped, with the evidence in front of the model.
+                repaired = await self._repair_step_check(
+                    intention, resume, step, detail, actions=executed,
+                )
+                if repaired is not None:
+                    note = (
+                        f"the step's success check did not pass; the check "
+                        f"itself was rewritten to {dumps(repaired)[:200]} and "
+                        f"the step runs again"
+                    )
+                    logger.info("gsl.step_check_repaired", step=step.id)
+                    return SolverResult(
+                        outcome=SolverOutcome.step_failed,
+                        thoughts=[note, thought],
+                        actions=executed,
+                        plan=plan,
+                        cost_usd=cost,
+                    )
                 return SolverResult(
                     outcome=SolverOutcome.step_failed,
                     thoughts=[note, thought] + ([f"check said: {detail}"] if detail else []),
@@ -1086,7 +1210,9 @@ class GeneralSolverLoop:
             failures=step_failures,
         )
 
-    async def _complete_with_cost(self, request: ModelRequest) -> tuple[dict[str, Any], float, bool]:
+    async def _complete_with_cost(
+        self, request: ModelRequest,
+    ) -> tuple[dict[str, Any], float, bool]:
         """Parsed JSON, its cost, and whether the model was cut off mid-answer.
 
         The third value is the one that used to be thrown away. `finish_reason` was
@@ -1101,6 +1227,103 @@ class GeneralSolverLoop:
             response.cost_usd,
             was_truncated(response.finish_reason),
         )
+
+    @staticmethod
+    def _usable_actions(data: dict[str, Any]) -> list[dict[str, Any]]:
+        """The actions a step could actually run: dicts that name a tool.
+
+        A model that returns `"actions": ["write the file"]` has returned
+        nothing a toolhost can execute, and treating that list as present is
+        how a step failed twice on a formatting slip before its repair path
+        ever got a turn.
+        """
+        return [
+            a for a in (data.get("actions") or [])
+            if isinstance(a, dict) and a.get("tool")
+        ]
+
+    async def _repair_step_check(
+        self, intention: IntentionRecord, resume: dict[str, Any], step: Any,
+        evidence: str, actions: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any] | None:
+        """Rewrite a failing success check, or `None` when that is not allowed.
+
+        The work succeeded and the check failed, so the thing being tested is
+        the plan's idea of done, not the step. The model sees the step, the
+        check it wrote, and what the check observed, and answers with one
+        replacement check -- same schema, same honesty bar: it may narrow the
+        claim, never drop it. Two rewrites per step, tracked in the resume
+        blob, because an unbounded repair loop is just a quieter way of
+        ignoring a failing step.
+        """
+        counts = resume.setdefault("check_repairs", {})
+        try:
+            done = int(counts.get(step.id, 0))
+        except (TypeError, ValueError):
+            done = 0
+        if done >= 2:
+            return None
+        counts[step.id] = done + 1
+        request = ModelRequest(
+            tier=Tier.T2,
+            purpose="gsl.check_repair",
+            budget_bucket=budget_bucket_for(intention),
+            model_hint=self.config.gsl.model_hint or None,
+            messages=[
+                ModelMessage(role=Role.system, content=(
+                    "A plan step's success_check failed while the step's own "
+                    "tool calls all succeeded. Rewrite the check so it "
+                    "verifies what the step actually did, on this machine. "
+                    "Allowed shapes: "
+                    '{"type": "file_exists", "path": "..."}; '
+                    '{"type": "file_contains", "path": "...", "text": "..."}; '
+                    '{"type": "command", "command": "...", "expect": "exit_zero"}; '
+                    '{"type": "syntax", "path": "..."}; '
+                    '{"type": "json_field", "path": "...", "field": "...", "expect": "..."}; '
+                    '{"type": "value_check", "field": "...", "expect": "..."}. '
+                    "A command check must be read-only: no mkdir, no writing "
+                    "files, no installs, no clones. Paths are real paths on "
+                    "this Mac; when unsure, use one that appeared in the "
+                    "evidence. Answer with the JSON check object only."
+                )),
+                ModelMessage(role=Role.user, content=(
+                    f"step: {step.description}\n"
+                    f"failing check: {dumps(step.success_check)}\n"
+                    f"what the check observed: {evidence[:600] or '(no detail)'}\n"
+                    f"tool calls that succeeded for this step:\n{_describe_actions(actions)}\n"
+                    "The replacement must verify the same deliverable the step "
+                    "describes, using paths and commands that appear above. "
+                    "Returning the failing check unchanged is not a repair."
+                )),
+            ],
+            max_tokens=600,
+        )
+        try:
+            data, _c, truncated = await self._complete_with_cost(request)
+        except Exception:
+            logger.warning("gsl.check_repair_call_failed", step=step.id)
+            return None
+        if truncated or not isinstance(data, dict) or not data.get("type"):
+            return None
+        check = dict(data)
+        if check.get("type") not in _RUNNABLE_CHECKS:
+            return None
+        if _same_check(check, step.success_check):
+            # The model answered with the check that just failed. Re-running
+            # it changes nothing and costs an attempt, so this is not a
+            # repair: give the budget back and let the step fail honestly.
+            counts[step.id] = done
+            return None
+        if check.get("type") == "command":
+            command = str(check.get("command", ""))
+            if not command.strip() or _MUTATING_CHECK.search(command):
+                return None
+        for entry in resume["plan"]["steps"]:
+            if entry.get("id") == step.id:
+                entry["success_check"] = check
+                break
+        await self._save_resume(intention, resume)
+        return check
 
     async def _tool_catalog(self) -> str:
         """Where the tool catalog is, which is not in this prompt.
@@ -1355,6 +1578,21 @@ class GeneralSolverLoop:
                             "step was not objectively verified",
                 },
             }
+        if kind == "command":
+            command = str(check.get("command", ""))
+            if _MUTATING_CHECK.search(command):
+                logger.warning("gsl.step_check_mutates", step=step.id)
+                return {
+                    "passed": False, "observed": True,
+                    "evidence": {
+                        "command": command[:600],
+                        "error": (
+                            "the success check performs the work instead of "
+                            "verifying it; put the write/mkdir/install in the "
+                            "step's action and make the check read-only"
+                        ),
+                    },
+                }
         try:
             result = await ObjectiveChecker(user_home()).check(check)
         except Exception:
@@ -1374,6 +1612,7 @@ class GeneralSolverLoop:
             request = ModelRequest(
                 tier=Tier.T2,
                 purpose="gsl.reflect",
+                model_hint=self.config.gsl.model_hint or None,
                 budget_bucket=budget_bucket_for(intention),
                 messages=[
                     ModelMessage(role=Role.system, content=REFLECT_PROMPT.format(

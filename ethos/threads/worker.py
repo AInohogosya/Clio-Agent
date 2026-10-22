@@ -15,6 +15,8 @@ from ethos.prompts import (
     SUCCESS_CHECKS_MATTER,
     delegation_note,
     dumps,
+    render_constraints,
+    render_success_criteria,
 )
 from ethos.schemas.memory import MemoryHit
 from ethos.schemas.models import ModelMessage, ModelRequest, Role, Tier
@@ -200,6 +202,12 @@ async def _pursue(
                     success_checks=SUCCESS_CHECKS_MATTER,
                     delegation=delegation_note(goal_as_intention),
                     title=goal, desired_end_state=goal,
+                    constraints=render_constraints(
+                        getattr(goal_as_intention, "constraints", None)
+                    ),
+                    success_criteria=render_success_criteria(
+                        getattr(goal_as_intention, "success_criteria", None)
+                    ),
                 )),
                 ModelMessage(role=Role.user, content="Produce the plan JSON."),
             ],
@@ -221,6 +229,12 @@ async def _pursue(
                         editing=EDIT_EXISTING_FILES,
                         delegation=delegation_note(goal_as_intention),
                         title=goal,
+                        intention_end_state=getattr(
+                            goal_as_intention, "desired_end_state", ""
+                        ) or "-",
+                        constraints=render_constraints(
+                            getattr(goal_as_intention, "constraints", None)
+                        ),
                         step_id=step.get("id", f"s{i+1}"),
                         step_description=step.get("description", ""),
                         plan_state=dumps(plan_data.get("steps", [])[:5]),

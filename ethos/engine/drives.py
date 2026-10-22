@@ -39,6 +39,13 @@ DRIVES = ("commitment", "curiosity", "mastery", "creation", "order", "social", "
 # asked for.
 UNDATED_COMMITMENT_URGENCY = 0.5
 
+# The statuses a commission can be in and still mean somebody is waiting. The
+# same list `MemoryStore` treats as open work; duplicated here because the
+# drives never import the store.
+_OPEN = frozenset({
+    "proposed", "active", "in_progress", "waiting", "awaiting_review",
+})
+
 
 class DriveInputs(BaseModel):
     intentions: list[dict[str, Any]] = Field(default_factory=list)
@@ -71,6 +78,7 @@ class DriveInputs(BaseModel):
                 "kind": i.kind,
                 "status": i.status,
                 "priority": i.priority,
+                "origin": i.origin,
                 "deadline": i.deadline.isoformat() if i.deadline else None,
                 "created_at": i.created_at.isoformat() if i.created_at else None,
             }
@@ -437,6 +445,27 @@ class Motivation:
                 why="deadline within 24h bypasses arbitration",
             )
             return focus, self.drive_pressures(inputs, now)
+
+        # A commission is a person waiting, and idle curiosity loses to that
+        # every time. The softmax weighs the commitment drive fairly, but fair
+        # is the problem: a pressure of 0.7 against curiosity's 0.6 loses often
+        # enough that an owner's task sat in_progress for an hour while the
+        # agent explored a question it asked itself. Commissions take the pass
+        # outright -- the same bypass a deadline gets, for the same reason:
+        # someone specific is waiting on the result.
+        waiting = [
+            item for item in inputs.intentions
+            if item.get("origin") == "commission"
+            and item.get("status") in _OPEN
+        ]
+        if waiting:
+            top = max(waiting, key=lambda item: selection_key(item, now))
+            return Focus(
+                intention_id=_focus_id(top),
+                title=top.get("title") or "commissioned work",
+                kind=top.get("kind") or "commitment",
+                why="commissioned work outranks idle impulses",
+            ), self.drive_pressures(inputs, now)
 
         impulse, p = self.arbitrate(inputs, energy)
         if impulse is None:

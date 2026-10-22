@@ -85,12 +85,14 @@ class FoundryGatewayProvider:
         purpose: str,
         timeout_s: float = 3600.0,
         metadata: dict[str, Any] | None = None,
+        model_hint: str | None = None,
     ) -> None:
         self._gateway = gateway
         self._loop = loop
         self._tier = tier
         self._purpose = purpose
         self._timeout_s = timeout_s
+        self._model_hint = model_hint or None
         self._metadata = {"subagent": agent_name, **(metadata or {})}
 
     def complete(self, request: Any) -> Any:
@@ -107,6 +109,7 @@ class FoundryGatewayProvider:
                 {"name": name, "description": f"FOUNDRY tool {name}"}
                 for name in (request.tools or [])
             ],
+            model_hint=self._model_hint,
             max_tokens=max(1, min(int(request.max_output_tokens), _MAX_TOKENS_CEILING)),
             temperature=float(request.temperature) if request.temperature is not None else None,
             metadata=self._metadata,

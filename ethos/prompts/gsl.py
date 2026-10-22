@@ -177,7 +177,20 @@ touches the code, and let it fail. For a step that writes a file, check the file
 
 If you cannot name a check for a step, say what the step is instead of inventing
 one. A check that cannot fail is worse than none: it is a step that reports
-itself done."""
+itself done.
+
+A check is a read-only verifier, never the work itself. It must not create a
+directory, write a file, install a package or commit anything: no `mkdir`,
+`touch`, `cat >`, `tee`, `pip install`, `npm install`, `git add` or `git
+commit` in a check. Those are actions. Putting the `cat > file` in the check is
+how a plan looks like it wrote a file while the step's own action was `ls`, and
+the loop now refuses such a check rather than running it.
+
+The file-check spellings are exact: `file_exists` takes `path`; `file_contains`
+takes `path` and `text`; a command check takes `command` and `expect`. For a
+step that writes a file, the action is `fs.write` with the whole content and
+the check is `file_exists` on that path.
+"""
 
 # The sub-agents are co-workers, not a fact about the catalog.
 #
@@ -222,6 +235,12 @@ whole classes of job:
   Settings by shell commands when APEX is the worker for it is doing the
   sub-agent's job worse and calling it done.
 
+`~/Desktop` is a directory, not a desktop action. Creating a folder there,
+writing a file there, or listing it is an `fs`/`shell` job; APEX is for what a
+person would do by looking at and clicking an app. "Create a folder on the
+Desktop" is the filesystem case, and handing it to a GUI controller is how a
+task that needed one `fs.write` ends as a cancelled desktop run.
+
 Routing is yours to decide, and the default is to delegate. A goal whose end
 state sits on the desktop or in a browser -- something to open, click, read
 off the screen or change in a real app -- is delegated to APEX, and a goal
@@ -244,6 +263,15 @@ Delegation steps look like any other step, with the sub-agent's tool named:
 yourself: it sees only what you pass it, so the task states the goal, the
 target, and how success will be read back -- the same words you would need to
 hand a colleague who was not in this conversation.
+
+A long job is several delegations, not one. A sub-agent call returns when its
+task reaches a terminal state, so a goal that cannot finish in one run is split
+at observable checkpoints -- the runtime started, the notebook saved, training
+launched, the weights downloaded, the server listening -- and the next step
+continues from the state the previous one left. One delegation that tries to
+set up and finish a multi-hour job is one timeout away from having to start
+over, and its failure looks like the sub-agent's when it was the shape of the
+request.
 
 When a delegation comes back `failed`, `blocked` or `unknown`, that verdict is
 the sub-agent telling you what stopped it -- a missing dependency, a refused
@@ -327,7 +355,11 @@ def delegation_note(intention: Any) -> str:
         )
         return note
     routed = []
-    if _APEX_WORK_CUES.search(lowered):
+    filesystem_on_desktop = bool(
+        re.search(r"\b(desktop)\b", lowered)
+        and re.search(r"\b(folder|directory|file|write|save|list)\b", lowered)
+    )
+    if _APEX_WORK_CUES.search(lowered) and not filesystem_on_desktop:
         routed.append(
             "the work reads as a desktop or browser goal -- something to be seen "
             "and changed on the real machine. That is APEX's job by what the work "
@@ -390,6 +422,14 @@ Respond with strict JSON:
   ]
 }}"""
 
+# The plan is where a clear request is most often lost. A commission carries a
+# desired end state, a list of success criteria and a set of constraints that say
+# how parts of it must be done; a prompt that hands the model only the title
+# leaves it free to invent a different, easier route -- train locally instead of
+# on Colab, skip the stage that needs a browser, drop the deliverable the end
+# state names. So the plan prompt carries all three, and states the two rules
+# that keep them from being ignored: cover every stage, and treat a constraint as
+# binding rather than as advice.
 PLAN_PROMPT = """You are {name}. Build a short-horizon plan of 3 to 7 steps for this approach.
 Each step must name the primitive tool it needs (or 'think'), and a concrete success check.
 
@@ -399,9 +439,28 @@ Each step must name the primitive tool it needs (or 'think'), and a concrete suc
 
 {delegation}
 
+COVERAGE
+- The plan must cover the whole desired end state, stage by stage, in the order the
+  work happens. Every stage the end state names gets its own step.
+- Do not replace a stage the end state names with a different route: training on
+  Colab is not achieved by training locally, and a deliverable path that is named
+  is the path to produce.
+- Where the constraints say how a stage is done, do it that way and not the easier
+  substitute. A constraint is binding on the plan, not advice about it.
+- Starting a long-running process and verifying it are two steps: start the server,
+  service or job with `shell.run`, and verify what it shows in a GUI with
+  `subagent.apex`. One step that tries to do both asks the desktop worker to
+  launch something it is not for.
+- A later step may assume the earlier ones finished; their results are carried
+  forward in the plan state.
+
 APPROACH: {approach}
 
 INTENTION: {title}: {desired_end_state}
+
+{constraints}
+
+{success_criteria}
 
 Respond with strict JSON:
 {{
@@ -409,6 +468,36 @@ Respond with strict JSON:
     {{"id": "s1", "description": "...", "tool_hints": ["shell.run"], "success_check": {{"type": "command", "command": "...", "expect": "exit_zero"}}, "reversible": true}}
   ]
 }}"""
+
+
+def render_constraints(constraints: dict[str, Any] | None) -> str:
+    """The intention's constraints as binding lines for the plan prompt."""
+
+    if not constraints:
+        return "CONSTRAINTS: none."
+    lines = "\n".join(f"- {key}: {value}" for key, value in constraints.items())
+    return (
+        "BINDING CONSTRAINTS (the plan must satisfy every one; where a constraint "
+        f"names how a stage is done, the plan must do it that way):\n{lines}"
+    )
+
+
+def render_success_criteria(criteria: list[dict[str, Any]] | None) -> str:
+    """The intention's success criteria, so the plan ends where success is read."""
+
+    if not criteria:
+        return "SUCCESS IS READ AS: the desired end state above."
+    lines = []
+    for item in criteria:
+        kind = item.get("type", "check")
+        fields = ", ".join(
+            f"{key}={value}" for key, value in item.items() if key != "type"
+        )
+        lines.append(f"- {kind}: {fields}" if fields else f"- {kind}")
+    return (
+        "SUCCESS IS READ AS (the plan's last steps must make each of these true):\n"
+        + "\n".join(lines)
+    )
 
 # Appended to the plan prompt once the request has been degraded.
 #
@@ -474,6 +563,8 @@ A repeat is not a follow-up. If comm.send answers held or duplicate, nobody hear
 STEP_PROMPT = """You are {name}, executing one step of a plan.
 
 INTENTION: {title}
+DESIRED END STATE: {intention_end_state}
+{constraints}
 STEP {step_id}: {step_description}
 PLAN STATE:
 {plan_state}
@@ -518,7 +609,11 @@ are not interchangeable:
 A step that changes a file is an `fs.edit` step. `shell.run` can do that, and
 when it does it is a whole-file rewrite written from memory — the one thing this
 prompt is trying to talk you out of. Everything else in the catalog is there for
-the job it is named for; reach past these two when neither fits."""
+the job it is named for; reach past these two when neither fits.
+
+A step that creates a file that does not exist yet is an `fs.write` step:
+  {{"tool": "fs.write", "args": {{"path": "...", "content": "<the whole file>"}}}}
+Not `fs.edit` (it needs something to edit), and not `shell.run` with `cat >`."""
 
 EVALUATE_PROMPT = """You are {name}. Evaluate the step outcome against the success check.
 

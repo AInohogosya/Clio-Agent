@@ -10,16 +10,20 @@
 # Being cut off is now a failure rather than a silent success, so a ceiling set
 # too low here costs a retry instead of quietly accomplishing nothing.
 
-understand_tokens: 2000
-devise_tokens: 2000
+understand_tokens: 4000
+devise_tokens: 4000
 plan_tokens: 8000
 step_tokens: 16000
-reflect_tokens: 1500
+reflect_tokens: 3000
 
 # A step that called no tool is a failure, not a done step.
 allow_empty_step: false
 # Never pad a plan out with invented steps to reach some minimum length.
-min_real_plan_steps: 1
+min_real_plan_steps: 3
+# The strong model for the solver loop's own calls. `z-ai/glm-5.3` sits in the
+# catalogue against the same NVIDIA endpoint as the base model; these calls go
+# to it first and fall back to the base model whenever it cannot serve.
+model_hint: "gemma4:31b-cloud"
 
 # ------------------------------------------------------------------
 # Whether the code it wrote works.

@@ -120,6 +120,41 @@ models:
     supports_tools: true
     diversity_family: nvidia
 
+  # The strong model behind the same NVIDIA endpoint the base model uses. It
+  # is an order of magnitude slower (~50s an answer against lightning's ~3s),
+  # so it sits here as the quality pick the gateway escalates to for T2/T3
+  # work rather than as a base model: planning and step decisions are exactly
+  # the calls where a small model's malformed JSON costs a whole strategy.
+  - provider: openai_compat
+    model: z-ai/glm-5.3
+    base_url: "https://integrate.api.nvidia.com/v1"
+    api_key_env: NVIDIA_API_KEY
+    tiers: [T2, T3]
+    quality: 0.90
+    latency_s: 60.0
+    rpm: 30
+    tpm: 200000
+    supports_thinking: false
+    supports_tools: true
+    diversity_family: zai
+
+  # Ollama Cloud via the local server's OpenAI-compatible endpoint. A 21K-token
+  # prompt answers in ~1.5s, which makes it the only candidate that can carry
+  # the solver loop's large prompts without the 504s the NVIDIA endpoint
+  # returns on them. No key: the local Ollama server proxies the cloud plan.
+  - provider: openai_compat
+    model: gemma4:31b-cloud
+    base_url: "http://127.0.0.1:11434/v1"
+    api_key_env: ""
+    tiers: [T1, T2, T3]
+    quality: 0.90
+    latency_s: 5.0
+    rpm: 1000
+    tpm: 1000000
+    supports_thinking: false
+    supports_tools: true
+    diversity_family: google
+
   - provider: openai_compat
     model: llama-3.3-70b-versatile
     base_url: "https://api.groq.com/openai/v1"

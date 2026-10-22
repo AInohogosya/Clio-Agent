@@ -394,6 +394,13 @@ class GslConfig(BaseModel):
     too small is then loud instead of silent.
     """
 
+    # When set, the solver loop's model calls carry this `model_hint`, so the
+    # router picks this catalogue entry first and falls back to whatever else
+    # can serve the tier when it cannot. This is how a deployment points the
+    # thinking work (plan, step, verify) at its strongest model without making
+    # every two-second housekeeping call pay that model's latency too.
+    model_hint: str = ""
+
     understand_tokens: int = 2_000
     devise_tokens: int = 2_000
     # 73% of plan calls were ending on this ceiling rather than on a full answer.
@@ -1618,6 +1625,9 @@ class SubagentsConfig(BaseModel):
     # The tier sub-agent model calls are routed at. T2: delegation-grade work
     # that still deserves a capable model.
     tier: str = "T2"
+    # The model sub-agents' own model calls are pinned to, when the deployment
+    # wants a different one than the base model. Empty means no hint.
+    model_hint: str = ""
     agents: list[SubagentConfig] = Field(default_factory=lambda: [
         SubagentConfig(name="foundry"),
         SubagentConfig(name="apex"),

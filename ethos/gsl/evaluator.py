@@ -63,8 +63,31 @@ class ObjectiveChecker:
         return await result if inspect.isawaitable(result) else result
 
     @staticmethod
-    def _check_exists(check: dict[str, Any], artifact: Any = None) -> dict[str, Any]:
-        path = resolve(str(check.get("path", "")))
+    def _path_of(check: dict[str, Any]) -> str:
+        """The path a file check names, under any of the spellings plans use.
+
+        The schema never fixed a key name for these checks, so plans have
+        written `path`, `file_path`, `file` and `target` -- and an unknown key
+        used to resolve to the empty path, which is the current directory and
+        therefore always exists. That is a check that reports success without
+        looking at the file, which is the exact failure success checks exist to
+        prevent.
+        """
+
+        for key in ("path", "file_path", "file", "target"):
+            value = check.get(key)
+            if isinstance(value, str) and value.strip():
+                return value
+        return ""
+
+    @classmethod
+    def _check_exists(cls, check: dict[str, Any], artifact: Any = None) -> dict[str, Any]:
+        raw = cls._path_of(check)
+        if not raw:
+            return {"passed": False, "observed": True, "evidence": {
+                "error": "file_exists check names no path (use `path`)",
+            }}
+        path = resolve(raw)
         return {"passed": path.exists(), "observed": True,
                 "evidence": {"path": str(path), "exists": path.exists()}}
 
@@ -183,13 +206,30 @@ class ObjectiveChecker:
             },
         }
 
-    @staticmethod
-    def _check_contains(check: dict[str, Any], artifact: Any = None) -> dict[str, Any]:
-        path = resolve(str(check.get("path", "")))
-        needle = str(check.get("text", ""))
+    @classmethod
+    def _check_contains(cls, check: dict[str, Any], artifact: Any = None) -> dict[str, Any]:
+        raw = cls._path_of(check)
+        if not raw:
+            return {"passed": False, "observed": True, "evidence": {
+                "error": "file_contains check names no path (use `path`)",
+            }}
+        path = resolve(raw)
+        needle = str(
+            check.get("text")
+            or check.get("expected")
+            or check.get("contains")
+            or ""
+        )
+        if not needle:
+            return {"passed": False, "observed": True, "evidence": {
+                "error": "file_contains check names no text (use `text`)",
+            }}
         if not path.exists():
             return {"passed": False, "observed": True,
-                    "evidence": {"error": f"missing file {path}"}}
+                    "evidence": {"error": f"missing file {path}", "path": str(path)}}
+        if not path.is_file():
+            return {"passed": False, "observed": True,
+                    "evidence": {"error": f"not a file: {path}", "path": str(path)}}
         content = path.read_text(encoding="utf-8", errors="replace")
         return {"passed": needle in content, "observed": True,
                 "evidence": {"path": str(path), "contains": needle in content}}

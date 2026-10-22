@@ -105,6 +105,8 @@ class SubAgent(ABC):
         model unless the deployment pinned one for delegation."""
         if self.config.subagents.model_name:
             return self.config.subagents.model_name
+        if self.config.subagents.model_hint:
+            return self.config.subagents.model_hint
         if self.config.models.base is not None:
             return self.config.models.base.model
         return self.config.self_name.lower().replace(" ", "-")

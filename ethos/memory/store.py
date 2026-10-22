@@ -157,6 +157,19 @@ class MemoryStore:
             for r in rows
         ]
 
+    async def last_consolidation_at(self) -> datetime | None:
+        """When the nightly pass last finished, so a restart does not repeat it.
+
+        The life loop keeps the date in memory, which is enough for a process
+        that stays up and no help at all for one that is restarted inside the
+        same evening: the pass would run again on every start. The episode it
+        writes on completion is the durable record that already exists.
+        """
+        row = await self.db.fetchrow(
+            "SELECT max(ts) AS ts FROM episodes WHERE kind = 'consolidation'"
+        )
+        return row["ts"] if row is not None else None
+
     # --------------------------------------------------------------- facts
 
     async def record_fact(

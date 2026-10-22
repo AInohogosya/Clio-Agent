@@ -42,6 +42,7 @@ async def run_model_verifier(
     producer_family: str | None,
     purpose: str,
     thread_id: str | None = None,
+    model_hint: str | None = None,
 ) -> dict[str, Any]:
     """The rung-2 judge, as one model call shared by every path that reaches it.
 
@@ -58,6 +59,7 @@ async def run_model_verifier(
         purpose=purpose,
         thread_id=thread_id,
         provider_hint=diverse_provider_hint(config, producer_family),
+        model_hint=model_hint,
         messages=[
             ModelMessage(role=Role.system, content=VERIFIER_PROMPT.format(
                 goal=goal,
@@ -381,6 +383,7 @@ class VerificationLadder:
             artifact_text=_artifact_text(artifact),
             producer_family=producer_family,
             purpose="gsl.verify",
+            model_hint=self.config.gsl.model_hint or None,
         )
 
     async def _record_human_review_pending(

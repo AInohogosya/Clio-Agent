@@ -947,8 +947,25 @@ class GatewayService:
                 delay = self._delay_before_retry(
                     attempt, retry_after_of(exc), rate_limited=rate_limited,
                 )
-                following = self._next_entry(
-                    attempt_request, entry, tried, model_scoped=scope == _MODEL_SCOPED,
+                # A reply cut off by its own ceiling is a fact about the room,
+                # not about the model, so the widened request goes back to the
+                # same model. Moving to the next catalogue entry here turned
+                # every short caller-supplied `max_tokens` into a tour of the
+                # failover ladder: APEX's one-token connection probe was
+                # recorded as a truncated answer from the base model, then
+                # retried against an unrelated free endpoint and left to back
+                # off for a minute. The model has not failed; the ceiling has.
+                request_scoped = (
+                    isinstance(exc, UnusableResponse)
+                    and exc.request_scoped
+                    and bool(changes)
+                )
+                following = (
+                    entry if request_scoped
+                    else self._next_entry(
+                        attempt_request, entry, tried,
+                        model_scoped=scope == _MODEL_SCOPED,
+                    )
                 )
                 if following is None:
                     # Every model that could serve this one has now been excluded,
@@ -1178,6 +1195,14 @@ def create_gateway_app(service: GatewayService):
         except BudgetExceededError as exc:
             raise HTTPException(status_code=402, detail=str(exc)) from exc
         except Exception as exc:
+            # A 502 without a traceback is a dead end for the operator: the
+            # client sees one opaque sentence and the log has no record of
+            # which layer failed. The exception still travels as the 502, but
+            # it is also written where the process's own log is read.
+            logger.exception(
+                "gateway.request_failed", purpose=request.purpose,
+                tier=request.tier.value, error=str(exc)[:300],
+            )
             raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     # ---- OpenAI-compatible wire shim -----------------------------------------
@@ -1185,8 +1210,6 @@ def create_gateway_app(service: GatewayService):
     # the shape Foundry and APEX (and any OpenAI-speaking client) already speak,
     # so a sub-agent's single configured endpoint is backed by this deployment's
     # whole catalogue: routing, spend guard, retries, failover, base model.
-    known_models = frozenset(entry.model for entry in service.config.models.models)
-
     async def chat_completions(request):
         # The signature carries no annotation on purpose: this module imports
         # under `from __future__ import annotations`, which resolves a
@@ -1195,6 +1218,14 @@ def create_gateway_app(service: GatewayService):
         # query field. The real annotation is attached before registration.
         body = await request.json()
         requested_model = str(body.get("model") or "")
+        # Read the catalogue per request rather than once at start-up: the base
+        # model can be replaced at runtime (`sync_base_model`), and a frozen set
+        # from boot then no longer contains the name every sub-agent is told to
+        # send. The request was treated as naming an unknown model, the router
+        # picked by tier instead, and a sub-agent that had been configured for
+        # this deployment's base model silently landed on a completely
+        # different catalogue entry.
+        known_models = frozenset(entry.model for entry in service.config.models.models)
         model_request = compat.openai_chat_to_model_request(
             body, known_models=known_models, purpose="compat.chat",
         )
@@ -1206,6 +1237,10 @@ def create_gateway_app(service: GatewayService):
             except BudgetExceededError as exc:
                 raise HTTPException(status_code=402, detail=str(exc)) from exc
             except Exception as exc:
+                logger.exception(
+                    "gateway.request_failed", purpose=model_request.purpose,
+                    tier=model_request.tier.value, error=str(exc)[:300],
+                )
                 raise HTTPException(status_code=502, detail=str(exc)) from exc
 
         if not wants_stream:

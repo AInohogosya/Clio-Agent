@@ -59,7 +59,19 @@ def full_config(tmp_path, monkeypatch):
     monkeypatch.setenv("ETHOS_HOME", str(tmp_path / "home"))
     cfg = load_config("config")
     cfg.models.base = None
-    cfg.models.models = [e for e in cfg.models.models if not e.pinned]
+    # A loopback base_url is the machine answering, not the catalogue under
+    # test: whether 127.0.0.1:something is listening is a property of this
+    # laptop, and the guard below exists so no test ever finds out.
+    from urllib.parse import urlsplit
+
+    def _remote(entry):
+        host = urlsplit(entry.base_url or "").hostname or ""
+        return host not in ("localhost",) and not host.endswith(".localhost") and host != "127.0.0.1"
+
+    cfg.models.models = [
+        e for e in cfg.models.models
+        if not e.pinned and (e.provider != "openai_compat" or _remote(e))
+    ]
     return cfg
 
 
