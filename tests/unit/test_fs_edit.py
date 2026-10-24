@@ -279,7 +279,8 @@ def test_the_step_prompt_demonstrates_the_edit_and_the_shell_and_not_only_one() 
         "the file edit comes first, since that is the one being under-used"
 
     body = STEP_PROMPT.format(
-        name="Clio", commissioned="C", editing="E", delegation="D", title="t",
+        name="Clio", commissioned="C", editing="E", delegation="D",
+        deliverable="V", title="t",
         intention_end_state="d", constraints="K",
         step_id="s1", step_description="x", plan_state="[]", memories="(none)",
         tools="(catalog)",

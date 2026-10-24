@@ -340,7 +340,7 @@ def test_the_plan_prompt_carries_the_delegation_text() -> None:
     )
     rendered = PLAN_PROMPT.format(
         name="Clio", commissioned="C", success_checks="S",
-        delegation=delegation_note(intention), approach="A",
+        deliverable="V", delegation=delegation_note(intention), approach="A",
         title=intention.title, desired_end_state=intention.desired_end_state,
         constraints="K", success_criteria="R",
     )

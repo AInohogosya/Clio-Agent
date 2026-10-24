@@ -1,10 +1,10 @@
-"""initial Clio Agent 3 schema
+"""initial Clio Agent 3.1 schema
 
 Revision ID: 0001
 Revises:
 Create Date: 2026-01-01
 
-All 20 tables from the Clio Agent 3 implementation specification (Section 5.1)
+All 20 tables from the Clio Agent 3.1 implementation specification (Section 5.1)
 with HNSW and GIN indexes.
 """
 

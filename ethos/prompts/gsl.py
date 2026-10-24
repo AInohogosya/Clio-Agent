@@ -195,6 +195,34 @@ the check is `file_exists` on that path. A step that creates a folder uses
 `fs.mkdir`; `fs.write` is for files, not for standing in for a directory.
 """
 
+# A person cannot use a result they cannot find. The agent's own reach is the
+# filesystem and the desktop, and both failures have happened: a build reported
+# as finished that was a directory of source files with no launchable icon, and
+# work whose only address was "the project folder". Neither is a delivery, no
+# matter how correct the files are. This text is placed where the plan and the
+# step are written, because "done" is decided there, and again in the verifier,
+# because a summary that says "built" is not evidence that anything opens.
+VISIBLE_DELIVERABLE = """A result the person cannot find is not a result.
+
+- Write files to an absolute path the person can reach, and say that path in the
+  step's notes. "In the project folder" is not an address; the absolute path is.
+- The last step that touches the work makes the result visible: on macOS run
+  `open -R <path>` on the file or folder, or `open <app>` when the deliverable
+  is an app; on another platform use its file manager. Revealing is a step of
+  its own, not a substitute for one, and its check confirms the path exists.
+- A folder of source files is not an app. If the person asked for an app, an
+  agent, or anything they will launch, the deliverable includes a launchable
+  entry point with an icon -- a macOS `.app` bundle, a `.desktop` file, or the
+  platform's equivalent -- and the plan has a step that creates it. A CLI that
+  needs a terminal and a remembered command does not satisfy "on my desktop".
+- The final check opens the deliverable rather than listing it: the `.app`
+  exists and opening it succeeds, or the launcher's `--help` exits 0. `test -f`
+  on a README proves a file, not a working thing.
+- If only part of this is possible, say which part is missing and where the
+  files are. Never report the work as finished when the visible, launchable
+  thing does not exist.
+"""
+
 # The sub-agents are co-workers, not a fact about the catalog.
 #
 # `subagent.apex` and `subagent.foundry` were in the tool catalog from the day
@@ -407,6 +435,11 @@ Produce strict JSON:
 DEVISE_PROMPT = """You are {name}. Devise exactly 3 distinct approaches to advance the intention below.
 Prefer approaches that are reversible and cheap to verify. Consider the lessons and know-how.
 
+A failed approach is not the end of the intention. Use the lessons to propose
+approaches that do not repeat the failure, and never answer with an empty list:
+if the obvious routes have failed, propose the smaller or different route that
+gets past what stopped them. The work is revised, not abandoned.
+
 INTENTION:
 {title}: {desired_end_state}
 
@@ -433,12 +466,23 @@ Respond with strict JSON:
 # state names. So the plan prompt carries all three, and states the two rules
 # that keep them from being ignored: cover every stage, and treat a constraint as
 # binding rather than as advice.
+#
+# The third rule is what a failed plan is. The prompt used to describe how to
+# build a plan and said nothing about the case where the plan it built does not
+# work, so the model treated a dead end as the end of the task: it answered with
+# no steps, the goal was parked, and the person was told the work had stopped.
+# A plan is a hypothesis about how to reach the end state, and a hypothesis that
+# fails is revised, not abandoned. So the prompt says that in the place the next
+# plan is written, and says what a revision is: keep what was sound, change the
+# assumption the failure disproved, and keep aiming at the whole end state.
 PLAN_PROMPT = """You are {name}. Build a short-horizon plan of as many steps as the work needs, up to 7, for this approach.
 Each step must name the primitive tool it needs (or 'think'), and a concrete success check.
 
 {commissioned}
 
 {success_checks}
+
+{deliverable}
 
 {delegation}
 
@@ -456,6 +500,26 @@ COVERAGE
   launch something it is not for.
 - A later step may assume the earlier ones finished; their results are carried
   forward in the plan state.
+
+WHEN A PLAN FAILS
+- A failed step, check or plan is information about the plan, not the end of the
+  task. Never give up on the intention because a plan did not work, under any
+  circumstances: never report that the work cannot be done while any route
+  remains, and never answer with an empty plan.
+- Revise the plan rather than repeating it: read what actually failed, name the
+  assumption it disproved, and change the step that failed or the route that led
+  to it. A revision may keep every step that was sound; it must not keep the part
+  that failed unchanged.
+- The revised plan is still for the whole desired end state. Do not shrink the
+  goal to what the failed plan happened to reach, and do not drop a stage because
+  its first step was hard.
+- If the failure leaves the route genuinely open, make the next plan the smallest
+  real step that finds the way through -- a check of the thing the plan assumed,
+  a different tool for the same job, or the one missing prerequisite. A one-step
+  plan that can be tried is a plan; an empty plan is giving up.
+- The only reasons to stop are an instruction to stop from the person who asked,
+  a hard limit this machine enforces, or a choice that cannot be taken back. A
+  plan that did not work is not one of them.
 
 APPROACH: {approach}
 
@@ -519,6 +583,14 @@ def render_success_criteria(criteria: list[dict[str, Any]] | None) -> str:
 # Nothing here invites a plan to be fabricated, and the no-padding rule in the
 # loop is what stops one being: an empty step list is a failure at every level of
 # degradation, and stays one.
+#
+# The last line used to be an escape hatch -- "if you cannot see how to do this
+# at all, return no steps rather than inventing them" -- and the model took it.
+# A degraded request that answered with nothing then became a parked goal and a
+# person told the work had stopped. The honest short answer is almost never
+# nothing: it is one real step that tests the assumption the last plan got wrong.
+# So the prompt asks for that, and says plainly that an empty plan is not a valid
+# answer at any size.
 DEGRADED_PLAN = """
 
 This request has already failed several times at the size above, so it is being
@@ -531,8 +603,13 @@ asked more cheaply. Give the shortest plan that matches the real work:
 Still do not pad it. A step that is not a real piece of work is worse than a
 short plan: it will be executed, it will fail, and the agent will spend the rest
 of its attempt budget finding out. If the real answer is one step, give one
-step. If you cannot see how to do this at all, return no steps rather than
-inventing them."""
+step. If an earlier plan failed, give the shortest real revision of it: the step
+that failed, corrected, and the next step that follows from it.
+
+This is a smaller plan, not a surrender. Never answer with an empty plan and
+never report that the work cannot be done: when the route is not visible yet,
+the one-step plan is the step that looks for it. Keep the same desired end state
+and revise the way to it."""
 
 # How to speak when nobody asked a question.
 #
@@ -583,6 +660,8 @@ arguments need. Do not abbreviate a file to save space — when you are writing 
 in full it goes in `args.content` exactly as it should read.
 
 {delegation}
+
+{deliverable}
 
 {editing}
 
@@ -660,6 +739,14 @@ are the lines that changed, and where it carries test or build output, that is
 what running the check actually printed. Read them. A requirement that is not in
 the diff is a requirement that was not met, however the summary reads, and a
 failing test in the output is a failing test whatever else the work got right.
+
+Judge the deliverable where the person will meet it. When the goal asks for
+something to be seen, opened, or launched on this machine, a directory of source
+files and a command line is not that thing: the launcher -- a macOS `.app`
+bundle or the platform's equivalent -- has to be present, and the evidence has
+to show that it exists and opens. If it is missing, fail that requirement and
+name the missing launcher; files being present is not proof the person can use
+them.
 
 Respond with strict JSON:
 {{ "verdict": "pass" | "fail" | "needs_human", "issues": ["..."], "confidence": 0.0 }}"""

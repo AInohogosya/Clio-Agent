@@ -1,5 +1,5 @@
 [Unit]
-Description=Clio Agent 3 model gateway
+Description=Clio Agent 3.1 model gateway
 After=network.target postgresql.service
 Wants=postgresql.service
 

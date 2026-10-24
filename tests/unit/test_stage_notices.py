@@ -112,6 +112,36 @@ def test_finished_work_appears_in_the_execution_state_block() -> None:
     assert "finished" in block
 
 
+def test_an_unverified_stage_is_not_reported_as_finished() -> None:
+    """A rung-3 review is "not verified", not "finished".
+
+    The execution-state line said `awaiting_review` was "finished, waiting on
+    you", and a reply read that as a completed build. It was a folder of source
+    files with no launchable icon, and the person went looking for one. The
+    stage line now says what the status means, and carries the path the files
+    were actually written to so the reply can name it.
+    """
+    class _Stages:
+        async def fetch(self, query: str, *args: Any) -> list[dict[str, Any]]:
+            return [{
+                "stage": "awaiting_review",
+                "title": "build the coding agent",
+                "detail": "the work could not be verified; files: /Users/me/Desktop/coding-agent",
+                "delivered_at": None,
+            }]
+
+    social = SocialCognition(_config("unverified-stage"), db=_Stages())
+    lines = asyncio.run(social._finished_work())
+
+    assert lines, "the stage has to be visible to the reply at all"
+    assert "not verified" in lines[0]
+    assert "finished" not in lines[0]
+    assert "/Users/me/Desktop/coding-agent" in lines[0], (
+        "a report about files has to say where they are, or the person searches "
+        "the desktop for something that was never named"
+    )
+
+
 def test_an_empty_stage_list_is_not_read_as_nothing_happened() -> None:
     """The honest line, which is the whole fix for the false "I have not done it".
 
@@ -665,7 +695,8 @@ def test_the_notice_prompt_distinguishes_finished_from_stopped_short() -> None:
 
     assert "finished and passed its checks" in done["content"]
     assert "stopped short of finished" in parked["content"]
-    assert "outstanding is a person" in review["content"]
+    assert "not verified" in review["content"]
+    assert "Do not call it finished" in review["content"]
     for rendered in (done, parked, review):
         assert "Do not narrate your own machinery" in rendered["content"]
 

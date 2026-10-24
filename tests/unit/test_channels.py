@@ -1076,6 +1076,18 @@ async def _started_telegram(monkeypatch: pytest.MonkeyPatch, adapter: TelegramAd
     await adapter.start()
 
 
+async def _delivered(adapter: TelegramAdapter) -> None:
+    """Wait out the deliveries the handler spawned.
+
+    A handler no longer records the message itself: it hands the message to a
+    task of its own, so a slow or broken pipeline can never stall the library's
+    update loop, and a failed write is retried instead of lost. A test that has
+    just driven the handler therefore waits for the task set to drain before
+    asserting on what was received.
+    """
+    await asyncio.gather(*adapter._inbound_tasks)
+
+
 async def test_a_telegram_message_arrives_with_the_name_of_the_person_who_sent_it(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -1100,6 +1112,7 @@ async def test_a_telegram_message_arrives_with_the_name_of_the_person_who_sent_i
         1, 819012345678, "are you there?",
         user=FakeUser("Ada", "Lovelace", username="ada"),
     ), None)
+    await _delivered(adapter)
 
     assert len(received) == 1
     message = received[0]
@@ -1124,12 +1137,17 @@ async def test_a_telegram_group_message_names_its_author_not_the_room(
     """
     received: list[Message] = []
     module = _FakeTelegramModule(_FakeApplication())
+
+    async def on_inbound(message: Message) -> None:
+        received.append(message)
+
     adapter = TelegramAdapter("t", [-1001234567890], allow_groups=True,
-                              on_inbound=received.append)
+                              on_inbound=on_inbound)
     await _started_telegram(monkeypatch, adapter, module)
     handle = module.callbacks[-1]
     await handle(_FakeUpdate(1, -1001234567890, "hello", user=FakeUser("Grace"),
                              chat_type="supergroup"), None)
+    await _delivered(adapter)
     assert received[0].sender_name == "Grace"
     assert received[0].person_id == "tg:-1001234567890"
 
@@ -1147,12 +1165,17 @@ async def test_a_telegram_stranger_is_answered_when_the_door_is_open(
     """
     received: list[Message] = []
     module = _FakeTelegramModule(_FakeApplication())
-    public = TelegramAdapter("t", [], accept_from_anyone=True, on_inbound=received.append)
+
+    async def on_inbound(message: Message) -> None:
+        received.append(message)
+
+    public = TelegramAdapter("t", [], accept_from_anyone=True, on_inbound=on_inbound)
     await _started_telegram(monkeypatch, public, module)
     await module.callbacks[-1](_FakeUpdate(1, 4242, "hello", user=FakeUser("Ada")), None)
+    await _delivered(public)
     assert [m.person_id for m in received] == ["tg:4242"]
 
-    narrow = TelegramAdapter("t", [42], on_inbound=received.append)
+    narrow = TelegramAdapter("t", [42], on_inbound=on_inbound)
     await _started_telegram(monkeypatch, narrow, module)
     update = _FakeUpdate(2, 4242, "hello", user=FakeUser("Ada"))
     before = len(received)
@@ -1161,6 +1184,73 @@ async def test_a_telegram_stranger_is_answered_when_the_door_is_open(
     assert any("4242" in reply for reply in update.effective_message.replies), (
         "the refusal has to carry the id the allowlist wants"
     )
+
+
+async def test_a_message_survives_a_pipeline_that_fails_at_first(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The bug this delivery task exists for.
+
+    Telegram acknowledges an update when this process fetches it, so a handler
+    that raises and moves on has deleted the message — which is exactly what a
+    Postgres that is briefly unreachable did, for every message sent into the
+    outage. The delivery now retries instead, and the message lands once the
+    pipeline is answering again. The waits are pinned to zero so the test is
+    about the retry rather than the clock.
+    """
+    received: list[Message] = []
+    attempts = {"n": 0}
+
+    async def on_inbound(message: Message) -> None:
+        attempts["n"] += 1
+        if attempts["n"] < 3:
+            raise ConnectionError("database is not answering")
+        received.append(message)
+
+    monkeypatch.setattr(telegram_adapter_module, "INBOUND_RETRY_BASE_S", 0.0)
+    monkeypatch.setattr(telegram_adapter_module, "INBOUND_RETRY_MAX_S", 0.0)
+
+    module = _FakeTelegramModule(_FakeApplication())
+    adapter = TelegramAdapter("t", [819012345678], on_inbound=on_inbound)
+    await _started_telegram(monkeypatch, adapter, module)
+
+    await module.callbacks[-1](
+        _FakeUpdate(1, 819012345678, "are you there?", user=FakeUser("Ada")), None)
+    await _delivered(adapter)
+
+    assert attempts["n"] == 3, "the failed attempts are retried, not discarded"
+    assert [m.text for m in received] == ["are you there?"], "the message is not lost"
+
+
+async def test_a_wedged_pipeline_cannot_hold_the_update_loop_shut(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A slow delivery must cost the channel nothing.
+
+    The library takes the next update off its queue only once the previous
+    handler returns, so a handler that awaited a delivery parked on a dead
+    connection stopped the bot from receiving anything at all — while the poller
+    went on answering `getUpdates` with 200s and every log line said it was
+    listening. The handler now returns at once and the delivery waits on its own
+    task; closing the door takes the delivery with it.
+    """
+    async def on_inbound(message: Message) -> None:
+        await asyncio.sleep(3600)
+
+    module = _FakeTelegramModule(_FakeApplication())
+    adapter = TelegramAdapter("t", [819012345678], on_inbound=on_inbound)
+    await _started_telegram(monkeypatch, adapter, module)
+
+    await asyncio.wait_for(
+        module.callbacks[-1](
+            _FakeUpdate(1, 819012345678, "hello", user=FakeUser("Ada")), None),
+        timeout=1.0,
+    )
+    assert len(adapter._inbound_tasks) == 1, "the delivery runs off the handler, not in it"
+
+    await adapter.stop()
+    await asyncio.sleep(0)
+    assert not adapter._inbound_tasks, "a closing door takes its deliveries with it"
 
 
 async def test_the_long_poll_is_the_listening_half(monkeypatch: pytest.MonkeyPatch):

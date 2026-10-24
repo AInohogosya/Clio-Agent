@@ -46,6 +46,12 @@ PARKED_HEARTBEAT_S = 30.0
 THOUGHT_BUFFER = 256
 
 
+def _discard(task: asyncio.Future[Any]) -> None:
+    """Take an abandoned task's exception, so it is not reported as an orphan."""
+    if not task.cancelled():
+        task.exception()
+
+
 def _stage_as_dict(notice: StageNotice) -> dict[str, Any]:
     """A stage notice as the plain dict `Decision.stage` carries.
 
@@ -164,6 +170,12 @@ class Life:
         self.spent_discretionary_session = 0.0
         self.cycles = 0
         self._percept_queue: Any = None
+        # Percepts taken off the queue by the inter-cycle wait to end its sleep
+        # early. They are held here rather than kept in the queue because the
+        # wait has to *read* one to know a message arrived, and a percept read
+        # and then dropped is a message nobody ever sees. The next `perceive`
+        # looks at these before it looks at the queue.
+        self._woken: list[Any] = []
         # A bounded ring, not a list. `deque(maxlen=...)` drops the oldest entry
         # on append, so the buffer cannot outgrow its own window. The two readers
         # that used to be list slices go through `_tail` instead, because `deque`
@@ -270,6 +282,16 @@ class Life:
 
     async def perceive(self) -> list[Percept]:
         percepts: list[Percept] = []
+        # A percept the inter-cycle wait pulled off the queue to end its sleep
+        # early is looked at first. Reading one is how the wait learns a message
+        # arrived, so it cannot put it back without racing the next writer;
+        # holding it here and draining it first is what keeps the early wake
+        # from costing the message that caused it.
+        held, self._woken = self._woken, []
+        for item in held:
+            percept = self._percept_of(item)
+            if percept is not None:
+                percepts.append(percept)
         queue = self._percept_queue
         if queue is None:
             return percepts
@@ -278,11 +300,71 @@ class Life:
                 item = queue.get_nowait()
             except Exception:
                 break
-            if isinstance(item, Percept):
-                percepts.append(item)
-            elif isinstance(item, Event):
-                percepts.append(self._percept_from_event(item))
+            percept = self._percept_of(item)
+            if percept is not None:
+                percepts.append(percept)
         return percepts
+
+    def _percept_of(self, item: Any) -> Percept | None:
+        """One queued item as a percept, or `None` for anything else.
+
+        The queue carries the same two shapes it always did — a `Percept`, or an
+        `Event` to convert — and the held list carries the very same objects, so
+        both readers go through one conversion rather than two that could drift.
+        """
+        if isinstance(item, Percept):
+            return item
+        if isinstance(item, Event):
+            return self._percept_from_event(item)
+        return None
+
+    async def _wait_until_next(self) -> None:
+        """Wait out the tick, or end it the moment a percept arrives.
+
+        The loop used to sleep the whole tick before looking at its queue, so a
+        message sent a moment after a pass was answered on the tick's clock
+        rather than the sender's — up to the longest tick (eight seconds while
+        waiting, sixty while resting) of somebody on the other end watching for
+        a sign the agent heard them. The tick is still the pace of an idle
+        agent; it is no longer the pace of a channel.
+
+        The wait is the tick raced against the next queue item. A tick that
+        elapses first is the ordinary idle pass; an item that lands first ends
+        the sleep so the next pass perceives it, and the item is held for that
+        pass rather than dropped. Nothing is lost either way: the item read here
+        is the one `perceive` drains first, and it is taken off the queue by a
+        callback rather than after the race, so a stop landing at the same
+        instant as the message cannot lose it.
+        """
+        ticking = asyncio.ensure_future(self.deps.rhythm.wait_until_next(self.states.state))
+        queue = self._percept_queue
+        if queue is None:
+            await ticking
+            return
+        arriving = asyncio.ensure_future(queue.get())
+        # The getter owns its item the moment it completes, not the moment the
+        # race below returns: a done-callback fires on completion whether or not
+        # the wait is still there to collect, which is what keeps an item from
+        # being read and then dropped when a stop cancels the wait.
+        arriving.add_done_callback(self._hold_arrival)
+        # A cancelled child is not owed to anybody, but a raised one is, and a
+        # future nobody retrieves is logged as an orphan. `ticking` is the one
+        # abandoned without a reader when the getter wins.
+        ticking.add_done_callback(_discard)
+        try:
+            await asyncio.wait({ticking, arriving}, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            # Both are cancelled unconditionally and not awaited: the winner is
+            # already done, and the loser is abandoned to the loop rather than
+            # held open by a wait here — awaiting a cancelled getter is how a
+            # cancellation meant for this pass would be swallowed instead.
+            ticking.cancel()
+            arriving.cancel()
+
+    def _hold_arrival(self, task: asyncio.Future[Any]) -> None:
+        """Keep the percept a queue read took, so ending the sleep cannot lose it."""
+        if not task.cancelled() and task.exception() is None:
+            self._woken.append(task.result())
 
     def _percept_from_event(self, event: Event) -> Percept:
         from ethos.schemas.events import percept_from_event
@@ -1822,7 +1904,7 @@ class Life:
                 # The tick at the end of a good cycle is what keeps a failing
                 # one from becoming a spin loop. A cycle that raises never
                 # reaches it, so the pause is owed here instead.
-                await self.deps.rhythm.wait_until_next(self.states.state)
+                await self._wait_until_next()
 
         # The loop only leaves by control: an oversight stop, or a signal. This
         # block used to live at the tail of `_cycle`, where it ran after every
@@ -1910,7 +1992,7 @@ class Life:
             self.states.transition(State.THINKING_REFLECTING, "focus acquired")
 
         await self.deps.rhythm.after_cycle(outcome.model_dump(mode="json"))
-        await self.deps.rhythm.wait_until_next(self.states.state)
+        await self._wait_until_next()
 
     async def run(self) -> None:
         await self.life()

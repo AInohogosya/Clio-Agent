@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from typing import Any
 
 from ethos.config import EthosConfig
+from ethos.engine.rhythm import backoff_seconds
+from ethos.gateway.service import retry_after_of
+from ethos.gsl.planner import is_nothing_could_serve, is_rate_limited_failure
 from ethos.gsl.verification import run_model_verifier
 from ethos.observability.logger import get_logger
+from ethos.parse import parse_json_block
 from ethos.prompts import (
     COMMISSIONED_ALREADY,
     DEVISE_PROMPT,
@@ -13,6 +18,7 @@ from ethos.prompts import (
     PLAN_PROMPT,
     STEP_PROMPT,
     SUCCESS_CHECKS_MATTER,
+    VISIBLE_DELIVERABLE,
     delegation_note,
     dumps,
     render_constraints,
@@ -28,6 +34,98 @@ logger = get_logger("ethos.threads.worker")
 # same intentions — but their worker dispatches to the sub-agent registry, and
 # the program's own model calls are routed through this agent's gateway.
 SUBAGENT_ROLES = ("foundry", "apex")
+
+# A failure that reaches this worker has already been through the gateway's
+# own retry curve — failover, request widening, cooldown waits. The budget
+# here is therefore small and about the gaps the gateway cannot see: a 429
+# that outlasted its schedule, a provider that blinked between retries. Three
+# attempts, bounded waits, and then an honest failure rather than a silent one.
+CALL_ATTEMPTS = 3
+RATE_LIMIT_BASE_S = 30.0
+RATE_LIMIT_MAX_S = 300.0
+TRANSIENT_BASE_S = 5.0
+TRANSIENT_MAX_S = 60.0
+SUBAGENT_ATTEMPTS = 2
+
+
+class ThreadAnswerUnusable(Exception):
+    """The model answered, and the answer is not the shape the caller asked for.
+
+    Raised only after the repair turn has also failed, so a formatting slip
+    costs one re-ask and not the task."""
+
+
+async def _complete(gateway: Any, request: Any) -> Any:
+    """One model call with a bounded retry behind it.
+
+    The blanket `except` this replaces caught the first failure and ended the
+    task: a single 429 or a dropped connection was the whole pursuit. The
+    classification is the planner's, so the two failure kinds with different
+    answers are told apart — a rate limit is time and is waited out on a
+    bounded curve (honouring a `Retry-After` the provider named), while a
+    deployment that cannot serve the request at all is not made servable by
+    waiting, and is raised immediately.
+    """
+    last: BaseException | None = None
+    for attempt in range(1, CALL_ATTEMPTS + 1):
+        try:
+            return await gateway.complete(request)
+        except Exception as exc:
+            last = exc
+            if attempt >= CALL_ATTEMPTS or is_nothing_could_serve(exc):
+                break
+            if is_rate_limited_failure(exc):
+                asked = retry_after_of(exc)
+                wait = (
+                    min(asked, RATE_LIMIT_MAX_S) if asked is not None
+                    else min(RATE_LIMIT_BASE_S * (2 ** (attempt - 1)), RATE_LIMIT_MAX_S)
+                )
+            else:
+                wait = backoff_seconds(attempt - 1, base_s=TRANSIENT_BASE_S, max_s=TRANSIENT_MAX_S)
+            logger.warning(
+                "thread.call_retry", purpose=request.purpose, attempt=attempt,
+                wait_s=round(wait, 1), error=f"{type(exc).__name__}: {exc}"[:200],
+            )
+            await asyncio.sleep(wait)
+    assert last is not None
+    raise last
+
+
+async def _complete_json(gateway: Any, request: Any, *, label: str, schema_hint: str) -> tuple[dict[str, Any], Any]:
+    """A model answer that must be a JSON object, with one repair turn.
+
+    `parse_json_block` returns `{}` for prose, and the plain reading of an
+    empty dict downstream is "the plan had no steps" — a formatting slip read
+    as a fact about the work. The repair re-asks once with the model's own
+    answer quoted back and the schema restated, the way the solver loop
+    repairs a step answer.
+    """
+    response = await _complete(gateway, request)
+    data = parse_json_block(response.text or "")
+    if data:
+        return data, response
+    first = (response.text or "")[:1200]
+    repair = ModelRequest(
+        tier=request.tier,
+        purpose=request.purpose,
+        thread_id=request.thread_id,
+        messages=[
+            *request.messages,
+            ModelMessage(role=Role.user, content=(
+                "Your answer was not a usable JSON object. Your answer was: "
+                f"{first}\n\nAnswer again with strict JSON only — {schema_hint} "
+                "— with no prose around it."
+            )),
+        ],
+        max_tokens=request.max_tokens,
+    )
+    response2 = await _complete(gateway, repair)
+    data2 = parse_json_block(response2.text or "")
+    if data2:
+        return data2, response2
+    raise ThreadAnswerUnusable(
+        f"{label}: the model returned no usable JSON twice (first answer: {first[:200]})"
+    )
 
 
 async def run_thread(spec: dict[str, Any], config: EthosConfig, memory: Any, gateway: Any = None) -> Any:
@@ -87,16 +185,34 @@ async def _run_subagent(
         reason = registry.describe() or ["no sub-agents are enabled"]
         return {"status": "unavailable", "goal": goal, "error": f"sub-agent {role!r} unavailable",
                 "available": reason}
-    try:
-        result = await agent.run(goal, workdir=str(workdir))
-    except Exception as exc:
-        logger.exception("thread.subagent_failed", role=role)
-        result_dict: dict[str, Any] = {
-            "agent": role, "status": "failed", "summary": "sub-agent crashed",
-            "error": str(exc), "duration_s": round(time.monotonic() - started, 1),
-        }
-    else:
+    result: Any = None
+    result_dict: dict[str, Any] | None = None
+    # One retry behind the run. A sub-agent crash can be a deterministic
+    # property of the goal, so the budget is two and the gap between them
+    # is short — enough for a port to open or a worktree to settle, not
+    # enough to disguise a goal the program cannot do.
+    for attempt in range(1, SUBAGENT_ATTEMPTS + 1):
+        try:
+            result = await agent.run(goal, workdir=str(workdir))
+            break
+        except Exception as exc:
+            if attempt >= SUBAGENT_ATTEMPTS:
+                logger.exception("thread.subagent_failed", role=role)
+                result_dict = {
+                    "agent": role, "status": "failed",
+                    "summary": f"sub-agent crashed (attempt {attempt})",
+                    "error": str(exc),
+                    "duration_s": round(time.monotonic() - started, 1),
+                }
+                break
+            logger.warning(
+                "thread.subagent_retry", role=role, attempt=attempt,
+                error=f"{type(exc).__name__}: {exc}"[:200],
+            )
+            await asyncio.sleep(backoff_seconds(0, base_s=10.0, max_s=30.0))
+    if result is not None:
         result_dict = result.to_dict()
+    assert result_dict is not None
     result_dict["goal"] = goal
     try:
         await memory.record_episode(
@@ -155,7 +271,6 @@ async def _pursue(
     if gateway is None:
         return {"status": "no-gateway", "goal": goal, "thoughts": ["gateway unavailable"]}
     from ethos.gsl.planner import pick_approach
-    from ethos.parse import parse_json_block
 
     knowhow_text = "\n".join(f"- [{m.kind}] {m.summary}" for m in memories[:10]) or "(none)"
     # `delegation_note` reads the work off an intention's fields, and this
@@ -166,22 +281,44 @@ async def _pursue(
     goal_as_intention = SimpleNamespace(
         title=goal, desired_end_state=goal, constraints=None,
     )
+
+    # Which phase the pursuit is in, so a failure names it. A single outer
+    # `except` reads the phase off nothing and reports every failure as the
+    # pursuit as a whole; the stage is the difference between "the task
+    # failed" and "the plan call failed", and the reason a person can act on.
+    stage = "pursue"
+
+    async def _fail(exc: BaseException) -> dict[str, Any]:
+        logger.exception("thread.pursue_failed", stage=stage)
+        return {
+            "status": "failed", "goal": goal, "stage": stage,
+            "error": f"{type(exc).__name__}: {exc}"[:400], "cost_usd": cost,
+            "thoughts": thoughts[:10],
+            "duration_s": round(time.monotonic() - started, 1),
+        }
+
     try:
-        devise_response = await gateway.complete(ModelRequest(
-            tier=Tier.T2,
-            purpose="thread.devise",
-            thread_id=str(spec.get("id")),
-            messages=[
-                ModelMessage(role=Role.system, content=DEVISE_PROMPT.format(
-                    name=config.self_name, title=goal, desired_end_state=goal,
-                    understanding=goal, knowhow=knowhow_text, lessons="(none)",
-                )),
-                ModelMessage(role=Role.user, content="Devise 3 approaches."),
-            ],
-            max_tokens=1200,
-        ))
+        stage = "devise"
+        data, devise_response = await _complete_json(
+            gateway, ModelRequest(
+                tier=Tier.T2,
+                purpose="thread.devise",
+                thread_id=str(spec.get("id")),
+                messages=[
+                    ModelMessage(role=Role.system, content=DEVISE_PROMPT.format(
+                        name=config.self_name, title=goal, desired_end_state=goal,
+                        understanding=goal, knowhow=knowhow_text, lessons="(none)",
+                    )),
+                    ModelMessage(role=Role.user, content="Devise 3 approaches."),
+                ],
+                max_tokens=1200,
+            ),
+            label="devise",
+            schema_hint='{"approaches": [{"id": "a1", "summary": "...", '
+                        '"expected_value": 0.5, "estimated_cost_usd": 0.05, '
+                        '"reversible": true}]}',
+        )
         cost += devise_response.cost_usd
-        data = parse_json_block(devise_response.text or "")
         approach = pick_approach([
             {"id": a.get("id", f"a{i}"), "summary": a.get("summary", ""),
              "expected_value": a.get("expected_value", 0.5),
@@ -191,68 +328,110 @@ async def _pursue(
         ]) or {"id": "a1", "summary": goal}
         thoughts.append(f"approach: {approach.get('summary', '')[:150]}")
 
-        plan_response = await gateway.complete(ModelRequest(
-            tier=Tier.T2,
-            purpose="thread.plan",
-            thread_id=str(spec.get("id")),
-            messages=[
-                ModelMessage(role=Role.system, content=PLAN_PROMPT.format(
-                    name=config.self_name, approach=approach.get("summary", ""),
-                    commissioned=COMMISSIONED_ALREADY,
-                    success_checks=SUCCESS_CHECKS_MATTER,
-                    delegation=delegation_note(goal_as_intention),
-                    title=goal, desired_end_state=goal,
-                    constraints=render_constraints(
-                        getattr(goal_as_intention, "constraints", None)
-                    ),
-                    success_criteria=render_success_criteria(
-                        getattr(goal_as_intention, "success_criteria", None)
-                    ),
-                )),
-                ModelMessage(role=Role.user, content="Produce the plan JSON."),
-            ],
-            max_tokens=1200,
-        ))
-        cost += plan_response.cost_usd
-        plan_data = parse_json_block(plan_response.text or "")
-
-        for i, step in enumerate(plan_data.get("steps", [])[:5]):
-            if not isinstance(step, dict) or not step.get("description"):
-                continue
-            step_response = await gateway.complete(ModelRequest(
+        stage = "plan"
+        plan_data, plan_response = await _complete_json(
+            gateway, ModelRequest(
                 tier=Tier.T2,
-                purpose="thread.step",
+                purpose="thread.plan",
                 thread_id=str(spec.get("id")),
                 messages=[
-                    ModelMessage(role=Role.system, content=STEP_PROMPT.format(
-                        name=config.self_name, commissioned=COMMISSIONED_ALREADY,
-                        editing=EDIT_EXISTING_FILES,
+                    ModelMessage(role=Role.system, content=PLAN_PROMPT.format(
+                        name=config.self_name, approach=approach.get("summary", ""),
+                        commissioned=COMMISSIONED_ALREADY,
+                        success_checks=SUCCESS_CHECKS_MATTER,
+                        deliverable=VISIBLE_DELIVERABLE,
                         delegation=delegation_note(goal_as_intention),
-                        title=goal,
-                        intention_end_state=getattr(
-                            goal_as_intention, "desired_end_state", ""
-                        ) or "-",
+                        title=goal, desired_end_state=goal,
                         constraints=render_constraints(
                             getattr(goal_as_intention, "constraints", None)
                         ),
-                        step_id=step.get("id", f"s{i+1}"),
-                        step_description=step.get("description", ""),
-                        plan_state=dumps(plan_data.get("steps", [])[:5]),
-                        memories=knowhow_text,
-                        tools="(same tool catalog as the Self)",
+                        success_criteria=render_success_criteria(
+                            getattr(goal_as_intention, "success_criteria", None)
+                        ),
                     )),
-                    ModelMessage(role=Role.user, content="Decide the next concrete action."),
+                    ModelMessage(role=Role.user, content="Produce the plan JSON."),
                 ],
+                max_tokens=1200,
+            ),
+            label="plan",
+            schema_hint='{"steps": [{"id": "s1", "description": "one concrete action"}]}',
+        )
+        cost += plan_response.cost_usd
+
+        steps = [
+            s for s in plan_data.get("steps", [])[:5]
+            if isinstance(s, dict) and s.get("description")
+        ]
+        if not steps:
+            raise ThreadAnswerUnusable(
+                "plan: the plan carried no usable steps after the repair turn"
+            )
+
+        for i, step in enumerate(steps):
+            step_id = str(step.get("id", f"s{i+1}"))
+            stage = f"step {step_id}"
+            step_messages = [
+                ModelMessage(role=Role.system, content=STEP_PROMPT.format(
+                    name=config.self_name, commissioned=COMMISSIONED_ALREADY,
+                    editing=EDIT_EXISTING_FILES,
+                    deliverable=VISIBLE_DELIVERABLE,
+                    delegation=delegation_note(goal_as_intention),
+                    title=goal,
+                    intention_end_state=getattr(
+                        goal_as_intention, "desired_end_state", ""
+                    ) or "-",
+                    constraints=render_constraints(
+                        getattr(goal_as_intention, "constraints", None)
+                    ),
+                    step_id=step_id,
+                    step_description=step.get("description", ""),
+                    plan_state=dumps(plan_data.get("steps", [])[:5]),
+                    memories=knowhow_text,
+                    tools="(same tool catalog as the Self)",
+                )),
+                ModelMessage(role=Role.user, content="Decide the next concrete action."),
+            ]
+            step_response = await _complete(gateway, ModelRequest(
+                tier=Tier.T2,
+                purpose="thread.step",
+                thread_id=str(spec.get("id")),
+                messages=step_messages,
                 max_tokens=1500,
             ))
             cost += step_response.cost_usd
             step_data_out = parse_json_block(step_response.text or "")
+            if not step_data_out:
+                # The step's own repair turn, before the step is given up on:
+                # the same quoted-back re-ask the devise and plan calls get.
+                step_response = await _complete(gateway, ModelRequest(
+                    tier=Tier.T2,
+                    purpose="thread.step",
+                    thread_id=str(spec.get("id")),
+                    messages=[
+                        *step_messages,
+                        ModelMessage(role=Role.user, content=(
+                            "Your answer was not a usable JSON object. Your answer was: "
+                            f"{(step_response.text or '')[:1200]}\n\nAnswer again with "
+                            'strict JSON only — {"thought": "one line", "actions": '
+                            '[{"tool": "...", "args": {...}}], "done": false} — with '
+                            "no prose around it."
+                        )),
+                    ],
+                    max_tokens=1500,
+                ))
+                cost += step_response.cost_usd
+                step_data_out = parse_json_block(step_response.text or "")
+                if not step_data_out:
+                    return await _fail(
+                        ThreadAnswerUnusable(
+                            "the model returned no usable JSON twice for this step"
+                        ),
+                    )
             thought = step_data_out.get("thought", "")
             if thought:
                 thoughts.append(str(thought)[:200])
     except Exception as exc:
-        logger.exception("thread.pursue_failed")
-        return {"status": "failed", "goal": goal, "error": str(exc), "cost_usd": cost}
+        return await _fail(exc)
 
     await memory.record_episode(
         kind="thread_result",

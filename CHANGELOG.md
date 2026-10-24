@@ -1,4 +1,4 @@
-# Clio Agent 3
+# Clio Agent 3.1
 
 ## v3.1.0-beta.4
 
@@ -8,6 +8,7 @@ Beta 4 fixes the failures behind the 2026-10-22 Docs task and the false "not sta
 - Planning: restored `gsl.min_real_plan_steps` from 3 to 1. A valid one-step plan is no longer rejected as "too short", and the plan prompt asks for as many steps as the work needs up to seven instead of starting at three.
 - GSL checks: folder creation is an action (`fs.mkdir`), not a success check. Checks may inspect a folder with `test -d`; a check that creates the folder is still rejected, but the prompt no longer suggests the rejected shape.
 - Social context: the deliberation's execution-state block now lists open work with its last recorded action and current plan step, alongside the short journal window. A quiet journal no longer reads as "this task never started" when its last action was forty minutes ago.
+- Responsiveness: the life loop's inter-cycle wait is cut short the moment a percept arrives, so a message sent via Telegram (or any channel) is perceived and answered on the sender's clock rather than on the next tick — up to eight seconds waiting and sixty resting of delay removed. The tick still paces an idle agent, and the percept that ended the wait is held for the pass rather than dropped.
 - Tests: filesystem coverage for folder creation and the directory/file confusion, plan-floor and prompt assertions, and the new open-work progress line.
 
 ## v3.1.0

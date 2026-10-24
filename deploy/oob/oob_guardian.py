@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""oob-guardian: out-of-band oversight for the Clio Agent 3 agent.
+"""oob-guardian: out-of-band oversight for the Clio Agent 3.1 agent.
 
 Runs on the hypervisor host, outside the agent's machine. It cannot be
 modified or evaded by the agent (H1). Stdlib only.

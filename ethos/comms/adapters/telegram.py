@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Any
 
 from ethos.comms.adapters.base import ChannelAdapter, offer_seen
@@ -25,6 +26,28 @@ POLL_READ_TIMEOUT_S = POLL_TIMEOUT_S + 5.0
 # is the library's own tidy shutdown and this cap is only reached when the
 # cooperative path has already failed. See `stop`.
 STOP_TIMEOUT_S = POLL_READ_TIMEOUT_S + 5.0
+
+# How a message that fails to be *recorded* is chased.
+#
+# Telegram acknowledges an update the moment this process fetches it, not when
+# the handler finishes with it — so a handler that raises has cost the message
+# its only life. And it does raise, regularly, for a reason that is a fact
+# about the minute rather than the message: the inbound pipeline's first act is
+# a database write, and the logs show Postgres going unreachable for minutes at
+# a stretch — a restarted container, a laptop waking, a checkpoint stall —
+# while the bot kept polling and every message that landed in the window was
+# acknowledged, dropped, and never spoken to. From the phone that reads as the
+# bot "stopped receiving" exactly when the database did.
+#
+# So a failed delivery is retried, on an exponential that starts fast enough to
+# paper over a blip nobody would notice and is capped well short of a minute so
+# a longer outage does not crowd the log. The budget bounds how long a message
+# is chased before it is declared lost out loud — ten minutes covers every
+# outage the logs show and keeps a message from being retried into eternity
+# against a permanently broken pipeline.
+INBOUND_RETRY_BASE_S = 2.0
+INBOUND_RETRY_MAX_S = 60.0
+INBOUND_RETRY_BUDGET_S = 600.0
 
 
 def _display_name(user: Any) -> str | None:
@@ -99,6 +122,9 @@ class TelegramAdapter(ChannelAdapter):
         self.on_inbound = on_inbound
         self._app: Any = None
         self._polling = False
+        # Deliveries still in flight, kept so `stop` can reach them and so a
+        # task whose exception was never retrieved is not reported as an orphan.
+        self._inbound_tasks: set[asyncio.Task[None]] = set()
         # Update ids, kept so a replay cannot become a second message.
         #
         # Telegram acknowledges an update when this process acknowledges the
@@ -200,7 +226,7 @@ class TelegramAdapter(ChannelAdapter):
                 sender_username=_handle(update.effective_user),
             )
             try:
-                await self.on_inbound(message)
+                self._spawn_delivery(message)
             except Exception:
                 logger.exception("comms.telegram.inbound_failed")
 
@@ -234,6 +260,71 @@ class TelegramAdapter(ChannelAdapter):
         # builds this adapter to reply and never polls it.
         logger.info("comms.telegram.ready_to_send", allowed=len(self.allowed_chat_ids),
                     allow_groups=self.allow_groups, open_to_all=self.accept_from_anyone)
+
+    def _spawn_delivery(self, message: Message) -> None:
+        """Hand one inbound message to a task of its own, and never wait on it.
+
+        Two reasons this is a task rather than an inline `await`, and both are
+        about what a handler that runs inside the library's update loop costs.
+
+        The first is the loop itself. `python-telegram-bot` processes updates
+        one at a time: the next message is not even taken off the fetch queue
+        until the previous handler returns. `on_inbound` writes to Postgres and
+        publishes onto the bus, and a pool with nothing healthy in it can wait
+        on `acquire` for as long as it likes — one wedged delivery wedged the
+        whole fetcher, and the poller went on answering `getUpdates` with 200s
+        forever while every message behind the wedge queued up unhandled. From
+        the phone, that is the bot silently going deaf. A task per message costs
+        the handler nothing but a scheduling tick, and there is no delivery left
+        that can hold the door shut behind it.
+
+        The second is the retry. Telegram has already acknowledged the update by
+        the time this runs, so a delivery that raises once has lost the message
+        its only life — which is how a minutes-long Postgres blip deleted every
+        message sent into it. The task chases the message until it lands or the
+        budget runs out; the retries are the difference between a delayed reply
+        and a person who was never heard.
+        """
+        task = asyncio.create_task(self._deliver(message), name="telegram:inbound")
+        self._inbound_tasks.add(task)
+        task.add_done_callback(self._inbound_tasks.discard)
+
+    async def _deliver(self, message: Message) -> None:
+        """Record one message, and keep trying until it is recorded or the budget is up.
+
+        The wait doubles from two seconds and is capped at a minute, so a blip
+        lasting seconds is crossed almost invisibly and a longer outage is
+        knocked on once a minute rather than hammered. Each attempt logs what it
+        tripped over; the final failure is logged with its traceback, because a
+        message that is given up on is the one somebody on the other end is
+        still waiting for an answer to.
+
+        Re-delivering is safe by construction: the pipeline's own insert is
+        `ON CONFLICT (id) DO NOTHING` on the message id, so a retry after an
+        attempt that half-landed records nothing twice. The tasks may overtake
+        one another during an outage — a message that arrives later can land
+        first — and that is the honest shape of a broken pipe healing, not an
+        ordering guarantee worth holding the poller hostage for.
+        """
+        delay = INBOUND_RETRY_BASE_S
+        deadline = time.monotonic() + INBOUND_RETRY_BUDGET_S
+        while True:
+            try:
+                await self.on_inbound(message)
+                return
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    logger.exception("comms.telegram.inbound_dropped",
+                                     message_id=str(message.id), person_id=message.person_id)
+                    return
+                logger.warning("comms.telegram.inbound_retry",
+                               message_id=str(message.id), error=str(exc)[:200],
+                               next_delay_s=round(delay, 1), budget_left_s=round(remaining, 1))
+                await asyncio.sleep(min(delay, remaining))
+                delay = min(delay * 2, INBOUND_RETRY_MAX_S)
 
     async def listen(self) -> None:
         if self._app is None or self._polling:
@@ -298,8 +389,30 @@ class TelegramAdapter(ChannelAdapter):
             # relied on to reach it — while `task.cancel()` always can, and is a
             # no-op once the cooperative stop has already finished the job.
             self._cancel_poller()
+            self._abandon_deliveries()
             self._app = None
             self._polling = False
+
+    def _abandon_deliveries(self) -> None:
+        """Cancel deliveries still in flight, rather than leaving them running.
+
+        Each one holds the inbound handler and through it a database pool that
+        the caller is in the middle of closing, so a delivery that outlives its
+        door fails eventually but noisily, and a retry loop running against a
+        closed pool writes a traceback a minute for as long as the process
+        lingers. The process is going away either way — a task cancelled here
+        would have been cancelled by interpreter exit a moment later — so the
+        worst case is one message whose retries were cut short, which a restart
+        replays and the dedupe absorbs.
+        """
+        cancelled = 0
+        for task in self._inbound_tasks:
+            if not task.done():
+                task.cancel()
+                cancelled += 1
+        self._inbound_tasks.clear()
+        if cancelled:
+            logger.warning("comms.telegram.deliveries_abandoned", tasks=cancelled)
 
     async def _stop_updater(self) -> None:
         """Ask the library to stop polling, and stop waiting for it if it will not.

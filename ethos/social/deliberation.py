@@ -820,13 +820,17 @@ class SocialCognition:
             # the guardrail that the other one is there to raise.
             logger.warning("social.execution_state_stages_failed")
             return []
-        spoken = {"done": "finished", "parked": "stopped short", "awaiting_review": "finished, waiting on you"}
+        spoken = {
+            "done": "finished",
+            "parked": "stopped short",
+            "awaiting_review": "not verified, waiting on you",
+        }
         lines: list[str] = []
         for row in rows:
             stage = str(row["stage"] or "")
             phrase = spoken.get(stage, stage)
             title = str(row["title"] or "")[:120]
-            detail = " ".join(str(row["detail"] or "").split())[:200]
+            detail = " ".join(str(row["detail"] or "").split())[:400]
             said = "already told them" if row["delivered_at"] is not None else "not told them yet"
             line = f"- {title}: {phrase} ({stage}); {said}"
             if detail:

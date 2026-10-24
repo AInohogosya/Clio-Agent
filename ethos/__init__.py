@@ -1,4 +1,4 @@
-__version__ = "3"
+__version__ = "3.1"
 
 # The product's name is the version, not a second string that has to be kept in
 # step with it: everything user-facing — the CLI banner, the FastAPI titles, the

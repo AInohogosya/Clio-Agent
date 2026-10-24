@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="thumbnail.png" alt="Clio Agent 3" width="880">
+  <img src="thumbnail.png" alt="Clio Agent 3.1" width="880">
 </p>
 
-<h1 align="center">Clio Agent 3</h1>
+<h1 align="center">Clio Agent 3.1</h1>
 
 <p align="center">
   <b>An agent that is there when you aren't.</b><br>
@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <code>3.0.0-beta.3</code> · <code>released 2026-10-03 JST</code> · <code>Python ≥ 3.12</code> ·
+  <code>3.1.0</code> · <code>released 2026-10-03 JST</code> · <code>Python ≥ 3.12</code> ·
   <code>PostgreSQL 16 + pgvector</code> · <code>Linux / macOS / Windows</code> ·
   <code>no license yet — all rights reserved</code>
 </p>
@@ -319,7 +319,7 @@ it holds the agent's memory; to throw it away, `make db-down && rm -rf data/pgda
 
 ## The interface
 
-The interface — **Clio Agent 3** — is a browser page and a terminal client. It is not a dashboard
+The interface — **Clio Agent 3.1** — is a browser page and a terminal client. It is not a dashboard
 bolted onto a chat box: the agent's state and the conversation are one screen, because an agent that
 thinks when nobody is talking has to be watchable while it does.
 
@@ -1163,7 +1163,7 @@ scripts/           # ensure_postgres.sh: brings the database up (Docker, or a lo
 package.json       # the root manifest, so `npm start` is one command from here
 start.sh           # deprecated shim: creates the venv with uv, then runs `ethos up`
 web/server/        # the interface bridge (Node): serves interface/, translates HTTP/WS to the bus
-interface/         # Clio Agent 3, the interface: packages/core, packages/web, packages/cli
+interface/         # Clio Agent 3.1, the interface: packages/core, packages/web, packages/cli
 tests/             # unit (pure math/logic), integration (live DB), scenarios (end-to-end)
 deploy/            # systemd units + hypervisor-host oob-guardian
 data/              # gitignored local state of the checkout: the Postgres cluster and its
@@ -1174,7 +1174,7 @@ data/              # gitignored local state of the checkout: the Postgres cluste
 `interface/` is a directory of this repository. `npm start` builds it on demand, so it does not have
 to be installed or built by hand before anything works.
 
-### Clio Agent 3, in three packages
+### Clio Agent 3.1, in three packages
 
 | Package | What it is |
 |---|---|
@@ -1420,7 +1420,7 @@ is a state you can see on the settings screen and fix.
 ### The agent's name
 
 The agent introduces itself on the first line of every prompt it sends, in the form
-`I am <name>, an AI agent based on Clio Agent 3.` The lineage is a fact about this program, so it is
+`I am <name>, an AI agent based on Clio Agent 3.1.` The lineage is a fact about this program, so it is
 a constant in `ethos/prompts/identity.py` and not a setting. The name is the opposite — it is the
 one part of an identity a person is unambiguously entitled to set.
 

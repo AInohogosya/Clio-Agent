@@ -25,7 +25,7 @@ def _release_line() -> str:
     """The one-line answer to "which build is this", shared by every spelling.
 
     The product name carries the version already, so it is printed rather than
-    repeated next to it: `Clio Agent 3` is the version, and a second "3"
+    repeated next to it: `Clio Agent 3.1` is the version, and a second "3"
     beside it would be a second thing to keep in step. The date is stated rather than
     left to the file's mtime because a build copied between machines has the mtime of
     the copy, and a release date is a fact about the release.
@@ -69,7 +69,7 @@ def cli(
         help="the agent's own home, for memory, journals and sockets (default: $ETHOS_HOME, then ~/.ethos)",
     ),
 ) -> None:
-    """Clio Agent 3: a continuously existing, general-purpose autonomous agent.
+    """Clio Agent 3.1: a continuously existing, general-purpose autonomous agent.
 
     The one command that brings the agent up is `ethos up`; `ethos status` asks
     whether it is there, `ethos stop` ends it, `ethos logs` follows it, and
@@ -429,6 +429,7 @@ def worker() -> None:
         from ethos.gateway.service import GatewayService
         from ethos.memory.store import MemoryStore
         from ethos.schemas.gsl import IntentionStatus
+        from ethos.threads.manager import failure_reason, is_failed_result
         from ethos.threads.worker import run_thread
 
         # One embedder for the thread's writes, borrowed rather than owned. This
@@ -452,7 +453,17 @@ def worker() -> None:
             thread_id = spec.get("id", "unknown")
             try:
                 result = await run_thread(spec, config, memory, gateway)
-                status, error = "done", None
+                if is_failed_result(result):
+                    # The worker caught its own failure and returned the
+                    # envelope. The plain reading of a returned value — "the
+                    # work is done" — closed intentions as `done, "worker
+                    # completed"` over a pursuit that had failed; the reason is
+                    # read out and the intention is parked, as the solver loop
+                    # parks a goal it cannot finish.
+                    error = failure_reason(result)
+                    result, status = None, "failed"
+                else:
+                    status, error = "done", None
             except Exception as exc:
                 result, status, error = None, "failed", str(exc)
             intention_id = spec.get("intention_id")
@@ -460,7 +471,7 @@ def worker() -> None:
                 try:
                     await memory.close_intention(
                         UUID(str(intention_id)),
-                        IntentionStatus.done.value if status == "done" else IntentionStatus.failed.value,
+                        IntentionStatus.done.value if status == "done" else IntentionStatus.parked.value,
                         "worker completed" if status == "done" else f"worker failed: {error}",
                     )
                 except Exception:

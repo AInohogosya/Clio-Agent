@@ -233,9 +233,10 @@ def test_the_prompts_that_do_the_work_say_it_was_asked_for() -> None:
 
 @pytest.mark.parametrize("template,fields", [
     ("plan", dict(name="Clio", commissioned="C", success_checks="S", delegation="D",
-                  approach="a", title="t", desired_end_state="d",
+                  deliverable="V", approach="a", title="t", desired_end_state="d",
                   constraints="K", success_criteria="R")),
-    ("step", dict(name="Clio", commissioned="C", editing="E", delegation="D", title="t",
+    ("step", dict(name="Clio", commissioned="C", editing="E", delegation="D",
+                  deliverable="V", title="t",
                   intention_end_state="d", constraints="K",
                   step_id="s1", step_description="x", plan_state="[]", memories="(none)",
                   tools="(catalog)")),
@@ -292,7 +293,7 @@ def test_the_step_prompt_says_to_edit_rather_than_rewrite() -> None:
     # is still there, because it is true and it was not the problem.
     body = STEP_PROMPT.format(
         name="Clio", commissioned="C", editing=EDIT_EXISTING_FILES, delegation="D",
-        title="t", intention_end_state="d", constraints="K",
+        deliverable="V", title="t", intention_end_state="d", constraints="K",
         step_id="s1", step_description="x", plan_state="[]",
         memories="(none)", tools="(catalog)",
     )
@@ -372,9 +373,86 @@ def test_the_plan_prompt_does_not_promise_a_fixed_minimum() -> None:
     assert "as many steps as the work needs" in PLAN_PROMPT
 
 
+def test_a_failed_plan_is_revised_rather_than_abandoned() -> None:
+    """A dead end in the plan is not the end of the task.
+
+    The prompt described how to build a plan and said nothing about the plan not
+    working, so a failed plan ended as an empty answer, a parked goal and a person
+    told the work had stopped. A plan is a hypothesis: the prompt now says what a
+    failure means, what a revision changes, and that an empty plan is giving up.
+    """
+    from ethos.prompts.gsl import DEGRADED_PLAN, DEVISE_PROMPT, PLAN_PROMPT
+
+    plan = " ".join(PLAN_PROMPT.split()).lower()
+    assert "when a plan fails" in plan
+    assert "never give up" in plan
+    assert "revise the plan" in plan
+    assert "empty plan" in plan
+    assert "information about the plan, not the end" in plan
+
+    degraded = " ".join(DEGRADED_PLAN.split()).lower()
+    assert "return no steps rather than inventing them" not in degraded
+    assert "revision" in degraded
+    assert "never answer with an empty plan" in degraded
+
+    devise = " ".join(DEVISE_PROMPT.split()).lower()
+    assert "failed approach is not the end" in devise
+    assert "never answer with an empty list" in devise
+
+
 def test_the_step_prompt_has_a_folder_action_that_is_not_fs_write() -> None:
     from ethos.prompts.gsl import STEP_PROMPT
 
     flat = " ".join(STEP_PROMPT.split())
     assert "fs.mkdir" in flat
     assert "creates a folder" in flat
+
+
+def test_a_desktop_deliverable_uses_a_visible_launcher_not_just_files() -> None:
+    """A folder of source files is not an app the person can launch.
+
+    The coding-agent build ended as a CLI package: visible on disk, but no
+    launchable thing and no icon, and the report called it finished. The plan and
+    the step now carry the delivery rule, and the verifier is told to judge the
+    thing where the person will meet it.
+    """
+    from ethos.prompts.gsl import (
+        PLAN_PROMPT,
+        STEP_PROMPT,
+        VERIFIER_PROMPT,
+        VISIBLE_DELIVERABLE,
+    )
+
+    deliverable = " ".join(VISIBLE_DELIVERABLE.split()).lower()
+    assert "launchable entry point" in deliverable
+    assert ".app" in deliverable
+    assert "open -r" in deliverable
+    assert "absolute path" in deliverable
+    assert "folder of source files is not an app" in deliverable
+    assert "never report the work as finished" in deliverable
+
+    assert "{deliverable}" in PLAN_PROMPT
+    assert "{deliverable}" in STEP_PROMPT
+
+    verifier = " ".join(VERIFIER_PROMPT.split()).lower()
+    assert "launcher" in verifier
+    assert ".app" in verifier
+    assert "source" in verifier and "not that thing" in verifier
+
+
+def test_the_report_names_the_files_the_work_wrote() -> None:
+    """`done` is not an address; the path is what the person can act on."""
+    from ethos.gsl.loop import _delivered_note, _delivered_paths
+
+    resume = {"artifacts": [
+        {"tool": "fs.mkdir", "ok": True, "args": {"path": "/Users/me/Desktop/agent"}},
+        {"tool": "fs.write", "ok": True, "args": {"path": "/Users/me/Desktop/agent/README.md"}},
+        {"tool": "fs.read", "ok": True, "args": {"path": "/Users/me/elsewhere.txt"}},
+        {"tool": "fs.write", "ok": False, "args": {"path": "/Users/me/Desktop/broken.txt"}},
+    ]}
+
+    assert _delivered_paths(resume) == ["/Users/me/Desktop/agent"], (
+        "nested files collapse into their folder, reads are not deliveries, and "
+        "a failed write is not a file the person can see"
+    )
+    assert _delivered_note(resume) == "; files: /Users/me/Desktop/agent"

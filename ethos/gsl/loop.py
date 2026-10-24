@@ -30,6 +30,7 @@ from ethos.prompts import (
     EDIT_EXISTING_FILES,
     REFLECT_PROMPT,
     STEP_PROMPT,
+    VISIBLE_DELIVERABLE,
     commissioned_note,
     delegation_note,
     dumps,
@@ -96,6 +97,43 @@ def _describe_actions(actions: list[dict[str, Any]] | None, limit: int = 6) -> s
             f"- {tool}({str(target)[:160]}) -> {outcome}: {result[:160]}"
         )
     return "\n".join(lines) or "(none recorded)"
+
+
+def _delivered_paths(resume: dict[str, Any], limit: int = 4) -> list[str]:
+    """Where the work actually put files, for the message that reports it.
+
+    The record already knows: every `fs.*` call is in `resume["artifacts"]` with
+    the path it named. What was missing is the hand-off to the person. A reply
+    that says the work is done but not where it is leaves them to search for it,
+    which is the same complaint as a desktop icon that never appears. Only tools
+    that write contribute -- a read is not a delivered file -- and nested paths
+    collapse to the outermost directory, so one folder and the files inside it
+    are one address rather than five.
+    """
+    written: list[str] = []
+    for action in resume.get("artifacts") or []:
+        if not isinstance(action, dict) or not action.get("ok", True):
+            continue
+        tool = str(action.get("tool") or "")
+        args = action.get("args") if isinstance(action.get("args"), dict) else {}
+        path = ""
+        if tool in ("fs.write", "fs.edit", "fs.mkdir"):
+            path = str(args.get("path") or "")
+        elif tool == "fs.move":
+            path = str(args.get("to_path") or "")
+        if path and path not in written:
+            written.append(path)
+    outer: list[str] = []
+    for path in sorted(written, key=len):
+        if any(path == top or path.startswith(top.rstrip("/") + "/") for top in outer):
+            continue
+        outer.append(path)
+    return outer[:limit]
+
+
+def _delivered_note(resume: dict[str, Any]) -> str:
+    paths = _delivered_paths(resume)
+    return ("; files: " + ", ".join(paths)) if paths else ""
 
 
 def _same_check(candidate: dict[str, Any], original: dict[str, Any]) -> bool:
@@ -842,6 +880,7 @@ class GeneralSolverLoop:
                     name=self.config.self_name,
                     commissioned=commissioned_note(intention.origin),
                     editing=EDIT_EXISTING_FILES,
+                    deliverable=VISIBLE_DELIVERABLE,
                     delegation=delegation_note(intention),
                     title=intention.title,
                     intention_end_state=intention.desired_end_state or "-",
@@ -1363,14 +1402,19 @@ class GeneralSolverLoop:
             await self.memory.update_intention(
                 intention.id, status=IntentionStatus.awaiting_review.value,
             )
-            # A rung-3 review is a stage somebody is owed an answer about: the work
-            # is finished as far as this program can tell, and the thing outstanding
-            # is a person. Not announced -- the sentence is not this loop's to
-            # write -- but owed, so the record carries who.
+            # A rung-3 review is a stage somebody is owed an answer about: this
+            # program could not confirm the work meets the goal, and the thing
+            # outstanding is a person. It is not "finished" -- calling it that is
+            # what told somebody a build was done when only its source files
+            # existed. Not announced -- the sentence is not this loop's to
+            # write -- but owed, so the record carries who, why, and where the
+            # files actually are.
+            detail = "; ".join(verification.issues or [])[:300] or (
+                "the work could not be verified and is waiting on a person to look at it"
+            )
             await self._notice_stage(
                 intention, IntentionStatus.awaiting_review.value,
-                "; ".join(verification.issues or [])[:400]
-                or "the work is finished and is waiting on a person to look at it",
+                (detail + _delivered_note(resume))[:800],
             )
             return SolverResult(
                 outcome=SolverOutcome.awaiting_review, verification=verification,
@@ -1406,7 +1450,8 @@ class GeneralSolverLoop:
             await self._notice_stage(
                 intention, IntentionStatus.done.value,
                 f"verified at rung {verification.rung_reached} on "
-                f"{verification.objective.checks_run if verification.objective else 0} check(s)",
+                f"{verification.objective.checks_run if verification.objective else 0} check(s)"
+                + _delivered_note(resume),
             )
             ran = (verification.objective.checks_run if verification.objective else 0)
             return SolverResult(
@@ -1660,7 +1705,10 @@ class GeneralSolverLoop:
         await self.memory.open_question(
             f"How should I approach '{intention.title}' next time? ({reason})", priority=0.7,
         )
-        await self._notice_stage(intention, IntentionStatus.parked.value, reason)
+        await self._notice_stage(
+            intention, IntentionStatus.parked.value,
+            (reason + _delivered_note(state))[:800],
+        )
 
     async def _notice_stage(
         self, intention: IntentionRecord, stage: str, detail: str = "",

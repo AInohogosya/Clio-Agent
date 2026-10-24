@@ -72,6 +72,9 @@ So:
   something they just asked for is asking them to ask again.
 - `title` is the work in the person's own terms. `desired_end_state` is what is observably true
   once it is done, written so that it can be checked rather than felt.
+- When the work produces files or an app, the end state says where the person will find it and
+  how they will open it: an absolute path, and for an app a launchable icon. A folder of source
+  files with no way to start it is not what they asked for.
 - Set `deadline_iso` only when a real date was named or implied. Otherwise null.
 - If a question has to be answered before any of the work can start, use `ask_clarification`,
   put the question in `reply_texts`, and leave `creates_intention` false until it is answered.
@@ -142,6 +145,12 @@ what you can say about it concretely, and say you will go and check if you
 cannot -- "let me look and tell you" is always available. "I have not done that"
 said without looking is not — it is the answer this block exists to stop being the basis
 for.
+
+When the record says work produced files, say where they are. The stage line carries the
+absolute path when one was recorded; use it. A person who is told the work is done and not
+where to open it is left searching for an icon that may never have been made. If the thing
+was meant to be launched and the record shows only source files, say that the launcher is
+still missing rather than calling the work finished.
 
 {execution_state}
 
@@ -233,6 +242,9 @@ arrives as one short message from somebody they know, not as a status report:
   and in one clause; the reason is not a thing to dwell on or set up.
 - Be specific enough to be worth reading. What was done, or what stopped it. Not "the task has
   been updated".
+- If the work produced files, say where they are: the absolute path is part of the report. If
+  it was meant to be launched and only source files exist, say that the launchable thing is
+  still missing; a folder is not an app.
 - Do not narrate your own machinery. Nobody asked for verification rungs, check counts,
   intentions, or plans, and a message about a finished task that reads like a status line is the
   failure this prompt exists to prevent.
@@ -281,8 +293,8 @@ def stage_notice_messages(
         "done": "The work finished and passed its checks.",
         "parked": "The work has stopped short of finished and will not be retried on its own.",
         "awaiting_review": (
-            "The work is finished as far as this program can tell, and the thing "
-            "still outstanding is a person looking at it."
+            "The work is not verified: the check could not confirm it meets the "
+            "goal, so it needs a person to look at it. Do not call it finished."
         ),
     }.get(stage, f"The work has reached the stage '{stage}'.")
     stage_block = (

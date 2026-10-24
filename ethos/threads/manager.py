@@ -12,6 +12,38 @@ from ethos.schemas.events import EventKind
 
 logger = get_logger("ethos.threads.manager")
 
+# Result envelopes that say the work did not finish, whatever the worker's
+# return value. A worker that *raises* is already handled below; the missing
+# half was the worker that catches its own failure and returns a dict — the
+# plain reading of "the worker returned" is "the work is done", and a pursuit
+# that ended in `{"status": "failed"}` was closed as `done, "thread completed"`
+# in the intention store, with the error still sitting in the result nobody
+# reconciled. These are the statuses the worker's own vocabulary uses.
+_FAILED_RESULT_STATUSES = frozenset({
+    "failed", "unavailable", "blocked", "timeout", "no-gateway", "missing-intention",
+})
+
+
+def is_failed_result(result: Any) -> bool:
+    """Whether a worker's returned envelope says the work did not finish.
+
+    Shared instead of duplicated: the in-process manager and the deployed
+    `ethos worker` process both receive this envelope, and both used to read
+    "the worker returned" as "the work is done".
+    """
+    return (
+        isinstance(result, dict)
+        and str(result.get("status", "")) in _FAILED_RESULT_STATUSES
+    )
+
+
+def failure_reason(result: dict[str, Any]) -> str:
+    for key in ("error", "summary", "status"):
+        value = str(result.get(key) or "").strip()
+        if value:
+            return value[:300]
+    return "worker reported failure"
+
 
 class ThreadHandle:
     def __init__(self, thread_id: str, spec: dict[str, Any], task: asyncio.Task | None = None):
@@ -165,17 +197,36 @@ class ThreadManager:
     async def _run(self, handle: ThreadHandle, worker: Any) -> None:
         try:
             result = await worker(handle.spec)
-            handle.finish(result=result)
-            if handle.spec.get("intention_id"):
-                try:
-                    from ethos.schemas.gsl import IntentionStatus
+            if is_failed_result(result):
+                # The worker ended its own task on an issue and said so in the
+                # envelope. Recorded the way the solver loop records a goal it
+                # cannot finish: parked, with the reason, so the ledger and the
+                # stage notices carry the ending instead of the intention
+                # silently reading `done, "thread completed"`.
+                reason = failure_reason(result)
+                handle.finish(error=reason)
+                if handle.spec.get("intention_id"):
+                    try:
+                        from ethos.schemas.gsl import IntentionStatus
 
-                    await self.memory.close_intention(
-                        _uuid(handle.spec["intention_id"]),
-                        IntentionStatus.done.value, "thread completed",
-                    )
-                except Exception:
-                    logger.exception("threads.close_intention_failed")
+                        await self.memory.close_intention(
+                            _uuid(handle.spec["intention_id"]),
+                            IntentionStatus.parked.value, f"thread failed: {reason}",
+                        )
+                    except Exception:
+                        logger.exception("threads.close_intention_failed")
+            else:
+                handle.finish(result=result)
+                if handle.spec.get("intention_id"):
+                    try:
+                        from ethos.schemas.gsl import IntentionStatus
+
+                        await self.memory.close_intention(
+                            _uuid(handle.spec["intention_id"]),
+                            IntentionStatus.done.value, "thread completed",
+                        )
+                    except Exception:
+                        logger.exception("threads.close_intention_failed")
         except Exception as exc:
             logger.exception("threads.worker_failed", thread_id=handle.thread_id)
             handle.finish(error=str(exc))
@@ -183,9 +234,13 @@ class ThreadManager:
                 try:
                     from ethos.schemas.gsl import IntentionStatus
 
+                    # Parked rather than failed, for the same reason the solver
+                    # loop parks: the reason is written and notifiable, and a
+                    # crashed thread is a goal that could not be finished, not
+                    # a verdict on the goal itself.
                     await self.memory.close_intention(
                         _uuid(handle.spec["intention_id"]),
-                        IntentionStatus.failed.value, f"thread failed: {exc}",
+                        IntentionStatus.parked.value, f"thread crashed: {exc}",
                     )
                 except Exception:
                     logger.exception("threads.close_intention_failed")
