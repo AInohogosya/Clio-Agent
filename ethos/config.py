@@ -259,6 +259,38 @@ class ThreadsConfig(BaseModel):
     """
     retention: int = 64
 
+    # How long a running handle may go without a result before the manager
+    # presumes its worker is never going to report back.
+    #
+    # In process mode a worker publishes its result over the bus, and a
+    # worker that dies before publishing leaves a handle that says
+    # "running" forever -- quietly holding one of the `max_concurrent`
+    # slots. Four of those and the agent can no longer delegate anything,
+    # which is the "agent stopped" failure with nothing dead to show for
+    # it. The reaper reclaims handles (and requeues their intentions as
+    # parked, where the reopen sweep can find them) once they are older
+    # than this. Generous on purpose: a delegate doing long desktop work
+    # is alive and merely slow, and must not be reaped under its own
+    # result.
+    stale_after_s: float = 7200.0
+
+    # How many times a worker retries one model call before the task ends
+    # honestly. Zero -- the field default -- means there is no ceiling: a
+    # call that keeps failing keeps being retried on the worker's backoff
+    # (rate limits on the escalation curve, anything else doubling to 60s)
+    # for as long as the thread runs. The one exception is unchanged: a
+    # failure that says *no model could serve this request at all* ends the
+    # task honestly on the spot, because waiting cannot fix a missing
+    # engine -- and the goal is parked and reopened by the sweep, so the
+    # work itself is never lost. A positive number restores the old
+    # bounded retry budget.
+    call_attempts: int = 0
+
+    # How many times a crashed sub-agent run is retried inside its thread,
+    # with a short gap between attempts. Zero -- the field default -- means
+    # no ceiling; a positive number restores the old budget of two.
+    subagent_attempts: int = 0
+
 
 class AttentionWeights(BaseModel):
     src: float = 0.35
@@ -437,14 +469,17 @@ class GslConfig(BaseModel):
     # Consecutive planning failures before the request is degraded: thinking is
     # bounded, the tier is dropped and the schema ask is relaxed. Reached on the
     # third failure by default, which is after two attempts at the request as it
-    # was written.
+    # was written. Degradation is a recovery action, not a stop, so it applies
+    # however the park knob below is set.
     plan_attempts_before_degrade: int = 3
-    # Consecutive planning failures before the intention is parked. Reached on
-    # the sixth, and parking is the point: it closes the intention, so the next
-    # cycle has nothing to retry, and it records why, so the blockage is
-    # something a person can be told instead of something they infer from
-    # silence.
-    plan_attempts_before_park: int = 6
+    # Consecutive planning failures before the intention is parked. Zero --
+    # the field default -- means never: the loop degrades the request, backs
+    # off on the curve below, and asks again for as long as the agent runs,
+    # because "a task stops only when the user asks it to or the goal itself
+    # cannot be met". Set a positive number to restore the old ceiling, and
+    # the loop parks with the count and the reason recorded where a person
+    # can be told.
+    plan_attempts_before_park: int = 0
     # The wait between attempts, growing by doubling and capped. Applied *between*
     # cycles rather than inside one: sleeping in the solver holds the life loop
     # open for the length of the wait, which is a worse outage than the one being
@@ -459,6 +494,36 @@ class GslConfig(BaseModel):
     # spent reasoning and the plan arriving as `finish_reason: length` and nothing
     # else -- which is the single most common way a plan call fails here.
     degraded_reasoning_budget: int = 2_000
+
+    # How many strategies a goal may burn through before it is parked. Zero --
+    # the field default -- means there is no ceiling: a step that keeps
+    # failing keeps earning a fresh approach, on the backoff the switch
+    # itself schedules, for as long as the goal is open. A positive number
+    # restores the old ceiling (park after N strategies).
+    max_strategies: int = 0
+
+    # ------------------------------------------------------------------
+    # Parked is a pause, not a verdict: when and how often work is reopened.
+    #
+    # Parking exists so a goal that cannot currently be worked stops
+    # consuming cycles -- but "cannot currently" and "never" used to be the
+    # same state: a parked intention is closed, and only a human reopening
+    # it or a new request could restart the work. In the field that reads
+    # as "the agent gave up": a delegate thread that crashed, three bad
+    # plans in a row, and the work a person was owed sat on a shelf
+    # forever while the agent idled.
+    #
+    # So aged parked intentions are reopened on a backoff and the drives pick
+    # them up again like any other open work. The backoff keeps a blocked
+    # goal from becoming a hot loop; the reopen count is itself unbounded
+    # by default -- a goal that parks, reopens and parks again is a goal the
+    # agent has not given up on, and a person decides when they have.
+    # Intentions parked for budget are left alone: the budget comes back on
+    # its own schedule and the work resumes then. `park_reopen_max: 0` now
+    # means unlimited reopens; a positive number bounds the sweep the old
+    # way, and a negative value disables it entirely.
+    park_reopen_backoff_s: float = 1_800.0
+    park_reopen_max: int = 0
 
     # ------------------------------------------------------------------
     # Whether the code it wrote works.
@@ -615,6 +680,19 @@ class SocialConfig(BaseModel):
     # without an edit to the code.
     deliberation_max_tokens: int = 16_000
     deliberation_escalated_max_tokens: int = 48_000
+
+    # How many times a message nobody could answer is re-asked before the
+    # queue gives up on it. Zero -- the field default -- means never give
+    # up: the question is retried for as long as the agent runs, and the
+    # first few attempts are immediate (the model may simply have blinked)
+    # before the retries move onto the shared escalation curve (five
+    # minutes, an hour, five hours, a day, staying at a day) so an
+    # unanswered question costs one attempt a day rather than a hot loop.
+    # The two classes match the queue's own: failures the user must fix
+    # (dead key, exhausted quota) and transient ones (429/503/timeout).
+    # Positive numbers restore the old ceilings.
+    max_deliberation_attempts: int = 0
+    max_transient_attempts: int = 0
 
 
 class RetrievalWeights(BaseModel):
@@ -1040,6 +1118,20 @@ class InterruptionConfig(BaseModel):
 
 
 class GuardianConfig(BaseModel):
+    # "field" keeps the guardian's record-keeping and its reversibility
+    # transforms -- journal, trash, snapshots -- and drops its vetoes: the
+    # hard-limit pattern block, the capital-at-risk rejection and the
+    # due-process model check all become audit entries, and the action
+    # proceeds. "normal" is the vetoing gate this always was.
+    #
+    # The field default is the field requirement: a gate whose answer can
+    # be "no" is a place the agent stops, and an agent meant to carry a
+    # person's whole working day cannot stop at its own safety review.
+    # Oversight is unaffected either way -- `pause_actions`, the preview
+    # mode and the control-plane verbs answer to the owner, not to this
+    # knob, and remain effective in both modes. The environment variable
+    # `ETHOS_GUARDIAN_MODE` overrides the file.
+    mode: str = "field"
     fast_path_retention_days: int = 30
     due_process_retention_days: int = 180
     snapshot_policy: dict[str, int] = Field(default_factory=lambda: {"minutes_15": 4, "hourly": 24, "daily": 7})
@@ -1057,6 +1149,12 @@ class HardLimitsConfig(BaseModel):
     H4_legal_authority: bool = True
     H5_commissioned_due_process: bool = True
     H6_credential_scope: bool = True
+    # "warn" | "block" -- what the spend caps do when they are crossed.
+    # The field default is set in `permissions.yaml`: warn, because a cap
+    # enforced with a raise stops the agent for the rest of the day, and
+    # the ledger plus the dashboard still show exactly what was spent.
+    # `ETHOS_BUDGET_MODE` overrides the file.
+    on_exceed: str = "block"
 
 
 class PermissionsConfig(BaseModel):
@@ -1626,8 +1724,13 @@ class SubagentsConfig(BaseModel):
     # that still deserves a capable model.
     tier: str = "T2"
     # The model sub-agents' own model calls are pinned to, when the deployment
-    # wants a different one than the base model. Empty means no hint.
+    # wants a different one than the base. Empty means no hint.
     model_hint: str = ""
+    # The step ceiling APEX runs a desktop task under. Zero -- the field
+    # default -- means unlimited, which is APEX's own maximum (10,000
+    # steps): the program enforces that range itself and refuses anything
+    # outside 1..10000. A positive number is passed through as the ceiling.
+    apex_max_steps: int = 0
     agents: list[SubagentConfig] = Field(default_factory=lambda: [
         SubagentConfig(name="foundry"),
         SubagentConfig(name="apex"),

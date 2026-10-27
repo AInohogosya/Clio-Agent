@@ -218,6 +218,51 @@ async def test_gsl_parks_on_exhausted_budget(db, config, tmp_path):
     assert final.status == "parked"
 
 
+async def test_parked_work_is_reopenable_after_the_backoff(db, config):
+    """Parked is a pause the agent can end itself, not a shelf it needs a person for.
+
+    The reopen sweep in the life loop works in two halves: the store finds
+    the parks old enough to be owed another chance, and the loop reopens
+    them with a fresh degradation ladder. This exercises both halves against
+    the real schema -- the store query, the reopen write, and the fact that
+    a reopened intention is attentionable again.
+    """
+    memory = await make_memory(db, config)
+    intention_id = await memory.create_intention(
+        title="Rewrite the parser", desired_end_state="parser rewritten",
+        kind="task", origin="thread", priority=0.5,
+    )
+    await memory.close_intention(intention_id, "parked", "thread crashed: no answer")
+
+    # A moment-old park is a pause, not a debt: the sweep must not pick it
+    # up before the backoff has meant something.
+    fresh = await memory.list_parked_intentions(older_than_s=1800.0)
+    assert all(i.id != intention_id for i in fresh)
+
+    await db.execute(
+        "UPDATE intentions SET updated_at = now() - interval '2 hours' WHERE id = $1",
+        intention_id,
+    )
+    stale = await memory.list_parked_intentions(older_than_s=1800.0)
+    matches = [i for i in stale if i.id == intention_id]
+    assert matches, "an aged park is the reopen sweep's to find"
+
+    # What the sweep does with what it finds: reopen with a fresh ladder.
+    record = matches[0]
+    resume = dict(record.resume_state or {})
+    resume["park_reopens"] = int(resume.get("park_reopens") or 0) + 1
+    resume.pop("parked_reason", None)
+    resume["plan_attempts"] = 0
+    resume["plan_retry_after"] = None
+    await memory.update_intention(record.id, status="active", resume_state=resume)
+
+    reopened = await memory.get_intention(intention_id)
+    assert reopened is not None and reopened.is_open()
+    attentionable = await memory.list_attentionable_intentions()
+    assert any(i.id == intention_id for i in attentionable), \
+        "reopened work is work the drives are allowed to choose again"
+
+
 async def test_memory_store_full_cycle(db, config):
     memory = await make_memory(db, config)
     episode_id = await memory.record_episode(
@@ -859,6 +904,7 @@ async def test_a_goal_that_cannot_be_planned_eventually_parks(db, config, tmp_pa
     was installed along the way, because "it parked" is only the right outcome if
     it parked *instead of* pretending to have a plan.
     """
+    config.gsl.plan_attempts_before_park = 6  # the cap under test, restored here
     marker = "zz-parkstate"
     memory, gateway, gsl, intention_id = await _never_plannable(
         db, config, tmp_path, marker,
@@ -898,6 +944,42 @@ async def test_a_goal_that_cannot_be_planned_eventually_parks(db, config, tmp_pa
         await db.execute("DELETE FROM intentions WHERE id = $1", intention_id)
 
 
+async def test_a_goal_that_cannot_be_planned_never_parks_under_no_ceiling(db, config, tmp_path):
+    """The field contract: no cap on the asking, a curve on the pace.
+
+    With `plan_attempts_before_park` at zero -- the default -- the same
+    unplannable goal that parks above is instead asked again on every
+    advance: the request is degraded after the third failure, the attempts
+    keep counting, and the row stays open. Nothing here says the loop is
+    right to keep trying; it says that stopping is a decision somebody
+    makes, not something a counter does.
+    """
+    config.gsl.plan_attempts_before_park = 0
+    marker = "zz-neverpark"
+    memory, gateway, gsl, intention_id = await _never_plannable(
+        db, config, tmp_path, marker,
+    )
+    try:
+        outcomes = []
+        for _ in range(9):  # well past the ceiling the old default enforced
+            intention = await memory.get_intention(intention_id)
+            assert intention.status not in ("parked", "done", "failed", "cancelled")
+            result = await gsl.advance(intention, ws=None)
+            outcomes.append(result.outcome.value)
+
+        after = await memory.get_intention(intention_id)
+        assert after.status not in ("parked", "done", "failed", "cancelled"), after.status
+        resume = after.resume_state or {}
+        # The first advance is the understanding phase; every one after it is
+        # a plan call that failed and was counted.
+        assert resume.get("plan_attempts") >= 8, resume.get("plan_attempts")
+        assert (resume.get("plan_last_failure") or {}).get("kind") == "unusable", resume
+        assert "plan" not in resume, "degraded, still, not a fabricated plan"
+        assert len(gateway.requests) >= 9, "and the request really was re-asked"
+    finally:
+        await db.execute("DELETE FROM intentions WHERE id = $1", intention_id)
+
+
 async def test_a_parked_goal_stops_spending_money(db, config, tmp_path):
     """Parked means parked: the next cycle must not make another call.
 
@@ -908,6 +990,7 @@ async def test_a_parked_goal_stops_spending_money(db, config, tmp_path):
     gateway was not touched -- not by trusting the scheduler never to select a
     closed intention, which is a convention rather than a guarantee.
     """
+    config.gsl.plan_attempts_before_park = 6  # the cap under test, restored here
     marker = "zz-parkhalt"
     memory, gateway, gsl, intention_id = await _never_plannable(
         db, config, tmp_path, marker,
@@ -1362,6 +1445,7 @@ async def test_a_failed_step_model_call_is_a_failed_step_not_a_dead_cycle(
     is counted on the step, and the walk ends parked with a reason instead of
     looping on the identical failing call.
     """
+    config.gsl.plan_attempts_before_park = 6  # the cap under test, restored here
     from ethos.gateway.providers.base import ProviderError
 
     marker = "zz-stepcallfail"
@@ -1431,6 +1515,7 @@ async def test_a_failed_understanding_call_backs_off_instead_of_killing_the_cycl
     counted and backed off (the next cycle does not spend another model call on
     it), and the walk ends parked with a reason naming the stage.
     """
+    config.gsl.plan_attempts_before_park = 6  # the cap under test, restored here
     from ethos.gateway.providers.base import ProviderError
 
     marker = "zz-understandfail"
@@ -1647,6 +1732,7 @@ async def test_a_devise_call_that_returns_nothing_is_counted_not_invented_around
     So: no invented approach is recorded, the failure is counted, and the walk
     ends parked with a reason instead of continuing indefinitely.
     """
+    config.gsl.plan_attempts_before_park = 6  # the cap under test, restored here
     marker = "zz-deviseempty"
     memory = await make_memory(db, config)
     await db.execute("DELETE FROM intentions WHERE title LIKE $1", f"%{marker}%")
@@ -1701,6 +1787,7 @@ async def test_a_devise_call_that_raises_is_a_failure_and_not_a_silent_fallback(
     that was down, a key that had expired and a model that simply had no
     opinions were all the same event to the loop, and all of them were free.
     """
+    config.gsl.plan_attempts_before_park = 6  # the cap under test, restored here
     from ethos.gateway.providers.base import ProviderError
 
     marker = "zz-deviseraise"

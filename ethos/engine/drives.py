@@ -487,6 +487,25 @@ class Motivation:
                 why=impulse.description,
             ), p
 
+        if impulse.name in IMPULSE_TARGETS:
+            # An impulse whose whole subject is work that already exists has
+            # nothing to advance when that work is absent, and minting an
+            # intention titled after the drive does not give it a subject --
+            # it gives it a fake one. Observed live on 2026-10-25: the real
+            # commission had just parked, so for one arbitration the open
+            # list held no commitment, the fallback below opened an
+            # "advance_commitment" task, and the GSL planned against that
+            # self-referential sentence. Nothing in such a plan can be about
+            # the missing commitment, so the model produced bookkeeping
+            # theatre -- "capture HEAD hash", "create .clio/advance-repo",
+            # "append timestamped evidence line" -- each step passing a
+            # trivially satisfiable check, leaving the placeholder
+            # in_progress forever while the agent told its owner it was
+            # picking up the work it had promised. The honest response to
+            # "advance a commitment" when there is no commitment is no
+            # focus; the drive fires again the moment real work is open.
+            return None, p
+
         focus = Focus(
             title=impulse.name,
             kind="impulse",

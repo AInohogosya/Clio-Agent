@@ -417,10 +417,19 @@ async def test_an_impulse_with_no_existing_subject_still_opens_its_own_work(conf
     assert focus.intention_id is not None, "and the new work is bound to the focus"
 
 
-async def test_a_commitment_impulse_with_nothing_committed_still_acts(config):
-    """Nothing committed is not a reason to do nothing.
+async def test_a_commitment_impulse_with_nothing_committed_mints_nothing(config):
+    """Nothing committed is nothing to advance, and no way to fake it.
 
-    It is a reason to open something, which is what the impulse asked for.
+    The fallback used to open an intention titled after the drive whenever the
+    resolver found no open commitment -- which is exactly the state the drive
+    reaches in the gap between real work parking and the sweep reopening it.
+    Observed live on 2026-10-25: twelve such placeholders in one night, each
+    planned against its own self-referential sentence, so the solver produced
+    bookkeeping theatre (capture a hash, mkdir a directory, append an
+    "evidence" line) that passed trivially satisfiable checks and left the
+    intention in_progress forever -- while the agent told its owner it was
+    picking up the work it had actually promised. An impulse whose subject is
+    existing work has no subject, so it gets no focus and opens nothing.
     """
     from ethos.engine.drives import Motivation
 
@@ -444,8 +453,33 @@ async def test_a_commitment_impulse_with_nothing_committed_still_acts(config):
                                  "priority": 0.5, "deadline": None}]),
         energy=0.9, create_intention_fn=create_intention)
 
-    assert len(created) == 1
-    assert focus is not None
+    assert created == [], "a drive with no subject must not mint one"
+    assert focus is None, "and it must not hold a focus over fake work"
+
+
+async def test_a_venture_impulse_with_no_open_venture_mints_nothing(config):
+    """`push_venture` has the same shape and the same defect."""
+    from ethos.engine.drives import Motivation
+
+    created = []
+
+    async def create_intention(**kwargs):
+        created.append(kwargs)
+        return uuid4()
+
+    motivation = Motivation(config, rng=random.Random(11))
+    motivation.arbitrate = lambda inputs, energy: (  # type: ignore[method-assign]
+        Impulse(name="push_venture", drive="creation", relevance=0.9,
+                value_hat=0.75, cost_hat=0.2,
+                description="Move the most promising venture one step."),
+        motivation.drive_pressures(inputs),
+    )
+
+    focus, _ = await motivation.choose_focus(DriveInputs(), energy=0.9,
+                                             create_intention_fn=create_intention)
+
+    assert created == []
+    assert focus is None
 
 
 def test_drive_inputs_carry_the_id_of_the_work_they_describe():

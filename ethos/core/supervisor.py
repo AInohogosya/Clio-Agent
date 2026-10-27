@@ -50,6 +50,30 @@ supervisor that was killed rather than asked cannot refuse to start.
 
 SHUTDOWN_GRACE_S = 10.0
 
+CORE_HEARTBEAT_FILE = "heartbeat"
+"""The file `ethos-core` touches once per life cycle (and on every parked
+heartbeat), so the supervisor can tell a live core from a wedged one.
+
+Process-death polling alone cannot see the worse failure: a core that is
+alive but stuck — a call that will never return, an await nothing will
+complete. The file is the cheapest channel both sides can use without the
+supervisor needing database access: the core already publishes presence
+per cycle, and touching a file next to that publish costs nothing.
+
+Only read when it exists, so a supervisor running an older core (or a
+core whose run dir it cannot read) never kills a child for being quiet.
+"""
+
+CORE_HEARTBEAT_STALE_S = float(os.environ.get("ETHOS_CORE_HEARTBEAT_STALE_S", "1800"))
+"""How old the heartbeat may be before the core is presumed wedged.
+
+Generous on purpose: a cycle is a whole deliberation whose model calls can
+each sit out a provider's rate-limit window, and a core that is legitimately
+grinding through an outage must not be killed for it. Half an hour with no
+cycle at all — not one tick, no parked heartbeat — is the silence that
+means wedged, not busy.
+"""
+
 
 class ProcessSpec:
     def __init__(self, name: str, argv: list[str], optional: bool = False):
@@ -59,8 +83,11 @@ class ProcessSpec:
         self.proc: subprocess.Popen | None = None
         self.last_start: float = 0.0
         self.restart_count: int = 0
-        """Set once this child has used up its restarts, so the sweep stops asking."""
+        """How many consecutive quick restarts this child is on. Grows the
+        backoff and resets after a minute of stable life; never a death
+        sentence — a required child is always restarted."""
         self.retired: bool = False
+        """Set for an optional child only (the bridge), which is not restarted."""
         """The earliest moment the next attempt is allowed to happen."""
         self.next_attempt: float = 0.0
 
@@ -114,7 +141,6 @@ class Supervisor:
     """Seven-process model [D-11]: starts gateway, toolhost, comms, workers,
     core and (optionally) web; restarts crashed children with backoff."""
 
-    MAX_RESTARTS = 5
     BACKOFF_S = 3.0
     POLL_S = 2.0
 
@@ -216,7 +242,7 @@ class Supervisor:
         inside its own start-up loop, which left every already-started process
         running with nothing to restart them. So the failure is logged with the
         child's name and handed back, and the caller counts it like any other
-        death: the same backoff, the same limit, the same "we have given up".
+        death: the same backoff, and the same promise to keep trying.
         """
         log_path = self.log_dir / f"{spec.name}.log"
         try:
@@ -243,23 +269,42 @@ class Supervisor:
             # open leaks a descriptor per restart, and a supervisor restarts.
             fh.close()
         spec.last_start = time.monotonic()
+        if spec.name == "ethos-core":
+            # The heartbeat on disk is the last core's, not this one's: a file
+            # outlives the process that wrote it. Judging a core two seconds
+            # old against a mtime its predecessor left behind is how a fresh
+            # boot gets terminated before its first cycle — database connect,
+            # embedder load — can touch the file once, and every restart
+            # inherits the same stale verdict, for as long as the supervisor
+            # lives. The baseline moves to the spawn instead: a fresh core has
+            # the full stale window to say its first word, and one that hangs
+            # during start-up is still caught, `CORE_HEARTBEAT_STALE_S` after
+            # the moment it was asked to run.
+            try:
+                self.core_heartbeat_file.parent.mkdir(parents=True, exist_ok=True)
+                self.core_heartbeat_file.touch()
+            except OSError as exc:
+                logger.warning(
+                    "supervisor.heartbeat_baseline_failed", reason=str(exc)
+                )
         logger.info("supervisor.started", process=spec.name, pid=spec.proc.pid)
         return True
 
     def _should_restart(self, spec: ProcessSpec) -> bool:
         if self._stopping or spec.optional:
             return False
-        # A child that ran stably earns its restarts back: the limit bounds a
-        # tight crash loop (a missing API key at start-up), not the lifetime of
-        # the supervisor. Without this, a core that crash-looped five times
-        # before its key was pasted into the settings page stayed retired
-        # forever — and the page the person just used to fix it could never
-        # show a live agent until somebody ran `ethos up` again.
+        # A child that ran stably earns its restarts back: the count bounds the
+        # backoff curve, not the lifetime of the supervisor. There is no
+        # give-up path for a required child, deliberately: a core that
+        # crash-looped five times before its key was pasted into the settings
+        # page used to stay retired forever — and the page the person just
+        # used to fix it could never show a live agent until somebody ran
+        # `ethos up` again. A field agent keeps its children coming back for
+        # as long as the supervisor lives, on a backoff that tops out at
+        # forty-eight seconds; the operator's stop is `ethos stop`, not
+        # five crashes.
         if spec.restart_count and time.monotonic() - spec.last_start >= 60.0:
             spec.restart_count = 0
-        if spec.restart_count >= self.MAX_RESTARTS:
-            logger.error("supervisor.giving_up", process=spec.name)
-            return False
         return True
 
     def _retire(self, spec: ProcessSpec, rc: int | None) -> None:
@@ -271,12 +316,26 @@ class Supervisor:
         if spec.optional and rc == 0:
             logger.info("supervisor.child_done", process=spec.name)
             return
-        # Said once, not on every poll: a child that will not be restarted stays
-        # dead, and re-announcing it every two seconds is a log nobody can read.
-        # An optional child's death is a warning — the rest of the agent is still
-        # up, and the one thing missing is named.
-        log = logger.warning if spec.optional else logger.error
-        log("supervisor.child_dead", process=spec.name, rc=rc)
+        # Said once, not on every poll, and reachable only for an optional
+        # child now: a required child is restarted by `_sweep` for as long as
+        # the supervisor lives, so "will not be restarted" can only mean the
+        # bridge. Re-announcing it every two seconds is a log nobody can read.
+        logger.warning("supervisor.child_dead", process=spec.name, rc=rc)
+
+    @property
+    def core_heartbeat_file(self) -> Path:
+        return self.config.paths.run_dir / CORE_HEARTBEAT_FILE
+
+    def _core_heartbeat_age_s(self) -> float | None:
+        """Seconds since the core last touched its heartbeat, or `None`.
+
+        `None` means "do not judge" — no file yet, or a run dir that cannot
+        be read — and is treated exactly like a young heartbeat.
+        """
+        try:
+            return time.time() - self.core_heartbeat_file.stat().st_mtime
+        except OSError:
+            return None
 
     def _sweep(self) -> None:
         """One pass over every child: what died, what never started, what to retry."""
@@ -285,11 +344,38 @@ class Supervisor:
             if self._stopping or spec.retired:
                 continue
             if spec.proc is not None and spec.proc.poll() is None:
+                # Alive — but "has a pid" is not "is making progress". The core
+                # touches a heartbeat file once per cycle and on every parked
+                # heartbeat; a core that has neither cycled nor said it is
+                # parked for half an hour is wedged, and a wedged core is the
+                # one failure process-death polling cannot see. Terminated
+                # here, restarted by the next sweep like any other death.
+                if spec.name == "ethos-core":
+                    age = self._core_heartbeat_age_s()
+                    if age is not None and age > CORE_HEARTBEAT_STALE_S:
+                        logger.error(
+                            "supervisor.core_wedged",
+                            heartbeat_age_s=round(age, 1),
+                            stale_after_s=CORE_HEARTBEAT_STALE_S,
+                            action="terminating; next sweep restarts it",
+                        )
+                        try:
+                            spec.proc.terminate()
+                        except OSError:
+                            logger.exception("supervisor.core_terminate_failed")
                 continue
             rc = spec.proc.returncode if spec.proc is not None else None
             if spec.proc is not None:
                 spec.proc = None
-            elif now < spec.next_attempt:
+            # The backoff gate is reached by both shapes of absence, and that
+            # is the fix: it used to be an `elif` on `proc is None`, so a child
+            # that *died* — a fresh `Popen` object holding an exit code — blew
+            # straight past `next_attempt` every sweep. The delay was computed,
+            # logged, and never slept: a core crash-looping on a broken import
+            # came back every two seconds, four and a half thousand times a
+            # night, with `delay: 48.0` printed on every line saying otherwise.
+            # A death schedules its restart here; the sweeps in between wait.
+            if now < spec.next_attempt:
                 continue
             # A child that never started is on the same footing as one that died:
             # both are absent, and both are the supervisor's to put back.

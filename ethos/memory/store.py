@@ -423,6 +423,53 @@ class MemoryStore:
         )
         return [self._row_to_intention(r) for r in rows]
 
+    async def next_open_commission(self) -> IntentionRecord | None:
+        """The open intention a person is waiting on, most urgent first.
+
+        The commission bypass in `choose_focus` takes the pass outright -- but
+        it only ever runs when the focus is empty. A focus held by lesser work
+        (an idle impulse, a drive's own housekeeping) never empties on its own:
+        `_settled_focus` returns the held focus for as long as its goal has a
+        pending step, so the bypass is unreachable and a person's request sits
+        open behind work nobody asked for. Observed live on 2026-10-25: the
+        focus had landed on a placeholder intention and stayed there all
+        morning -- `advance_goal` cycles every tick -- while the commissioned
+        task the owner had asked to see resumed sat open one priority band
+        above it, and every reply said "picking up the Snake work" while no
+        cycle ever read that intention.
+
+        This is the same selection the bypass makes, callable mid-cycle: the
+        oldest open commission with a deadline beats an undated one, priority
+        breaks ties, recency after that -- the same ordering
+        `selection_key` gives the drive layer.
+        """
+        rows = await self.db.fetch(
+            "SELECT * FROM intentions WHERE status = ANY($1::text[]) "
+            "AND origin = 'commission' "
+            "ORDER BY deadline ASC NULLS LAST, priority DESC, created_at ASC LIMIT 1",
+            list(_OPEN_INTENTION_STATUSES),
+        )
+        if not rows:
+            return None
+        return self._row_to_intention(rows[0])
+
+    async def list_parked_intentions(self, older_than_s: float, limit: int = 50) -> list[IntentionRecord]:
+        """Parked intentions whose parking has aged past `older_than_s`.
+
+        For the reopen sweep: parking is a pause with a reason, and this is
+        the query that finds the pauses old enough to be owed another chance.
+        `updated_at` is written when the intention is closed, so for a parked
+        row it *is* the parking time until something else touches the row --
+        and nothing else is allowed to, while it is closed.
+        """
+        rows = await self.db.fetch(
+            "SELECT * FROM intentions WHERE status = 'parked' "
+            "AND updated_at <= now() - make_interval(secs => $1) "
+            "ORDER BY updated_at ASC LIMIT $2",
+            float(older_than_s), limit,
+        )
+        return [self._row_to_intention(r) for r in rows]
+
     async def find_open_intention(
         self,
         title: str,

@@ -62,6 +62,17 @@ threads:
   max_concurrent: 4
   max_depth: 2
   mode: inprocess
+  # Retry ceilings inside a delegated thread. Zero -- the default -- means no
+  # ceiling: a model call that keeps failing is retried on the worker's
+  # backoff (rate limits on the escalation curve, anything else doubling to
+  # 60s) for as long as the thread runs, and a crashed sub-agent run is
+  # retried with a short gap between attempts. Positive numbers restore the
+  # old honest-failure-after-N budgets. The one exception is unchanged: a
+  # failure that says no model on this deployment could serve the request
+  # ends the task on the spot -- the goal is parked and reopened by the life
+  # loop's sweep, so the work is retried at the system level instead.
+  call_attempts: 0
+  subagent_attempts: 0
 
 # External agent programs wired in as sub-agents. Each one keeps its own
 # identity and interface; every model call they make is routed through this
@@ -75,6 +86,10 @@ subagents:
   # the base model's name, so they inherit it.
   model_name: ""
   tier: T2
+  # The step ceiling APEX runs a desktop task under. Zero -- the default --
+  # means unlimited, which is APEX's own maximum (the program enforces
+  # 1..10000 itself); a positive number is passed through as the ceiling.
+  apex_max_steps: 0
   # The model sub-agents' own calls are pinned to. Foundry's role outputs are
   # strict JSON schemas; the small base model could not satisfy the planner's
   # and repeated the same invalid object through all three schema repairs.

@@ -66,6 +66,22 @@ models:
   # Source: https://build.nvidia.com/nvidia/nemotron-3-super-120b-a12b
   "nvidia/nemotron-3-super-120b-a12b": { input: 0.0, cached_input: 0.0, cache_write: 0.0, output: 0.0 }
 
+  # The 3.5 Super VL hosted endpoint, same NVIDIA developer API as the two
+  # above and the same trial terms; the model the live base_model.yaml pins
+  # since 2026-10-20. Priced by name for the same reason: without this row the
+  # pricing test correctly reports a catalogue model with no known rate, and
+  # the fallback charges it the high-water mark.
+  # Source: https://build.nvidia.com/nvidia/nemotron-3.5-super-vl-120b-a12b
+  "nvidia/nemotron-3.5-super-vl-120b-a12b": { input: 0.0, cached_input: 0.0, cache_write: 0.0, output: 0.0 }
+
+  # The Nemotron 3 Ultra hosted endpoint, same NVIDIA developer API and the
+  # same trial terms; the model the live base_model.yaml has pinned since
+  # 2026-10-25. Priced by name for the same reason as the rows above: without
+  # this row the catalogue model lands on the high-water mark, and a day of
+  # retries against a free endpoint reads as money the agent never spent.
+  # Source: https://build.nvidia.com/nvidia/nemotron-3-ultra-550b-a55b
+  "nvidia/nemotron-3-ultra-550b-a55b": { input: 0.0, cached_input: 0.0, cache_write: 0.0, output: 0.0 }
+
   # Step 5 preview, on the same NVIDIA developer endpoint as the Nemotron above
   # (`https://integrate.api.nvidia.com/v1`, named under `free_base_urls`), priced
   # by name for the same reason: a base model pinned to it charges by name, and

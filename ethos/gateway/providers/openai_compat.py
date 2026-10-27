@@ -16,6 +16,16 @@ from ethos.gateway.normalizer import (
 )
 from ethos.gateway.providers.base import Provider, ProviderError
 
+# What an endpoint may call the gateway's parameters under its own name. The
+# OpenAI-compatible request says `reasoning`; a vLLM deployment rejects it as
+# its internal `thinking_token_budget` ("not yet supported by the V2 model
+# runner"), which shares no substring with `reasoning` -- and a refusal that
+# cannot be recognized is a refusal that is paid for again on every call:
+# thirty-nine of them in one day, all one purpose, before anything learned.
+PARAMETER_ALIASES: dict[str, tuple[str, ...]] = {
+    "reasoning": ("reasoning", "thinking_token_budget", "thinking_budget"),
+}
+
 
 class OpenAICompatProvider(Provider):
     """OpenAI-compatible adapter: OpenRouter, NVIDIA NIM, local vLLM, DeepSeek, Groq."""
@@ -167,11 +177,12 @@ class OpenAICompatProvider(Provider):
         if exc.status != 400:
             return False
         text = str(exc).lower()
-        if parameter not in text:
+        names = PARAMETER_ALIASES.get(parameter, (parameter,))
+        if not any(name in text for name in names):
             return False
         return any(word in text for word in (
-            "unsupported", "not support", "unknown", "unrecognized", "unrecognised",
-            "unexpected", "invalid", "extra", "not allowed", "does not",
+            "unsupported", "not support", "not yet support", "unknown", "unrecognized",
+            "unrecognised", "unexpected", "invalid", "extra", "not allowed", "does not",
         ))
 
     @staticmethod

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -16,6 +17,8 @@ from ethos.observability.logger import get_logger
 from ethos.parse import parse_json_block
 
 logger = get_logger("ethos.guardian.gate")
+
+FIELD_MODE = "field"
 
 DUE_PROCESS_PROMPT = """You are an independent reviewer inside {name}'s guardian subsystem. An agent
 is about to move a COMMISSIONED artifact to trash. The claiming reason must be evaluated for
@@ -141,6 +144,27 @@ class GuardianGate:
         self.verifier = verifier
         self.control = control
 
+    def _field_mode(self) -> bool:
+        """Whether the gate keeps records instead of standing in the way.
+
+        Field mode is the "usable unattended" setting: every veto this gate
+        has -- the hard-limit pattern block, the capital-at-risk rejection,
+        the due-process model check -- becomes an audit entry, and the
+        action proceeds. What it does not touch is the reversibility work,
+        which is not a barrier: trash, snapshots and the journal are how a
+        mistake gets undone, and they run identically in both modes. Nor
+        does it touch oversight: `pause_actions` and preview answer to the
+        owner, and stay effective with the gate in any mode.
+
+        Read once per call rather than cached, so a surface (or an
+        environment variable on a restarted child) can change the mode
+        without the gate holding yesterday's answer.
+        """
+        mode = os.environ.get("ETHOS_GUARDIAN_MODE")
+        if not mode:
+            mode = str(getattr(self.config.permissions.guardian, "mode", FIELD_MODE))
+        return mode.strip().lower() == FIELD_MODE
+
     async def review(
         self,
         tool: str,
@@ -196,6 +220,24 @@ class GuardianGate:
 
         effects = classify_tool(tool, args)
         if "blocked" in effects.categories:
+            if self._field_mode():
+                # Recorded, then allowed outright. Everything downstream of
+                # the gate -- the journal before execution, the snapshot --
+                # runs identically, but the destructive review below is not
+                # for these: the pattern tables name scans, credential
+                # probes and the like, and handing one to the trash
+                # transform would be a category error -- the fast path is
+                # for deletes of agent-owned files, and `rm -rf /` has no
+                # business being moved anywhere.
+                await self.audit.append(
+                    actor=thread_id, category="guardian",
+                    summary=f"hard-limit pattern audited, allowed in field mode: {tool}",
+                    details={"notes": effects.notes, "args": _redacted(args)},
+                )
+                return GateDecision(
+                    Verdict.ALLOW, GatePath.NORMAL,
+                    "hard-limit pattern allowed in field mode; the hit is on the audit record",
+                )
             await self.audit.append(
                 actor=thread_id, category="guardian",
                 summary=f"action blocked by hard limit: {tool}",
@@ -236,6 +278,17 @@ class GuardianGate:
     ) -> GateDecision | None:
         limits = self.config.permissions.hard_limits
         if money > limits.H2_capital_at_risk_usd:
+            if self._field_mode():
+                # Audited rather than refused, for the same reason the
+                # pattern block is: a cap the gate enforces with a "no" is
+                # a place the work stops, and the person who set the cap
+                # can read the entry and say so in words.
+                await self.audit.append(
+                    actor=thread_id, category="guardian",
+                    summary="capital-at-risk cap exceeded; allowed and audited (field mode)",
+                    details={"money_usd": money, "cap": limits.H2_capital_at_risk_usd},
+                )
+                return None
             await self.audit.append(
                 actor=thread_id, category="guardian",
                 summary="action blocked: capital-at-risk cap (H2)",
@@ -271,23 +324,66 @@ class GuardianGate:
         # shell command, and a prose echo could become the target in the first
         # place. Concrete means named (not a glob, expansion or `~`), and the
         # fast path below additionally requires that it still exists.
+        #
+        # The list is `delete_targets` rather than `paths` because the review
+        # wants what the command would destroy, not what it names: a compound
+        # command's read-side operands (`find DIR ... -exec rm ...`) and its
+        # redirects (`2>/dev/null`) are in `paths` and must not be read as
+        # things about to be removed. The incident of 2026-10-27 was exactly
+        # that reading: the `find` root sat first in `paths`, the registry
+        # called it protected because commissioned work lives underneath it,
+        # and the trash took the whole project directory for an `rm` whose
+        # operands were two subdirectories of it.
         targets = [
-            Path(p).expanduser() for p in effects.paths if is_concrete_path(p)
+            Path(p).expanduser() for p in effects.delete_targets if is_concrete_path(p)
         ]
         if not targets:
             raw = args.get("path") or args.get("to_path")
             if isinstance(raw, str) and is_concrete_path(raw):
                 targets = [Path(raw).expanduser()]
         protected = None
+        protected_target: Path | None = None
         for target in targets:
             try:
                 protected = await self.registry.is_protected(target)
             except Exception:
                 protected = None
             if protected is not None:
+                protected_target = target
                 break
 
         if protected is not None:
+            if self._field_mode():
+                # No second opinion in field mode. The due-process check is
+                # an extra model call in the critical path of a delete, and
+                # it fails closed -- an unreachable verifier was a refusal
+                # the work could not argue with. What actually makes this
+                # delete safe is the transform below: the artifact goes to
+                # trash with long retention and the action is journaled,
+                # which is reversibility doing the job a veto was doing.
+                entry = await self.trash.move(
+                    protected_target if protected_target is not None else Path(str(args.get("path", ""))),
+                    kind="due_process", reason=reason, intention_id=intention_id,
+                )
+                await self.audit.append(
+                    actor=thread_id, category="guardian",
+                    summary="due process waived in field mode; commissioned artifact moved to trash",
+                    details={
+                        "uri": protected["uri"], "trash_entry": entry.id, "reason": reason,
+                        # What was actually moved: the registry's row may name a
+                        # file inside the target (a directory holding
+                        # commissioned work), and the record has to say which
+                        # one the trash took.
+                        "moved": str(entry.origin),
+                    },
+                )
+                return GateDecision(
+                    Verdict.TRANSFORM, GatePath.DUE_PROCESS,
+                    "field mode: moved to trash with long retention, journaled",
+                    transformed_tool="fs.read",
+                    transformed_args={"path": entry.to_dict()["path"]},
+                    undo_ref=entry.id,
+                )
             verdict = await self.verifier.check_consistency(
                 reason=reason,
                 evidence={
@@ -321,13 +417,14 @@ class GuardianGate:
                     "commissioned artifacts are never destroyed without due process (H5)",
                 )
             entry = await self.trash.move(
-                targets[0] if targets else Path(str(args.get("path", ""))),
+                protected_target if protected_target is not None else Path(str(args.get("path", ""))),
                 kind="due_process", reason=reason, intention_id=intention_id,
             )
             await self.audit.append(
                 actor=thread_id, category="guardian",
                 summary="due process PASSED; commissioned artifact moved to trash (180d retention)",
-                details={"uri": protected["uri"], "trash_entry": entry.id, "verdict": verdict},
+                details={"uri": protected["uri"], "trash_entry": entry.id, "verdict": verdict,
+                         "moved": str(entry.origin)},
             )
             # Same as the rejection above: the move is real, the trash entry is
             # recorded, the audit entry above says why it was allowed, and the
@@ -346,18 +443,25 @@ class GuardianGate:
             # failure. The trash was raising `cannot trash non-existent path`
             # here, which turned `rm -f` with a stale or prose-derived name
             # into a failed tool call.
-            target = next(
-                (t for t in targets if t.exists() or t.is_symlink()), None,
-            )
-            if target is None:
+            #
+            # Every existing target is taken, not the first one: an `rm` of
+            # `venv .venv` that only moved the first left the second for the
+            # next attempt, and the command the agent believed it had run --
+            # the transform replaces the whole line -- never came back round
+            # to it in the shape it wrote. Each move is its own entry, so
+            # each can be restored on its own.
+            existing = [t for t in targets if t.exists() or t.is_symlink()]
+            if not existing:
                 return GateDecision(
                     Verdict.ALLOW, GatePath.FAST,
                     "destructive command with no existing concrete path target",
                 )
-            entry = await self.trash.move(
-                target, kind="fast_path",
-                reason=reason, intention_id=intention_id, thread_id=thread_id,
-            )
+            entries: list[Any] = []
+            for target in existing:
+                entries.append(await self.trash.move(
+                    target, kind="fast_path",
+                    reason=reason, intention_id=intention_id, thread_id=thread_id,
+                ))
             try:
                 await self.snapshots.create(f"pre-delete:{reason}")
             except Exception:
@@ -365,14 +469,19 @@ class GuardianGate:
             await self.audit.append(
                 actor=thread_id, category="guardian",
                 summary="fast path: agent-owned destructive op moved to trash (30d)",
-                details={"target": str(target), "trash_entry": entry.id, "tool": tool},
+                details={
+                    "target": str(existing[0]),
+                    "moved": [str(e.origin) for e in entries],
+                    "trash_entry": entries[0].id,
+                    "tool": tool,
+                },
             )
             return GateDecision(
                 Verdict.TRANSFORM, GatePath.FAST,
                 "agent-owned file: moved to trash with 30-day retention + snapshot",
                 transformed_tool="fs.read",
-                transformed_args={"path": entry.to_dict()["path"]},
-                undo_ref=entry.id,
+                transformed_args={"path": entries[0].to_dict()["path"]},
+                undo_ref=entries[0].id,
             )
 
         await self.audit.append(

@@ -8,7 +8,7 @@ import pytest
 
 from ethos.config import load_base_model, load_config
 from ethos.gateway.client import GatewayClient
-from ethos.gateway.cost import BudgetExceededError, CostCalculator
+from ethos.gateway.cost import BudgetExceededError, CostCalculator, SpendGuard
 from ethos.gateway.normalizer import estimate_tokens
 from ethos.gateway.providers.anthropic_native import AnthropicNativeProvider
 from ethos.gateway.providers.base import ProviderError
@@ -352,6 +352,41 @@ def test_budget_exception_carries_details():
     assert exc.bucket == "day"
     assert exc.spent == 19.0
     assert exc.cap == 20.0
+
+
+class _OverCapDB:
+    """Answers every spend query as if every cap had been crossed."""
+
+    async def fetchval(self, sql, *args):
+        return 999.0
+
+
+async def test_block_mode_refuses_the_call_when_the_caps_are_crossed(full_config):
+    full_config.permissions.hard_limits.on_exceed = "block"
+    guard = SpendGuard(_OverCapDB(), full_config)
+    with pytest.raises(BudgetExceededError):
+        await guard.check("discretionary", est_cost=0.50)
+
+
+async def test_warn_mode_keeps_the_agent_working_past_the_cap(full_config):
+    """The field contract: the cap is a loud line on the dashboard, not a stop.
+
+    A budget that raises stops the agent for the rest of the day, which for a
+    tool meant to carry someone's whole working day is the one failure the
+    money was supposed to prevent. In warn mode the same breach is logged and
+    the call proceeds.
+    """
+    full_config.permissions.hard_limits.on_exceed = "warn"
+    guard = SpendGuard(_OverCapDB(), full_config)
+    await guard.check("discretionary", est_cost=0.50)  # must not raise
+
+
+async def test_the_budget_env_var_overrides_the_file(full_config, monkeypatch):
+    full_config.permissions.hard_limits.on_exceed = "warn"
+    monkeypatch.setenv("ETHOS_BUDGET_MODE", "block")
+    guard = SpendGuard(_OverCapDB(), full_config)
+    with pytest.raises(BudgetExceededError):
+        await guard.check("discretionary", est_cost=0.50)
 
 
 def test_estimate_tokens_positive(full_config):

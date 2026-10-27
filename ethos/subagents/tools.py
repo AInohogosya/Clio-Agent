@@ -136,7 +136,13 @@ class ApexRunTool(Tool):
         "properties": {
             "task": {"type": "string", "description": "the desktop goal, in natural language"},
             "mode": {"type": "string", "enum": ["visible", "hidden"], "description": "default hidden"},
-            "max_steps": {"type": "integer", "description": "step ceiling (default 60)"},
+            "max_steps": {
+                "type": "integer",
+                "description": (
+                    "step ceiling; 0 or omitted means the deployment's "
+                    "`subagents.apex_max_steps` (default: no ceiling)"
+                ),
+            },
         },
         "required": ["task"],
     }

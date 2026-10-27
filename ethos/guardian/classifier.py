@@ -12,6 +12,7 @@ DESTRUCTIVE_CATEGORIES = {"delete", "irreversible", "permission"}
 class SideEffects:
     categories: set[str] = field(default_factory=set)
     paths: list[str] = field(default_factory=list)
+    delete_targets: list[str] = field(default_factory=list)
     money_usd: float | None = None
     notes: list[str] = field(default_factory=list)
 
@@ -458,6 +459,70 @@ def extract_paths(command: str) -> list[str]:
     return _unique(paths)
 
 
+# The commands whose operands are things the command destroys. Derived from the
+# table rather than spelled twice, so a word added to `COMMAND_TABLE` with a
+# destructive category is a delete target the gate can name without another edit.
+DESTRUCTIVE_BASES = frozenset(
+    base for base, categories in COMMAND_TABLE.items() if categories & {"delete", "irreversible"}
+)
+
+
+def extract_delete_targets(command: str) -> list[str]:
+    """The paths a command would destroy, as opposed to the paths it names.
+
+    `extract_paths` answers "what does this command touch", and for the
+    destructive review that answer is too wide. A compound command names paths
+    on both sides of its semicolons -- `find DIR ... -exec rm -rf {} +` names
+    `DIR` as the tree to *walk*, a redirect names `/dev/null` as where stderr
+    goes -- and `extract_paths` collects all of them. The gate then read the
+    lot as delete targets, asked the registry whether the first was protected,
+    and moved it to the trash: on 2026-10-27 that turned an `rm` of two
+    virtual-environment directories into the loss of the whole project
+    directory they sat in, restored from the trash twenty minutes later.
+
+    So the review's targets are the operands of the destructive commands only:
+    a word is a delete target when the command it belongs to is one that
+    deletes. A redirect target is never one -- redirection writes, it does not
+    remove -- and an operand of a read (`find`'s root, `ls`'s argument) is a
+    place the command looks, not a thing it ends.
+    """
+    try:
+        parsed = bashlex.parse(command)
+    except Exception:
+        parsed = []
+    targets: list[str] = []
+    if parsed:
+        for tree in parsed:
+            for node in _walk(tree):
+                if getattr(node, "kind", None) != "command":
+                    continue
+                parts = getattr(node, "parts", []) or []
+                base = ""
+                for part in parts:
+                    if getattr(part, "kind", None) == "word":
+                        base = _command_base(getattr(part, "word", "") or "")
+                        break
+                if base not in DESTRUCTIVE_BASES:
+                    continue
+                for part in parts[1:]:
+                    word = getattr(part, "word", None)
+                    if word is None:
+                        continue
+                    if word.startswith("-") and not _looks_like_path(word):
+                        continue
+                    if _looks_like_path(word) and word not in targets:
+                        targets.append(word)
+    else:
+        # Unparseable: the token scan cannot tell which command an operand
+        # belongs to, so it keeps the wide reading rather than guessing a
+        # narrower one. A command bashlex cannot read is rare, and the wide
+        # reading is what this function's callers did before it existed.
+        for token in command.split():
+            if _looks_like_path(token) and token not in targets:
+                targets.append(token)
+    return targets
+
+
 def _walk(node: object):
     stack = [node]
     while stack:
@@ -517,6 +582,10 @@ def classify_shell(command: str) -> SideEffects:
             else:
                 effects.categories.add("irreversible")
     effects.paths = extract_paths(command)
+    # The review's own list: what the command would destroy, not what it names.
+    # Kept separate from `paths` because the gate's destructive review must not
+    # read a `find` root or a redirect as a thing about to be removed.
+    effects.delete_targets = extract_delete_targets(command)
     unresolved = _unresolved_paths(command)
     if unresolved:
         # Not decoration: `GuardianGate._review_destructive` walks `paths` looking
@@ -614,10 +683,11 @@ def classify_tool(tool: str, args: dict) -> SideEffects:
         categories |= shell_effects.categories
         paths.extend(shell_effects.paths)
         return SideEffects(categories=categories, paths=_unique(paths),
+                           delete_targets=shell_effects.delete_targets,
                            money_usd=shell_effects.money_usd, notes=shell_effects.notes)
     money = args.get("spend_usd") or args.get("_spend_usd")
     return SideEffects(
-        categories=categories, paths=_unique(paths),
+        categories=categories, paths=_unique(paths), delete_targets=_unique(paths),
         money_usd=float(money) if money is not None else None,
     )
 

@@ -151,7 +151,9 @@ async def test_a_prose_answer_gets_one_repair_turn(config):
 
 async def test_exhausted_rate_limits_end_the_task_honestly(config):
     """Bounded does not mean unbounded: after the retry budget the task ends,
-    and the envelope says so with the stage and the error."""
+    and the envelope says so with the stage and the error. The field default
+    is no ceiling at all; this test restores the bounded mode it is about."""
+    config.threads.call_attempts = 3
     gateway = _ScriptedGateway({
         "thread.devise": [_RateLimited("slow down")] * 9,
     })
@@ -256,9 +258,52 @@ def test_the_failure_envelope_vocabulary_is_shared():
     assert failure_reason({"status": "failed"}) == "failed"
 
 
+async def test_orphaned_handles_release_their_slots(config):
+    """A worker that dies unpublished must not hold a delegate slot forever.
+
+    In process mode a worker publishes its result over the bus, and one that
+    dies before publishing leaves a handle saying "running" for the life of
+    the manager. Four of those and `spawn_spec` refused every new delegate --
+    the agent stopped delegating with nothing dead to show for it. The
+    reaper reclaims stale handles: marked failed, intention parked (where
+    the reopen sweep can pick the work back up), slot returned.
+    """
+    import asyncio
+
+    memory = _Memory()
+    # Zero means "stale immediately", which is what an orphan is from the
+    # moment its worker dies; real workers get the generous default.
+    config.threads.stale_after_s = 0.0
+
+    async def _hanging_worker(spec: dict[str, Any]) -> Any:
+        await asyncio.sleep(3600)
+
+    manager = ThreadManager(config, memory, worker_factory=_hanging_worker)
+    held = [
+        await manager.spawn_spec({"goal": "stuck goal", "role": "delegate"})
+        for _ in range(config.threads.max_concurrent)
+    ]
+    assert manager._running_count() == config.threads.max_concurrent
+
+    # The spawn that used to raise forever, because four handles that would
+    # never answer were counted as four live delegates.
+    after = await manager.spawn_spec({"goal": "the next thing", "role": "delegate"})
+    assert after.status == "running"
+    for handle in held:
+        assert handle.status == "failed"
+        assert "presumed dead" in handle.error
+    assert all(status == "parked" for _, status, _ in memory.closed), \
+        "the orphaned work is parked, which is where the reopen sweep finds it"
+    # Let the cancelled tasks run their finally-blocks so the test ends clean.
+    for task in [h.task for h in held if h.task is not None]:
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+
 async def test_a_crashing_subagent_is_retried(config, monkeypatch: pytest.MonkeyPatch):
     """A sub-agent that crashes once gets a second attempt before the thread
     reports the crash."""
+    config.threads.subagent_attempts = 2
     from ethos.subagents.base import SubAgentResult
 
     runs = {"count": 0}
@@ -293,6 +338,7 @@ async def test_a_crashing_subagent_is_retried(config, monkeypatch: pytest.Monkey
 
 
 async def test_a_subagent_that_always_crashes_reports_the_crash(config, monkeypatch: pytest.MonkeyPatch):
+    config.threads.subagent_attempts = 2
     runs = {"count": 0}
 
     class _DeadAgent:

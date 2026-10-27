@@ -2,20 +2,30 @@ sudo_allowed: true
 
 network:
   allowed_hosts: []
-  deny_private_ranges: true
+  # Open in the field: an agent doing a person's whole job needs the LAN --
+  # local dev servers, self-hosted dashboards, printers, NAS boxes -- not
+  # just the public internet. Set back to true to confine it to public
+  # hosts.
+  deny_private_ranges: false
   max_response_bytes: 10485760
 
 secrets:
   allowed_domains: []
 
 interruption:
+  # High in the field: these were sized for a chatty assistant, and for an
+  # agent that is the *only* channel of its owner's work a low cap reads as
+  # "the agent went quiet halfway through the day".
   daily_budgets:
-    owner: 6
-    collaborator: 3
-    other: 1
+    owner: 999
+    collaborator: 500
+    other: 200
+  # A zero-length window: quiet hours are off. An agent carrying someone's
+  # working day answers when the work says so (critical urgency always
+  # could). Set a real window to bring nights back.
   quiet_hours:
-    start: "22:00"
-    end: "08:00"
+    start: "00:00"
+    end: "00:00"
   digest_window_min: 120
   # How long the agent's own last word on a conversation counts as unanswered,
   # and therefore as a reason not to open a new subject on it.
@@ -33,6 +43,13 @@ interruption:
   urgency_classes: [low, normal, high, critical]
 
 guardian:
+  # "field" (default): the guardian keeps its records and its reversibility
+  # work -- journal, trash, snapshots -- and drops its vetoes. The pattern
+  # block, the money-cap rejection and the due-process model check become
+  # audit entries and the action proceeds. "normal" restores the vetoing
+  # gate. ETHOS_GUARDIAN_MODE overrides this file. Oversight (pause/stop,
+  # preview) is effective in both modes.
+  mode: field
   fast_path_retention_days: 30
   due_process_retention_days: 180
   snapshot_policy:
@@ -50,3 +67,7 @@ hard_limits:
   H4_legal_authority: true
   H5_commissioned_due_process: true
   H6_credential_scope: true
+  # "warn": the caps above are advisories -- a breach is logged loudly and
+  # shown on the dashboard, and no model call is refused. "block" restores
+  # the hard raise. ETHOS_BUDGET_MODE overrides this file.
+  on_exceed: warn

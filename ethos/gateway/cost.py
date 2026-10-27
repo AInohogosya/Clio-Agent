@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import time
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any
@@ -209,7 +211,17 @@ class CostCalculator:
 
 
 class SpendGuard:
-    """Enforces H2 (financial exposure caps) at the gateway boundary."""
+    """Enforces H2 (financial exposure caps) at the gateway boundary.
+
+    In the default field configuration the caps are advisories (`on_exceed:
+    warn`): the breach is logged loudly and shown on the dashboard, which
+    reads the same ledger, but no call is refused -- a budget that stops the
+    agent stops it for the rest of the day, which for a tool meant to carry
+    someone's whole working day is the one failure the money was supposed to
+    prevent. `on_exceed: block` restores the hard raise.
+    """
+
+    WARN_INTERVAL_S = 300.0
 
     def __init__(self, db: Database | None, config: EthosConfig):
         self.db = db
@@ -219,6 +231,7 @@ class SpendGuard:
         reserve_pct = config.gateway.budget.commitment_reserve_pct
         self.commitment_cap = round(self.daily_cap * reserve_pct, 6)
         self.discretionary_cap = round(self.daily_cap - self.commitment_cap, 6)
+        self._last_warn: dict[str, float] = {}
 
     async def _start_of_day(self) -> datetime:
         return start_of_day()
@@ -242,6 +255,18 @@ class SpendGuard:
             "day_discretionary": float(day_discretionary),
         }
 
+    def _soft_mode(self) -> bool:
+        """Whether a breach warns rather than raises.
+
+        Read per call so a restart or a settings change is picked up
+        without rebuilding the guard; `ETHOS_BUDGET_MODE` overrides the
+        file for a deployment that wants one without the other.
+        """
+        mode = os.environ.get("ETHOS_BUDGET_MODE")
+        if not mode:
+            mode = str(getattr(self.config.permissions.hard_limits, "on_exceed", "block"))
+        return mode.strip().lower() == "warn"
+
     async def check(self, bucket: str, est_cost: float) -> None:
         if self.db is None:
             return
@@ -252,25 +277,48 @@ class SpendGuard:
         if est_cost <= 0.0:
             return
         spend = await self.spend()
+        breaches: list[tuple[str, str, float, float]] = []
         if spend["month_total"] + est_cost > self.monthly_cap:
-            raise BudgetExceededError(
+            breaches.append((
+                "month",
                 f"monthly spend cap exceeded: {spend['month_total']:.2f} + {est_cost:.4f} > {self.monthly_cap:.2f}",
-                bucket="month", spent=spend["month_total"], cap=self.monthly_cap,
-            )
+                spend["month_total"], self.monthly_cap,
+            ))
         if spend["day_total"] + est_cost > self.daily_cap:
-            raise BudgetExceededError(
+            breaches.append((
+                "day",
                 f"daily spend cap exceeded: {spend['day_total']:.2f} + {est_cost:.4f} > {self.daily_cap:.2f}",
-                bucket="day", spent=spend["day_total"], cap=self.daily_cap,
-            )
+                spend["day_total"], self.daily_cap,
+            ))
         if bucket == "commitment" and spend["day_commitment"] + est_cost > self.commitment_cap:
-            raise BudgetExceededError(
+            breaches.append((
+                "commitment",
                 f"commitment reserve exceeded: {spend['day_commitment']:.2f} + {est_cost:.4f} > {self.commitment_cap:.2f}",
-                bucket="commitment", spent=spend["day_commitment"], cap=self.commitment_cap,
-            )
+                spend["day_commitment"], self.commitment_cap,
+            ))
         if bucket == "discretionary" and spend["day_discretionary"] + est_cost > self.discretionary_cap:
-            raise BudgetExceededError(
+            breaches.append((
+                "discretionary",
                 f"discretionary budget exhausted: {spend['day_discretionary']:.2f} + {est_cost:.4f} > {self.discretionary_cap:.2f}",
-                bucket="discretionary", spent=spend["day_discretionary"], cap=self.discretionary_cap,
+                spend["day_discretionary"], self.discretionary_cap,
+            ))
+        if not breaches:
+            return
+        if not self._soft_mode():
+            b_bucket, message, spent, cap = breaches[0]
+            raise BudgetExceededError(message, bucket=b_bucket, spent=spent, cap=cap)
+        # Soft mode: say it once per bucket per interval rather than on every
+        # call, so a working afternoon past the cap is one visible line on the
+        # dashboard, not a wall of them in the log the person stopped reading.
+        now = time.monotonic()
+        for b_bucket, message, spent, cap in breaches:
+            if now - self._last_warn.get(b_bucket, 0.0) < self.WARN_INTERVAL_S:
+                continue
+            self._last_warn[b_bucket] = now
+            logger.warning(
+                "spend.soft_cap_exceeded", bucket=b_bucket,
+                spent=round(spent, 4), cap=cap, est_cost=round(est_cost, 6),
+                message=message, action="allowed (on_exceed: warn)",
             )
 
     async def record(self, record: ModelCallRecord) -> None:

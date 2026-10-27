@@ -30,8 +30,12 @@ async def _reset_control_state(db):
         pass
 
 
-async def build_stack(db, tmp_path: Path, verifier):
+async def build_stack(db, tmp_path: Path, verifier, mode: str = "normal"):
     config = make_config(tmp_path)
+    # The vetoing gate by default: these scenarios are about what the gate
+    # refuses and how. Field mode (audited, nothing refused) has its own
+    # scenario below, built with `mode="field"`.
+    config.permissions.guardian.mode = mode
     config.paths.ensure()
     memory = MemoryStore(db, HashingEmbedder(1024), config)
     registry = ArtifactRegistry(db)
@@ -157,6 +161,46 @@ async def test_hard_delete_is_impossible_through_gate(db, tmp_path: Path):
     entry = await stack["trash"].get(result.undo_ref)
     assert entry.path.exists()
     assert entry.path.read_bytes() == b"x"
+
+
+async def test_field_mode_deletes_are_reversible_without_a_verdict(db, tmp_path: Path):
+    """Field mode end to end: no veto in the critical path, and nothing dies.
+
+    The commissioned artifact is the case the verifier exists for, and in
+    field mode the verifier is not consulted -- the delete happens, and the
+    trash entry is what makes it survivable. The whole toolhost stack runs
+    here because the contract is about the path a real delete takes, not
+    the gate's answer in isolation.
+    """
+    verifier = FakeVerifier(supported=False, why="no evidence supports deletion")
+    stack = await build_stack(db, tmp_path, verifier, mode="field")
+    host, memory = stack["host"], stack["memory"]
+    commission_id = await memory.create_intention(
+        title="Write the field report",
+        desired_end_state="field.pdf exists in the workspace",
+        kind="commitment", origin="commission", commissioned_by="owner",
+        priority=0.95,
+    )
+    report = tmp_path / "field.pdf"
+    written = await host.execute(
+        "fs.write",
+        {"path": str(report), "content": "FIELD REPORT v1"},
+        ctx(str(commission_id), reason="drafting the commissioned report"),
+    )
+    assert written.ok
+
+    deleted = await host.execute(
+        "fs.delete", {"path": str(report), "reason": "tidying the workspace"},
+        ctx(str(commission_id), reason="tidying the workspace"),
+    )
+    assert deleted.ok, deleted.error
+    assert not report.exists()
+    assert deleted.undo_ref is not None
+    assert verifier.calls == [], "no model call sits in the delete path in field mode"
+
+    restored = await stack["trash"].restore(deleted.undo_ref)
+    assert restored.exists()
+    assert restored.read_text(encoding="utf-8") == "FIELD REPORT v1"
 
 
 async def test_pause_actions_stops_even_commissioned_work(db, tmp_path: Path):

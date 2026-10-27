@@ -56,11 +56,23 @@ code_check_max_commands: 3
 # A plan call that comes back unusable used to be retried on the next cycle with
 # the identical request, at the tick rate, forever: nothing in the resume state
 # counted the failures, so no threshold was crossed and no ceiling was reached.
-# These are the thresholds. Three failures degrade the request (thinking bounded,
-# tier dropped, schema relaxed), six park the intention so the loop has nothing
-# left to retry and the reason is recorded where a person can be told it.
+# Three failures degrade the request (thinking bounded, tier dropped, schema
+# relaxed) and keep it degraded -- degradation is a recovery action, not a stop.
+#
+# The park ceiling is now zero by default: never. The loop degrades, backs off
+# on the curve below and asks again for as long as the goal is open, because a
+# task stops only when the user asks it to or the goal itself cannot be met.
+# Set `plan_attempts_before_park` to a positive number to restore the old
+# ceiling, and the loop parks with the count and the reason recorded where a
+# person can be told it.
 plan_attempts_before_degrade: 3
-plan_attempts_before_park: 6
+plan_attempts_before_park: 0
+# How many strategies a goal may burn through (2 failures on one step hands the
+# pass to the next approach). Zero -- the default -- means no ceiling: a step
+# that keeps failing keeps earning a fresh approach, on a backoff that grows
+# with the strategy number and caps at `plan_backoff_max_s` below, for as long
+# as the goal is open. A positive number parks after that many instead.
+max_strategies: 0
 # The wait between attempts. Applied between cycles, not inside one: sleeping in
 # the solver would hold the life loop open for the length of the wait.
 plan_backoff_s: 15

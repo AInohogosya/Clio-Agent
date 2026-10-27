@@ -188,10 +188,13 @@ def test_a_genuinely_unusable_request_still_parks_at_the_threshold():
     A model that answers and answers wrongly, after every degradation lever
     has been pulled, is a goal the loop cannot make progress on -- parking it
     with the reason recorded is the observable stop, and the stage notice
-    tells whoever asked.
+    tells whoever asked. The park threshold is configuration now
+    (`gsl.plan_attempts_before_park`) and the field default is zero -- never
+    park -- so this test restores the ceiling it is about.
     """
     memory = _RecordingMemory()
     loop = _loop("/tmp/ethos-test-na-p2-park", memory)
+    loop.config.gsl.plan_attempts_before_park = 6
     intention = _intention_record()
     resume: dict[str, Any] = {}
     result = None

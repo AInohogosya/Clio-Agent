@@ -273,7 +273,16 @@ class ApexSubAgent(SubAgent):
     async def run(self, task: str, *, workdir: str | None = None, **opts: Any) -> SubAgentResult:
         started = time.monotonic()
         mode = str(opts.get("mode") or self.settings.env.get("APEX_MODE") or "hidden")
-        max_steps = int(opts.get("max_steps") or self.settings.env.get("APEX_MAX_STEPS") or 60)
+        # The step ceiling, in priority order: the caller's own ask, the
+        # agent program's configured environment, then this deployment's
+        # `subagents.apex_max_steps`. Zero -- the field default -- means no
+        # ceiling from this side, which is APEX's own maximum: the program
+        # enforces 1..10000 itself and refuses anything outside, so
+        # "unlimited" here is the largest budget it accepts rather than a
+        # number it would reject the task over.
+        configured = int(getattr(self.config.subagents, "apex_max_steps", 0) or 0)
+        ceiling = configured if configured > 0 else 10_000
+        max_steps = int(opts.get("max_steps") or self.settings.env.get("APEX_MAX_STEPS") or ceiling)
         configured = self.settings.mode
         if configured in ("inprocess", "auto") and self.gateway is not None:
             try:

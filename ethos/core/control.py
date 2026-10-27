@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import time
 from datetime import UTC, datetime
 from typing import Any
 
@@ -14,6 +15,18 @@ logger = get_logger("ethos.core.control")
 
 CONTROL_KEY = "lifecycle"
 CONTROL_KIND = "control"
+
+ROW_RECHECK_S = 30.0
+"""How often `refresh` re-reads the lifecycle row from the database.
+
+The bus event is the fast path and this is the backstop: a surface that
+presses pause writes the row and notifies, and a core whose bus connection
+has wedged would otherwise never learn either fact — a stop that cannot
+arrive and, worse, a resume that cannot, which is a pause that outlives
+the reason for it with no button left that works. Half a minute is chosen
+to match the parked heartbeat: the loop that most needs to notice a
+resume re-reads on every beat anyway.
+"""
 
 
 class ControlPlane:
@@ -82,6 +95,7 @@ class ControlPlane:
         # flag changed, only that its cached reading is stale.
         self._wake_event = asyncio.Event()
         self._loaded = False
+        self._last_row_read = 0.0
 
     @property
     def stop_file(self) -> str:
@@ -317,11 +331,48 @@ class ControlPlane:
         logger.info("control.ending", by=by)
 
     async def refresh(self) -> None:
-        """Called at the top of every cycle: files + bus state are truth [H1]."""
+        """Called at the top of every cycle: files + bus state are truth [H1].
+
+        The files are re-read every time; the row is re-read at most every
+        `ROW_RECHECK_S`, and failures to read it are stepped over rather than
+        raised — a control plane that cannot see the database is one that
+        still obeys the files, which is the channel H1 exists to guarantee,
+        and a broken read here must not cost the cycle it opened.
+
+        The row's flags are adopted only where a file is not the authority:
+        `_apply_files` remembers whether `stop` or `paused`/`emergency`
+        came from a file, and a host's hard switch outranks a row that
+        says otherwise. In both directions this closes the gap the bus
+        leaves when it is wedged — a pause pressed on a surface reaches
+        the agent, and a resume lifts one, with or without a notify.
+        """
         if not self._loaded:
             await self.load()
-        else:
-            self._apply_files()
+            self._last_row_read = time.monotonic()
+            return
+        self._apply_files()
+        if self.db is None or time.monotonic() - self._last_row_read < ROW_RECHECK_S:
+            return
+        self._last_row_read = time.monotonic()
+        try:
+            row = await self.db.fetchrow(
+                "SELECT attrs::text AS attrs FROM env_entities WHERE kind = $1 AND key = $2",
+                CONTROL_KIND, CONTROL_KEY,
+            )
+            if row is None:
+                return
+            attrs = decode_env_attrs(row)
+            before = self.snapshot()
+            if not self._stop_from_file:
+                self.stopped = bool(attrs.get("stopped", False))
+            if not self._hold_from_file:
+                self.paused = bool(attrs.get("paused", False))
+                self.pause_actions = bool(attrs.get("pause_actions", False))
+                self.emergency = bool(attrs.get("emergency", False))
+            self.preview = bool(attrs.get("preview", False))
+            self._after_change(before)
+        except Exception:
+            logger.warning("control.row_recheck_failed")
 
     async def wait_resume(self) -> None:
         await self._resume_event.wait()

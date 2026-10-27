@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from ethos.paths import resolve
+from ethos.schemas.tools import ToolErrorCode, ToolResult
 from ethos.toolhost.server import Tool, ToolContext, Toolhost
 
 MAX_READ_BYTES = 2_000_000
@@ -85,7 +86,17 @@ class FsReadTool(Tool):
     async def run(self, args: dict[str, Any], ctx: ToolContext, host: Toolhost) -> Any:
         path = _existing(host, str(args["path"]))
         if path.is_dir():
-            raise IsADirectoryError(str(path))
+            # The bare exception text is the path and nothing else, which is
+            # how a call came back from a guardian transform that had moved a
+            # directory to the trash: the model read `error: <path>` with no
+            # word in it about directories, reading, or what to do instead,
+            # and spent its next steps guessing. Said rather than raised,
+            # because the sentence is the whole fix.
+            return ToolResult(
+                ok=False, error_code=ToolErrorCode.EXECUTION,
+                error=(f"{path} is a directory; fs.read reads files. "
+                       "Use fs.list for a directory's contents."),
+            )
         if args.get("binary"):
             data = path.read_bytes()[:MAX_READ_BYTES]
             import base64

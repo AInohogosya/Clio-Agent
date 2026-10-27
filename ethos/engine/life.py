@@ -9,20 +9,22 @@ from uuid import UUID
 
 from ethos.config import EthosConfig
 from ethos.engine.attention import Attention
-from ethos.engine.drives import DriveInputs, Motivation
+from ethos.engine.drives import IMPULSE_TARGETS, DriveInputs, Motivation
 from ethos.engine.rhythm import RhythmController, backoff_seconds
 from ethos.engine.states import State, StateMachine
 from ethos.engine.stops import StopKind, StopsLedger
 from ethos.engine.workspace import WorkspaceAssembler
 from ethos.gateway.service import format_wait as _format_retry_wait
+from ethos.gsl.loop import PLAN_ATTEMPTS, PLAN_DEGRADED, PLAN_RETRY_AFTER
 from ethos.observability import metrics
 from ethos.observability.logger import bind_context, get_logger
 from ethos.schemas.context import TurnKind
 from ethos.schemas.events import Event, EventKind, Percept
-from ethos.schemas.gsl import Decision, Focus, Outcome, SolverOutcome, StageNotice
+from ethos.schemas.gsl import Decision, Focus, IntentionStatus, Outcome, SolverOutcome, StageNotice
 from ethos.schemas.messages import Urgency
 from ethos.schemas.reverie import ReverieResult
 from ethos.social.conversation import open_conversations, render_conversations
+from ethos.social.deliberation import NO_CAP, effective_attempt_caps
 
 logger = get_logger("ethos.life")
 
@@ -30,6 +32,12 @@ logger = get_logger("ethos.life")
 # patience and inside the longest tick a working agent has, so "paused" is
 # reported as paused rather than as silence.
 PARKED_HEARTBEAT_S = 30.0
+
+# How often the life loop looks for parked intentions old enough to reopen.
+# A query per cycle would be a query per four seconds for a fact that changes
+# on the scale of the park backoff; a sweep that is late costs a late reopen,
+# which against half an hour of parking is nothing.
+PARK_REOPEN_CHECK_S = 300.0
 
 # How many thoughts the running buffer keeps.
 #
@@ -193,6 +201,7 @@ class Life:
         # conversation took priority" is true on every one of those passes and
         # true forever; only the count says whether the goal is being starved.
         self._inbound_deferrals: int = 0
+        self._last_park_sweep: float = 0.0
 
     # ------------------------------------------------------------- wake
 
@@ -636,6 +645,27 @@ class Life:
             )
 
         if self.focus is not None and self.focus.intention_id is not None:
+            # Impulse work is the drives' own choice; a commission is a person
+            # waiting. `choose_focus` gives the commission the pass outright,
+            # but it only runs when the focus is empty -- and an impulse focus
+            # with a pending step never empties: `_settled_focus` hands it back
+            # every cycle, so the bypass is unreachable and the person's work
+            # sat open behind the impulse for as long as the impulse held.
+            # Observed live on 2026-10-25: every cycle for hours advanced a
+            # drive placeholder while the commissioned task waited one priority
+            # band above it, and the replies said the commissioned task was
+            # being picked up. The ask is one indexed query, and only on a
+            # focus the drives invented; a commission or a deadline keeps the
+            # pass it already had.
+            if self.focus.kind == "impulse":
+                commission = await self.memory.next_open_commission()
+                if commission is not None and commission.id != self.focus.intention_id:
+                    self.focus = Focus(
+                        intention_id=commission.id,
+                        title=commission.title or "commissioned work",
+                        kind=commission.kind or "commitment",
+                        why="commissioned work outranks idle impulses",
+                    )
             # Worked. Whatever was waiting in the queue has not been lost, and
             # the next pass starts the count over -- which is the point: the
             # bound is on how long a goal may be *continuously* deferred, not on
@@ -888,6 +918,80 @@ class Life:
         """One stop, from anywhere in the loop: the one door to the ledger."""
         self.stops.record(kind=kind, subject=subject, reason=reason, what=what)
 
+    async def _maybe_reopen_parked(self) -> None:
+        """Parked work gets another chance, on a backoff, without a human.
+
+        Parking was designed as "closed until reopened" with the reopening
+        left to a person, which in the field is the difference between a
+        pause and a loss: a goal that parked because a delegate thread
+        crashed, or because the model produced bad plans three times in a
+        row, stayed parked forever while the agent idled with owed work on
+        a shelf. The sweep reopens aged parked intentions so the drives can
+        pick them up again. Reopens are unbounded by default -- a goal that
+        parks, reopens and parks again is a goal the agent has not given up
+        on -- and a positive `park_reopen_max` bounds the sweep for
+        deployments that want the shelf back.
+
+        Intentions parked for budget are skipped: the budget comes back on
+        its own schedule and the work resumes then, and reopening early
+        would only re-park it. Everything here is best-effort -- a sweep
+        that cannot read the store costs one log line and tries again on
+        the next due pass.
+        """
+        gsl_cfg = self.config.gsl
+        if gsl_cfg.park_reopen_max < 0:
+            return
+        if time.monotonic() - self._last_park_sweep < PARK_REOPEN_CHECK_S:
+            return
+        self._last_park_sweep = time.monotonic()
+        try:
+            stale = await self.memory.list_parked_intentions(gsl_cfg.park_reopen_backoff_s)
+        except Exception:
+            logger.warning("life.park_sweep_failed")
+            return
+        for intention in stale:
+            resume = dict(intention.resume_state or {})
+            reason = str(resume.get("parked_reason") or intention.closed_reason or "")
+            if reason.startswith("budget exhausted"):
+                continue
+            # A placeholder named after a drive is not owed work, so it is not
+            # owed a reopen either. The sweep exists to give real work another
+            # chance; an "advance_commitment" row parked by its own fake loop
+            # would be resurrected by this sweep every backoff window, and
+            # nothing else in the system can tell it apart from work a person
+            # is waiting on. With the drives no longer minting placeholders
+            # (see `Motivation.choose_focus`) this only guards the ones that
+            # already exist.
+            if intention.origin == "impulse" and intention.title in IMPULSE_TARGETS:
+                continue
+            reopens = int(resume.get("park_reopens") or 0)
+            if gsl_cfg.park_reopen_max > 0 and reopens >= gsl_cfg.park_reopen_max:
+                continue
+            resume["park_reopens"] = reopens + 1
+            resume.pop("parked_reason", None)
+            # A fresh degradation ladder for a goal that already climbed
+            # one: the six attempts that earned the park are spent, and the
+            # question this reopen asks is whether the world has changed,
+            # which deserves the same six answers the first pass got.
+            resume[PLAN_ATTEMPTS] = 0
+            resume[PLAN_RETRY_AFTER] = None
+            resume.pop(PLAN_DEGRADED, None)
+            try:
+                await self.memory.update_intention(
+                    intention.id,
+                    status=IntentionStatus.active.value,
+                    resume_state=resume,
+                )
+            except Exception:
+                logger.exception("life.park_reopen_failed", intention=str(intention.id))
+                continue
+            logger.info(
+                "life.park_reopened", intention=str(intention.id),
+                reopen=reopens + 1,
+                of_max=(gsl_cfg.park_reopen_max if gsl_cfg.park_reopen_max > 0 else None),
+                reason=reason[:200],
+            )
+
     async def _act_social(self, social: dict[str, Any]) -> dict[str, str] | None:
         """Carry out one turn's social decision.
 
@@ -1018,6 +1122,7 @@ class Life:
         # in a declared silence and nothing goes out.
         if not texts:
             await self._record_silence_turn(message, decision)
+            failed: dict[str, Any] | None = None
             if decision.decided:
                 await self.deps.social.mark_handled(message, decided)
             else:
@@ -1031,7 +1136,12 @@ class Life:
                     # is. Carry that into the announcement so the screen names
                     # the pause ("waiting about 1h") instead of a bare failure.
                     decision.reason = str(failed["reason"])[:500]
-            await self._announce_decline(message, decision)
+            # On the last attempt `_hold_undecided` has already published the
+            # ending -- "could not, after N attempts" -- and the decline
+            # announcement here would say "retrying..." over the top of it,
+            # which is the one status the message can never return to.
+            if not (isinstance(failed, dict) and failed.get("_final")):
+                await self._announce_decline(message, decision)
             return commission
         gap_ceiling = max(0.0, float(self.config.social.reply_gap_max_s))
         for index, (text, delay) in enumerate(pairs):
@@ -1357,21 +1467,62 @@ class Life:
         will pick it up on a later cycle and the person gets their answer without
         having asked twice.
 
-        Bounded, because the alternative is a loop: a model that can never answer
-        this message would otherwise be asked again every cycle forever, and each
-        ask costs money. After the last attempt the row is left exactly as it is,
-        which is a permanent, readable record that the agent tried and could not.
-        Transient outages stay pending longer (retried quietly); only failures
-        the user must fix stop early and surface.
+        The asking is unbounded by default and spaced instead of stopped: the
+        first few attempts are immediate, the rest move onto the escalation
+        curve, and a question the world is not ready to answer is retried once a
+        day for as long as the agent runs. A deployment that wants the old
+        behaviour sets `social.max_deliberation_attempts` /
+        `social.max_transient_attempts` to positive numbers, and then the
+        person is told when the retries end -- the notice below -- rather than
+        being left with a "retrying..." that never comes true.
         """
         reason = decision.reason if hasattr(decision, "reason") else str(getattr(decision, "reason", ""))
         user_action = "(action needed" in (reason or "")
-        return await self.deps.social.record_failure(message, {
+        payload = await self.deps.social.record_failure(message, {
             "action": decision.action.value,
             "reason": decision.reason,
             "decided": False,
             "needs_user_action": user_action,
         })
+        # The person is told when the retries end, not only while they run.
+        # The last attempt used to publish the same "retrying..." line as
+        # every earlier one, and then the row silently stopped matching the
+        # queue's attempt cap -- a question that read as "still trying"
+        # forever, to someone who was owed "I could not". The caps are the
+        # same ones `pending_inbound` enforces, read through the same helper
+        # so the two can never disagree about which attempt is the last.
+        # With no cap configured (`NO_CAP`) there is no last attempt and no
+        # notice: the queue keeps its promise instead of explaining why it
+        # will not keep it.
+        if isinstance(payload, dict) and self.bus is not None:
+            attempts = int(payload.get("attempts") or 0)
+            needs_action = bool(payload.get("needs_user_action"))
+            ua_cap, tr_cap = effective_attempt_caps(self.config)
+            cap = ua_cap if needs_action else tr_cap
+            if cap < NO_CAP and attempts >= cap:
+                payload["_final"] = True
+                try:
+                    await self.bus.publish(EventKind.MESSAGE_HANDLED, {
+                        "message_id": str(message.id),
+                        "person_id": message.person_id,
+                        "channel": message.channel,
+                        "action": decision.action.value,
+                        "reason": reason[:200],
+                        "decided": False,
+                        "needs_user_action": needs_action,
+                        "retrying": False,
+                        "final": True,
+                        "error_kind": "gave_up_after_retries",
+                        "status_text": (
+                            f"Could not answer after {attempts} attempts: {reason[:150]}. "
+                            + ("This needs your action (API key or quota)."
+                               if needs_action else
+                               "Please resend when convenient and I will try again.")
+                        ),
+                    })
+                except Exception:
+                    logger.exception("life.final_attempt_publish_failed")
+        return payload
 
     async def _record_thought(self, thought: str, *, importance: float, half_life_h: float,
                                 thought_turn: bool = True, **turn_kwargs: Any) -> None:
@@ -1610,6 +1761,17 @@ class Life:
         await self._publish_budget()
 
     async def _publish_presence(self) -> None:
+        # The heartbeat file first, unconditionally: the supervisor reads it
+        # (and nothing else of ours) to tell a wedged core from a busy one, and
+        # a presence publish that could not reach the bus is exactly the moment
+        # that distinction matters most. The name matches
+        # `CORE_HEARTBEAT_FILE` in `ethos.core.supervisor` — "heartbeat".
+        try:
+            heartbeat = self.config.paths.run_dir / "heartbeat"
+            heartbeat.parent.mkdir(parents=True, exist_ok=True)
+            heartbeat.touch()
+        except OSError:
+            pass
         if self.bus is None:
             return
         try:
@@ -1831,13 +1993,42 @@ class Life:
                 cycle.cancel()
                 try:
                     await cycle
-                except (asyncio.CancelledError, Exception):
+                except asyncio.CancelledError:
                     pass
+                except Exception:
+                    # The stop has already won the race, so the cycle's result
+                    # is discarded either way — but *why* it failed is not. A
+                    # stop that lands on a crashing cycle used to swallow the
+                    # trace outright, which read as a clean stop in every log
+                    # while the same exception returned on the next one.
+                    logger.exception("life.cycle_interrupted_failed")
         finally:
             asked.cancel()
 
     async def life(self) -> None:
-        await self.wake_up()
+        # Waking is the one step the cycle handler cannot catch for us, and an
+        # exception from it used to end the process outright — a database that
+        # was still coming up took the core down before the loop it protects
+        # had run even once. The supervisor would have restarted it; in here
+        # it is cheaper and kinder: retry on the same backoff the rest of the
+        # loop already trusts, and leave only by a signal.
+        while True:
+            try:
+                await self.wake_up()
+                break
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("life.wake_failed")
+                self.stops.record(
+                    kind=StopKind.error,
+                    subject="wake",
+                    reason="waking the agent raised; retrying on a backoff",
+                    what="wake",
+                )
+                if self.control.ending:
+                    return
+                await asyncio.sleep(60.0)
         while True:
             # The files before the flags: a stop written by the host has to be
             # what *this* pass reads, not what the next start reads. `load` does it
@@ -1939,6 +2130,7 @@ class Life:
         of that was a night of no cycles at all.
         """
         await self._pace()
+        await self._maybe_reopen_parked()
         percepts = await self.perceive()
         appraisal = await self.deps.attention.appraise(
             percepts, self.focus,

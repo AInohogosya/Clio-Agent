@@ -114,21 +114,38 @@ _ASK_AGAIN = (
     "not answered. Answer with the object this time, and nothing else."
 )
 
-# How many times one message is put to a model before it is left alone.
+# How many times one message is put to a model before it is left alone, as
+# configuration rather than constants: `social.max_deliberation_attempts` for
+# the failures a person must fix (a dead key, an exhausted quota) and
+# `social.max_transient_attempts` for the ones that clear on their own
+# (429/503/timeout). Zero -- the field default for both -- means never leave
+# it alone: the question is retried for as long as the agent runs, with the
+# first few attempts immediate and the rest paced on the escalation curve.
 #
-# A turn that could not be decided is put back on the queue rather than closed,
-# so a model that recovers answers without the person asking twice. Without a
-# ceiling that is a loop -- the same question, every cycle, at two model calls
-# apiece, for as long as the agent is running. Three is enough for anything that
-# is going to clear, because the two calls inside one deliberation have already
-# asked three times before this count moves at all.
-MAX_DELIBERATION_ATTEMPTS = 3
+# Zero cannot be the number the queue's SQL compares against -- `attempts < 0`
+# is never true and would drop the row at the first failure -- so a configured
+# zero reads as NO_CAP: a ceiling no attempt count can reach.
+NO_CAP = 2_000_000_000
 
-# Transient outages (429/503/timeout) clear on their own, so they are retried
-# quietly in the background for longer instead of surfacing as errors. Only
-# failures the user must fix (401/403 key or limit problems) stop early and
-# surface prominently.
-MAX_TRANSIENT_ATTEMPTS = 12
+# The attempts of an uncapped question that stay immediate before the rest
+# move onto the escalation curve (five minutes, then an hour, five hours, a
+# day, staying at a day). The first few cover a model that blinked; past
+# these, an unanswered question costs one attempt a day rather than a hot
+# loop of two model calls a cycle.
+_UNBOUNDED_SPACING_AFTER = 3
+
+
+def effective_attempt_caps(config: Any) -> tuple[int, int]:
+    """The (user-actionable, transient) attempt caps a queue should enforce.
+
+    The pair `pending_inbound` and the final-attempt notice in the life loop
+    both read, so the two can never disagree about which attempt is the
+    last. Zero means no cap and is returned as `NO_CAP` for the SQL.
+    """
+    ua = int(getattr(config.social, "max_deliberation_attempts", 0) or 0)
+    tr = int(getattr(config.social, "max_transient_attempts", 0) or 0)
+    return (ua if ua > 0 else NO_CAP, tr if tr > 0 else NO_CAP)
+
 
 _USER_ACTIONABLE_RE = re.compile(
     r"401|403|invalid_api_key|invalid api key|incorrect api key|unauthorized"
@@ -1344,6 +1361,7 @@ class SocialCognition:
     async def pending_inbound(self, limit: int = 5) -> list[Message]:
         if self.db is None:
             return []
+        ua_cap, tr_cap = effective_attempt_caps(self.config)
         rows = await self.db.fetch(
             "SELECT id, ts, direction, channel, conversation_key, person_id, text, attachments, "
             "in_reply_to, intention_id, social_decision, delivery, sender_name, sender_username "
@@ -1361,7 +1379,7 @@ class SocialCognition:
             "      AND COALESCE(NULLIF((social_decision->>'next_retry_after_epoch'), '')"
             "        ::double precision, 0) <= EXTRACT(EPOCH FROM now()))"
             ") ORDER BY ts ASC LIMIT $1",
-            limit, MAX_DELIBERATION_ATTEMPTS, MAX_TRANSIENT_ATTEMPTS,
+            limit, ua_cap, tr_cap,
         )
         out: list[Message] = []
         for row in rows:
@@ -1410,9 +1428,12 @@ class SocialCognition:
         The attempt count lives in the same column rather than in a new one,
         because it is bookkeeping about a decision that was never formed and
         there is no decision to attach it to. `pending_inbound` reads it back to
-        decide whether to ask again; transient failures retry up to
-        `MAX_TRANSIENT_ATTEMPTS`, user-actionable ones (bad key/limit) stop at
-        `MAX_DELIBERATION_ATTEMPTS` and surface.
+        decide whether to ask again; the caps are configuration
+        (`social.max_transient_attempts`, `social.max_deliberation_attempts`)
+        and zero -- the default -- means the question is never dropped: the
+        early attempts are immediate and the rest move onto the escalation
+        curve, so the queue keeps its promise to the person without becoming
+        a hot loop.
 
         A rate-limited failure additionally schedules *when* to ask again: five
         minutes after the first 429, then an hour, five hours, a day, staying at
@@ -1447,6 +1468,24 @@ class SocialCognition:
             payload["reason"] = (
                 f"{base_reason}; waiting {format_wait(wait_s)} before retry "
                 f"(rate-limited attempt {attempts})"
+            )
+        ua_cap, tr_cap = effective_attempt_caps(self.config)
+        transient = payload.get("needs_user_action") is False
+        cap = tr_cap if transient else ua_cap
+        if cap >= NO_CAP and attempts > _UNBOUNDED_SPACING_AFTER:
+            # No ceiling configured: the retries never end, so they cannot stay
+            # immediate either -- an unanswered question asked every cycle is a
+            # hot loop of two model calls a turn. The first few are the model
+            # possibly blinking; past those the shared escalation curve paces
+            # the rest, the same wait a rate-limited failure would take, and
+            # `pending_inbound` holds the row until it elapses.
+            wait_s = rate_limit_wait_for_attempt(attempts)
+            payload["wait_s"] = wait_s
+            payload["next_retry_after_epoch"] = time.time() + wait_s
+            base_reason = reason.split("; waiting ", 1)[0][:400]
+            payload["reason"] = (
+                f"{base_reason}; waiting {format_wait(wait_s)} "
+                f"before retry (attempt {attempts})"
             )
         if self.db is None:
             return payload

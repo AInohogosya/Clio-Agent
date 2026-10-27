@@ -51,7 +51,9 @@ from ethos.schemas.models import ModelMessage, ModelRequest, Role, Tier
 
 logger = get_logger("ethos.gsl")
 
-MAX_STRATEGIES = 3
+# Two failures on one step hand the pass to a fresh approach. This is a
+# recovery action, not a stop; how many approaches a goal may burn through
+# is `gsl.max_strategies` (0 = no ceiling).
 STEP_FAILURES_BEFORE_SWITCH = 2
 
 # The check kinds a step will be failed on. A policy, not a capability list:
@@ -242,6 +244,17 @@ class GeneralSolverLoop:
         """Whether the plan request has to be made under reduced demands."""
         return self._plan_attempts(resume) >= max(1, self.config.gsl.plan_attempts_before_degrade)
 
+    def _max_strategies(self) -> int:
+        """The strategy ceiling, or 0 when there is none.
+
+        Read per call so a settings change or a restart is honoured without
+        rebuilding the loop. 0 is the field default: a step that keeps
+        failing keeps earning a fresh approach for as long as the goal is
+        open, and the pacing below is what keeps that from being a hot
+        loop rather than a ceiling.
+        """
+        return max(0, int(self.config.gsl.max_strategies))
+
     def _planning_waiting(self, resume: dict[str, Any], now: datetime | None = None) -> float:
         """Seconds left on the backoff, or zero. Never negative.
 
@@ -305,7 +318,7 @@ class GeneralSolverLoop:
         attempts = self._plan_attempts(resume) + 1
         resume[PLAN_ATTEMPTS] = attempts
         resume[PLAN_LAST_FAILURE] = {"stage": stage, "kind": exc.kind, "reason": str(exc)[:300]}
-        park_at = max(1, self.config.gsl.plan_attempts_before_park)
+        park_at = max(0, self.config.gsl.plan_attempts_before_park)
         reason = f"{attempts} consecutive planning failures ({stage}): {exc}"
 
         # A provider that is down, out of room or rate limiting is not the goal
@@ -314,12 +327,14 @@ class GeneralSolverLoop:
         # budget and the work was closed as parked -- a task dropped because the
         # world hiccupped, which is exactly the silent drop NA-P2.1 forbids: a
         # task stops only when the user asks it to or the goal itself cannot be
-        # met. Those two kinds now back off on the escalation curve and stay
-        # open indefinitely; the cap on the wait (a day) keeps the retry alive,
-        # and the model-side kinds -- the request itself unusable after every
-        # degradation -- still count toward the park, because those are the ones
-        # where trying again changes nothing.
-        if attempts >= park_at and exc.kind not in ("rate_limited", "no_model"):
+        # be met. Those two kinds now back off on the escalation curve and stay
+        # open indefinitely; the cap on the wait (a day) keeps the retry alive.
+        #
+        # `park_at: 0` -- the field default -- extends the same mercy to every
+        # other failure kind too: the request keeps being degraded and re-asked
+        # on the backoff below for as long as the goal is open, and a positive
+        # `park_at` restores the ceiling that parks instead.
+        if park_at > 0 and attempts >= park_at and exc.kind not in ("rate_limited", "no_model"):
             # Parked with the count attached, so the row that says why the work
             # stopped also says how many attempts earned that conclusion. No
             # separate `_save_resume` first: `_park` writes this blob, and writing
@@ -551,10 +566,11 @@ class GeneralSolverLoop:
         failures = int(step_attempts.get(step.id, 0))
         if failures >= STEP_FAILURES_BEFORE_SWITCH:
             strategy_number = int(resume.get("strategy_number", 1)) + 1
-            if strategy_number > MAX_STRATEGIES:
-                await self._park(intention, f"{MAX_STRATEGIES} strategies failed on step {step.id}")
+            max_strategies = self._max_strategies()
+            if max_strategies > 0 and strategy_number > max_strategies:
+                await self._park(intention, f"{max_strategies} strategies failed on step {step.id}")
                 return SolverResult(outcome=SolverOutcome.parked, cost_usd=cost,
-                                    thoughts=[f"parked after {MAX_STRATEGIES} strategies"])
+                                    thoughts=[f"parked after {max_strategies} strategies"])
             waiting = self._planning_waiting(resume)
             if waiting > 0:
                 return SolverResult(
@@ -577,6 +593,7 @@ class GeneralSolverLoop:
                 return failed
             cost += c
             await self._install_plan(intention, resume, new_plan, strategy_number=strategy_number)
+            await self._pace_strategy_switch(intention, resume, strategy_number)
             return SolverResult(
                 outcome=SolverOutcome.strategy_switch, plan=new_plan, cost_usd=cost,
                 thoughts=[f"strategy switch #{strategy_number} after repeated failures"],
@@ -1473,7 +1490,8 @@ class GeneralSolverLoop:
                 intention_id=intention.id, importance=0.6,
             )
         strategy_number = int(resume.get("strategy_number", 1)) + 1
-        if strategy_number > MAX_STRATEGIES:
+        max_strategies = self._max_strategies()
+        if max_strategies > 0 and strategy_number > max_strategies:
             await self._park(intention, f"verification failed after all strategies: "
                                         f"{'; '.join(verification.issues[:2])[:200]}")
             return SolverResult(
@@ -1485,7 +1503,7 @@ class GeneralSolverLoop:
             return SolverResult(
                 outcome=SolverOutcome.step_failed, verification=verification, plan=plan,
                 thoughts=[f"verification failed; replanning is waiting out a backoff of "
-                         f"about {round(waiting)}s"],
+                          f"about {round(waiting)}s"],
                 cost_usd=cost,
             ), cost
         try:
@@ -1506,11 +1524,34 @@ class GeneralSolverLoop:
             return failed, cost + exc.cost_usd
         cost += c
         await self._install_plan(intention, resume, new_plan, strategy_number=strategy_number)
+        await self._pace_strategy_switch(intention, resume, strategy_number)
         return SolverResult(
             outcome=SolverOutcome.strategy_switch, plan=new_plan, verification=verification,
             thoughts=[f"verification failed; switching to strategy #{strategy_number}"],
             cost_usd=cost,
         ), cost
+
+    async def _pace_strategy_switch(
+        self, intention: IntentionRecord, resume: dict[str, Any], strategy_number: int,
+    ) -> None:
+        """When strategies are unbounded, the switch schedules its own wait.
+
+        A ceiling used to be the only thing standing between a hopeless step
+        and an infinite ladder of fresh approaches. With no ceiling, this is
+        the replacement: every installed strategy carries a backoff that
+        grows with its number and caps at `plan_backoff_max_s`, so a goal
+        the model cannot solve is retried every few minutes rather than
+        every tick -- an unbounded *number* of attempts, never an
+        unbounded *rate* of them. The wait rides `PLAN_RETRY_AFTER`, which
+        the step gate already knows how to read and name.
+        """
+        if self._max_strategies() > 0:
+            return
+        wait_s = self._plan_backoff_s(min(max(1, strategy_number), 8))
+        resume[PLAN_RETRY_AFTER] = (
+            datetime.now(UTC) + timedelta(seconds=wait_s)
+        ).isoformat()
+        await self._save_resume(intention, resume)
 
     def _artifact(self, resume: dict[str, Any], plan: Plan) -> dict[str, Any]:
         """What the work actually is, for the rung that judges it.
@@ -1700,6 +1741,11 @@ class GeneralSolverLoop:
         """
         state = resume if resume is not None else dict(intention.resume_state or {})
         state["parked_reason"] = reason[:500]
+        # When the parking happened, for the reopen sweep: parked is a pause
+        # with a reason, not a verdict on the goal, and the sweep in the life
+        # loop needs to know how long the pause has been running to decide
+        # when the work is owed another chance.
+        state["parked_at_epoch"] = time.time()
         await self.memory.update_intention(intention.id, resume_state=state)
         await self.memory.close_intention(intention.id, IntentionStatus.parked.value, reason)
         await self.memory.open_question(

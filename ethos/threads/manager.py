@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 import uuid
 from collections import OrderedDict
 from typing import Any
@@ -54,6 +55,9 @@ class ThreadHandle:
         self.result: Any = None
         self.error: str | None = None
         self.done_event = asyncio.Event()
+        self.started_at = time.monotonic()
+        """For the orphan reaper: when this handle began, so a worker that
+        will never report back can be told from one that is merely slow."""
 
     def finish(self, result: Any = None, error: str | None = None) -> None:
         self.result = result
@@ -127,7 +131,83 @@ class ThreadManager:
             self.finished.popitem(last=False)
         metrics.THREADS_FINISHED_KEPT.set(len(self.finished))
 
+    async def _reap_stale(self) -> None:
+        """Reclaim running handles whose worker will never report back.
+
+        The failure this exists for has no corpse: a worker that dies
+        before publishing its result leaves the handle saying "running"
+        forever, and every one of those permanently holds one of the
+        `max_concurrent` slots. Four orphans and the agent can no longer
+        delegate anything -- the "agent stopped" failure with nothing dead
+        to show for it. A stale handle is marked failed, its intention is
+        parked (where the reopen sweep can give the work another chance),
+        and its slot is given back.
+
+        Called when the slots are full and whenever a `wait` times out, so
+        it costs nothing while threads are healthy.
+        """
+        stale_after = float(getattr(self.config.threads, "stale_after_s", 7200.0))
+        now = time.monotonic()
+        for thread_id, handle in list(self.active.items()):
+            if handle.status != "running" or now - handle.started_at < stale_after:
+                continue
+            logger.warning(
+                "threads.reaping_stale", thread_id=thread_id,
+                age_s=round(now - handle.started_at), stale_after_s=stale_after,
+            )
+            handle.finish(
+                error=f"thread presumed dead: no result within {round(stale_after)}s "
+                      "(orphan reaper)",
+            )
+            if handle.spec.get("intention_id"):
+                try:
+                    from ethos.schemas.gsl import IntentionStatus
+
+                    # Parked rather than failed, for the same reason a crashed
+                    # thread is: the worker is gone, not the goal, and a
+                    # parked row is one the reopen sweep can pick back up.
+                    await self.memory.close_intention(
+                        _uuid(handle.spec["intention_id"]),
+                        IntentionStatus.parked.value,
+                        "thread presumed dead: no result before the staleness window",
+                    )
+                except Exception:
+                    logger.exception("threads.close_intention_failed")
+            if handle.task is not None and not handle.task.done():
+                # The `_run` coroutine's finally-block retires and publishes
+                # once the cancellation lands, so the reaper only cancels and
+                # lets that path do its own bookkeeping.
+                handle.task.cancel()
+            else:
+                # Process mode, or a task that already ended without a
+                # result: nothing is left to run the finally-block, so the
+                # retirement and the bus event are the reaper's to send.
+                self._retire(thread_id)
+                if self.bus is not None:
+                    try:
+                        await self.bus.publish(
+                            EventKind.THREAD_RESULT,
+                            {
+                                "thread_id": handle.thread_id,
+                                "goal": handle.spec.get("goal"),
+                                "status": handle.status,
+                                "result": handle.result,
+                                "error": handle.error,
+                                "intention_id": handle.spec.get("intention_id"),
+                            },
+                        )
+                    except Exception:
+                        logger.exception("threads.result_publish_failed")
+        metrics.THREADS_ACTIVE.set(self._running_count())
+
     async def spawn_spec(self, spec: dict[str, Any]) -> ThreadHandle:
+        if self._running_count() >= self.config.threads.max_concurrent:
+            # Full is often not full: the oldest "running" handles may be
+            # orphans of workers that died unpublished, and refusing a new
+            # delegate because of them is the agent being stopped by its
+            # own accounting. Reclaim first, refuse only if real work
+            # still holds every slot.
+            await self._reap_stale()
         if self._running_count() >= self.config.threads.max_concurrent:
             raise RuntimeError(
                 f"max {self.config.threads.max_concurrent} concurrent delegates reached"
@@ -274,6 +354,12 @@ class ThreadManager:
             else:
                 await asyncio.wait_for(handle.done_event.wait(), timeout=timeout_s)
         except TimeoutError:
+            # A wait that ran out is also the cheapest moment to check
+            # whether the thing being waited on is ever going to answer:
+            # the caller has already decided to stop waiting, and a
+            # handle that is stale by now is an orphan whose slot is owed
+            # back either way.
+            await self._reap_stale()
             return None
         return handle.result
 

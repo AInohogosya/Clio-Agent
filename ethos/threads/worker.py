@@ -36,16 +36,23 @@ logger = get_logger("ethos.threads.worker")
 SUBAGENT_ROLES = ("foundry", "apex")
 
 # A failure that reaches this worker has already been through the gateway's
-# own retry curve — failover, request widening, cooldown waits. The budget
-# here is therefore small and about the gaps the gateway cannot see: a 429
-# that outlasted its schedule, a provider that blinked between retries. Three
-# attempts, bounded waits, and then an honest failure rather than a silent one.
-CALL_ATTEMPTS = 3
+# own retry curve — failover, request widening, cooldown waits. The counts
+# here are about the gaps the gateway cannot see: a 429 that outlasted its
+# schedule, a provider that blinked between retries. They come from
+# configuration (`threads.call_attempts`, `threads.subagent_attempts`) and
+# zero — the default — means there is no ceiling: the work is retried on
+# the backoffs below for as long as the thread runs, because a task stops
+# only when the user asks it to or the goal itself cannot be met.
 RATE_LIMIT_BASE_S = 30.0
 RATE_LIMIT_MAX_S = 300.0
 TRANSIENT_BASE_S = 5.0
 TRANSIENT_MAX_S = 60.0
-SUBAGENT_ATTEMPTS = 2
+
+
+def _attempt_cap(config: Any, attr: str) -> int:
+    """The configured retry ceiling for `attr`, or 0 when there is none."""
+    threads = getattr(config, "threads", None)
+    return max(0, int(getattr(threads, attr, 0) or 0))
 
 
 class ThreadAnswerUnusable(Exception):
@@ -55,24 +62,38 @@ class ThreadAnswerUnusable(Exception):
     costs one re-ask and not the task."""
 
 
-async def _complete(gateway: Any, request: Any) -> Any:
-    """One model call with a bounded retry behind it.
+async def _complete(gateway: Any, request: Any, config: Any = None) -> Any:
+    """One model call, retried for as long as the configuration allows.
 
     The blanket `except` this replaces caught the first failure and ended the
     task: a single 429 or a dropped connection was the whole pursuit. The
     classification is the planner's, so the two failure kinds with different
     answers are told apart — a rate limit is time and is waited out on a
-    bounded curve (honouring a `Retry-After` the provider named), while a
-    deployment that cannot serve the request at all is not made servable by
-    waiting, and is raised immediately.
+    bounded curve (honouring a `Retry-After` the provider named), while any
+    other failure backs off doubling to sixty seconds.
+
+    With no ceiling configured (`threads.call_attempts: 0`, the default) the
+    loop runs for as long as the thread does — the pacing is the backoff, not
+    a count. One failure kind still ends the task on the spot, unchanged:
+    `is_nothing_could_serve` means no model on this deployment could ever
+    answer — a dead key, an empty catalogue — and waiting cannot fix a
+    missing engine. That is not the task being given up on: the envelope
+    fails, the manager parks the goal, and the reopen sweep in the life loop
+    brings it back for another attempt on its own cadence, so a key fixed
+    an hour later is a goal that finishes an hour later.
     """
+    cap = _attempt_cap(config, "call_attempts")
+    attempt = 0
     last: BaseException | None = None
-    for attempt in range(1, CALL_ATTEMPTS + 1):
+    while True:
+        attempt += 1
         try:
             return await gateway.complete(request)
         except Exception as exc:
             last = exc
-            if attempt >= CALL_ATTEMPTS or is_nothing_could_serve(exc):
+            if is_nothing_could_serve(exc):
+                break
+            if cap > 0 and attempt >= cap:
                 break
             if is_rate_limited_failure(exc):
                 asked = retry_after_of(exc)
@@ -91,7 +112,8 @@ async def _complete(gateway: Any, request: Any) -> Any:
     raise last
 
 
-async def _complete_json(gateway: Any, request: Any, *, label: str, schema_hint: str) -> tuple[dict[str, Any], Any]:
+async def _complete_json(gateway: Any, request: Any, config: Any = None, *,
+                          label: str, schema_hint: str) -> tuple[dict[str, Any], Any]:
     """A model answer that must be a JSON object, with one repair turn.
 
     `parse_json_block` returns `{}` for prose, and the plain reading of an
@@ -100,7 +122,7 @@ async def _complete_json(gateway: Any, request: Any, *, label: str, schema_hint:
     answer quoted back and the schema restated, the way the solver loop
     repairs a step answer.
     """
-    response = await _complete(gateway, request)
+    response = await _complete(gateway, request, config)
     data = parse_json_block(response.text or "")
     if data:
         return data, response
@@ -119,7 +141,7 @@ async def _complete_json(gateway: Any, request: Any, *, label: str, schema_hint:
         ],
         max_tokens=request.max_tokens,
     )
-    response2 = await _complete(gateway, repair)
+    response2 = await _complete(gateway, repair, config)
     data2 = parse_json_block(response2.text or "")
     if data2:
         return data2, response2
@@ -187,16 +209,23 @@ async def _run_subagent(
                 "available": reason}
     result: Any = None
     result_dict: dict[str, Any] | None = None
-    # One retry behind the run. A sub-agent crash can be a deterministic
-    # property of the goal, so the budget is two and the gap between them
-    # is short — enough for a port to open or a worktree to settle, not
-    # enough to disguise a goal the program cannot do.
-    for attempt in range(1, SUBAGENT_ATTEMPTS + 1):
+    # A sub-agent crash can be a deterministic property of the goal, which is
+    # why the count used to be two. It is configuration now
+    # (`threads.subagent_attempts`) and zero -- the default -- means the run
+    # is retried for as long as the thread lives, with the short gap below
+    # between attempts: enough for a port to open or a worktree to settle,
+    # and, when the crash really is the goal, the pacing that keeps the
+    # retries from being a hot loop. A positive number restores the old
+    # honest failure after that many attempts.
+    cap = _attempt_cap(config, "subagent_attempts")
+    attempt = 0
+    while True:
+        attempt += 1
         try:
             result = await agent.run(goal, workdir=str(workdir))
             break
         except Exception as exc:
-            if attempt >= SUBAGENT_ATTEMPTS:
+            if cap > 0 and attempt >= cap:
                 logger.exception("thread.subagent_failed", role=role)
                 result_dict = {
                     "agent": role, "status": "failed",
@@ -313,6 +342,7 @@ async def _pursue(
                 ],
                 max_tokens=1200,
             ),
+            config,
             label="devise",
             schema_hint='{"approaches": [{"id": "a1", "summary": "...", '
                         '"expected_value": 0.5, "estimated_cost_usd": 0.05, '
@@ -353,6 +383,7 @@ async def _pursue(
                 ],
                 max_tokens=1200,
             ),
+            config,
             label="plan",
             schema_hint='{"steps": [{"id": "s1", "description": "one concrete action"}]}',
         )
@@ -397,7 +428,7 @@ async def _pursue(
                 thread_id=str(spec.get("id")),
                 messages=step_messages,
                 max_tokens=1500,
-            ))
+            ), config)
             cost += step_response.cost_usd
             step_data_out = parse_json_block(step_response.text or "")
             if not step_data_out:
@@ -418,7 +449,7 @@ async def _pursue(
                         )),
                     ],
                     max_tokens=1500,
-                ))
+                ), config)
                 cost += step_response.cost_usd
                 step_data_out = parse_json_block(step_response.text or "")
                 if not step_data_out:

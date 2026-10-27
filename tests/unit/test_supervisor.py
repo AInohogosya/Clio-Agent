@@ -124,22 +124,131 @@ def test_a_child_that_never_started_is_restarted_like_one_that_died(
     assert spec.retired is False, "one failure is not the end of the road for it"
 
 
-def test_a_child_is_given_up_on_only_after_the_limit(tmp_path: Any, monkeypatch: Any) -> None:
-    """Bounded, because the alternative is a spawn loop every two seconds."""
+def test_a_required_child_is_never_given_up_on(tmp_path: Any, monkeypatch: Any) -> None:
+    """Five crashes are five restarts, not a death sentence.
+
+    The give-up path this replaces left a crash-looping core retired for the
+    life of the supervisor: the person whose missing API key caused the loop
+    pasted the key into the settings page and the agent stayed dead, because
+    the one process that watches for children had stopped watching for
+    this one. In the field the operator's stop is `ethos stop` -- never a
+    crash count -- so a required child is asked again on every sweep, on a
+    backoff that resets after a minute of stable life.
+    """
     supervisor = _supervisor(tmp_path)
     supervisor.BACKOFF_S = 0.0
     spec = ProcessSpec("ethos-gateway", ["/nonexistent/gateway", "gateway"])
     supervisor.specs = [spec]
 
+    attempts: list[int] = []
+
     def always_missing(argv: list[str], **kwargs: Any) -> Any:
+        attempts.append(1)
         raise FileNotFoundError(2, "No such file or directory", argv[0])
 
     monkeypatch.setattr(subprocess, "Popen", always_missing)
 
     supervisor._open(spec)
-    for _ in range(supervisor.MAX_RESTARTS + 2):
+    for _ in range(12):
         supervisor._sweep()
-    assert spec.retired is True, "a child that will not start must stop being asked"
+    assert spec.retired is False, "nothing is ever the last ask for a required child"
+    assert len(attempts) >= 12, "every sweep asks again"
+
+
+def test_a_silent_core_is_terminated_as_wedged(tmp_path: Any, monkeypatch: Any) -> None:
+    """Process-death polling cannot see a hang; the heartbeat file can.
+
+    A core that is alive but stuck -- a call that will never return, an await
+    nothing will complete -- is the one failure `Popen.poll()` is blind to,
+    and the whole reason the core touches a heartbeat once per cycle. The
+    supervisor reads it only for the core, only when it exists, and never
+    kills anything else for being quiet.
+    """
+    import ethos.core.supervisor as supervisor_module
+
+    supervisor = _supervisor(tmp_path)
+    monkeypatch.setattr(supervisor_module, "CORE_HEARTBEAT_STALE_S", 60.0)
+    core = ProcessSpec("ethos-core", ["x"])
+    other = ProcessSpec("ethos-gateway", ["x"])
+    core_proc, other_proc = _FakeProc(pid=1), _FakeProc(pid=2)
+    core.proc = core_proc
+    other.proc = other_proc
+    supervisor.specs = [core, other]
+
+    # No heartbeat file yet: nothing is judged, by design -- a supervisor
+    # running a core that has not written one (or a run dir it cannot read)
+    # must not kill children for being quiet.
+    supervisor._sweep()
+    assert core_proc.terminated is False
+
+    heartbeat = supervisor.core_heartbeat_file
+    heartbeat.parent.mkdir(parents=True, exist_ok=True)
+    heartbeat.touch()
+
+    # A fresh heartbeat: a busy core is left alone.
+    supervisor._sweep()
+    assert core_proc.terminated is False
+
+    # A stale one: the core is presumed wedged and terminated, and the next
+    # sweep restarts it like any other death. Other children are untouched
+    # no matter how quiet -- the heartbeat is the core's channel alone.
+    stale = time.time() - 3600.0
+    os.utime(heartbeat, (stale, stale))
+    supervisor._sweep()
+    assert core_proc.terminated is True
+    assert other_proc.terminated is False
+
+
+def test_a_freshly_started_core_is_not_judged_by_the_heartbeat_of_the_dead_one(
+    tmp_path: Any, monkeypatch: Any
+) -> None:
+    """A heartbeat outlives the core that wrote it.
+
+    The file's mtime belongs to the previous core, so the wedge check — read
+    against whatever is on disk — condemned every freshly spawned one within a
+    single sweep, before a boot (database connect, embedder load) could touch
+    the file even once. Each restart inherited the same stale verdict: the log
+    filled with nineteen thousand `core_wedged` lines while no core lived long
+    enough to write the one heartbeat that would have cleared it. The spawn
+    moves the baseline, so the newest core is judged from the moment it was
+    asked to run, not from the moment its predecessor went quiet.
+    """
+    import ethos.core.supervisor as supervisor_module
+
+    supervisor = _supervisor(tmp_path)
+    monkeypatch.setattr(supervisor_module, "CORE_HEARTBEAT_STALE_S", 60.0)
+
+    # What a restart inherits: a heartbeat the previous core wrote an hour ago.
+    heartbeat = supervisor.core_heartbeat_file
+    heartbeat.parent.mkdir(parents=True, exist_ok=True)
+    stale = time.time() - 3600.0
+    heartbeat.touch()
+    os.utime(heartbeat, (stale, stale))
+
+    opened: list[str] = []
+
+    def fake_popen(argv: list[str], **kwargs: Any) -> Any:
+        opened.append(argv[0])
+        return _FakeProc()
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    core = ProcessSpec("ethos-core", ["core"])
+    supervisor.specs = [core]
+
+    assert supervisor._open(core) is True
+    fresh = heartbeat.stat().st_mtime
+    assert time.time() - fresh < 60.0, "the spawn re-baselined the heartbeat"
+
+    supervisor._sweep()
+    assert core.proc is not None and core.proc.terminated is False, (
+        "a core two seconds into its boot is not a wedged core"
+    )
+
+    # The protection is not an amnesty: a core that goes silent after its
+    # baseline is still caught, on the same rule as any other.
+    os.utime(heartbeat, (stale, stale))
+    supervisor._sweep()
+    assert core.proc is not None and core.proc.terminated is True
 
 
 def test_an_optional_child_that_finds_the_job_done_is_not_a_failure(

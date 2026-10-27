@@ -456,3 +456,72 @@ def test_the_report_names_the_files_the_work_wrote() -> None:
         "a failed write is not a file the person can see"
     )
     assert _delivered_note(resume) == "; files: /Users/me/Desktop/agent"
+
+
+# --------------------------------------------------------------------------
+# When strategies are unbounded, the switch schedules its own pacing
+
+
+class _MemorySaved:
+    """Captures what the loop wrote, and nothing else."""
+
+    def __init__(self) -> None:
+        self.saved: dict[str, Any] | None = None
+
+    async def update_intention(self, intention_id: Any, **fields: Any) -> None:
+        self.saved = fields.get("resume_state")
+
+
+def _bare_loop(config, memory: Any) -> Any:
+    from ethos.gsl.loop import GeneralSolverLoop
+
+    return GeneralSolverLoop(config, memory, gateway=None, toolhost=None, verification=None)
+
+
+def test_an_unbounded_strategy_switch_schedules_its_own_pacing(tmp_path: Path) -> None:
+    """No ceiling means pacing, not a tick-rate ladder of fresh approaches.
+
+    The strategy cap used to be the only thing standing between a hopeless
+    step and an infinite ladder of approaches; with the cap lifted
+    (`gsl.max_strategies: 0`, the default), every installed strategy carries
+    a backoff that grows with its number and caps at `plan_backoff_max_s`.
+    The deadline rides `plan_retry_after`, which the loop's own gates
+    already read and name.
+    """
+    import asyncio
+    from datetime import UTC, datetime
+
+    from ethos.gsl.loop import PLAN_RETRY_AFTER
+
+    config = make_config(tmp_path)
+    memory = _MemorySaved()
+    loop = _bare_loop(config, memory)
+
+    asyncio.run(loop._pace_strategy_switch(_IntentionRow(), {}, strategy_number=2))
+    raw = (memory.saved or {}).get(PLAN_RETRY_AFTER)
+    assert raw, "the switch set a deadline"
+    deadline = datetime.fromisoformat(str(raw))
+    assert deadline > datetime.now(UTC)
+    # Strategy 8 sits on the cap: later switches do not wait longer than
+    # `plan_backoff_max_s`, whatever their number.
+    asyncio.run(loop._pace_strategy_switch(_IntentionRow(), {}, strategy_number=8))
+    capped = datetime.fromisoformat(str((memory.saved or {}).get(PLAN_RETRY_AFTER)))
+    assert (capped - datetime.now(UTC)).total_seconds() <= config.gsl.plan_backoff_max_s + 5
+
+
+def test_a_capped_strategy_switch_adds_no_pacing(tmp_path: Path) -> None:
+    """With a ceiling configured, the old shape is unchanged: the park is the
+    stop, and a switch that installs does not also delay the new plan."""
+    import asyncio
+
+    config = make_config(tmp_path)
+    config.gsl.max_strategies = 3
+    memory = _MemorySaved()
+    loop = _bare_loop(config, memory)
+
+    asyncio.run(loop._pace_strategy_switch(_IntentionRow(), {}, strategy_number=2))
+    assert memory.saved is None, "a capped switch writes nothing, let alone a wait"
+
+
+class _IntentionRow:
+    id = "00000000-0000-0000-0000-000000000001"
