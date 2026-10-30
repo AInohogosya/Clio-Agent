@@ -22,6 +22,12 @@ subprocess starts. Handing the child this agent's own interpreter instead is
 how a missing dependency came back as "the desktop task failed": the child
 crashed on the same import that broke in-process mode, before it had touched
 the desktop, and its exit code was read as a verdict on a task it never ran.
+
+The default mode is `hidden` — the background screen — so a delegation works
+on a surface the person is not watching. An in-process run is therefore
+accompanied by `apex_screen.ApexScreenRelay`, the read-only loopback stream
+the interface's Background Screen panel renders; without it, background work
+would be invisible work.
 """
 
 from __future__ import annotations
@@ -33,6 +39,7 @@ from typing import Any
 
 from ethos.observability.logger import get_logger
 from ethos.platform import venv_python
+from ethos.subagents.apex_screen import ApexScreenRelay
 from ethos.subagents.base import (
     STATUS_BLOCKED,
     STATUS_DONE,
@@ -112,6 +119,7 @@ class ApexSubAgent(SubAgent):
             self.config, self.gateway_url(), self.model_name(),
         ))
         plane: Any | None = None
+        relay: ApexScreenRelay | None = None
         try:
             adapter = create_screen_controller(screen_mode)
             plane = ControlPlane(
@@ -122,12 +130,28 @@ class ApexSubAgent(SubAgent):
                     max_steps=max_steps,
                 ),
             )
+            # The run works on a surface the person is not watching, so this
+            # stream is the only place the work is visible at all. It is
+            # started before `plane.start` and closed before the plane is, so
+            # no pump is ever reading an adapter that is already closed.
+            relay = ApexScreenRelay.attach(
+                plane, goal=task, screen_mode=screen_mode.value,
+            )
             await plane.start()
             snapshot = await plane.create_task(task)
+            relay.set_task(snapshot.task_id)
             await plane.run_task(snapshot.task_id)
             final = await plane.wait_for_task(snapshot.task_id)
-            return self.timed(self._result_from_snapshot(final, "inprocess"), started)
+            result = self._result_from_snapshot(final, "inprocess")
+            # The port is how a log line becomes a live view: the interface's
+            # proxy scans for the relay, but a debugging session should not
+            # have to.
+            if relay.port:
+                result.detail["background_screen_port"] = relay.port
+            return self.timed(result, started)
         finally:
+            if relay is not None:
+                relay.close()
             if plane is not None:
                 try:
                     await plane.aclose()

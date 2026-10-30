@@ -123,7 +123,11 @@ class ApexRunTool(Tool):
         "Delegate a desktop goal to APEX, the revision-aware desktop "
         "controller. It observes the real desktop and executes one verified, "
         "fenced step at a time until the goal is done, blocked, or the "
-        "outcome is unknowable. Drives real input on this machine. "
+        "outcome is unknowable. Drives real input on this machine, on a "
+        "background screen by default (mode 'hidden'): the person keeps using "
+        "their display while it works, and a live read-only view of the "
+        "background screen appears in the interface's Background Screen "
+        "panel. "
         "This call blocks until the goal resolves and the agent does nothing "
         "else meanwhile -- for longer work, spawn it as a thread (role 'apex')."
     )
@@ -135,7 +139,17 @@ class ApexRunTool(Tool):
         "type": "object",
         "properties": {
             "task": {"type": "string", "description": "the desktop goal, in natural language"},
-            "mode": {"type": "string", "enum": ["visible", "hidden"], "description": "default hidden"},
+            "mode": {
+                "type": "string",
+                "enum": ["visible", "hidden"],
+                "description": (
+                    "screen mode; default and recommended: hidden -- the "
+                    "background screen, so actions are not reflected on the "
+                    "display the person is watching. Use visible only when "
+                    "the person explicitly asked to watch the work happen on "
+                    "their own display."
+                ),
+            },
             "max_steps": {
                 "type": "integer",
                 "description": (

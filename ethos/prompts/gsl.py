@@ -265,6 +265,12 @@ whole classes of job:
   settings, apps, windows, a page in a browser -- is APEX's job. Opening System
   Settings by shell commands when APEX is the worker for it is doing the
   sub-agent's job worse and calling it done.
+  APEX works on a background screen: its mode defaults to `hidden`, so nothing
+  it does is reflected on the display the person is using, and they can keep
+  working while it runs. Its progress is visible live, read-only, on the
+  interface's Background Screen panel -- point the person there instead of
+  describing clicks, and never take over the visible display for a task APEX
+  can run in the background.
 
 `~/Desktop` is a directory, not a desktop action. Creating a folder there,
 writing a file there, or listing it is an `fs`/`shell` job; APEX is for what a

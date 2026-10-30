@@ -2931,6 +2931,132 @@ app.post("/api/intentions/:id/close", handle(async (req, res) => {
 }));
 
 /**
+ * The background screen: a read-only window onto an APEX sub-agent's run.
+ *
+ * When the agent delegates desktop work, the run happens on a surface the
+ * person is not watching — that is the point of hidden mode — and the
+ * `ApexScreenRelay` beside the run streams that surface over loopback. This
+ * proxy is the two GET roads the interface's Background Screen panel needs:
+ *
+ * `GET /api/apex-screen/session`
+ *     The relay's session — status, goal, step count, and whether the view is
+ *     pixels or a semantic mirror.
+ * `GET /api/apex-screen/events`
+ *     The relay's `/frames` event stream, piped through byte for byte.
+ *
+ * The read-only property is structural, not remembered. Only GETs are
+ * registered here, the relay itself answers GETs and nothing else, and the
+ * panel draws with pointer events disabled — so a view that cannot ask for
+ * input at any layer cannot accidentally become one. Discovery scans the
+ * relay's small port range (ETHOS_APEX_SCREEN_PORT, default 8788, upward) and
+ * requires the relay's own `readOnly` marker, so a different loopback service
+ * that happens to live on a nearby port is never mistaken for a run.
+ */
+const APEX_SCREEN_BASE_PORT = Number.isInteger(Number(process.env.ETHOS_APEX_SCREEN_PORT))
+  && Number(process.env.ETHOS_APEX_SCREEN_PORT) > 0
+  ? Number(process.env.ETHOS_APEX_SCREEN_PORT)
+  : 8788;
+const APEX_SCREEN_PORT_SPAN = 8;
+const APEX_SCREEN_PROBE_TIMEOUT_MS = 600;
+
+async function findApexScreenRelay() {
+  for (let offset = 0; offset < APEX_SCREEN_PORT_SPAN; offset += 1) {
+    const port = APEX_SCREEN_BASE_PORT + offset;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), APEX_SCREEN_PROBE_TIMEOUT_MS);
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/session`, {
+        cache: "no-store",
+        signal: controller.signal,
+      });
+      if (!response.ok) continue;
+      const session = await response.json();
+      if (session?.readOnly === true && session?.source === "agent") {
+        return { port, session };
+      }
+    } catch {
+      /* nothing lives on this port; try the next one */
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  return null;
+}
+
+app.get("/api/apex-screen/session", async (_req, res) => {
+  try {
+    const relay = await findApexScreenRelay();
+    if (!relay) {
+      res.status(503).json({ error: "no_active_session" });
+      return;
+    }
+    res.json(relay.session);
+  } catch {
+    res.status(502).json({ error: "relay_unreachable" });
+  }
+});
+
+app.get("/api/apex-screen/events", async (_req, res) => {
+  const relay = await findApexScreenRelay();
+  if (!relay) {
+    // The panel treats this as "no run is working right now" and retries on
+    // its own cadence, so a quiet day never becomes a reconnect storm.
+    res.status(503).json({ error: "no_active_session" });
+    return;
+  }
+  let upstream;
+  try {
+    upstream = await fetch(`http://127.0.0.1:${relay.port}/frames`, {
+      cache: "no-store",
+    });
+  } catch {
+    res.status(502).json({ error: "relay_unreachable" });
+    return;
+  }
+  if (!upstream.ok || !upstream.body) {
+    res.status(502).json({ error: "relay_unreachable" });
+    return;
+  }
+  res.writeHead(200, {
+    "cache-control": "no-store",
+    connection: "keep-alive",
+    "content-type": "text/event-stream; charset=utf-8",
+    "x-accel-buffering": "no",
+    "x-content-type-options": "nosniff",
+  });
+  const close = new AbortController();
+  let closed = false;
+  res.on("close", () => {
+    closed = true;
+    close.abort();
+  });
+  const reader = upstream.body.getReader();
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done || closed) break;
+      if (!res.write(value)) {
+        // Respect the browser's own backpressure: the relay already drops
+        // frames for a slow reader, so this only keeps the pipe honest. The
+        // close race matters — a response that ends while backing up must
+        // not leave this await parked forever.
+        await new Promise((resolve) => {
+          res.once("drain", resolve);
+          res.once("close", resolve);
+        });
+        if (closed) break;
+      }
+    }
+  } catch {
+    /* the wire went away; the relay notices its subscribers ending */
+  } finally {
+    close.abort();
+    reader.cancel().catch(() => undefined);
+    if (!res.writableEnded) res.end();
+  }
+});
+
+/**
  * The shared phone settings (provider, model, key, language, theme, …) as
  * durable state, so the page keeps what a person configured across a reload
  * and across a restart of this process.

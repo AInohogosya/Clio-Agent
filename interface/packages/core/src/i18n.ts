@@ -408,6 +408,15 @@ const en = {
   panelBudget: 'Budget',
   panelGuardian: 'Guardian',
   panelChannels: 'Channels',
+  panelScreen: 'Background Screen',
+
+  screenLive: 'Live',
+  screenGoal: 'Goal',
+  screenSteps: 'Steps',
+  screenActivity: 'Background activity',
+  screenReadonly: 'Read-only view — the agent works on a background screen, not on your display.',
+  screenMirror: 'Structure view: this background surface has no pixels, so its live accessibility tree is drawn instead.',
+  screenEmpty: 'No background screen is active. When the agent works on the desktop, it happens in the background — the live view appears here.',
 
   presenceLabel: 'Presence',
   presenceState: 'State',
@@ -879,6 +888,15 @@ const ja: TranslationTable = {
   panelBudget: '予算',
   panelGuardian: '守護',
   panelChannels: 'チャネル',
+  panelScreen: 'バックグラウンド画面',
+
+  screenLive: 'ライブ',
+  screenGoal: '目標',
+  screenSteps: 'ステップ',
+  screenActivity: 'バックグラウンドの動き',
+  screenReadonly: '閲覧専用です — エージェントはバックグラウンド画面で作業しており、あなたの画面には何も表示されません。',
+  screenMirror: '構造ビュー: このバックグラウンド面にはピクセルがないため、ライブのアクセシビリティツリーを描画しています。',
+  screenEmpty: 'バックグラウンド画面は現在ありません。エージェントがデスクトップ作業を行うときはバックグラウンドで動くため、ここにライブビューが表示されます。',
 
   presenceLabel: '状態',
   presenceState: '状態',
@@ -1345,6 +1363,15 @@ const zh: TranslationTable = {
   panelBudget: '预算',
   panelGuardian: '守护',
   panelChannels: '渠道',
+  panelScreen: '后台屏幕',
+
+  screenLive: '实时',
+  screenGoal: '目标',
+  screenSteps: '步骤',
+  screenActivity: '后台动态',
+  screenReadonly: '只读视图 — 智能体在后台屏幕上工作，不会影响你的显示画面。',
+  screenMirror: '结构视图：该后台表面没有像素，因此绘制的是其实时辅助功能树。',
+  screenEmpty: '当前没有后台屏幕。智能体在桌面上工作时会在后台进行——实时视图会显示在这里。',
 
   presenceLabel: '状态',
   presenceState: '状态',

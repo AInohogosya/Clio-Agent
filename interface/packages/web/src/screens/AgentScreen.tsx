@@ -12,6 +12,7 @@ import {
   type TranslationKey,
 } from '@project-phone/core';
 import { Composer } from '../components/Composer';
+import { BackgroundScreenPane } from '../components/agent/BackgroundScreenPane';
 import { MessageRow, PendingIndicator } from '../components/MessageRow.js';
 import { ConversationFeed, useConversationFeed } from '../components/ConversationFeed';
 import { Icon } from '../components/Icon';
@@ -33,12 +34,13 @@ import {
   type AgentT,
 } from '../components/agent/agent-kit';
 
-type Panel = 'intentions' | 'actions' | 'thoughts' | 'budget' | 'guardian';
+type Panel = 'intentions' | 'actions' | 'thoughts' | 'budget' | 'guardian' | 'screen';
 
-const PANELS: Array<{ id: Panel; label: TranslationKey; icon: 'edit' | 'database' | 'spark' | 'activity' | 'shield' }> = [
+const PANELS: Array<{ id: Panel; label: TranslationKey; icon: 'edit' | 'database' | 'spark' | 'activity' | 'shield' | 'cpu' }> = [
   { id: 'intentions', label: 'panelIntentions', icon: 'edit' },
   { id: 'actions', label: 'panelActions', icon: 'database' },
   { id: 'thoughts', label: 'panelThoughts', icon: 'spark' },
+  { id: 'screen', label: 'panelScreen', icon: 'cpu' },
   { id: 'budget', label: 'panelBudget', icon: 'activity' },
   { id: 'guardian', label: 'panelGuardian', icon: 'shield' },
 ];
@@ -236,6 +238,7 @@ export function AgentScreen({
             ) : null}
             {panel === 'actions' ? <ActionsPane language={language} onUndo={onUndo} t={t} view={view} /> : null}
             {panel === 'thoughts' ? <ThoughtsPane language={language} t={t} view={view} /> : null}
+            {panel === 'screen' ? <BackgroundScreenPane language={language} t={t} /> : null}
             {panel === 'budget' ? <BudgetPane language={language} t={t} view={view} /> : null}
             {panel === 'guardian' ? <GuardianPane language={language} now={now} t={t} view={view} /> : null}
           </section>
