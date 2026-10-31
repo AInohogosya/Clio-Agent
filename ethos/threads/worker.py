@@ -33,7 +33,7 @@ logger = get_logger("ethos.threads.worker")
 # spawn through the same ThreadManager — same budget carve, same bus results,
 # same intentions — but their worker dispatches to the sub-agent registry, and
 # the program's own model calls are routed through this agent's gateway.
-SUBAGENT_ROLES = ("foundry", "apex")
+SUBAGENT_ROLES = ("foundry", "apex", "axiom")
 
 # A failure that reaches this worker has already been through the gateway's
 # own retry curve — failover, request widening, cooldown waits. The counts

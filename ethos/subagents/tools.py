@@ -60,7 +60,7 @@ class SubagentStatusTool(Tool):
     name = "subagent.status"
     description = (
         "List the external agent programs wired in as sub-agents "
-        "(Foundry, APEX), what each is for, and whether each is reachable."
+        "(Foundry, APEX, AXIOM), what each is for, and whether each is reachable."
     )
     timeout_s = 15.0
     input_schema = {"type": "object", "properties": {}}
@@ -179,4 +179,51 @@ class ApexRunTool(Tool):
         return _as_result(result.to_dict())
 
 
-__all__ = ["ApexRunTool", "FoundryRunTool", "SubagentStatusTool"]
+class AxiomRunTool(Tool):
+    name = "subagent.axiom"
+    description = (
+        "Delegate a coding task to AXIOM, the single-turn autonomous coding "
+        "agent. It compiles the task into a verified intent, models the "
+        "workspace, plans the work as a DAG, applies every change inside a "
+        "sandboxed shadow workspace and puts the result through an adversarial "
+        "verification gauntlet before anything is committed back. Best for a "
+        "bounded coding task -- a feature, a fix, a refactor with its tests -- "
+        "that should be done and verified in one run; a repo-scale objective "
+        "with gates and a merge train belongs to subagent.foundry. "
+        "This call blocks until the run finishes and the agent does nothing "
+        "else meanwhile -- for longer work, spawn it as a thread (role 'axiom')."
+    )
+    # Same relationship to the sub-agent's own budget as `subagent.foundry`:
+    # above the run's own ceiling, so AXIOM reports its own failed/blocked
+    # verdict rather than being cut off here with nothing to say.
+    timeout_s = 86400.0
+    input_schema = {
+        "type": "object",
+        "properties": {
+            "task": {"type": "string", "description": "the coding task, in plain text"},
+            "workdir": {
+                "type": "string",
+                "description": "the repository or workspace to act on; default: the thread's own workdir",
+            },
+        },
+        "required": ["task"],
+    }
+
+    async def run(self, args: dict[str, Any], ctx: ToolContext, host: Toolhost) -> Any:
+        registry = _registry(host)
+        if registry is None or not registry.has("axiom"):
+            return _as_result({
+                "agent": "axiom", "status": "unavailable",
+                "error": "axiom sub-agent is not available",
+            })
+        result = await registry.run(
+            "axiom",
+            str(args["task"]),
+            workdir=args.get("workdir") or ctx.cwd,
+        )
+        if isinstance(result, dict):
+            return _as_result(result)
+        return _as_result(result.to_dict())
+
+
+__all__ = ["ApexRunTool", "AxiomRunTool", "FoundryRunTool", "SubagentStatusTool"]

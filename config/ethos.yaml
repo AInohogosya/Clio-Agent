@@ -121,4 +121,18 @@ subagents:
         # APEX's planner sees 50K+ token prompts; the NVIDIA endpoint 504s on
         # those and lightning plans badly. Ollama Cloud answers them in seconds.
         LLM_MODEL: gemma4:31b-cloud
+    - name: axiom
+      # Single-turn autonomous coding agent. Takes a bounded coding task -- a
+      # feature, a fix, a refactor with its tests -- compiles it into a
+      # verified intent, models the workspace, plans the work as a DAG,
+      # mutates only inside a sandboxed shadow workspace and puts the result
+      # through an adversarial verification gauntlet before anything lands in
+      # the workspace. Repo-scale objectives with their own design phase,
+      # gates and merge train stay with foundry.
+      mode: auto
+      root: ""
+      # The workspace AXIOM acts on. Empty means the thread's own isolated
+      # worktree.
+      repo_root: ""
+      timeout_s: 3600.0
 

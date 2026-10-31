@@ -1,12 +1,16 @@
 """The model bridge: sub-agent model calls, routed through this agent's gateway.
 
-Two sub-agents, two call conventions, one routing table:
+Three sub-agents, three call conventions, one routing table:
 
 * Foundry's `Orchestrator` takes any object with a *synchronous*
   `complete(LLMRequest) -> LLMResponse` — an in-process provider is injected,
   which hops to this agent's running event loop and calls the gateway there.
 * APEX speaks the OpenAI chat-completions wire format through its own SDK
   clients; it is pointed at this agent's gateway shim over loopback HTTP.
+* AXIOM speaks the same wire format through its own native `httpx` client (no
+  SDK dependency); its `AxiomConfig` is pointed at the gateway shim the same
+  way, with `provider="openai"` so the catalogue's base-model routing resolves
+  to the plain chat-completions adapter rather than litellm.
 
 Both paths land in the same place: `GatewayService.complete`, where
 `models.yaml`, the spend guard, the retry/failover policy and the base model
@@ -148,4 +152,30 @@ def apex_planner_config(config: Any, gateway_url: str, model_name: str) -> Any:
     )
 
 
-__all__ = ["FoundryGatewayProvider", "apex_planner_config"]
+def axiom_engine_config(config_cls: Any, *, gateway_url: str, model_name: str, workspace: Any) -> Any:
+    """AXIOM's `AxiomConfig`, pointed at this agent's gateway.
+
+    The config class comes in as a parameter — like Foundry's provider, this
+    function is importable without the AXIOM tree present, so the adapter's
+    tests can exercise the routing without importing the program. `provider`
+    is pinned to `"openai"` (not `"auto"`, not `"litellm"`): with a base model
+    configured, AXIOM resolves the wire adapter from the base provider's
+    protocol, and an openai-protocol base resolves to its native
+    chat-completions client against `base_url` — this agent's gateway shim —
+    rather than to litellm, which would want a prefixed model name. The key is
+    a placeholder the shim does not check; AXIOM's own config requires one to
+    consider a base model usable, and without it the program would silently
+    route to its mock engine.
+    """
+    return config_cls(
+        provider="openai",
+        model=model_name,
+        api_key="clio-gateway",
+        base_provider="openai",
+        base_url=f"{gateway_url.rstrip('/')}/v1",
+        workspace=str(workspace),
+        max_tokens=16384,
+    )
+
+
+__all__ = ["FoundryGatewayProvider", "apex_planner_config", "axiom_engine_config"]

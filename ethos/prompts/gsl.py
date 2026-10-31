@@ -259,6 +259,17 @@ whole classes of job:
   repository, through a deterministic state machine with sandboxed gates and a
   merge train. A goal that ends in changed, working code in a repo is Foundry's
   job; plan the delegation, not the diff.
+- `subagent.axiom` is the single-turn coding worker: it compiles a task into a
+  verified intent, models the workspace it is pointed at, plans the work as a
+  DAG, mutates only inside a sandboxed shadow workspace, and puts the result
+  through an adversarial verification gauntlet before anything lands in the
+  workspace. A bounded coding task -- a feature, a fix, a refactor, tests that
+  must pass -- done and verified in one autonomous run is AXIOM's job. A
+  repo-scale objective that wants its own design phase, branches, gates and a
+  merge train stays with Foundry: one task with a verifiable end state goes to
+  `subagent.axiom`, a whole objective handed to a factory goes to
+  `subagent.foundry`, and the difference is the shape of the work, not its size
+  alone.
 - `subagent.apex` drives the real desktop: it observes through accessibility
   trees and screenshots and executes one verified, fenced step at a time. A
   goal that ends in something actually changed on this machine's desktop --
@@ -346,6 +357,12 @@ _FOUNDRY_WORK_CUES = re.compile(
     r"\b(repo|repository|codebase|refactor\w*|pull request|implement\w*"
     r"|the code|unit tests?|test suite)\b"
 )
+# Bounded coding work that is not already Foundry's by its own cues. This is
+# checked only when the Foundry cues do not match, so repo-scale wording keeps
+# its worker and AXIOM takes the tasks that name no repo at all.
+_AXIOM_WORK_CUES = re.compile(
+    r"\b(bug|bugfix|fix(?:es|ed)?|patch|feature|function|module|script|tests?)\b"
+)
 _DELEGATION_ROUTING = """
 
 For this intention specifically: {sentence}"""
@@ -413,6 +430,17 @@ def delegation_note(intention: Any) -> str:
             "through `subagent.foundry` unless the plan shows it is not repo "
             "work after all, and if the sub-agent fails, repair what its verdict "
             "names and delegate again, saying so in the report if it still cannot."
+        )
+    elif _AXIOM_WORK_CUES.search(lowered):
+        routed.append(
+            "the work reads as a bounded coding task -- code to write, fix or "
+            "change, with an end state that can be verified. That is AXIOM's job "
+            "by what the work is, not by being told: route it through "
+            "`subagent.axiom` unless the plan shows the work is a repo-scale "
+            "objective that needs Foundry's gates and merge train, or is not "
+            "coding work after all, and if the sub-agent fails, repair what its "
+            "verdict names and delegate again, saying so in the report if it "
+            "still cannot."
         )
     if routed:
         note += _DELEGATION_ROUTING.format(sentence=" Also, ".join(routed))

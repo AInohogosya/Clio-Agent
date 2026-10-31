@@ -1734,6 +1734,7 @@ class SubagentsConfig(BaseModel):
     agents: list[SubagentConfig] = Field(default_factory=lambda: [
         SubagentConfig(name="foundry"),
         SubagentConfig(name="apex"),
+        SubagentConfig(name="axiom"),
     ])
 
     def agent(self, name: str) -> SubagentConfig | None:

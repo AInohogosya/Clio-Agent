@@ -1,9 +1,9 @@
 """The sub-agent coordination layer.
 
-External agent programs — Foundry and APEX, living beside this checkout — are
-wired in here as sub-agents of this agent. Each keeps its own identity, its
-own state machine and its own interface; what it gives up is its own private
-line to a model vendor.
+External agent programs — Foundry, APEX and AXIOM, living beside this
+checkout — are wired in here as sub-agents of this agent. Each keeps its own
+identity, its own state machine and its own interface; what it gives up is its
+own private line to a model vendor.
 
 Three pieces make that work:
 
@@ -15,8 +15,9 @@ Three pieces make that work:
                 the bridge points its OpenAI-compatible client at the gateway's
                 own OpenAI-compatible shim (`/v1/chat/completions`).
 * one adapter per program — which knows that program's real interface
-  (Foundry's Orchestrator, APEX's ControlPlane) and drives it, in-process
-  when it can be imported safely, as a child process when it cannot.
+  (Foundry's Orchestrator, APEX's ControlPlane, AXIOM's six-layer engine)
+  and drives it, in-process when it can be imported safely, as a child
+  process when it cannot.
 """
 
 from __future__ import annotations
@@ -43,9 +44,10 @@ class SubagentRegistry:
         # sub-agent program's own source tree, and one broken program must not
         # stop the others — or the agent itself — from starting.
         from ethos.subagents.apex import ApexSubAgent
+        from ethos.subagents.axiom import AxiomSubAgent
         from ethos.subagents.foundry import FoundrySubAgent
 
-        for cls in (FoundrySubAgent, ApexSubAgent):
+        for cls in (FoundrySubAgent, ApexSubAgent, AxiomSubAgent):
             settings = config.subagents.agent(cls.name)
             if settings is None or not settings.enabled:
                 continue

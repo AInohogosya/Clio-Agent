@@ -653,12 +653,14 @@ TOOL_CATEGORIES: dict[str, set[str]] = {
     "intent.list": set(),
     "thread.spawn": {"execute"},
     # A sub-agent delegation is another program executing against this machine:
-    # Foundry merges branches into a repository and APEX drives real input.
-    # They were falling through to the `{"write"}` default, which is both wrong
+    # Foundry merges branches into a repository, APEX drives real input, and
+    # AXIOM mutates a workspace under its own verification gauntlet. They were
+    # falling through to the `{"write"}` default, which is both wrong
     # -- nothing here writes a file directly -- and weaker than what they can
     # actually do.
     "subagent.foundry": {"execute", "write"},
     "subagent.apex": {"execute", "write"},
+    "subagent.axiom": {"execute", "write"},
     "subagent.status": set(),
     "schedule.at": set(),
     "schedule.every": set(),
