@@ -150,6 +150,7 @@ class Toolhost:
             FsStatTool,
             FsWriteTool,
         )
+        from ethos.toolhost.tools.history import HistoryBrowseTool
         from ethos.toolhost.tools.http import HttpTool
         from ethos.toolhost.tools.intent import (
             IntentCloseTool,
@@ -193,6 +194,7 @@ class Toolhost:
             CommSendTool(),
             MemoryRecordTool(), MemorySearchTool(), MemoryRememberFactTool(),
             OpenQuestionTool(), RandomMemoryTool(),
+            HistoryBrowseTool(),
             IntentCreateTool(), IntentGetTool(), IntentListTool(), IntentUpdateTool(),
             IntentCloseTool(),
             ThreadSpawnTool(),

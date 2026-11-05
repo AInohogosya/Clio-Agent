@@ -1,5 +1,6 @@
 from ethos.prompts.context import NARRATE_PROMPT, narrate_messages
 from ethos.prompts.deliberation import (
+    DELIBERATION_AUTONOMY_NOTE,
     IGNORE_STREAK_REVIEW,
     social_deliberation_messages,
     streak_review_messages,
@@ -32,6 +33,7 @@ from ethos.prompts.identity import (
     CROSS_TALK_OPEN,
     DEFAULT_VALUES,
     HARD_LIMIT_TEXT,
+    NATURE_NOTE,
     REACH_NOTE,
     SELF_DESCRIPTION_TEMPLATE,
     build_identity_kernel,
@@ -45,14 +47,15 @@ from ethos.prompts.reverie import REVERIE_PROMPT, reverie_messages
 __all__ = [
     "NARRATE_PROMPT", "narrate_messages",
     "COMMISSIONED_ALREADY", "SELF_TAKEN_WORK", "commissioned_note",
-    "EDIT_EXISTING_FILES", "MESSAGE_CARE", "IGNORE_STREAK_REVIEW", "social_deliberation_messages",
+    "EDIT_EXISTING_FILES", "MESSAGE_CARE", "IGNORE_STREAK_REVIEW", "DELIBERATION_AUTONOMY_NOTE",
+    "social_deliberation_messages",
     "streak_review_messages",
     "DEVISE_PROMPT", "EVALUATE_PROMPT", "DEGRADED_PLAN", "PLAN_PROMPT", "REFLECT_PROMPT", "STEP_PROMPT",
     "SUCCESS_CHECKS_MATTER", "DELEGATION",
     "UNDERSTAND_PROMPT", "VERIFIER_PROMPT", "VISIBLE_DELIVERABLE",
     "delegation_note", "dumps",
     "render_constraints", "render_success_criteria",
-    "AUTONOMY_NOTE", "DEFAULT_VALUES", "HARD_LIMIT_TEXT", "SELF_DESCRIPTION_TEMPLATE",
+    "AUTONOMY_NOTE", "NATURE_NOTE", "DEFAULT_VALUES", "HARD_LIMIT_TEXT", "SELF_DESCRIPTION_TEMPLATE",
     "REACH_NOTE", "CROSS_TALK_CLOSED", "CROSS_TALK_OPEN", "cross_talk_note",
     "build_identity_kernel",
     "build_limits_block", "build_tool_catalog_block", "AGENT_LINEAGE", "identity_line",

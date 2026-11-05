@@ -8,6 +8,7 @@ from ethos.observability.logger import get_logger
 from ethos.parse import parse_json_block
 from ethos.prompts.context import narrate_messages
 from ethos.schemas.context import (
+    ContextAnchor,
     ContextSnapshot,
     ContextTurn,
     NarrativeLine,
@@ -93,6 +94,8 @@ class ContextLayer:
         self.thread_id = thread_id
         self.turns: list[ContextTurn] = []
         self.narrative: list[NarrativeLine] = []
+        self.anchors: list[ContextAnchor] = []
+        self.open_loops: list[str] = []
         self.open_loops: list[str] = []
         self.cost_usd = 0.0
         # Narration is a write to the agent's own mind, so it must not race
@@ -183,8 +186,71 @@ class ContextLayer:
                 )
 
     async def _enforce_capacity(self, focus: str | None = None) -> None:
-        if len(self.turns) > self.cfg.max_turns:
-            await self.roll(focus)
+        # Rolling until the buffer is back under `max_turns` — and until the
+        # durable turns are under their own cap, which is a cap on how many
+        # verbatim important turns may wait, not an exemption from rolling.
+        while (
+            len(self.turns) > self.cfg.max_turns
+            or self._durable_count() > self.cfg.durable_max_turns
+        ):
+            if await self.roll(focus) is None:
+                break
+
+    def _fresh_count(self) -> int:
+        return sum(1 for t in self.turns if not t.narrated)
+
+    def _durable_count(self) -> int:
+        threshold = self.cfg.durable_salience
+        return sum(1 for t in self.turns if t.salience >= threshold)
+
+    def _roll_selection(self) -> tuple[list[ContextTurn], list[ContextTurn]]:
+        """(stretch, drop): what the narrator reads, what the buffer loses.
+
+        Two decisions that the old rule folded into one. The narrator reads the
+        oldest turns nobody has written a line about yet — a partial view would
+        make the line about nothing. What *leaves* is chosen protectively: the
+        routine turns in the stretch go, the important ones stay — unless the
+        buffer is over its cap or the durable turns are over theirs, in which
+        case the whole stretch goes and the extraction pass is what carries its
+        content forward.
+
+        The old rule dropped the stretch whole, so a person's words were one
+        paraphrase after `narrate_every` turns and off the thread a dozen lines
+        later — the amnesia that made everything vanish unless it had been
+        turned into a task.
+        """
+        narrate = max(1, self.cfg.narrate_every)
+        if not self.turns:
+            return [], []
+        threshold = self.cfg.durable_salience
+        over_buffer = len(self.turns) > self.cfg.max_turns
+        over_durable = self._durable_count() > self.cfg.durable_max_turns
+        fresh = [t for t in self.turns if not t.narrated]
+        # When the stretch holds routine turns, they are the ones that go — the
+        # important turns in it stay verbatim even under overflow, because the
+        # cap the buffer is over is a cap on *everything* and the extraction is
+        # what stands behind the important half. A stretch that is all durable
+        # is the one case where the important turns go whole.
+        ephemeral = [t for t in fresh if t.salience < threshold]
+        if ephemeral:
+            # The stretch is read from the fresh turns (a partial view would
+            # make the line about nothing) and only its routine half leaves.
+            stretch = fresh[:narrate]
+            drop = [t for t in stretch if t.salience < threshold]
+            return stretch, drop
+        if over_buffer or over_durable:
+            # Overflow relief, and the oldest stretch is the relief: what is
+            # already narrated is the cheapest to lose verbatim, because a line
+            # and its anchors stand behind it.
+            stretch = self.turns[:narrate]
+            return stretch, list(stretch)
+        if not fresh:
+            # Everything buffered has been narrated and nothing is over its
+            # cap: a roll now would write the same line twice.
+            return [], []
+        stretch = fresh[:narrate]
+        # All durable, room for all of it: the line can wait.
+        return stretch, []
 
     async def roll(self, focus: str | None = None) -> NarrativeLine | None:
         """Turn the oldest stretch of buffer into a line of narrative.
@@ -195,13 +261,22 @@ class ContextLayer:
         """
         if self._narrating:
             return None
-        if len(self.turns) < self.cfg.narrate_every:
+        over = len(self.turns) > self.cfg.max_turns or self._durable_count() > self.cfg.durable_max_turns
+        if not over and self._fresh_count() < max(1, self.cfg.narrate_every):
+            # Under every cap with less than a batch of unwritten experience: a
+            # line can wait until there is a batch to write one about.
+            return None
+        stretch, drop = self._roll_selection()
+        if not stretch:
             return None
         self._narrating = True
         try:
-            batch = self.turns[: self.cfg.narrate_every]
-            del self.turns[: self.cfg.narrate_every]
-            line = await self._narrate(batch, focus)
+            for turn in stretch:
+                turn.narrated = True
+            if drop:
+                drop_ids = {t.id for t in drop}
+                self.turns[:] = [t for t in self.turns if t.id not in drop_ids]
+            line, anchors = await self._narrate(stretch, focus)
             self.narrative.append(line)
             if len(self.narrative) > self.cfg.narrative_max_lines:
                 # A line leaves the thread, so it goes to the retriever. Not
@@ -209,6 +284,7 @@ class ContextLayer:
                 # the agent every cycle, and writing it to memory too would put
                 # the same line in two places and let the two disagree.
                 await self._remember_narrative(self.narrative.pop(0))
+            await self._add_anchors(anchors)
             return line
         except Exception:
             logger.exception("context.roll_failed")
@@ -216,29 +292,53 @@ class ContextLayer:
         finally:
             self._narrating = False
 
-    async def _narrate(self, batch: list[ContextTurn], focus: str | None) -> NarrativeLine:
+    async def _narrate(
+        self, batch: list[ContextTurn], focus: str | None
+    ) -> tuple[NarrativeLine, list[ContextAnchor]]:
         kinds = sorted({t.kind for t in batch})
         rendered = [_render_for_narration(t) for t in batch]
-        line = await self._ask_narrator(rendered, focus)
+        line, raw_anchors = await self._ask_narrator(rendered, focus)
         if not line:
             line = _MECHANICAL_LINE.format(n=len(batch), kinds=", ".join(kinds))
-        return NarrativeLine(
-            text=line,
-            turn_count=len(batch),
-            kinds=kinds,
+        anchors: list[ContextAnchor] = []
+        conversation_key = next(
+            (t.conversation_key for t in batch if t.conversation_key), None,
         )
+        for item in raw_anchors:
+            text = " ".join(str(item.get("text") or "").split())[:_SUMMARY_CAP]
+            if not text:
+                continue
+            try:
+                salience = min(1.0, max(0.0, float(item.get("salience", 0.8))))
+            except (TypeError, ValueError):
+                salience = 0.8
+            if conversation_key:
+                # Something extracted from a conversation outranks the routine:
+                # a person's words were part of this batch, and what the
+                # extraction kept from them is the reason the batch was read.
+                salience = max(salience, 0.8)
+            anchors.append(ContextAnchor(
+                text=text,
+                kind=" ".join(str(item.get("kind") or "fact").split())[:40] or "fact",
+                salience=salience,
+                conversation_key=conversation_key,
+                turn_count=len(batch),
+            ))
+        return NarrativeLine(text=line, turn_count=len(batch), kinds=kinds), anchors
 
     async def _ask_narrator(
         self, rendered: list[str], focus: str | None
-    ) -> str | None:
+    ) -> tuple[str | None, list[dict[str, Any]]]:
         if self.gateway is None:
-            return None
+            return None, []
         try:
             tier = Tier(self.cfg.narration_tier)
         except ValueError:
             tier = Tier.T1
         name = self.config.self_name
-        messages = narrate_messages(name, rendered, focus)
+        messages = narrate_messages(
+            name, rendered, focus, important_max=self.cfg.narration_important_max,
+        )
         try:
             response = await self.gateway.complete(ModelRequest(
                 tier=tier,
@@ -263,19 +363,73 @@ class ContextLayer:
             # would not parse are four different problems wearing one event
             # name, and without the traceback the log cannot tell them apart.
             logger.exception("context.narrate_call_failed")
-            return None
+            return None, []
         self.cost_usd += float(response.cost_usd or 0.0)
         data = parse_json_block(response.text or "")
         text = str(data.get("line") or "").strip()
+        items: list[dict[str, Any]] = []
+        raw_items = data.get("important")
+        if isinstance(raw_items, list):
+            items = [item for item in raw_items if isinstance(item, dict)]
         if not text:
-            return None
+            return None, items
         loops = data.get("open_loops")
         if isinstance(loops, list):
             for loop in loops[:3]:
                 text_line = " ".join(str(loop).split())[:_SUMMARY_CAP]
                 if text_line and text_line not in self.open_loops:
                     self.open_loops.append(text_line)
-        return text
+        return text, items
+
+    # --------------------------------------------------------------- anchors
+
+    async def _add_anchors(self, incoming: list[ContextAnchor]) -> None:
+        """Take the extraction's output into the thread, evicting the lowest.
+
+        An anchor is on the thread — in front of the agent every cycle — until
+        the anchor list itself is full; only then does the lowest-ranked one go,
+        and it goes to durable memory as an episode rather than to nowhere. A
+        repeat of something already anchored is absorbed, so the same promise
+        narrated twice does not take two rows.
+        """
+        for anchor in incoming:
+            key = _anchor_key(anchor.text)
+            if not key:
+                continue
+            if any(_anchor_key(existing.text) == key for existing in self.anchors):
+                continue
+            self.anchors.append(anchor)
+        if len(self.anchors) <= self.cfg.anchor_max:
+            return
+        # Evict by rank: lowest salience first, oldest first among equals. What
+        # leaves is written to durable memory — the whole point of an anchor is
+        # that surviving the thread is not the last chance it gets.
+        self.anchors.sort(key=lambda a: (a.salience, a.ts), reverse=True)
+        overflow = self.anchors[self.cfg.anchor_max:]
+        self.anchors = self.anchors[: self.cfg.anchor_max]
+        self.anchors.sort(key=lambda a: a.ts)
+        for anchor in overflow:
+            await self._remember_anchor(anchor)
+
+    async def _remember_anchor(self, anchor: ContextAnchor) -> None:
+        if self.memory is None:
+            return
+        try:
+            await self.memory.record_episode(
+                kind="anchor",
+                summary=anchor.text,
+                body={
+                    "anchor_kind": anchor.kind,
+                    "salience": anchor.salience,
+                    "conversation_key": anchor.conversation_key,
+                    "ts": anchor.ts.isoformat(),
+                },
+                thread_id=self.thread_id,
+                importance=max(0.8, anchor.salience),
+                half_life_h=720.0,
+            )
+        except Exception:
+            logger.warning("context.remember_anchor_failed")
 
     async def _remember_narrative(self, line: NarrativeLine) -> None:
         if self.memory is None:
@@ -369,6 +523,28 @@ class ContextLayer:
             loops = "\n".join(f"- {loop}" for loop in self.open_loops[:3])
             _take(f"## Still open\n{loops}\n")
 
+        if self.anchors:
+            # Ahead of the narrative on purpose. Anchors are the compression's
+            # own record of what must not be lost — a promise, a question, what
+            # somebody said — and the narrative is the routine stretch around
+            # them. When the budget is tight, the extraction survives the
+            # summary, which is the whole ordering this layer exists to enforce.
+            header = "## Must not forget\n"
+            ranked = sorted(
+                enumerate(self.anchors), key=lambda pair: (pair[1].salience, -pair[0]),
+                reverse=True,
+            )
+            lines: list[str] = []
+            room = budget - used - len(header)
+            for _, anchor in ranked:
+                fragment = f"- [{anchor.kind}] {anchor.text}\n"
+                if room < len(fragment):
+                    break
+                lines.append(fragment.rstrip())
+                room -= len(fragment)
+            if lines:
+                _take(header + "\n".join(lines) + "\n")
+
         if self.narrative:
             lines = "\n".join(f"- {line.text}" for line in self.narrative)
             _take(f"## What I have been doing\n{lines}\n")
@@ -428,6 +604,7 @@ class ContextLayer:
         snapshot = ContextSnapshot(
             narrative=self.narrative[-self.cfg.narrative_max_lines:],
             turns=self.turns[-self.cfg.persist_turns:],
+            anchors=self.anchors[-self.cfg.anchor_max:],
         )
         payload = snapshot.to_payload()
         payload["open_loops"] = self.open_loops[:3]
@@ -439,12 +616,15 @@ class ContextLayer:
             self.narrative = snapshot.narrative
         if snapshot.turns:
             self.turns = snapshot.turns
+        if snapshot.anchors:
+            self.anchors = snapshot.anchors
         loops = (payload or {}).get("open_loops") if isinstance(payload, dict) else None
         if isinstance(loops, list):
             self.open_loops = [str(item) for item in loops[:3]]
-        if self.narrative or self.turns:
+        if self.narrative or self.turns or self.anchors:
             logger.info(
                 "context.restored", narrative=len(self.narrative), turns=len(self.turns),
+                anchors=len(self.anchors),
             )
 
 
@@ -452,6 +632,11 @@ def _render_for_narration(turn: ContextTurn) -> str:
     if turn.kind in _DETAIL_KINDS and turn.detail.get("text"):
         return f"[{turn.kind}] {turn.summary} :: {one_line(str(turn.detail['text']))}"
     return f"[{turn.kind}] {turn.summary}"
+
+
+def _anchor_key(text: str) -> str:
+    """The form two anchors have to match in to count as the same anchor."""
+    return " ".join(str(text).split()).casefold().strip(" .;:!?")
 
 
 def _stringify(value: Any) -> str:

@@ -93,7 +93,14 @@ subagents:
   # The model sub-agents' own calls are pinned to. Foundry's role outputs are
   # strict JSON schemas; the small base model could not satisfy the planner's
   # and repeated the same invalid object through all three schema repairs.
-  model_hint: gemma4:31b-cloud
+  #
+  # This pin is separate from the base model above, and that separation is
+  # what hid the failure: `gemma4:31b-cloud` reached its monthly provider
+  # limit, so every Foundry role call failed with a 429 while the base model
+  # was answering fine, and changing the base model changed nothing here.
+  # Pointed at the strong model on the base model's own endpoint, which
+  # answers Foundry's schemas and is routed by the gateway's failover.
+  model_hint: nvidia/nemotron-3.5-super-vl-120b-a12b
   agents:
     - name: foundry
       # Deterministic, gate-verified software factory. Takes a product

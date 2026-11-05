@@ -4,7 +4,7 @@ import base64
 import re
 import time
 from collections import OrderedDict
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from ethos.observability.logger import get_logger
@@ -27,9 +27,43 @@ MAX_SESSIONS = 4
 # starts the next piece of work.
 IDLE_TTL_S = 300.0
 
+# How long `visit` waits for a page to load, and how long a selector action
+# waits for its element. Named once because the error messages quote the wait
+# they actually used, and a message that guesses its own timeout is a message
+# nobody can debug against.
+VISIT_TIMEOUT_MS = 45_000
+SELECTOR_TIMEOUT_MS = 15_000
+
 
 class BrowserError(RuntimeError):
     pass
+
+
+class NoPageError(BrowserError):
+    """A selector action aimed at a session whose browser never visited anything.
+
+    Every `session_id` is its own browser, and a fresh one sits on
+    `about:blank`. A click or an extract there cannot match anything, ever —
+    the selector is not slow to appear, it is impossible. Raised before the
+    wait starts, so the answer says what is actually wrong instead of spending
+    fifteen seconds and then sounding like the site refused to load.
+    """
+
+
+class SelectorTimeoutError(BrowserError):
+    """A selector that genuinely did not appear on a page that did load.
+
+    Distinct from `NoPageError` because the two call for opposite readings:
+    here the site opened and the failure belongs to the selector or the wait.
+    """
+
+
+class VisitTimeoutError(BrowserError):
+    """A page that never finished loading within `visit`'s own ceiling.
+
+    The one timeout that really does mean "the site did not open" — named so
+    the error can say that and nothing else can be mistaken for it.
+    """
 
 
 class BrowserSession:
@@ -43,6 +77,11 @@ class BrowserSession:
         self._browser: Any = None
         self._context: Any = None
         self._page: Any = None
+        # The URL of the last navigation this session completed. None until a
+        # `visit` lands — the marker the selector actions read before waiting
+        # on an element that cannot exist, and the field the pool's inventory
+        # quotes when it tells the agent where the page it opened actually is.
+        self.last_url: str | None = None
 
     async def start(self) -> None:
         if self._page is not None:
@@ -72,42 +111,121 @@ class BrowserSession:
             raise BrowserError("invalid selector")
         return selector.strip()
 
+    def _page_for_selector(self) -> Any:
+        """The page a click/type/extract/screenshot acts on, or a refusal that says why.
+
+        A session nobody has visited sits on `about:blank`, and every selector
+        waits fifteen seconds there before failing with an error that reads
+        like the site refused to load. That is how a successful visit — HTTP
+        200, in the session the visit named — ends up reported as "the site
+        would not open": the page opened fine, in a different session than the
+        one the action named. Refused before the wait, with the recovery in
+        the message, because the distinction between "the site is down" and
+        "you are in the wrong browser" is the whole diagnosis.
+        """
+        page = self._require_page()
+        if page.url == "about:blank":
+            raise NoPageError(
+                f"browser session '{self.id}' has no page open — no browser.visit has "
+                "succeeded in it, so no selector can ever match (this is not the site "
+                "failing). browser.visit the URL in this same session_id first, or "
+                "pass the session_id you already opened the page in."
+            )
+        return page
+
+    async def _selector_call(
+        self, action: str, selector: str, run: Callable[[], Awaitable[Any]]
+    ) -> Any:
+        """Run one selector action, translating Playwright's bare timeout.
+
+        A raw `TimeoutError: waiting for locator(...)` says neither where the
+        page was nor whether it ever loaded, and an error that names neither
+        gets read as "the site is down" — the reading that sent the agent away
+        from pages it had open. The rewrite quotes the selector, the wait and
+        the URL the page is on, and says plainly that the page is open, so the
+        failure lands where it belongs: the selector, or content that renders
+        late. Returns whatever the action returned, so the call happens once.
+        """
+        page = self._require_page()
+        try:
+            return await run()
+        except Exception as exc:
+            # By class name rather than by import: Playwright renames nothing,
+            # and this module must keep importing (and being testable) without
+            # a browser installed.
+            if type(exc).__name__ != "TimeoutError":
+                raise
+            raise SelectorTimeoutError(
+                f"browser.{action} waited {SELECTOR_TIMEOUT_MS // 1000}s for "
+                f"'{selector}' and nothing matched — the page IS open at "
+                f"{page.url}, so this is a selector or rendering problem, not a "
+                "failed visit. Check the selector, or browser.screenshot to see "
+                "what the page actually shows."
+            ) from exc
+
     async def visit(self, url: str) -> dict[str, Any]:
         if not re.match(r"^https?://", url):
             raise BrowserError("only http(s) URLs are allowed")
         page = self._require_page()
-        response = await page.goto(url, wait_until="domcontentloaded", timeout=45_000)
-        return {"url": url, "status": response.status if response else None}
+        try:
+            response = await page.goto(url, wait_until="domcontentloaded", timeout=VISIT_TIMEOUT_MS)
+        except Exception as exc:
+            if type(exc).__name__ != "TimeoutError":
+                raise
+            raise VisitTimeoutError(
+                f"browser.visit timed out after {VISIT_TIMEOUT_MS // 1000}s and "
+                f"{url} never finished loading — the site did not open (network "
+                "trouble, a slow page, or the site throttling automation)."
+            ) from exc
+        self.last_url = page.url
+        return {"url": url, "status": response.status if response else None, "session": self.id}
 
     async def click(self, selector: str) -> dict[str, Any]:
-        page = self._require_page()
-        await page.click(self._validate_selector(selector), timeout=15_000)
-        return {"clicked": selector}
+        selector = self._validate_selector(selector)
+        page = self._page_for_selector()
+        await self._selector_call(
+            "click", selector, lambda: page.click(selector, timeout=SELECTOR_TIMEOUT_MS)
+        )
+        return {"clicked": selector, "url": page.url}
 
     async def type(self, selector: str, text: str, submit: bool = False) -> dict[str, Any]:
-        page = self._require_page()
-        await page.fill(self._validate_selector(selector), text, timeout=15_000)
-        if submit:
-            await page.press(self._validate_selector(selector), "Enter")
-        return {"typed": selector, "submitted": submit}
+        selector = self._validate_selector(selector)
+        page = self._page_for_selector()
+
+        async def _run() -> None:
+            await page.fill(selector, text, timeout=SELECTOR_TIMEOUT_MS)
+            if submit:
+                await page.press(selector, "Enter")
+
+        await self._selector_call("type", selector, _run)
+        return {"typed": selector, "submitted": submit, "url": page.url}
 
     async def extract(self, selector: str = "body", attribute: str | None = None) -> dict[str, Any]:
-        page = self._require_page()
+        selector = self._validate_selector(selector)
+        page = self._page_for_selector()
         if attribute == "html":
-            html = await page.inner_html(self._validate_selector(selector), timeout=15_000)
-            return {"text": html[:200_000]}
+            html = await self._selector_call(
+                "extract", selector, lambda: page.inner_html(selector, timeout=SELECTOR_TIMEOUT_MS)
+            )
+            return {"text": html[:200_000], "url": page.url}
         if attribute and attribute not in ("href", "src", "text"):
             raise BrowserError("attribute must be text, href, src or html")
         if attribute:
-            value = await page.get_attribute(self._validate_selector(selector), attribute, timeout=15_000)
-            return {"text": str(value or "")[:200_000]}
-        text = await page.inner_text(self._validate_selector(selector), timeout=15_000)
-        return {"text": text[:200_000]}
+            value = await self._selector_call(
+                "extract", selector,
+                lambda: page.get_attribute(selector, attribute, timeout=SELECTOR_TIMEOUT_MS),
+            )
+            return {"text": str(value or "")[:200_000], "url": page.url}
+        text = await self._selector_call(
+            "extract", selector, lambda: page.inner_text(selector, timeout=SELECTOR_TIMEOUT_MS)
+        )
+        return {"text": text[:200_000], "url": page.url}
 
     async def screenshot(self, full_page: bool = False) -> dict[str, Any]:
-        page = self._require_page()
+        page = self._page_for_selector()
         shot = await page.screenshot(full_page=full_page)
-        return {"image_b64": base64.b64encode(shot).decode("ascii"), "bytes": len(shot)}
+        return {"image_b64": base64.b64encode(shot).decode("ascii"), "bytes": len(shot),
+                "url": page.url}
 
     async def close(self) -> None:
         try:
@@ -234,6 +352,20 @@ class BrowserPool:
         logger.info("browser.session_opened", session=session_id, live=len(self.sessions),
                     max_sessions=self.max_sessions)
         return session
+
+    def open_pages(self) -> dict[str, str]:
+        """`{session_id: url}` for every session holding a loaded page.
+
+        The recovery half of `NoPageError`: an action that landed in a session
+        nobody visited is one `session_id` away from the page the agent already
+        opened, and this is the map of where those pages are. Sessions whose
+        page never loaded are left out — they have nothing to reuse.
+        """
+        return {
+            session_id: session.last_url
+            for session_id, session in self.sessions.items()
+            if session.last_url
+        }
 
     async def close(self, session_id: str) -> None:
         await self._discard(session_id)

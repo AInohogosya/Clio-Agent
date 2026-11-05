@@ -10,6 +10,7 @@ from ethos.toolhost.tools.fs import (
     FsStatTool,
     FsWriteTool,
 )
+from ethos.toolhost.tools.history import HistoryBrowseTool
 from ethos.toolhost.tools.http import HttpTool
 from ethos.toolhost.tools.intent import (
     IntentCloseTool,
@@ -42,6 +43,7 @@ __all__ = [
     "FsDeleteTool", "FsEditTool", "FsListTool", "FsMkdirTool", "FsMoveTool",
     "FsReadTool", "FsStatTool", "FsWriteTool",
     "HttpTool",
+    "HistoryBrowseTool",
     "IntentCloseTool", "IntentCreateTool", "IntentGetTool", "IntentListTool", "IntentUpdateTool",
     "MemoryRecordTool", "MemoryRememberFactTool", "MemorySearchTool", "OpenQuestionTool",
     "RandomMemoryTool",

@@ -495,6 +495,19 @@ class GslConfig(BaseModel):
     # else -- which is the single most common way a plan call fails here.
     degraded_reasoning_budget: int = 2_000
 
+    # The ceiling on thinking given to an *ordinary* (non-degraded) solver call.
+    #
+    # A reasoning model reached through an OpenAI-compatible endpoint spends its
+    # chain of thought out of `max_tokens` and is billed for it inside
+    # `completion_tokens`. With no reasoning budget the whole ceiling is a bid on
+    # how long the model thinks first, so a plan call comes back as
+    # `finish_reason: length` with thousands of characters of reasoning and no plan
+    # at all -- the `gsl.plan` "reasoned without answering" failure. Sending this
+    # as the endpoint's own `reasoning.max_tokens` reserves room for the answer,
+    # and it is also what lets the gateway *widen* the request by halving it rather
+    # than only growing the ceiling, which is the recovery that was missing.
+    reasoning_budget: int = 2_000
+
     # How many strategies a goal may burn through before it is parked. Zero --
     # the field default -- means there is no ceiling: a step that keeps
     # failing keeps earning a fresh approach, on the backoff the switch
@@ -757,6 +770,21 @@ class ContextConfig(BaseModel):
     max_turns: int = 48
     narrate_every: int = 12
     narrative_max_lines: int = 12
+    # Compression is lossy for the routine and near-lossless for the important.
+    # A turn at or above `durable_salience` — a person speaking, a failure, a
+    # decision — is never dropped by a routine roll: it is kept verbatim until
+    # the durable buffer itself is full (`durable_max_turns`), and only then
+    # compressed, with an extraction pass that carries what it said into the
+    # thread as anchors. Under the old scheme a conversation was one line after
+    # `narrate_every` turns and gone from the thread a dozen lines later, which
+    # is why nothing survived unless it had been turned into a task.
+    durable_salience: float = 0.7
+    durable_max_turns: int = 24
+    # Anchors are the compression's explicit record of what must not be lost,
+    # rendered on the thread ahead of the narrative. Bounded: an anchor that
+    # scrolls off the cap is written to durable memory, not destroyed.
+    anchor_max: int = 16
+    narration_important_max: int = 4
     max_chars: int = 6000
     detail_chars: int = 600
     persist_turns: int = 30

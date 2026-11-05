@@ -50,6 +50,11 @@ class ContextTurn(BaseModel):
     salience: float = 0.5
     intention_id: str | None = None
     conversation_key: str | None = None
+    # Whether a roll has already narrated this turn. Marks the narrated prefix
+    # without removing the turn: a durable turn can be covered by a line and
+    # still kept verbatim, and the marker is what stops the next roll from
+    # narrating the same turn twice.
+    narrated: bool = False
 
     @property
     def is_social(self) -> bool:
@@ -71,6 +76,29 @@ class NarrativeLine(BaseModel):
     kinds: list[str] = Field(default_factory=list)
 
 
+class ContextAnchor(BaseModel):
+    """One thing the compression was told not to lose.
+
+    The old compression destroyed and summarised in one motion: every turn that
+    rolled off the buffer was replaced by a single line about the whole batch,
+    and a promise, a fact or a question inside it was averaged into that line or
+    lost. An anchor is the fix — the narrator's extraction of what must outlive
+    the raw turns, kept as its own row on the thread until even that is full, and
+    written to durable memory only when it finally leaves.
+
+    `kind` says what kind of thing it is so a reader can weigh it; it is free
+    text on purpose, because the vocabulary of what matters is the agent's to
+    grow, not ours to enumerate.
+    """
+
+    ts: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    text: str
+    kind: str = "fact"
+    salience: float = 0.8
+    conversation_key: str | None = None
+    turn_count: int = 0
+
+
 class ContextSnapshot(BaseModel):
     """The part of the context that outlives the process.
 
@@ -82,6 +110,7 @@ class ContextSnapshot(BaseModel):
 
     narrative: list[NarrativeLine] = Field(default_factory=list)
     turns: list[ContextTurn] = Field(default_factory=list)
+    anchors: list[ContextAnchor] = Field(default_factory=list)
 
     def to_payload(self) -> dict[str, Any]:
         """JSON-safe by construction.
@@ -97,6 +126,7 @@ class ContextSnapshot(BaseModel):
         return {
             "narrative": [_dump(line) for line in self.narrative],
             "turns": [_dump(turn) for turn in self.turns],
+            "anchors": [_dump(anchor) for anchor in self.anchors],
         }
 
     @classmethod
@@ -112,6 +142,7 @@ class ContextSnapshot(BaseModel):
         return cls(
             narrative=_validated_list(NarrativeLine, payload.get("narrative")),
             turns=_validated_list(ContextTurn, payload.get("turns")),
+            anchors=_validated_list(ContextAnchor, payload.get("anchors")),
         )
 
 

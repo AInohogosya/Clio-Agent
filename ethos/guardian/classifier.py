@@ -647,6 +647,9 @@ TOOL_CATEGORIES: dict[str, set[str]] = {
     "http.request": {"network", "write"},
     "comm.send": {"network", "write"},
     "memory.record": set(),
+    # Reading the transcript is the agent reading its own record of what was
+    # said: no file, no network, no write anywhere.
+    "history.browse": set(),
     "intent.create": set(),
     "intent.update": set(),
     "intent.close": set(),

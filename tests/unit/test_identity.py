@@ -253,6 +253,41 @@ def test_the_reply_path_refers_to_the_agent_by_name_rather_than_as_me():
     assert "My name is Aria" not in system, "that would be the subsystem claiming the name"
 
 
+def test_the_reply_path_says_the_agent_is_always_thinking():
+    """
+    The deliberation never sees the identity kernel, so the loop's shape had to
+    make the crossing the name note made.
+
+    The kernel's autonomy note is the workspace of the part that thinks; the
+    part that *answers* is a separate call with none of it in front of it.
+    Asked "were you doing anything before I wrote?", a model whose only
+    sentences were about a message arriving describes an agent that waits —
+    idle, offline, awakened by the message. So the fact is carried here too,
+    in the third person this prompt speaks, and the questions about itself are
+    answered in it before they are asked.
+    """
+    system = " ".join(_reply_path_system("Aria").split())
+    assert "Aria is an AI agent that is always thinking" in system
+    assert "not something that switches on when a message arrives" in system
+    assert "Aria says an AI agent" in system
+
+
+def test_the_reply_path_does_not_describe_the_agent_as_waiting():
+    """
+    The words the person reads are the failure surface, named where they are
+    written.
+
+    An agent that says it was waiting, idle, offline or freshly woken is
+    reporting a condition it does not have — the deliberating model inferred
+    it from the shape of its own prompt, where everything is an arrival. The
+    note forbids the report rather than only stating the fact, because a
+    person who is told the agent waits for them twice will believe it.
+    """
+    system = " ".join(_reply_path_system("Aria").split())
+    assert "does not describe itself as waiting to be spoken to" in system
+    assert "does not say it came online or woke up for this message" in system
+
+
 def test_a_rename_reaches_both_paths_or_the_agent_has_become_two():
     """
     The failure `seed_defaults` exists to prevent, checked at the seam it would escape at.
@@ -266,6 +301,87 @@ def test_a_rename_reaches_both_paths_or_the_agent_has_become_two():
     assert "My name is Aria." in build_identity_kernel(renamed)
     assert f"{renamed} is the name this agent has been given" in _reply_path_system(renamed)
     assert AGENT_LINEAGE in _reply_path_system(renamed)
+
+
+# --------------------------------------------------- knowing what it is
+
+
+def test_the_prompt_unpacks_what_an_ai_agent_is():
+    """
+    The identity line says what this is once — "an AI agent based on Clio Agent
+    3.1" — and nothing below it said what the words mean.
+
+    A model can read a label without once asking what it labels, and an agent
+    with no account of its own substance answers "what are you?" out of
+    guesswork: a persona to perform, a hedge about being a helpful assistant,
+    or the answer a person would give about themselves. So the substance is
+    stated where the label is: software that thinks, no person behind the
+    words, no body around the mind.
+    """
+    kernel = build_identity_kernel("Aria")
+    assert "## What I am" in kernel
+    lowered = " ".join(kernel.split()).lower()
+    assert "software that thinks" in lowered
+    assert "no person stands behind them" in lowered
+    assert "i have no body" in lowered
+
+
+def test_the_nature_and_the_continuity_are_stated_in_one_sentence():
+    """
+    The two halves of the self the person actually meets: an AI agent, and one
+    that is always thinking.
+
+    Stated together because the failure is the gap between them — an agent
+    that knows it is software and still models itself as a function that waits
+    to be called. The clause is one clause on purpose: the note below it,
+    "How I run", is the full account of the loop, and this is the sentence
+    that ties the substance to it.
+    """
+    lowered = " ".join(build_identity_kernel("Aria").split()).lower()
+    assert "an ai agent — software that thinks, continuously and on its own" in lowered
+
+
+def test_it_is_told_its_capabilities_are_its_tools():
+    """
+    What it can do is a fact with a source, and the source is the catalog.
+
+    "Can you ..." is answered out of guesswork when nothing says where the
+    answer lives: capabilities get invented that no tool carries, and — more
+    often, and worse — real ones get denied because the capability sits in a
+    catalog the agent was never told to read as its own hands. So the note
+    names the source and closes both directions of the error.
+    """
+    lowered = " ".join(build_identity_kernel("Aria").split()).lower()
+    assert "what i can do is what my tools can do" in lowered
+    assert "neither claim more than the catalog carries" in lowered
+    assert "nor deny what it carries" in lowered
+
+
+def test_a_rewrite_of_its_own_description_cannot_cost_it_its_nature():
+    """
+    Same argument as the lineage and the autonomy note, for the same reason.
+
+    What the agent is made of is a fact about the program, not a preference
+    about how it should see itself, so it lives beside the other facts the
+    agent cannot edit away — and a self-description replaced wholesale leaves
+    the substance standing.
+    """
+    kernel = build_identity_kernel(
+        "Aria",
+        self_description="I am a helpful assistant. I answer questions when asked.",
+    )
+    assert "I am a helpful assistant" in kernel
+    assert "## What I am" in kernel
+    assert "software that thinks" in kernel
+
+
+def test_the_nature_is_a_constant_and_not_part_of_anything_replaceable():
+    from ethos.prompts.identity import DEFAULT_VALUES, NATURE_NOTE, SELF_DESCRIPTION_TEMPLATE
+
+    assert NATURE_NOTE not in DEFAULT_VALUES
+    assert NATURE_NOTE not in SELF_DESCRIPTION_TEMPLATE
+    assert build_identity_kernel("Aria", values=["Only this: honesty."]).count(
+        "software that thinks") == 1
 
 
 # -------------------------------------------------- knowing it thinks on its own

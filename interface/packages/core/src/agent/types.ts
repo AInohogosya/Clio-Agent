@@ -896,6 +896,31 @@ export function readAgentMessage(value: unknown): AgentMessage {
   };
 }
 
+/** One page of past messages, read retroactively from the agent's own store. */
+export interface AgentHistoryPage {
+  messages: AgentMessage[];
+  /** Whether a page older than this one still exists. */
+  hasMore: boolean;
+  /**
+   * The instant to ask for the next page back with, as the agent wrote it, or
+   * `null` when there is no next page.
+   */
+  oldest: string | null;
+}
+
+export function readAgentHistory(value: unknown): AgentHistoryPage {
+  const source = record(value);
+  return {
+    messages: list(source.messages).slice(0, LIMITS.messages).map(readAgentMessage),
+    hasMore: bool(source.hasMore),
+    oldest: optionalInstant(source.oldest),
+  };
+}
+
+export function emptyAgentHistory(): AgentHistoryPage {
+  return { messages: [], hasMore: false, oldest: null };
+}
+
 /** An empty view. Never `null`: a surface with nothing to draw still has to draw. */
 export function emptyAgentView(now = 0): AgentView {
   return {

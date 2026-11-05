@@ -21,10 +21,13 @@ allow_empty_step: false
 # Never pad a plan out with invented steps to reach some minimum length. A
 # one-step plan is a real plan when the work is one step.
 min_real_plan_steps: 1
-# The strong model for the solver loop's own calls. `z-ai/glm-5.3` sits in the
-# catalogue against the same NVIDIA endpoint as the base model; these calls go
-# to it first and fall back to the base model whenever it cannot serve.
-model_hint: "gemma4:31b-cloud"
+# The model for the solver loop's own calls. Both the retired `z-ai/glm-5.3`
+# and the quota-exhausted `gemma4:31b-cloud` used to sit here, so these calls
+# led with a candidate that could only answer 410/429 and lost an attempt on
+# every one. `minimaxai/minimax-m3.1-flash` is on the same NVIDIA endpoint as
+# the base model and answers; these calls go to it first and fall back to the
+# base model whenever it cannot serve.
+model_hint: "minimaxai/minimax-m3.1-flash"
 
 # ------------------------------------------------------------------
 # Whether the code it wrote works.

@@ -4,6 +4,19 @@ tiers:
   T3: { floor: 0.90 }
 
 models:
+  - provider: openai_compat
+    model: deepseek-ai/deepseek-v4.1-flash
+    base_url: "https://integrate.api.nvidia.com/v1"
+    api_key_env: NVIDIA_API_KEY
+    tiers: [T1, T2, T3]
+    quality: 0.85
+    latency_s: 8.0
+    rpm: 60
+    tpm: 500000
+    supports_thinking: false
+    supports_tools: true
+    diversity_family: deepseek
+
   - provider: anthropic
     model: claude-sonnet-4-5
     api_key_env: ANTHROPIC_API_KEY
@@ -120,23 +133,23 @@ models:
     supports_tools: true
     diversity_family: nvidia
 
-  # The strong model behind the same NVIDIA endpoint the base model uses. It
-  # is an order of magnitude slower (~50s an answer against lightning's ~3s),
-  # so it sits here as the quality pick the gateway escalates to for T2/T3
-  # work rather than as a base model: planning and step decisions are exactly
-  # the calls where a small model's malformed JSON costs a whole strategy.
+  # MiniMax M3.1 Flash on the same NVIDIA endpoint the base model uses. The
+  # retired `z-ai/glm-5.3` used to sit here; it reached end of life on
+  # 2026-10-28 and answered HTTP 410 on every failover ladder, so it was a
+  # candidate that could only ever waste an attempt before being skipped. This
+  # replaces it as the quality pick the gateway escalates to for T2/T3 work.
   - provider: openai_compat
-    model: z-ai/glm-5.3
+    model: minimaxai/minimax-m3.1-flash
     base_url: "https://integrate.api.nvidia.com/v1"
     api_key_env: NVIDIA_API_KEY
-    tiers: [T2, T3]
+    tiers: [T3]
     quality: 0.90
-    latency_s: 60.0
+    latency_s: 30.0
     rpm: 30
     tpm: 200000
     supports_thinking: false
     supports_tools: true
-    diversity_family: zai
+    diversity_family: minimax
 
   # Ollama Cloud via the local server's OpenAI-compatible endpoint. A 21K-token
   # prompt answers in ~1.5s, which makes it the only candidate that can carry

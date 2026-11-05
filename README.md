@@ -567,6 +567,51 @@ anonymous queued string — and the longest-running entry in the system was exac
 not go out. Blocked for the `awaiting_reply_h` after the agent's own "on it", and blocked again on
 every subsequent flush, until the person happened to write back.
 
+### Compression that knows which half it is allowed to lose
+
+The working context (`ethos/memory/context.py`) is a buffer of turns and a thread of lines the agent
+writes about them. Its compression used to be one motion: the oldest `narrate_every` turns were
+replaced by a single line about the whole batch, the turns were dropped, and when the thread itself
+was full the oldest lines went to retrieval. A conversation was therefore one paraphrase after a
+dozen turns and off the thread a dozen lines later — which is the mechanism behind "it forgot
+everything it was not made into a task". Nothing that arrived as words rather than as an intention
+outlived the hour.
+
+The overhaul separates the two decisions a roll makes:
+
+- **What the narrator reads** is unchanged: the oldest stretch nobody has written a line about yet,
+  because a line written from a partial view is a line about nothing.
+- **What the buffer loses** is now protective. A turn at or above `memory.context.durable_salience`
+  (0.7 — a person speaking, a failure, a decision) is kept verbatim while the routine turns around it
+  are consumed, until the durable buffer reaches its own cap (`durable_max_turns`, 24) or the whole
+  buffer overflows. A `narrated` marker on each turn means a durable turn can be covered by a line
+  and still be kept, without the next roll writing the same line twice.
+
+And the narrator is asked for more than a line. Each roll also extracts what must outlive the turns —
+what somebody said, a promise, a question, a decision and why, a fact, a name, a deadline — as
+**anchors**, which render on the thread under *Must not forget*, ahead of the narrative and ranked by
+salience. An anchor taken from a conversation carries conversational weight; duplicates are absorbed;
+the list is capped (`anchor_max`, 16); and an anchor that leaves the cap is written to durable memory
+as an episode at importance ≥ 0.8 with a 30-day half-life, so surviving the thread is no longer the
+last chance the content gets. Anchors persist through restarts with the rest of the thread.
+
+### The past, for both sides of the conversation
+
+**A person scrolls back through the interface.** The timeline offers *Load older messages* above the
+transcript. It pages backwards through the `messages` table — the bridge's `GET /api/messages` takes
+a `before` instant and returns the rows older than it, narrowed by `person` and `channel`, searched
+by `q` — drawn by the same conversation key the live rows use, deduplicated against them, oldest
+first. The snapshot's last hundred rows are the live conversation; this is the history.
+
+**The agent reads the same history through a tool.** `history.browse` takes `hours_back` — how far
+back to read, default 24 hours, a year at most — plus optional `person_id`, `channel`, `query` and
+`limit`, and returns what was said, oldest first, delivered rows only (the same rule the agent's own
+conversation block applies: a row the outbound path recorded and nobody received is not something
+that was said). It is a read-only tool, classified as such, and its catalog line says what it is
+for: when the agent is not certain it still remembers what was said, it asks the store, and the
+store has everything. The two halves meet at the same table, so what the person can scroll back
+through is exactly what the agent can read — no more, no less.
+
 ### It said it had not done things it had done, and it did not come and say
 
 Two complaints, one cause: **nothing durable recorded that commissioned work had reached a stage
@@ -1474,9 +1519,16 @@ character trait — that thinking happens with nobody watching, through the nigh
 it means thinking and never waiting to be addressed — because a claim about character is something
 the agent will argue with and a claim about its own loop is something it can check.
 
-Two more constants sit beside it on the same argument, and the agent gets them for the same reason
+Three more constants sit beside it on the same argument, and the agent gets them for the same reason
 — each is something it would otherwise get wrong about itself, from evidence that does not
 contradict it:
+
+- **`NATURE_NOTE`** — what "an AI agent" actually unpacks to, which the identity line says and nothing
+  explained. The thinking is this program running, no person stands behind the words, there is no body,
+  and what the agent can do is what its tools can do: the tool catalog is the real list, the thing to
+  read rather than guess at when the question is whether it can. Without it the agent answers "what
+  are you?" out of guesswork — a persona, a hedge, or a person's answer — and answers "can you ..." by
+  inventing a capability or denying a real one.
 
 - **`CONTEXT_NOTE`** — everything below the identity line is assembled fresh each pass out of
   whatever the subsystems currently hold: the top of a search over memory, the last few turns of a

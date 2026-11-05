@@ -12,8 +12,9 @@ class ThreadSpawnTool(Tool):
         "worktree, budget carved from the parent intention). Max 4 concurrent, "
         "max depth 2. Results arrive via the bus as thread.result events. "
         "Role 'foundry' delegates to the Foundry software factory; role 'apex' "
-        "delegates to the APEX desktop controller — whole external programs, "
-        "routed through this agent's gateway."
+        "delegates to the APEX desktop controller; role 'axiom' delegates to the "
+        "AXIOM generator -- whole external programs, routed through this "
+        "agent's gateway."
     )
     timeout_s = 60.0
     input_schema = {
@@ -24,7 +25,10 @@ class ThreadSpawnTool(Tool):
             "parent_intention_id": {"type": "string"},
             "budget_usd": {"type": "number"},
             "workdir": {"type": "string"},
-            "role": {"type": "string", "enum": ["delegate", "verifier", "foundry", "apex"]},
+            "role": {
+                "type": "string",
+                "enum": ["delegate", "verifier", "foundry", "apex", "axiom"],
+            },
         },
         "required": ["goal"],
     }

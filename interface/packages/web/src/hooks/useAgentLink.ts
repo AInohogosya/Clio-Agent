@@ -4,11 +4,13 @@ import {
   channelLabel,
   conversationsIn,
   createAgentTransport,
+  emptyAgentHistory,
   reconcileDoors,
   toChatTimeline,
   type AgentControlAction,
   type AgentConversation,
   type AgentDoor,
+  type AgentHistoryPage,
   type AgentLinkStatus,
   type AgentTransport,
   type AgentView,
@@ -101,6 +103,24 @@ export interface AgentLinkController {
    * thing that makes the door they just opened appear.
    */
   refreshDoors: () => Promise<void>;
+  /**
+   * Past messages read retroactively, oldest first, for the conversation being
+   * read.
+   *
+   * The snapshot carries the live conversation — its last hundred rows across
+   * every door — and not the history, so a reader who wants what was said last
+   * week has to be able to ask for it. These pages are held here rather than
+   * folded into the view, because the view is the agent's own state and a page
+   * fetched for reading is not a fact about the agent.
+   */
+  history: AgentHistoryPage;
+  /** True while a page of history is being fetched. */
+  historyLoading: boolean;
+  /**
+   * Fetches the page before the oldest message currently shown, for the
+   * conversation this surface is on.
+   */
+  loadOlderHistory: () => Promise<void>;
 }
 
 /**
@@ -235,6 +255,65 @@ export function useAgentLink(
     if (found) setDoors(found);
   }, []);
 
+  // ---------------------------------------------------------------- history
+  //
+  // The past, on request. Pages are read backwards from the oldest message the
+  // reader is looking at, and kept per conversation: switching conversations is
+  // a different place in the scrollback, so the pages one conversation loaded
+  // would be a lie drawn under another's name.
+
+  const [history, setHistory] = useState<AgentHistoryPage>(() => emptyAgentHistory());
+  const [historyFor, setHistoryFor] = useState<string | null>(null);
+  const [historyLoading, setHistoryLoading] = useState(false);
+
+  useEffect(() => {
+    setHistory(emptyAgentHistory());
+    setHistoryFor(conversation?.id ?? null);
+  }, [conversation?.id]);
+
+  const loadOlderHistory = useCallback(async () => {
+    const selected = conversation;
+    const client = agentRef.current;
+    if (!selected || !client || historyLoading) return;
+    // The cursor is the oldest line already shown: the newest page of a loaded
+    // history, or — before any page has been fetched — the oldest line the live
+    // window happens to hold for this conversation.
+    const loaded = historyFor === selected.id ? history.messages : [];
+    const live = view.messages
+      .filter((message) => (selected.person
+        ? message.channel === selected.channel && message.person_id === selected.person
+        : message.channel === selected.channel))
+      .map((message) => message.ts)
+      .filter((ts) => ts > 0);
+    const candidates = [...loaded.map((message) => message.ts), ...live];
+    if (candidates.length === 0) return;
+    const oldest = Math.min(...candidates);
+    setHistoryLoading(true);
+    try {
+      const page = await client.history({
+        before: new Date(oldest).toISOString(),
+        ...(selected.person ? { person: selected.person } : {}),
+        channel: selected.channel,
+      });
+      if (!mounted.current) return;
+      // The live window and a fetched page can hold the same row — the snapshot
+      // moves, the page does not — so the union is by id, and the result is
+      // oldest first because a transcript is read in the order it was said.
+      const seen = new Set(loaded.map((message) => message.id));
+      const merged = [...loaded];
+      for (const message of page.messages) {
+        if (!message.id || seen.has(message.id)) continue;
+        seen.add(message.id);
+        merged.push(message);
+      }
+      merged.sort((left, right) => left.ts - right.ts);
+      setHistoryFor(selected.id);
+      setHistory({ messages: merged, hasMore: page.hasMore, oldest: page.oldest });
+    } finally {
+      if (mounted.current) setHistoryLoading(false);
+    }
+  }, [conversation, history, historyFor, historyLoading, view.messages]);
+
   useEffect(() => agent.subscribe((event) => {
     if (!mounted.current) return;
     if (event.type === 'view') {
@@ -329,9 +408,13 @@ export function useAgentLink(
     closedChannels: closed,
     setConversation: setSelected,
     refreshDoors,
+    history,
+    historyLoading,
+    loadOlderHistory,
   }), [
     current, currentTransport, view, link, streaming, notice,
     dismissNotice, control, undoAction, closeIntention, refresh, reconnect,
     conversations, conversation, doors, closed, refreshDoors,
+    history, historyLoading, loadOlderHistory,
   ]);
 }

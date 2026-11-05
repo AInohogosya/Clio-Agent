@@ -32,6 +32,9 @@ export default function App() {
     doors,
     closedChannels,
     setConversation,
+    history,
+    historyLoading,
+    loadOlderHistory,
   } = controller;
   const [screen, setScreen] = useState<Screen>('main');
   const [armedEmergency, setArmedEmergency] = useState(false);
@@ -118,6 +121,9 @@ export default function App() {
           )}
           onSend={(text) => void controller.sendMessage(text)}
           onUndo={(id) => void undoAction(id)}
+          onLoadOlderHistory={() => void loadOlderHistory()}
+          history={history}
+          historyLoading={historyLoading}
           pendingAction={pendingAction}
           snapshot={snapshot}
           streaming={streaming}

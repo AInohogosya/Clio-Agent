@@ -2511,6 +2511,70 @@ app.get("/api/snapshot", handle(async (_req, res) => {
 }));
 
 /**
+ * Past messages, on request.
+ *
+ * `/api/snapshot` carries the last hundred rows, which is the live conversation
+ * and not the history: a person who wants what was said last week has nowhere
+ * to look. This is that place. It is paged backwards — `before` names an
+ * instant, and the page is the rows older than it — because the question a
+ * reader asks while scrolling up is always "what came before this", never
+ * "what is on page four". Everything else is a filter on the same window:
+ * `person` and `channel` narrow it to one conversation, `q` searches the text.
+ *
+ * The delivered-only rule is the agent's own (`ethos/social/conversation.py`):
+ * the transcript holds rows the outbound path wrote and nobody ever received,
+ * and a history that shows a held message as if it was said is lying twice.
+ */
+const MESSAGE_PAGE_MAX = 200;
+app.get("/api/messages", handle(async (req, res) => {
+  const limitRaw = Number.parseInt(req.query?.limit, 10);
+  const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(limitRaw, 1), MESSAGE_PAGE_MAX) : 60;
+  const before = text(req.query?.before, 40).trim();
+  const person = text(req.query?.person, 128).trim();
+  const channel = text(req.query?.channel, 64).trim();
+  const query = text(req.query?.q, 256).trim();
+
+  const params = [];
+  const clauses = ["COALESCE(delivery->>'status', 'sent') = 'sent'"];
+  if (before) {
+    const instant = Date.parse(before);
+    if (!Number.isFinite(instant)) return res.status(400).json({ error: "invalid_before" });
+    params.push(new Date(instant).toISOString());
+    clauses.push(`ts < $${params.length}::timestamptz`);
+  }
+  if (person) {
+    params.push(person);
+    clauses.push(`person_id = $${params.length}`);
+  }
+  if (channel) {
+    params.push(channel);
+    clauses.push(`channel = $${params.length}`);
+  }
+  if (query) {
+    params.push(query);
+    clauses.push(`text ILIKE '%' || $${params.length} || '%'`);
+  }
+  params.push(limit + 1);
+  const rows = await pool.query(
+    `SELECT id::text AS id, ts, direction, channel, person_id, sender_name,
+            sender_username, text, delivery
+     FROM messages WHERE ${clauses.join(" AND ")}
+     ORDER BY ts DESC LIMIT $${params.length}`,
+    params,
+  );
+  const hasMore = rows.rows.length > limit;
+  const page = rows.rows.slice(0, limit);
+  // Oldest first, the order a transcript is read in; `oldest` is the cursor the
+  // next page back is fetched with, and `null` when there is no next page.
+  page.reverse();
+  res.json({
+    messages: page,
+    hasMore,
+    oldest: hasMore && page.length ? page[0].ts : null,
+  });
+}));
+
+/**
  * The agent's base model, and writing one.
  *
  * This is the one route that writes a credential, so it is also the one route

@@ -859,7 +859,16 @@ export function SettingsScreen({
   credential = { present: false, source: 'none', hint: '' },
 }: SettingsScreenProps) {
   const t = useMemo(() => createTranslator(settings.language), [settings.language]);
-  const [draft, setDraft] = useState<Settings>(() => ({ ...settings }));
+  // The draft as the form holds it.
+  //
+  // In agent mode the key field belongs to the agent's base model, and the
+  // agent's key is never read back — so the shared file's key is not carried
+  // into it. A form that starts with another store's credential in the field is
+  // a form that can write that credential into the agent's own file on the next
+  // save, and a key belongs to the vendor it was given to.
+  const [draft, setDraft] = useState<Settings>(() => (
+    settings.interface === 'agent' ? { ...settings, apiKey: '' } : { ...settings }
+  ));
   const [models, setModels] = useState<string[]>(() => (settings.model ? [settings.model] : []));
   const [source, setSource] = useState<'remote' | 'offline'>('offline');
   const [discovering, setDiscovering] = useState(false);
@@ -974,9 +983,33 @@ export function SettingsScreen({
   // Adopt a change made elsewhere, but never over an edit in progress.
   useEffect(() => {
     if (dirty) return;
-    setDraft((current) => (sameSettings(current, settings) ? current : { ...settings }));
+    setDraft((current) => {
+      if (sameSettings(current, settings)) return current;
+      // In agent mode the provider, the endpoint and the model in the shared
+      // file are a *copy* of the agent's base model, not the base model itself:
+      // the agent keeps the real one in its own home, and the copy is written
+      // from it. So the copy is never allowed to overwrite what the agent
+      // reported.
+      //
+      // A copy that has drifted — a base model changed on another surface, a
+      // file written by hand, a save that never reached the bridge — would
+      // otherwise replace the agent's choice with a vendor and a model nobody
+      // picked, and the next Save would write that back into the agent's own
+      // file. The symptom is a base model that reads as reverted to a vendor
+      // somebody had already left.
+      if (!agentMode) return { ...settings };
+      return {
+        ...current,
+        interface: settings.interface,
+        agentUrl: settings.agentUrl,
+        agentPerson: settings.agentPerson,
+        language: settings.language,
+        theme: settings.theme,
+        accent: settings.accent,
+      };
+    });
     setModels((current) => (current.includes(settings.model) || !settings.model ? current : [settings.model, ...current]));
-  }, [dirty, settings]);
+  }, [agentMode, dirty, settings]);
 
   useEffect(() => () => abort.current?.abort(), []);
 
@@ -1297,7 +1330,14 @@ export function SettingsScreen({
 
   const writeBaseModel = useCallback(async () => {
     if (!agentMode || !saveBaseModel) return null;
-    if (!dirty) return null;
+    // Only a base-model edit is a base-model write. A save that changed the
+    // language, the theme or the agent's name says nothing about which model
+    // the agent should think with, and writing one anyway would take the
+    // provider, the endpoint and the model from a draft — which, in agent mode,
+    // is a copy of the agent's base model that may have drifted while this page
+    // was open. That is how a base model somebody chose by hand comes back as
+    // another vendor's model, some time after the change that was asked for.
+    if (!baseTouched) return null;
     // The agent could not be asked, so there is nowhere to write. This one is not
     // a failure the agent reported: it is the form saying it never got an answer
     // to begin with, and the error line says so in those words rather than
@@ -1316,7 +1356,7 @@ export function SettingsScreen({
     setBase(written);
     setBaseTouched(false);
     return written;
-  }, [agentMode, base, draft, envActive, saveBaseModel]);
+  }, [agentMode, base, baseTouched, draft, envActive, saveBaseModel]);
 
   /**
    * Writes the name, or takes it back, and reports which in one line.

@@ -423,8 +423,27 @@ class GeneralSolverLoop:
         The count is about consecutive failures, and there is a plan again —
         so the attempts, the retry deadline and the recorded failure all go at
         once, in the same write that installs the plan.
+
+        Steps already marked "done" in the previous plan are carried over into
+        the new one, matched by step id. A strategy switch replaces the
+        approach, not the work already finished -- otherwise every step failure
+        throws away completed steps and the agent replans from zero forever.
         """
-        resume["plan"] = plan.model_dump(mode="json")
+        plan_dict = plan.model_dump(mode="json")
+        old_plan = resume.get("plan")
+        done_by_id: dict[str, dict[str, Any]] = {}
+        if isinstance(old_plan, dict):
+            for s in old_plan.get("steps", []):
+                if isinstance(s, dict) and s.get("status") == "done" and s.get("id"):
+                    done_by_id[str(s["id"])] = s
+        for s in plan_dict.get("steps", []):
+            if not isinstance(s, dict):
+                continue
+            sid = str(s.get("id"))
+            if sid in done_by_id:
+                s.clear()
+                s.update(done_by_id[sid])
+        resume["plan"] = plan_dict
         resume["step_attempts"] = {}
         resume["strategy_number"] = strategy_number
         resume[PLAN_ATTEMPTS] = 0
@@ -889,6 +908,7 @@ class GeneralSolverLoop:
             purpose="gsl.step",
             model_hint=self.config.gsl.model_hint or None,
             budget_bucket=budget_bucket_for(intention),
+            reasoning_budget=self.config.gsl.reasoning_budget,
             cache_prefix_blocks=3,
             messages=[
                 ModelMessage(role=Role.system, content=ws.stable_prefix_text() if ws is not None else ""),

@@ -14,6 +14,12 @@ person's hands are: their home directory. Shell commands and the objective
 verifier resolve the same way, because a rule that differs between the tool that
 writes a file and the tool that reads it back is a rule nobody can hold in mind.
 
+The same function also repairs the one malformed path that arrives constantly: an
+absolute path with its leading `/` dropped, as `Users/me/src/a.py`. Read against
+the home that becomes a path that is not there, so the tool refuses, and the model
+sends the same name again. See `_ROOT_ONLY_DIRS` for why the repair is a curated
+list of system roots rather than a rule about every first segment.
+
 **How far the reach actually goes.** The agent's filesystem permissions are the
 host user's, exactly: it runs as the person who started it, through the ordinary
 POSIX permission bits, and there is no containment anywhere in the tool layer —
@@ -75,6 +81,26 @@ def agent_home(config: object | None = None) -> Path:
     return user_home() / ".ethos"
 
 
+# Top-level names that can only mean "from the filesystem root". A path that
+# arrives as `Users/me/src/a.py` — the leading slash dropped off the front — is
+# the most common malformed argument in the journal by two orders of magnitude,
+# and against the home directory it resolves to a path that is simply not there:
+# every read fails, the error names a directory nobody has, and the model sends
+# the same name again. Reattaching the slash turns it into the path meant, which
+# is what it already was before whatever dropped the `/` got hold of it.
+#
+# A curated list rather than whatever happens to sit in `/`, because repositories
+# have an `etc/`, `var/`, `lib/` or `bin/` of their own every day and those are
+# genuine relative paths that must keep meaning the home. Every name here is a
+# system root. And the existence check in `resolve` is the second opinion: the
+# rewrite only fires when the home-relative reading is not there, so a home that
+# really does contain a `Users/` directory keeps it.
+_ROOT_ONLY_DIRS = frozenset({
+    "Users", "Applications", "System", "Library", "Volumes", "Network",
+    "private", "cores", "home", "root",
+})
+
+
 def resolve(path: str | os.PathLike[str], *, base: Path | None = None) -> Path:
     """A path as the agent means it: `~` expanded, relative against the home dir.
 
@@ -92,7 +118,22 @@ def resolve(path: str | os.PathLike[str], *, base: Path | None = None) -> Path:
     candidate = Path(os.path.expandvars(path)).expanduser()
     if candidate.is_absolute():
         return candidate
-    return ((base or user_home()) / candidate).resolve()
+    home = base or user_home()
+    home_candidate = home / candidate
+    if (
+        candidate.parts
+        and candidate.parts[0] in _ROOT_ONLY_DIRS
+        and not home_candidate.exists()
+    ):
+        # The slash fell off the front. Both halves of the condition matter:
+        # without the home-relative check this would steal `Users/…` from a home
+        # that contains one, and without the existence check it would rewrite a
+        # path being *created* — `fs.write` never has an existing target, which
+        # is why the parent counts as evidence too.
+        slashed = Path("/") / candidate
+        if slashed.exists() or slashed.parent.exists():
+            return slashed
+    return home_candidate.resolve()
 
 
 class ReachEntry(NamedTuple):

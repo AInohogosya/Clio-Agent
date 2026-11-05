@@ -16,6 +16,7 @@ import {
 } from './channel.js';
 import {
   AgentRequestError,
+  emptyAgentHistory,
   emptyAgentIdentity,
   emptyAgentView,
   isAgentControlAction,
@@ -25,6 +26,7 @@ import {
   readAgentBaseModel,
   readAgentChannelSetup,
   readAgentDoors,
+  readAgentHistory,
   readAgentMessage,
   readAgentView,
   readBaseModelReply,
@@ -41,6 +43,7 @@ import {
   type AgentDoorWrite,
   type AgentEvent,
   type AgentFailureCode,
+  type AgentHistoryPage,
   type AgentIdentity,
   type AgentLinkStatus,
   type AgentMessage,
@@ -660,6 +663,26 @@ export class AgentClient {
   async doors(): Promise<AgentDoor[]> {
     const fallback = readAgentDoors(null);
     return this.getOr('/api/channels', fallback, readAgentDoors);
+  }
+
+  /**
+   * One page of the past, read backwards from `before`.
+   *
+   * The snapshot carries the live conversation and not the history, so a reader
+   * who wants what was said last week has to be able to ask for it. Never
+   * rejects: an older bridge with no such route, or an agent that is down, is
+   * an empty page rather than an error in the timeline — a history that cannot
+   * be reached reads as "nothing older", which is what the pane can say.
+   */
+  async history(options: { before?: string; person?: string; channel?: string } = {}): Promise<AgentHistoryPage> {
+    const params = new URLSearchParams();
+    if (options.before) params.set('before', options.before);
+    if (options.person) params.set('person', options.person);
+    if (options.channel) params.set('channel', options.channel);
+    const query = params.toString();
+    return this.getOr('/api/messages', emptyAgentHistory(), readAgentHistory, {
+      query: query ? `?${query}` : '',
+    });
   }
 
   /**

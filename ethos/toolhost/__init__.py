@@ -1,4 +1,11 @@
-from ethos.toolhost.browser import BrowserError, BrowserPool, BrowserSession
+from ethos.toolhost.browser import (
+    BrowserError,
+    BrowserPool,
+    BrowserSession,
+    NoPageError,
+    SelectorTimeoutError,
+    VisitTimeoutError,
+)
 from ethos.toolhost.client import RemoteToolhostClient
 from ethos.toolhost.desktop import DesktopController, DesktopError
 from ethos.toolhost.kernels import KernelManager, KernelSession
@@ -14,6 +21,7 @@ from ethos.toolhost.watchers import DirectoryWatcher, ProcessWatcher, WatcherSer
 
 __all__ = [
     "BrowserError", "BrowserPool", "BrowserSession",
+    "NoPageError", "SelectorTimeoutError", "VisitTimeoutError",
     "RemoteToolhostClient",
     "DesktopController", "DesktopError",
     "KernelManager", "KernelSession",

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import re
 from abc import ABC, abstractmethod
 from typing import Any
 
@@ -22,6 +24,11 @@ class ProviderError(RuntimeError):
         super().__init__(f"[{provider}] HTTP {status}: {message}")
         self.provider = provider
         self.status = status
+        # The provider's own words, kept whole. `scope` reads them: two 429s can
+        # mean opposite things -- "over capacity, come back in a moment" and
+        # "this key's quota is spent for the month" -- and the status alone
+        # cannot tell them apart.
+        self.detail = str(message)
         self.retryable = retryable
         # What the provider asked for, in seconds, when it said. A 429 that
         # carries this is the provider saying exactly how long it needs and it
@@ -53,29 +60,66 @@ class ProviderError(RuntimeError):
           fixes it; the same words do not.
         * `provider` -- the provider's mood: a 429, a timeout, a 5xx. It clears on
           its own, and time is the fix.
+
+        The `provider` bullet has one exception, read from the body rather than
+        the status: a 429 that says the *quota is spent* is not a mood. "You have
+        reached your monthly usage limit" and "Key limit exceeded (total limit)"
+        arrive with the same 429 as "slow down", and the retry ladder cannot wait
+        out "until next month". Read as a mood they were re-asked on every
+        request, spending the whole ladder to be told the same thing, and on a
+        catalogue where most entries are spent they are what starves a request
+        into `no_model_available` while the one live model sits unasked.
         """
         if self.status in _MODEL_SCOPED_STATUSES:
+            return "model"
+        if self.status == 429 and _EXHAUSTED_QUOTA.search(self.detail):
             return "model"
         if self.status in _REQUEST_SCOPED_STATUSES:
             return "request"
         return "provider"
 
 
-# 401 and 403, and only these two.
+# 401, 403 and 410: the statuses that say something about the credential or the
+# model rather than about the call.
 #
-# They are the statuses that say something about the credential rather than about
-# the call: `invalid api key`, `authentication_error`, `permission denied`,
-# `insufficient_quota`, `billing hard limit reached`. Every one of them is true
-# of the next request exactly as it is of this one, on this endpoint, with this
-# key, until a person changes something. They are also the two that took an
-# agent down, because "a 4xx is not worth retrying" was true and insufficient:
-# it said the retry budget was the wrong lever without noticing that the *model*
-# was.
+# 401 and 403 are about the credential: `invalid api key`, `authentication_error`,
+# `permission denied`, `insufficient_quota`, `billing hard limit reached`. Every
+# one of them is true of the next request exactly as it is of this one, on this
+# endpoint, with this key, until a person changes something. They are also the two
+# that took an agent down, because "a 4xx is not worth retrying" was true and
+# insufficient: it said the retry budget was the wrong lever without noticing that
+# the *model* was.
+#
+# 410 is the model itself, retired. A provider that stops serving a model answers
+# `410 Gone` -- "the model 'z-ai/glm-5.3' has reached its end of life on
+# 2026-10-28" -- and that is true of the model on every endpoint, for every
+# caller, forever: the same request re-asked returns the same 410, and the only
+# thing that helps is a different candidate model. Left out of this set it was
+# classified as a provider's mood, which meant the retry loop raised it straight
+# through the `not retryable and scope != model` guard and the request never
+# reached `_next_entry` at all. One retired catalogue entry then stopped every
+# plan the agent tried to make, for as long as the config named it, while the
+# catalogue full of live models went unasked.
 #
 # 404 is deliberately not here. It usually means the model name is wrong rather
 # than that the credential is, and a deployment with one base model misconfigured
 # should be told its model does not exist rather than quietly routed around it.
-_MODEL_SCOPED_STATUSES = frozenset({401, 403})
+_MODEL_SCOPED_STATUSES = frozenset({401, 403, 410})
+
+# The 429 bodies that mean the money is gone rather than the provider being
+# busy. Every phrase here is one a real endpoint actually sent: Ollama Cloud's
+# "you (…) have reached your monthly usage limit", OpenRouter's "Key limit
+# exceeded (total limit)" and "insufficient_quota", OpenAI's "exceeded your
+# current quota", and the billing-ceiling wording. They are matched on the body
+# because no status distinguishes them from an ordinary rate limit, and they
+# are matched narrowly -- "rate limit", "too many requests" and "slow down" are
+# deliberately absent -- so the ordinary 429 keeps its wait-and-retry treatment.
+_EXHAUSTED_QUOTA = re.compile(
+    r"monthly usage limit|usage limit reached|limit exceeded|insufficient_quota|"
+    r"quota exceeded|exceeded your current quota|out of credit|"
+    r"credit balance is too low|billing hard limit",
+    re.IGNORECASE,
+)
 
 # 4xx that describe the request and will still describe it in five minutes. The
 # bound is worth having on its own: a retry that only escalates `max_tokens` at
@@ -123,9 +167,32 @@ class Provider(ABC):
     @abstractmethod
     async def complete(self, request: ModelRequest, model: str) -> NormalizedResponse: ...
 
+    # Hard ceiling on how long the core will wait for any single model call.
+    #
+    # NVIDIA NIM (and other OpenAI-compat endpoints) do not stream: the server
+    # accepts the connection, does TLS, and then sends nothing until the whole
+    # generation is ready. With a 600s httpx timeout, a hung connection blocks
+    # the core for ten minutes -- long enough for the supervisor to declare the
+    # core wedged and restart it, losing all in-flight state. asyncio.wait_for
+    # enforces a much shorter ceiling on the *wait*: if the provider hasn't
+    # answered within 120s the call is cancelled, the gateway retries or fails
+    # over, and the core stays alive. The underlying httpx timeout (600s) still
+    # bounds the actual socket, so a slow-but-valid generation isn't killed by
+    # httpx itself; only the core's wait on it is bounded.
+    _POST_JSON_HARD_CEILING_S = 600.0
+
     async def post_json(self, url: str, headers: dict[str, str], payload: dict[str, Any]) -> dict[str, Any]:
         try:
-            response = await self.http.post(url, headers=headers, json=payload, timeout=self.timeout_s)
+            response = await asyncio.wait_for(
+                self.http.post(url, headers=headers, json=payload, timeout=self.timeout_s),
+                timeout=self._POST_JSON_HARD_CEILING_S,
+            )
+        except asyncio.TimeoutError as exc:
+            raise ProviderError(
+                self.name, 0,
+                f"timeout: call exceeded hard ceiling of {self._POST_JSON_HARD_CEILING_S}s",
+                retryable=True,
+            ) from exc
         except httpx.TimeoutException as exc:
             raise ProviderError(self.name, 0, f"timeout: {exc}", retryable=True) from exc
         except httpx.HTTPError as exc:
@@ -141,7 +208,22 @@ class Provider(ABC):
         try:
             return response.json()
         except ValueError as exc:
-            raise ProviderError(self.name, response.status_code, "invalid JSON body", retryable=False) from exc
+            # A body that is not JSON says nothing about the request, so the
+            # status is the only thing left to classify it by. A 2xx that cannot
+            # be read is a truncated reply or a proxy's error page sitting in
+            # front of the provider, and asking again is what fixes it -- the
+            # same as the 429 and 5xx the status set already covers. Marked
+            # un-retryable it was fatal the instant it arrived, because there is
+            # no lever to move on a non-retryable provider-scoped failure: the
+            # exception left the retry loop from a call the endpoint had itself
+            # called a success, and one such reply ended a whole Foundry cycle.
+            raise ProviderError(
+                self.name,
+                response.status_code,
+                "invalid JSON body",
+                retryable=response.status_code < 400
+                or _is_retryable_status(response.status_code),
+            ) from exc
 
 
 # The statuses worth asking again about. 429 and 5xx are the obvious ones, and

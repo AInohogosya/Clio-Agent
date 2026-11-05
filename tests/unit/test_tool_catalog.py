@@ -348,8 +348,13 @@ def test_the_catalog_is_not_much_larger_than_it_has_to_be():
     refused call costs a whole round trip — but not one worth making twice. This is
     the guard on the trade, and it fails if a tool with a paragraph of description is
     added to a registry that has no reason to hold it.
+
+    2550, not 2500: the history tool was added after this guard was written, and
+    the guard had thirty-four tokens of room — less than the smallest tool that
+    can exist. A capability the agent needs is worth the raise; a paragraph in
+    its description is not, and this guard still says so.
     """
-    assert len(render(registered_tools())) // 4 < 2500
+    assert len(render(registered_tools())) // 4 < 2550
 
 
 @pytest.mark.parametrize("tool", registered_tools(), ids=lambda t: t["name"])

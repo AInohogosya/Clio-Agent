@@ -35,6 +35,14 @@ context:
   max_turns: 48
   narrate_every: 12
   narrative_max_lines: 12
+  # Compression is lossy for the routine and near-lossless for the important:
+  # turns at or above durable_salience (social turns, failures, decisions) are
+  # kept verbatim until the durable buffer itself is full, and what the narrator
+  # extracts from a compressed stretch is kept on the thread as anchors.
+  durable_salience: 0.7
+  durable_max_turns: 24
+  anchor_max: 16
+  narration_important_max: 4
   max_chars: 6000
   detail_chars: 600
   persist_turns: 30

@@ -131,10 +131,20 @@ import { createServer } from 'node:http';
 // executable is the log file rather than the second.
 const [, logPath, mode] = process.argv;
 writeFileSync(logPath, '');
-const OK = {
+const OPENAI = {
   configured: true, provider: 'openai', protocol: 'openai', model: 'gpt-4o-mini',
   base_url: 'https://api.openai.com/v1', key_present: true, key_hint: '\u2022\u2022\u2022\u20221234',
 };
+// A base model the agent is serving that the shared file knows nothing about.
+// The agent's own file is the authority; the shared file keeps a copy of it, and
+// a copy drifts.
+const NVIDIA = {
+  configured: true, provider: 'nvidia', protocol: 'openai',
+  model: 'nvidia/nemotron-3.5-super-vl-120b-a12b',
+  base_url: 'https://integrate.api.nvidia.com/v1', key_present: true,
+  key_hint: '\u2022\u2022\u2022\u20225678', key_env: 'NVIDIA_API_KEY', key_env_present: true,
+};
+let base = mode === 'nvidia' ? NVIDIA : OPENAI;
 const REASONS = {
   ok: null,
   endpoint: { status: 400, body: { error: 'invalid_endpoint' } },
@@ -147,17 +157,33 @@ const server = createServer((request, response) => {
   request.on('data', (chunk) => chunks.push(chunk));
   request.on('end', () => {
     const raw = Buffer.concat(chunks).toString('utf8');
+    const body = raw ? JSON.parse(raw) : null;
     appendFileSync(logPath, JSON.stringify({
       url: request.url,
-      body: raw ? JSON.parse(raw) : null,
+      method: request.method,
+      body,
     }) + '\\n');
     if (request.url !== '/api/model') {
       response.writeHead(404).end();
       return;
     }
     const refusal = REASONS[mode];
-    const reply = refusal ?? { status: 200, body: OK };
-    response.writeHead(reply.status, { 'content-type': 'application/json' }).end(JSON.stringify(reply.body));
+    if (refusal) {
+      response.writeHead(refusal.status, { 'content-type': 'application/json' }).end(JSON.stringify(refusal.body));
+      return;
+    }
+    if (request.method === 'POST') {
+      // A write is answered with what the agent now holds, so a surface mirrors
+      // the agent rather than what it hoped for.
+      base = {
+        ...base,
+        configured: true,
+        provider: body?.provider || base.provider,
+        model: body?.model || base.model,
+        base_url: body?.base_url || base.base_url,
+      };
+    }
+    response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(base));
   });
 });
 // The port is announced once the listener is up, so a test never races the
@@ -209,6 +235,61 @@ test('in agent mode a model is handed to the agent, not only to the file', async
       assert.equal(sent.url, '/api/model');
       assert.equal(sent.body.model, 'gpt-4.1');
       assert.equal('api_key' in sent.body, false, 'the file holds no key, so none is sent');
+    });
+  } finally {
+    agent.close();
+  }
+});
+
+test('the agent keeps its own base model when the shared file names another', async () => {
+  // The shared file keeps a *copy* of the agent's base model, so the terminal
+  // and the browser can show the same thing without asking anybody. A copy
+  // drifts: the agent's base model can be changed where the file knows nothing
+  // about it.
+  //
+  // The copy used to be pushed over the agent, so setting one field replaced
+  // the vendor, the endpoint and the model at once — which is how a base model
+  // somebody chose by hand came back as another vendor's. The agent is asked
+  // what it is using, and the field that changed is applied to *that*.
+  const agent = await startAgent('nvidia');
+  try {
+    await withConfig(({ path, phone }) => {
+      aimAtAgent(path, agent, 'agent');
+      // A drifted copy: the agent moved on to another vendor, the file did not,
+      // and it still holds the key that belongs to the vendor it names.
+      const state = readConfig();
+      saveConfig({
+        ...state,
+        settings: {
+          ...state.settings,
+          provider: 'openrouter',
+          model: 'stealth/space-bunny-alpha',
+          baseUrl: 'https://openrouter.ai/api/v1',
+          apiKey: 'sk-openrouter-secret',
+        },
+      }, { origin: 'web' });
+
+      const result = phone(['config', 'set', 'model', 'nvidia/nemotron-3.5-super-vl-120b-a12b']);
+      assert.equal(result.status, 0, result.stdout + result.stderr);
+
+      const sent = agent.received().at(-1);
+      assert.equal(sent.url, '/api/model');
+      assert.equal(sent.method, 'POST');
+      // The agent's own vendor and endpoint, not the file's.
+      assert.equal(sent.body.provider, 'nvidia');
+      assert.equal(sent.body.base_url, 'https://integrate.api.nvidia.com/v1');
+      assert.equal(sent.body.model, 'nvidia/nemotron-3.5-super-vl-120b-a12b');
+      // And the file's key is never posted to a vendor it was not given to.
+      assert.equal('api_key' in sent.body, false, 'the file holds a key for another vendor');
+
+      // The file is a mirror of what the agent now holds, not of what it was
+      // asked for: the agent's answer is the base model.
+      const settings = storedSettings(path);
+      assert.equal(settings.provider, 'nvidia');
+      assert.equal(settings.model, 'nvidia/nemotron-3.5-super-vl-120b-a12b');
+      assert.equal(settings.baseUrl, 'https://integrate.api.nvidia.com/v1');
+      // The key belonged to the vendor the file used to name.
+      assert.equal(settings.apiKey, '');
     });
   } finally {
     agent.close();

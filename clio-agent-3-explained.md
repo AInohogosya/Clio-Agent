@@ -372,12 +372,13 @@ unknown → NOT_FOUND → `ActionJournal.begin` WAL (`guardian/journal.py:82`,
 (`ok/rejected/timeout/failed`); reject → `guardian_reject`; digest capped
 2000ch; `auto_register_commission`; `ACTION_UPDATE` publish.
 `GET /healthz`, `GET /tools` (catalog), `POST /execute`.
-52 builtins (`server.py:103`; categories `classifier.py:473`):
+51 builtins (`server.py:103`; categories `classifier.py:473`):
 `shell.run/job/session{open,write,read,close}` (6),
 `fs.{read,write,edit,move,delete,list,stat}` (7), `code.{exec,reset}` (2,
 persistent `KernelSession`, 60k caps, `kernels.py:29`),
 `http.request`, `comm.send`,
 `memory.{record,search,remember_fact}+open_question+random` (5),
+`history.browse` (the transcript, `hours_back` back),
 `intent.{create,get,list,update,close}` (5), `thread.spawn`,
 `schedule.{at,every,cancel}` (3), `tools.{register,run,list}` (3, toolshed:
 `~/toolshed/<name>/tool.yaml` + stdin/stdout JSON subprocess — the eleventh
@@ -522,12 +523,22 @@ value_ledger`.
   (episodes/facts/knowhow/questions).
 - **Working memory** (`ethos/memory/context.py:54`): rolling buffer
   (`max_turns 48`) + first-person narrative thread (`narrate_every 12, max
-  12 lines`; overflow → episode `importance .6/336h`); narrator T1 300tok,
-  fail → mechanical tally; ordering `index + salience·2N`; render
-  `thread 60% / recent 40%`, `max 6000 / detail 600 chars`; snapshot persists
-  narrative + last 30 turns + 3 loops; `note_actions()` feeds tool results
-  into next-cycle context. The agent reads the recent tail of every live
-  conversation plus this context every cycle — steps as well as deliberations.
+  12 lines`; overflow → episode `importance .6/336h`) + **anchors** — the
+  narrator's extraction of what must outlive the turns (`important` in the
+  narration JSON, ≤ `narration_important_max 4` per roll), rendered on the
+  thread under *Must not forget*, ranked by salience, capped
+  (`anchor_max 16`); an anchor that leaves the cap → episode
+  `importance ≥ .8/720h`. Compression is lossy only for the routine: a turn at
+  or above `durable_salience .7` (social .85, failure .75) is kept verbatim
+  until the durable buffer reaches `durable_max_turns 24` or the buffer
+  overflows, and a `narrated` marker stops the next roll from narrating the
+  same turn twice. Narrator T1 300tok, fail → mechanical tally; ordering
+  `index + salience·2N`; render `thread 60% / recent 40%`,
+  `max 6000 / detail 600 chars`; snapshot persists narrative + last 30 turns +
+  anchors + 3 loops; `note_actions()` feeds tool results into next-cycle
+  context. The agent reads the recent tail of every live conversation plus
+  this context every cycle — steps as well as deliberations — and reads
+  further back through the `history.browse` tool (`hours_back` sets how far).
 - **Continuity** (`ethos/memory/continuity.py:16`): state-not-transcript;
   atomic `continuity.json` (tmp+fsync+rename) + `checkpoints` row **every
   cycle**. `wake_up()` (`continuity.py:63`): reload snapshot/focus, mark

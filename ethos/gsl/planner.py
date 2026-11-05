@@ -160,6 +160,7 @@ async def understand(
         purpose="gsl.understand",
         model_hint=config.gsl.model_hint or None,
         budget_bucket=budget_bucket_for(intention),
+        reasoning_budget=config.gsl.reasoning_budget,
         consequence_class="consequential" if consequential_hint else "routine",
         messages=[
             ModelMessage(role=Role.system, content=UNDERSTAND_PROMPT.format(
@@ -202,6 +203,7 @@ async def devise(
         purpose="gsl.devise",
         model_hint=config.gsl.model_hint or None,
         budget_bucket=budget_bucket_for(intention),
+        reasoning_budget=config.gsl.reasoning_budget,
         messages=[
             ModelMessage(role=Role.system, content=DEVISE_PROMPT.format(
                 name=config.self_name,
@@ -296,7 +298,9 @@ async def make_plan(
         purpose="gsl.plan",
         model_hint=config.gsl.model_hint or None,
         budget_bucket=budget_bucket_for(intention),
-        reasoning_budget=config.gsl.degraded_reasoning_budget if degraded else None,
+        reasoning_budget=(
+            config.gsl.degraded_reasoning_budget if degraded else config.gsl.reasoning_budget
+        ),
         messages=[
             ModelMessage(role=Role.system, content=PLAN_PROMPT.format(
                 name=config.self_name,

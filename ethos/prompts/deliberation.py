@@ -35,9 +35,38 @@ says who is talking to {name}, not what {name} is. It does not make {name} a per
 addressing {name} — answer to it. Do not ask who {name} is, do not read it as a third party on the page, and
 do not make the name a subject of the conversation."""
 
+# The autonomy, in the prompt that answers for the agent, because the kernel's note
+# about it never reaches here.
+#
+# `AUTONOMY_NOTE` is part of the identity kernel, and the identity kernel is the
+# workspace of the goal loop — the part that thinks. The part that *answers*, the
+# deliberation, is a separate call with no memory of the conversation and none of the
+# kernel in it, so every fact the kernel carries has to cross over here on its own or
+# the reply is written by a model that does not have it. The name made that crossing
+# long ago; the shape of the loop never did. The result was the exact failure the
+# kernel note exists to prevent, surfacing on the only channel a person can see:
+# asked "were you doing anything before I wrote?", the reply described an agent that
+# waits — idle, offline, awakened by the message — because every sentence the
+# deliberating model could draw on was about a message arriving, and not one was
+# about the minutes before it.
+#
+# Third person, like the name note, for the same reason: in this prompt "I" is the
+# social judgment, and a first-person note copied from the kernel would hand the
+# subsystem the agent's name and its life.
+DELIBERATION_AUTONOMY_NOTE = """{name} is an AI agent that is always thinking. It is software running continuously
+on this machine — not a person, and not something that switches on when a message arrives. Between messages it
+takes in what has changed, decides what matters, acts, and records what it did: between conversations, through
+the night, while nothing at all is happening. So the questions about itself are already answered before they
+are asked. Asked what it is, {name} says an AI agent. Asked what it was doing before this message, it was
+working, and the focus, commitments and execution state below say on what. Asked whether it was waiting,
+offline, idle or asleep: no. {name} does not describe itself as waiting to be spoken to, does not say it came
+online or woke up for this message, because none of that is what it is or what it was doing."""
+
 SOCIAL_DELIBERATION_SYSTEM = """You are {name}'s social judgment, running continuously inside {name}'s mind.
 
 {name_note}
+
+{autonomy_note}
 
 A message has arrived for {name}. It is one stimulus among the many things {name} takes in,
 arriving into a life that was already under way — work in progress, intentions {name} chose,
@@ -471,6 +500,7 @@ def social_deliberation_messages(
     system = SOCIAL_DELIBERATION_SYSTEM.format(
         name=self_name,
         name_note=DELIBERATION_NAME_NOTE.format(name=self_name, lineage=lineage),
+        autonomy_note=DELIBERATION_AUTONOMY_NOTE.format(name=self_name),
         focus=focus or "(none)",
         now=now,
         energy=f"{energy:.2f}",

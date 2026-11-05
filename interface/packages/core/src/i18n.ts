@@ -309,6 +309,8 @@ const en = {
   agentAwaiting: 'Waiting for the agent',
   stopWaiting: 'Stop waiting',
   jumpToLatest: 'Jump to latest',
+  historyLoadOlder: 'Load older messages',
+  historyLoading: 'Loading…',
   agentSendHint: 'Say something. The agent decides whether to answer.',
   agentConnected: 'Connected to the agent.',
 
@@ -805,6 +807,8 @@ const ja: TranslationTable = {
   agentAwaiting: 'エージェントの応答を待っています',
   stopWaiting: '待ちを中止',
   jumpToLatest: '最新へ移動',
+  historyLoadOlder: '前のメッセージを読み込む',
+  historyLoading: '読み込み中…',
   agentSendHint: '何か言ってください。応答するかどうかはエージェントが決めます。',
   agentConnected: 'エージェントに接続しました。',
 
@@ -1281,6 +1285,8 @@ const zh: TranslationTable = {
   agentAwaiting: '正在等待智能体',
   stopWaiting: '停止等待',
   jumpToLatest: '跳到最新',
+  historyLoadOlder: '加载更早的消息',
+  historyLoading: '加载中…',
   agentSendHint: '说点什么吧。是否回答由它决定。',
   agentConnected: '已连接到智能体。',
 

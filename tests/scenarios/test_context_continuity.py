@@ -220,7 +220,12 @@ async def test_open_commitments_reach_deliberation(db, tmp_path: Path):
 
 
 async def test_context_rolls_into_narrative_during_a_life(db, tmp_path: Path):
-    """The buffer is bounded, but nothing is lost: it becomes a line."""
+    """The buffer is bounded, and compression is lossy only for the routine.
+
+    A roll narrates the stretch into a line, but what it *consumes* is the
+    routine half: a person's question and a failure stay verbatim, because a
+    roll is allowed to lose a detail, not a conversation.
+    """
     config = make_config(tmp_path / "roll-live")
     config.paths.ensure()
     config.memory.context.narrate_every = 3
@@ -233,8 +238,12 @@ async def test_context_rolls_into_narrative_during_a_life(db, tmp_path: Path):
     await life._append_turn(TurnKind.action.value, "retried with different args")
     await context.roll("fix the tool")
 
-    assert len(context.turns) == 0, "the batch should have been consumed"
-    assert len(context.narrative) == 1, "and become a line"
+    assert len(context.narrative) == 1, "the stretch became a line"
+    kinds = {t.kind for t in context.turns}
+    assert TurnKind.action.value not in kinds, "the routine turn was consumed"
+    assert {TurnKind.inbound.value, TurnKind.failure.value} <= kinds, \
+        "the person's question and the failure stay verbatim"
+    assert "owner asked a question" in context.render()
     assert "What I have been doing" in context.render_thread()
     await deps.bus.stop()
 

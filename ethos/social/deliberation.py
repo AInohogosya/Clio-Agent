@@ -587,7 +587,15 @@ class SocialCognition:
             # did not actually hear.
             logger.warning("social.deliberate_reply_action_without_text")
             decision.action = SocialAction.act_silently
-            note = "action promised a reply but carried no text; nothing sent"
+            # A speaking action that carried no words is a malformed answer, not a
+            # silence the agent chose: the model named an action that speaks and
+            # then wrote nothing to say. Retiring the turn here is what put a
+            # chosen-silence reading in front of a person who was owed an answer,
+            # so the turn is left *undecided* instead and re-asked -- the same
+            # bounded retry (`_hold_undecided`, `MAX_DELIBERATION_ATTEMPTS`) every
+            # other turn that no model managed to answer gets.
+            decision.decided = False
+            note = "action promised a reply but carried no text; re-asking"
             decision.reason = f"{decision.reason}; {note}" if decision.reason else note
         self._withhold_unearned_progress(decision, state)
         return decision

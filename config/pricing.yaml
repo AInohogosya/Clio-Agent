@@ -88,6 +88,14 @@ models:
   # the price table is the one place that says what a name costs.
   "stepfun-ai/step-5-preview": { input: 0.0, cached_input: 0.0, cache_write: 0.0, output: 0.0 }
 
+  # MiniMax M3.1 Flash on the same NVIDIA developer endpoint as the rows above
+  # (`https://integrate.api.nvidia.com/v1`, named under `free_base_urls`), priced
+  # by name for the same reason: this is the model `base_model.yaml` pins now, and
+  # a pinned model with no rate in the table lands on the high-water mark -- a day
+  # of retries against a free endpoint reading as money the agent never spent.
+  # Source: https://build.nvidia.com/minimaxai/minimax-m3.1-flash
+  "minimaxai/minimax-m3.1-flash": { input: 0.0, cached_input: 0.0, cache_write: 0.0, output: 0.0 }
+
   # Groq. Llama 3.3 70B moved behind a sales quote on 2026-08-26; these are the
   # last published self-serve rates.
   # Source: https://groq.com/pricing

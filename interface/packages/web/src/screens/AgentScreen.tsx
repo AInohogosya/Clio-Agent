@@ -3,9 +3,11 @@ import {
   conversationKey,
   createTranslator,
   flattenIntentions,
+  toChatMessages,
   type AgentControlAction,
   type AgentConversation,
   type AgentDoor,
+  type AgentHistoryPage,
   type AgentView,
   type ClientSnapshot,
   type Language,
@@ -70,6 +72,12 @@ interface AgentScreenProps {
   /** The conversation this surface is on, or `null` before the transcript says. */
   conversation: AgentConversation | null;
   onSelectConversation: (id: string) => void;
+  /** Past messages read retroactively, oldest first. */
+  history: AgentHistoryPage;
+  /** True while a page of history is being fetched. */
+  historyLoading: boolean;
+  /** Asks for the page before the oldest message currently shown. */
+  onLoadOlderHistory: () => void;
 }
 
 /**
@@ -108,6 +116,9 @@ export function AgentScreen({
   closedChannels,
   conversation,
   onSelectConversation,
+  history,
+  historyLoading,
+  onLoadOlderHistory,
 }: AgentScreenProps) {
   const language = snapshot.settings.language;
   const t = useMemo(() => createTranslator(language), [language]);
@@ -199,9 +210,12 @@ export function AgentScreen({
           conversations={people}
           doors={doors}
           draft={draft}
+          history={history}
+          historyLoading={historyLoading}
           language={language}
           onDraft={setDraft}
           onInterrupt={onInterrupt}
+          onLoadOlderHistory={onLoadOlderHistory}
           onSelectChannel={selectChannel}
           onSelectConversation={onSelectConversation}
           onSubmit={submit}
@@ -404,6 +418,7 @@ function CycleStrip({ view, t }: { view: AgentView; t: AgentT }) {
 function TimelinePane({
   snapshot, draft, language, t, onDraft, onSubmit, onInterrupt,
   conversations, doors, closedChannels, conversation, onSelectChannel, onSelectConversation,
+  history, historyLoading, onLoadOlderHistory,
 }: {
   snapshot: ClientSnapshot;
   draft: string;
@@ -418,6 +433,9 @@ function TimelinePane({
   conversation: AgentConversation | null;
   onSelectChannel: (channel: string) => void;
   onSelectConversation: (id: string) => void;
+  history: AgentHistoryPage;
+  historyLoading: boolean;
+  onLoadOlderHistory: () => void;
 }) {
   /**
    * What this pane shows: one conversation, narrowed by the person named above
@@ -433,6 +451,21 @@ function TimelinePane({
       ? snapshot.messages.filter((message) => conversationKey(message) === conversation.id)
       : []),
     [snapshot.messages, conversation],
+  );
+  /**
+   * The past, when it has been asked for.
+   *
+   * The live timeline is the snapshot's last hundred rows across every door,
+   * which is the conversation and not its history. Pages read retroactively are
+   * drawn above it — same narrowing, same conversation key — and deduplicated
+   * against the live rows by id, because the snapshot moves while a fetched page
+   * does not and the same message must never be drawn twice.
+   */
+  const olderMessages = useMemo(
+    () => toChatMessages(history.messages)
+      .filter((message) => conversation && conversationKey(message) === conversation.id)
+      .filter((message) => !messages.some((live) => live.id === message.id)),
+    [history, conversation, messages],
   );
   const feed = useConversationFeed();
   // A messaging app is a door several people talk through, so it is the one
@@ -509,6 +542,39 @@ function TimelinePane({
         feed={feed}
         label={t('jumpToLatest')}
       >
+        {(() => {
+          // The control offers itself before any page has been fetched — that is
+          // the only way to ask for the first one — and leaves once a fetch has
+          // come back saying there is nothing older. A conversation with no
+          // messages at all has no cursor to page from, so it offers nothing.
+          const atEnd = history.messages.length > 0 && !history.hasMore;
+          const hasSomething = messages.length > 0 || olderMessages.length > 0;
+          return conversation && hasSomething && !atEnd ? (
+            <div className="flex justify-center pb-1">
+              <Button
+                disabled={historyLoading}
+                icon="arrowDown"
+                variant="quiet"
+                onClick={onLoadOlderHistory}
+              >
+                {historyLoading ? t('historyLoading') : t('historyLoadOlder')}
+              </Button>
+            </div>
+          ) : null;
+        })()}
+        {olderMessages.map((message) => {
+          const isUser = message.role === 'user';
+          const sender = isUser ? (message.author ?? conversation?.label ?? t('you')) : t('assistant');
+          return (
+            <MessageRow
+              clock={formatClock(message.createdAt, language)}
+              key={message.id}
+              message={message}
+              sender={sender}
+              truncateSender
+            />
+          );
+        })}
         {messages.length === 0 ? (
           <div className="flex flex-1 flex-col items-center justify-center px-6 py-10 text-center">
             <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl border border-[var(--line-strong)] bg-[var(--canvas-raised)] accent-text shadow-emboss">

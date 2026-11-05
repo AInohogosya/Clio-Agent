@@ -167,9 +167,9 @@ def failure_scope(exc: BaseException) -> str:
 
     `UnusableResponse` knows its own answer (`request_scoped`, set at the raise
     site where the reason is known). `ProviderError` knows it from the status
-    (401 and 403 are about the credential, not the call). Everything else is a
-    provider's mood: a 429, a timeout, a 5xx, a connection error, and time is
-    the only thing that has ever fixed any of them.
+    (401 and 403 are about the credential, and 410 about a retired model, not
+    the call). Everything else is a provider's mood: a 429, a timeout, a 5xx, a
+    connection error, and time is the only thing that has ever fixed any of them.
     """
     if isinstance(exc, UnusableResponse):
         return _REQUEST_SCOPED if exc.request_scoped else _PROVIDER_SCOPED
@@ -196,6 +196,8 @@ def _credential_diagnosis(exc: ProviderError) -> str:
         if "quota" in lowered or "billing" in lowered or "credit" in lowered:
             return f"quota or billing exhausted ({detail})"
         return f"no access to this model with this credential ({detail})"
+    if exc.status == 410:
+        return f"the model has been retired by the provider ({detail})"
     if exc.status == 429:
         return f"rate limited or out of quota ({detail})"
     if exc.status >= 500:
@@ -513,7 +515,8 @@ class GatewayService:
         )
 
     def _next_entry(
-        self, request: ModelRequest, failed: Any, tried: set[str], *, model_scoped: bool,
+        self, request: ModelRequest, failed: Any, tried: set[str], *,
+        model_scoped: bool, transient: frozenset[str] = frozenset(),
     ) -> Any | None:
         """
         Where the next attempt goes, or `None` when there is nowhere left to go.
@@ -551,6 +554,24 @@ class GatewayService:
                 request, is_available=self._is_entry_available, exclude=frozenset(tried)
             )
         except NoModelAvailable:
+            # Nothing is left that has not already failed *on this request*.
+            # Before calling it, put back the entries whose failure was the
+            # provider's mood rather than the model's own -- a rate limit, a
+            # timeout, a 5xx, which is exactly what the retry ladder exists to
+            # wait out. Without this a rate limit on the one working model
+            # excluded it for the rest of the request, the ladder walked on into
+            # the catalogue's dead entries, and the request ended in
+            # `no_model_available` while the model that could answer sat one
+            # slot behind it, excluded for a reason that had already expired.
+            redo = frozenset(transient) - {entry_key(failed)}
+            if model_scoped and redo:
+                try:
+                    return self.router.select(
+                        request, is_available=self._is_entry_available,
+                        exclude=frozenset(tried - redo),
+                    )
+                except NoModelAvailable:
+                    return None
             return None if model_scoped else failed
 
     def _widen_request(self, request: ModelRequest) -> tuple[ModelRequest, list[str]]:
@@ -868,6 +889,11 @@ class GatewayService:
         retry = self.config.gateway.retry
         max_attempts = 1 + max(0, retry.max_retries)
         tried: set[str] = set()
+        # The entries that failed this request for a reason that clears on its
+        # own -- a rate limit, a timeout, a 5xx. Excluded while there is anywhere
+        # else to go, and pulled back in as a last resort rather than failing the
+        # request outright; see `_next_entry`.
+        transient: set[str] = set()
         entry = await self._entry_for(request, max_attempts)
         last_error: Exception | None = None
         # The request the next attempt will send. Rebound whenever a failure is
@@ -909,6 +935,9 @@ class GatewayService:
                 raise
             except Exception as exc:
                 scope = failure_scope(exc)
+                rate_limited = is_rate_limited(exc)
+                if scope == _PROVIDER_SCOPED:
+                    transient.add(entry_key(entry))
                 # Recorded before the decision to retry, not after. A key that
                 # does not work is not worth retrying but is very much worth
                 # remembering: that model is out until somebody fixes the key,
@@ -917,7 +946,21 @@ class GatewayService:
                 # recorded, whatever the exception's own opinion of itself --
                 # `counts_against_model` was written for replies that were not
                 # answers, and a 401 is not that.
-                if scope == _MODEL_SCOPED or getattr(exc, "counts_against_model", True):
+                #
+                # An ordinary rate limit is the one exception, and it is the one
+                # that mattered. `record_failure` is what opens the circuit
+                # breaker, so counting 429s meant a burst of "you are going too
+                # fast" -- which the ladder exists to wait out -- opened the
+                # breaker on the model that was answering and dropped it out of
+                # rotation. On a catalogue where one model is the only live one,
+                # that turns the provider asking for a moment into the agent
+                # having no model at all: `no_model_available`, arrived at from a
+                # 429. A spent quota is not this case -- it is model-scoped (see
+                # `_EXHAUSTED_QUOTA`) and is recorded precisely because it does
+                # not clear.
+                if scope == _MODEL_SCOPED or (
+                    getattr(exc, "counts_against_model", True) and not rate_limited
+                ):
                     self.router.record_failure(entry, exc)
                 await self._note_failure(attempt_request, entry, exc, response)
                 exhaustive.log_model_failure(
@@ -943,7 +986,6 @@ class GatewayService:
                     # unsupported parameter supported, and escalating on one
                     # spends the budget to arrive at the same 400.
                     attempt_request, changes = self._widen_request(attempt_request)
-                rate_limited = is_rate_limited(exc)
                 delay = self._delay_before_retry(
                     attempt, retry_after_of(exc), rate_limited=rate_limited,
                 )
@@ -965,6 +1007,7 @@ class GatewayService:
                     else self._next_entry(
                         attempt_request, entry, tried,
                         model_scoped=scope == _MODEL_SCOPED,
+                        transient=frozenset(transient),
                     )
                 )
                 if following is None:

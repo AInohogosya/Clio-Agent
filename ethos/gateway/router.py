@@ -53,6 +53,16 @@ class NoModelAvailable(RuntimeError):
 # anything that could answer is asked at all.
 PIN_STREAK_LIMIT = 3
 
+# How long an entry is benched after a failure that will not clear on its own --
+# a revoked key, a spent monthly quota, a retired model. These are not the
+# provider's mood and the thirty-second cooldown is the wrong clock for them: a
+# key at its monthly limit is still at its monthly limit one cooldown later, so
+# on that schedule the entry is re-tried every thirty seconds for as long as the
+# process runs, and every one of those is a call spent to be told the same thing.
+# An hour is long enough to take the churn out of the ladder and short enough
+# that a key somebody has just topped up comes back without a restart.
+TERMINAL_BENCH_S = 3600.0
+
 
 def entry_key(entry: ModelEntry) -> str:
     """The identity a failure is remembered under: provider and model.
@@ -106,6 +116,10 @@ class CircuitBreaker:
 class _BreakerState:
     breaker: CircuitBreaker = field(default_factory=lambda: CircuitBreaker(60, 5, 20, 0.30, 30))
     failures_consecutive: int = 0
+    # Monotonic time until which a failure that does not clear has benched this
+    # entry entirely, independent of the breaker's own cooldown. See
+    # `TERMINAL_BENCH_S`.
+    terminal_until: float = 0.0
 
 
 class ModelRouter:
@@ -129,18 +143,35 @@ class ModelRouter:
 
     def breaker_open(self, entry: ModelEntry) -> bool:
         state = self.breakers.get(entry_key(entry))
-        return state is not None and state.breaker.is_open()
+        if state is None:
+            return False
+        # A terminal bench reads as "open" so the one place that decides an
+        # entry can be used -- `_is_entry_available` -- needs no second question,
+        # and the entry is out of rotation for the whole bench rather than for
+        # the breaker's cooldown.
+        if time.monotonic() < state.terminal_until:
+            return True
+        return state.breaker.is_open()
 
     def record_success(self, entry: ModelEntry) -> None:
         state = self.breakers.setdefault(entry_key(entry), _BreakerState())
         state.breaker.record(True)
         state.failures_consecutive = 0
+        # An answer is proof the key works, so a bench, whatever put it there,
+        # is over.
+        state.terminal_until = 0.0
 
     def record_failure(self, entry: ModelEntry, exc: Exception | None = None) -> None:
         state = self.breakers.setdefault(entry_key(entry), _BreakerState())
         state.breaker.record(False)
         state.failures_consecutive += 1
-        del exc
+        # `scope == "model"` is the failure that describes the credential or the
+        # model rather than this call -- a revoked key, a spent quota, a retired
+        # model -- and it is exactly the set that does not clear between one
+        # cooldown and the next. Read duck-typed so this module keeps knowing
+        # nothing about the provider layer.
+        if getattr(exc, "scope", "") == "model":
+            state.terminal_until = time.monotonic() + TERMINAL_BENCH_S
 
     def failing_hard(self, entry: ModelEntry) -> bool:
         """Whether this entry is on a losing streak rather than having a bad moment.
