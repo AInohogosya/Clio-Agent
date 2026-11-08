@@ -43,6 +43,25 @@ export function configPath(): string {
   return configured ? resolve(configured) : defaultConfigPath();
 }
 
+/**
+ * Whether the shared configuration file exists on disk.
+ *
+ * This is the first-launch signal both surfaces read: a fresh install has
+ * no file, and the first save creates it. A file that exists is never a
+ * first launch even when its revision or timestamp has not moved — a
+ * fixture or a hand-written file may carry zeros the save counter never
+ * touched, and nothing about the person can be told from them. A stat
+ * that fails is "not first launch" rather than a verdict, so a momentary
+ * read failure cannot prompt the provider setup screen.
+ */
+export function configFileExists(): boolean {
+  try {
+    return existingStat(configPath()) !== null;
+  } catch {
+    return false;
+  }
+}
+
 /** `lstat` so a symlink is seen as a symlink rather than followed to its target. */
 export function existingStat(path: string): Stats | null {
   try {

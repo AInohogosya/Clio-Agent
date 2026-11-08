@@ -968,6 +968,8 @@ class GeneralSolverLoop:
                     tier=request.tier,
                     purpose=request.purpose,
                     budget_bucket=request.budget_bucket,
+                    model_hint=request.model_hint,
+                    reasoning_budget=request.reasoning_budget,
                     cache_prefix_blocks=request.cache_prefix_blocks,
                     messages=[
                         *request.messages,
@@ -1361,6 +1363,12 @@ class GeneralSolverLoop:
             purpose="gsl.check_repair",
             budget_bucket=budget_bucket_for(intention),
             model_hint=self.config.gsl.model_hint or None,
+            # The solver's other calls bound thinking for exactly this
+            # reason: without it a reasoning model spends the whole
+            # ceiling thinking and answers with nothing, and the
+            # gateway's widening lever has no thinking budget to halve --
+            # it can only grow the ceiling and stay on the same model.
+            reasoning_budget=self.config.gsl.reasoning_budget,
             messages=[
                 ModelMessage(role=Role.system, content=(
                     "A plan step's success_check failed while the step's own "
@@ -1394,11 +1402,17 @@ class GeneralSolverLoop:
             data, _c, truncated = await self._complete_with_cost(request)
         except Exception:
             logger.warning("gsl.check_repair_call_failed", step=step.id)
+            # A model that never answered is not a repair that was spent:
+            # counting it against the two-rewrite budget meant two failed
+            # calls exhausted the budget and no check was ever rewritten.
+            counts[step.id] = done
             return None
         if truncated or not isinstance(data, dict) or not data.get("type"):
+            counts[step.id] = done
             return None
         check = dict(data)
         if check.get("type") not in _RUNNABLE_CHECKS:
+            counts[step.id] = done
             return None
         if _same_check(check, step.success_check):
             # The model answered with the check that just failed. Re-running
@@ -1409,6 +1423,7 @@ class GeneralSolverLoop:
         if check.get("type") == "command":
             command = str(check.get("command", ""))
             if not command.strip() or _MUTATING_CHECK.search(command):
+                counts[step.id] = done
                 return None
         for entry in resume["plan"]["steps"]:
             if entry.get("id") == step.id:
@@ -1826,6 +1841,7 @@ class GeneralSolverLoop:
                 tier=Tier.T2,
                 purpose="gsl.reflect",
                 model_hint=self.config.gsl.model_hint or None,
+                reasoning_budget=self.config.gsl.reasoning_budget,
                 budget_bucket=budget_bucket_for(intention),
                 messages=[
                     ModelMessage(role=Role.system, content=REFLECT_PROMPT.format(

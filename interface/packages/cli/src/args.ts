@@ -137,6 +137,7 @@ export const CONFIG_FIELDS = [
   'provider',
   'model',
   'baseUrl',
+  'reasoningLevel',
   'apiKey',
   'language',
   'theme',

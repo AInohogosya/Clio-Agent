@@ -22,6 +22,7 @@ from ethos.schemas.context import TurnKind
 from ethos.schemas.events import Event, EventKind, Percept
 from ethos.schemas.gsl import Decision, Focus, IntentionStatus, Outcome, SolverOutcome, StageNotice
 from ethos.schemas.messages import Urgency
+from ethos.schemas.models import ModelMessage, ModelRequest, Role, Tier
 from ethos.schemas.reverie import ReverieResult
 from ethos.social.conversation import open_conversations, render_conversations
 from ethos.social.deliberation import NO_CAP, effective_attempt_caps
@@ -766,11 +767,14 @@ class Life:
 
         if self.focus is not None and self.focus.kind == "social":
             return Decision(
-                kind="social", tier="T2", social=None,
-                rationale="social focus without pending message; nothing to do",
+                kind="idle_model", tier="T1",
+                rationale="social focus without pending message; always call the model",
             )
 
-        return Decision(kind="none", tier="T0", rationale="nothing pending; wait")
+        return Decision(
+            kind="idle_model", tier="T1",
+            rationale="nothing pending; always call the model",
+        )
 
     def _goal_is_owed(self) -> bool:
         """Whether the focus is real work this agent is committed to finishing.
@@ -858,7 +862,14 @@ class Life:
         elif decision.kind == "notify" and decision.stage is not None:
             outcome.ok = await self._notify_stage(decision.stage)
         elif decision.kind == "mind_wander":
-            await self._mind_wander()
+            cost = await self._mind_wander()
+            outcome.cost_usd += cost
+            self.spent_discretionary_session += cost
+        elif decision.kind == "idle_model":
+            cost = await self._idle_model_call()
+            outcome.cost_usd += cost
+            self.spent_discretionary_session += cost
+            outcome.results.append({"kind": "idle_model", "cost_usd": cost})
         elif decision.kind == "reverie":
             result = await self._reverie()
             outcome.ok = result.refused == "" and result.committed_id is not None
@@ -1745,14 +1756,67 @@ class Life:
         await self._roll_on_focus_change(previous, self.focus)
         return result
 
-    async def _mind_wander(self) -> None:
+    async def _mind_wander(self) -> float:
         memories = await self.memory.random_memories(self.config.rhythm.mind_wandering.sample_memories)
         questions = await self.memory.open_questions(limit=3)
         fragments = [m.summary for m in memories[:self.config.rhythm.mind_wandering.sample_memories]]
         fragments += [f"open question: {q['text']}" for q in questions]
         glance = " ; ".join(fragments)[:500]
-        thought = f"mind-wander: {glance}"
-        await self._record_thought(thought, importance=0.3, half_life_h=12)
+        return await self._idle_model_call(context=glance, purpose="life.mind_wander")
+
+    async def _idle_model_call(self, context: str = "", purpose: str = "life.idle_model") -> float:
+        """Always call the model on an idle cycle.
+
+        Gated only by the gateway itself: budget and rate limits raise there,
+        are recorded as ``limit_reached`` stops, and the cycle goes on. There
+        is no energy, due-clock, or focus gate in front of this call.
+        """
+        gateway = self.deps.gateway
+        if gateway is None and self.reverie is not None:
+            gateway = getattr(self.reverie, "gateway", None)
+        if gateway is None:
+            logger.warning("life.idle_model_no_gateway")
+            return 0.0
+        recent = _tail(self._thoughts, 5)
+        prompt_context = "\n".join(
+            part for part in [
+                f"focus: {self.focus.title}" if self.focus else "focus: none",
+                context,
+                "recent thoughts:\n" + "\n".join(recent) if recent else "",
+            ] if part
+        )[:2000]
+        request = ModelRequest(
+            tier=Tier.T1,
+            purpose=purpose,
+            budget_bucket="discretionary",
+            consequence_class="routine",
+            messages=[
+                ModelMessage(role=Role.system, content=(
+                    "You are idle with nothing owed to anybody. "
+                    "Answer with one short thought, observation, or next step "
+                    "in plain text. Do not call tools and do not commit to work."
+                )),
+                ModelMessage(role=Role.user, content=prompt_context or "Nothing pending."),
+            ],
+            max_tokens=self.config.rhythm.reverie.max_tokens,
+        )
+        try:
+            response = await gateway.complete(request)
+        except Exception as exc:
+            from ethos.engine.stops import disposition_from_exception
+
+            kind = disposition_from_exception(exc)
+            logger.warning("life.idle_model_failed", error=str(exc)[:200], kind=kind.value)
+            self.stops.record(kind=kind, subject="idle_model", reason=str(exc)[:300], what="model_call")
+            return 0.0
+        cost = float(getattr(response, "cost_usd", 0.0) or 0.0)
+        text = " ".join(str(getattr(response, "text", "") or "").split())[:500]
+        await self._record_thought(
+            f"idle-model: {text}" if text else "idle-model: (no text)",
+            importance=0.2, half_life_h=6,
+            focus=self.focus.title if self.focus else None,
+        )
+        return cost
 
     # ------------------------------------------------------------ record
 
@@ -1850,7 +1914,7 @@ class Life:
             if result_outcome in (SolverOutcome.goal_done.value, SolverOutcome.parked.value):
                 return None
             return self.focus
-        if decision.kind == "none":
+        if decision.kind in ("none", "idle_model"):
             return None
         if decision.kind == "social":
             # A social focus exists to answer one message, and it is spent the

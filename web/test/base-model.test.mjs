@@ -102,6 +102,7 @@ test('nothing configured reads as nothing', async () => {
   const body = await (await read()).json();
   assert.deepEqual(body, {
     configured: false, provider: '', protocol: '', model: '', base_url: '',
+    reasoning_level: 'off',
     key_present: false, key_hint: '', key_env: '', key_env_present: false,
   });
 });
@@ -323,6 +324,31 @@ test('a catalogue is fetched from the provider, and the key never comes back', a
     // Sorted, so the list does not reshuffle between two fetches of the same thing.
     assert.deepEqual(body.models, ['a/1', 'b/2']);
     assert.equal(JSON.stringify(body).includes(key), false);
+  } finally {
+    await provider.close();
+  }
+});
+
+test('the reasoning offer a catalogue reports is carried through', async () => {
+  // OpenRouter's shape: `reasoning` on the models that think, on every entry
+  // a `supported_parameters` list that names whether `reasoning` is in it.
+  // The screen narrows the levels it offers to what each model reported; a
+  // model absent from the map stays offered every level.
+  const provider = await startProvider((response) => {
+    response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({
+      data: [
+        { id: 'openai/o3', reasoning: { mandatory: true }, supported_parameters: ['max_tokens', 'reasoning'] },
+        { id: 'deepseek/deepseek-chat', supported_parameters: ['max_tokens'] },
+        { id: 'undeclared/model' },
+      ],
+    }));
+  });
+  try {
+    const { body } = await discover({ provider: 'openrouter', base_url: provider.baseUrl, api_key: key });
+    assert.equal(body.source, 'remote');
+    assert.deepEqual(body.reasoning?.['openai/o3'], ['off', 'low', 'medium', 'high']);
+    assert.deepEqual(body.reasoning?.['deepseek/deepseek-chat'], ['off']);
+    assert.equal(body.reasoning?.['undeclared/model'], undefined);
   } finally {
     await provider.close();
   }

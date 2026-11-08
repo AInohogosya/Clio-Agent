@@ -281,6 +281,10 @@ def test_a_base_model_written_while_running_is_picked_up(tmp_path, monkeypatch):
 
 def test_removing_it_keeps_the_catalogue_the_same_size(tmp_path, monkeypatch):
     monkeypatch.setenv("ETHOS_HOME", str(tmp_path))
+    monkeypatch.setattr("ethos.config.load_shipped_base_model", lambda *_: None)
+    # The sync fallback also reads the shipped loader by name from
+    # `ethos.gateway.service`, so patch it there too.
+    monkeypatch.setattr("ethos.gateway.service.load_shipped_base_model", lambda *_: None, raising=False)
     service = GatewayService(load_config("config"), providers={})
     write_base_model(tmp_path, VALID)
     service.sync_base_model()
@@ -292,8 +296,34 @@ def test_removing_it_keeps_the_catalogue_the_same_size(tmp_path, monkeypatch):
     assert len(service.config.models.models) == with_base - 1
 
 
+def test_removing_it_falls_back_to_the_shipped_base_model(tmp_path, monkeypatch):
+    """Start-up and runtime sync must agree on the fallback.
+
+    `load_config` uses `config/base_model.yaml` when no home file overrides
+    it. A runtime sync that instead set the base to None on removal left the
+    running agent with a different model -- or none -- from what a restart
+    would give it.
+    """
+    monkeypatch.setenv("ETHOS_HOME", str(tmp_path))
+    service = GatewayService(load_config("config"), providers={})
+    shipped = service.config.models.base
+    assert shipped is not None, "the shipped config carries a base model"
+
+    write_base_model(tmp_path, VALID)
+    service.sync_base_model()
+    assert service.config.models.base is not None
+    assert service.config.models.base.model == "some/model-id"
+
+    base_model_path(tmp_path).unlink()
+    service.sync_base_model()
+    assert service.config.models.base == shipped
+    assert service.config.models.models[0].model == shipped.model
+
+
 def test_a_corrupt_file_leaves_the_agent_running(tmp_path, monkeypatch):
     monkeypatch.setenv("ETHOS_HOME", str(tmp_path))
+    monkeypatch.setattr("ethos.config.load_shipped_base_model", lambda *_: None)
+    monkeypatch.setattr("ethos.gateway.service.load_shipped_base_model", lambda *_: None, raising=False)
     service = GatewayService(load_config("config"), providers={})
     write_base_model(tmp_path, VALID)
     service.sync_base_model()

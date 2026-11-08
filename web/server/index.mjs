@@ -1000,11 +1000,14 @@ const NO_BASE_MODEL = {
   protocol: "",
   model: "",
   base_url: "",
+  reasoning_level: "off",
   key_present: false,
   key_hint: "",
   key_env: "",
   key_env_present: false,
 };
+
+const REASONING_LEVELS = ["off", "low", "medium", "high"];
 
 /**
  * The base model file as it is on disk, or `null` when there is nothing to read.
@@ -1097,6 +1100,11 @@ function readBaseModel() {
     protocol,
     model: typeof data.model === "string" ? data.model : "",
     base_url: typeof data.base_url === "string" ? data.base_url : "",
+    // A file written before this field existed, or by hand with something
+    // else in it, reads as `off` — no level, not a level nobody chose.
+    reasoning_level: typeof data.reasoning_level === "string" && REASONING_LEVELS.includes(data.reasoning_level.trim())
+      ? data.reasoning_level.trim()
+      : "off",
     key_present: key.length > 0,
     key_hint: keyHint(key),
     key_env: keyEnv,
@@ -1263,6 +1271,14 @@ function writeBaseModel(body) {
   if (!MODEL_NAME.test(model)) return { error: "invalid_model" };
   const baseUrl = baseUrlOf(vendor, body?.base_url);
   if (!endpointAllowed(baseUrl)) return { error: "invalid_endpoint" };
+  // Omitted means "leave the one on file as it is", and anything that is not
+  // one of the four names is a refusal rather than a silent default.
+  const reasoningLevel = body?.reasoning_level === undefined
+    ? null
+    : text(body.reasoning_level, 16).trim();
+  if (reasoningLevel !== null && !REASONING_LEVELS.includes(reasoningLevel)) {
+    return { error: "invalid_reasoning_level" };
+  }
 
   // An absent key means "keep the one already stored", so a person can change the
   // model from a page that never held the credential. `clear_key` is how a key is
@@ -1312,6 +1328,13 @@ function writeBaseModel(body) {
   if (usingEnv) apiKeyEnv = env.variable;
   if (!apiKey && !apiKeyEnv && BASE_PROVIDERS[vendor].requiresKey) return { error: "key_required" };
 
+  // The level is carried across from the stored file like the key envelope
+  // above: a save that only changed the model must not silently reset the
+  // thinking somebody had chosen on a save before it.
+  const storedLevel = stored && typeof stored.reasoning_level === "string"
+    && REASONING_LEVELS.includes(stored.reasoning_level.trim())
+    ? stored.reasoning_level.trim()
+    : "off";
   const document = {
     // The vendor is kept alongside the protocol so the file says what a person
     // chose and not only what the adapter is called, which is what makes the
@@ -1320,6 +1343,7 @@ function writeBaseModel(body) {
     provider: BASE_PROVIDERS[vendor].protocol,
     model,
     base_url: baseUrl,
+    reasoning_level: reasoningLevel ?? storedLevel,
     api_key: apiKey,
     // Empty rather than absent, so a file that had one and no longer does does not
     // keep a reference the agent would resolve over the key that replaced it.
@@ -1556,11 +1580,18 @@ async function listModels(body) {
     if (!response.ok) {
       return { models: STATIC_MODELS[vendor], source: "offline", error: `http_${response.status}`, key_source: keySource };
     }
-    const models = extractModelIds(await response.json(), vendor);
+    const payload = await response.json();
+    const models = extractModelIds(payload, vendor);
     if (models.length === 0) {
       return { models: STATIC_MODELS[vendor], source: "offline", error: "empty_catalog", key_source: keySource };
     }
-    return { models, source: "remote", key_source: keySource };
+    const reasoning = extractReasoningSupport(payload, vendor);
+    return {
+      models,
+      source: "remote",
+      key_source: keySource,
+      ...(Object.keys(reasoning).length ? { reasoning } : {}),
+    };
   } catch (error) {
     return {
       models: STATIC_MODELS[vendor],
@@ -1595,6 +1626,52 @@ function extractModelIds(payload, vendor) {
     if (MODEL_NAME.test(id)) seen.add(id);
   }
   return [...seen].sort();
+}
+
+/**
+ * The reasoning levels one catalogue entry reports it accepts, or `null` when
+ * it reports nothing — which is not the same as reporting it takes none.
+ *
+ * The same rule the direct interface applies, because the two catalogues
+ * answer the same question: OpenRouter's `supported_parameters`/`reasoning`
+ * metadata, then a generic capability spelling, then silence — in which case
+ * the entry is absent and the caller offers every level.
+ */
+function extractReasoningSupport(payload, vendor) {
+  const support = {};
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return support;
+  const items = vendor === "gemini"
+    ? (Array.isArray(payload.models) ? payload.models : [])
+    : (Array.isArray(payload.data) ? payload.data : []);
+  for (const item of items.slice(0, MAX_CATALOGUE_ENTRIES)) {
+    if (!item || typeof item !== "object") continue;
+    const raw = vendor === "gemini" ? item.name : item.id;
+    if (typeof raw !== "string") continue;
+    const id = (vendor === "gemini" ? raw.replace(/^models\//, "") : raw).trim();
+    if (!MODEL_NAME.test(id)) continue;
+    const levels = reasoningLevelsOfEntry(item);
+    if (levels) support[id] = levels;
+  }
+  return support;
+}
+
+function reasoningLevelsOfEntry(entry) {
+  const reported = entry.supported_parameters;
+  if (Array.isArray(reported)) {
+    const params = reported.filter((name) => typeof name === "string");
+    if (params.includes("reasoning") || entry.reasoning !== undefined) return [...REASONING_LEVELS];
+    return ["off"];
+  }
+  if (entry.reasoning && typeof entry.reasoning === "object") return [...REASONING_LEVELS];
+  const capabilities = entry.capabilities && typeof entry.capabilities === "object"
+    ? entry.capabilities
+    : null;
+  const thinking = capabilities ? (capabilities.thinking ?? capabilities.reasoning) : undefined;
+  if (thinking === true || thinking === "supported" || thinking === "enabled") return [...REASONING_LEVELS];
+  if (thinking === false || thinking === "unsupported" || thinking === "disabled") return ["off"];
+  if (entry.supports_thinking === true) return [...REASONING_LEVELS];
+  if (entry.supports_thinking === false) return ["off"];
+  return null;
 }
 
 /**
@@ -2719,6 +2796,10 @@ app.post("/api/models", handle(async (req, res) => {
     // typed" or "asked with OPENAI_API_KEY" rather than leaving the reader to
     // work out which of the two they just exercised.
     ...(result.key_source ? { key_source: result.key_source } : {}),
+    // The per-model reasoning offer the provider reported, when it reported
+    // any: the form narrows the levels it offers to what the model accepts,
+    // and leaves every level offered for one it did not describe.
+    ...(result.reasoning ? { reasoning: result.reasoning } : {}),
     ...(result.error ? { error: result.error } : {}),
   });
 }));

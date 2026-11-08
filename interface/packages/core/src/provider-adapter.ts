@@ -9,7 +9,7 @@ import {
   isValidProviderEndpoint,
   sanitizeStoredText,
 } from './security.js';
-import { createSettings, type ModelDiscoveryResult, type ProviderId, type Settings } from './types.js';
+import { createSettings, REASONING_LEVELS, REASONING_TOKEN_BUDGETS, type ModelDiscoveryResult, type ProviderId, type ReasoningLevel, type Settings } from './types.js';
 import { normalizeBaseUrl, providerFor } from './providers.js';
 
 /**
@@ -111,6 +111,68 @@ function extractModels(payload: unknown, provider: ProviderId): string[] {
       return isSafeModelName(cleaned) ? cleaned : '';
     })
     .filter(Boolean);
+}
+
+/**
+ * The reasoning levels one catalogue entry reports it accepts, or `null`
+ * when it reports nothing — which is not the same as reporting it takes
+ * none, and is why this returns nothing rather than `['off']`.
+ *
+ * What a provider puts in a catalogue entry differs enough that this reads
+ * three spellings, in the order they settle the question:
+ *
+ *  - OpenRouter's own metadata. `supported_parameters` is the strongest
+ *    signal: an entry carrying it that does not list `reasoning` is a model
+ *    the router was told cannot take one, and the `reasoning` object beside
+ *    it (present on its reasoning models, sometimes `mandatory`) settles it
+ *    the same way. Both are reports, so absence here means only `off`.
+ *  - A generic capability spelling (`capabilities.thinking`, `supports_thinking`),
+ *    which some compatible endpoints do send.
+ *  - Anything else: nothing was reported, and the caller falls back to
+ *    offering every level. Only OpenAI's plain catalogue shape is in this
+ *    bucket among the major vendors, and it truly says nothing.
+ */
+function reasoningLevelsOfEntry(entry: Record<string, unknown>): ReasoningLevel[] | null {
+  const reported = entry.supported_parameters;
+  if (Array.isArray(reported)) {
+    const params = reported.filter((name): name is string => typeof name === 'string');
+    if (params.includes('reasoning') || entry.reasoning !== undefined) return [...REASONING_LEVELS];
+    return ['off'];
+  }
+  if (entry.reasoning && typeof entry.reasoning === 'object') return [...REASONING_LEVELS];
+  const capabilities = asRecord(entry.capabilities);
+  const thinking = capabilities ? (capabilities.thinking ?? capabilities.reasoning) : undefined;
+  if (thinking === true || thinking === 'supported' || thinking === 'enabled') return [...REASONING_LEVELS];
+  if (thinking === false || thinking === 'unsupported' || thinking === 'disabled') return ['off'];
+  if (entry.supports_thinking === true) return [...REASONING_LEVELS];
+  if (entry.supports_thinking === false) return ['off'];
+  return null;
+}
+
+/**
+ * The per-model reasoning offer out of a catalogue, keyed by the same cleaned
+ * id the model list uses — so a model found here is found by the name the
+ * picker holds.
+ */
+function extractReasoningSupport(payload: unknown, provider: ProviderId): Record<string, ReasoningLevel[]> {
+  const record = asRecord(payload);
+  if (!record) return {};
+  const items = provider === 'gemini'
+    ? (Array.isArray(record.models) ? record.models : [])
+    : (Array.isArray(record.data) ? record.data : []);
+  const support: Record<string, ReasoningLevel[]> = {};
+  for (const item of items.slice(0, MAX_MODEL_COUNT)) {
+    const candidate = asRecord(item);
+    if (!candidate) continue;
+    const value = provider === 'gemini' ? candidate.name : candidate.id;
+    if (typeof value !== 'string') continue;
+    const name = provider === 'gemini' ? value.replace(/^models\//, '') : value;
+    const cleaned = sanitizeStoredText(name, MAX_MODEL_LENGTH);
+    if (!isSafeModelName(cleaned)) continue;
+    const levels = reasoningLevelsOfEntry(candidate);
+    if (levels) support[cleaned] = levels;
+  }
+  return support;
 }
 
 export function isMissingKey(settings: Settings): boolean {
@@ -462,6 +524,36 @@ function completionEndpoint(settings: Settings, model: string, stream: boolean):
   return `${baseUrl}/chat/completions`;
 }
 
+/**
+ * How much thinking the chosen level buys, in the shape that provider wants.
+ *
+ * `off` is nothing at all: no field is sent, so the provider does what it
+ * always did — which is also what makes the field safe to add, since a draft
+ * that never chose a level sends exactly what it sent before.
+ *
+ * Four shapes for four families:
+ *  - Anthropic wants a `thinking` budget in tokens, and refuses a request
+ *    whose `max_tokens` does not exceed it, so the ceiling grows with it.
+ *  - Gemini wants a `thinkingBudget` inside `generationConfig`.
+ *  - OpenAI's chat completions want an effort name, which is the level itself.
+ *  - Everything else is an OpenAI-compatible endpoint, and those take the
+ *    gateway's own compat shape: a `reasoning` object with a token budget.
+ */
+function reasoningFields(settings: Settings): Record<string, unknown> {
+  const budget = REASONING_TOKEN_BUDGETS[settings.reasoningLevel];
+  if (budget === null) return {};
+  if (settings.provider === 'anthropic') {
+    return { thinking: { type: 'enabled', budget_tokens: budget } };
+  }
+  if (settings.provider === 'gemini') {
+    return { generationConfig: { thinkingConfig: { thinkingBudget: budget } } };
+  }
+  if (settings.provider === 'openai') {
+    return { reasoning_effort: settings.reasoningLevel };
+  }
+  return { reasoning: { max_tokens: budget } };
+}
+
 function completionBody(
   settings: Settings,
   prompt: string,
@@ -473,16 +565,21 @@ function completionBody(
   // none, so the empty string here is a shape the caller never sees rather than
   // a model anybody asked for.
   const model = settings.model || providerFor(settings.provider).defaultModel || '';
+  const reasoning = reasoningFields(settings);
 
   if (settings.provider === 'anthropic') {
     const { system, rest } = liftSystem(turns);
+    const budget = REASONING_TOKEN_BUDGETS[settings.reasoningLevel];
     return {
       model,
       body: {
         model,
         ...(system ? { system } : {}),
-        max_tokens: ANTHROPIC_MAX_TOKENS,
+        // Anthropic refuses a thinking budget that is not strictly below
+        // `max_tokens`, so the ceiling has to grow with the level.
+        max_tokens: budget === null ? ANTHROPIC_MAX_TOKENS : Math.max(ANTHROPIC_MAX_TOKENS, budget + 4096),
         messages: [...rest, { role: 'user', content: prompt }],
+        ...reasoning,
         ...(stream ? { stream: true } : {}),
       },
     };
@@ -498,6 +595,7 @@ function completionBody(
           role: turn.role === 'assistant' ? 'model' : 'user',
           parts: [{ text: turn.content }],
         })),
+        ...reasoning,
       },
     };
   }
@@ -508,6 +606,7 @@ function completionBody(
     body: {
       model,
       messages: [...trimLeadingAssistant(turns), { role: 'user', content: prompt }],
+      ...reasoning,
       ...(stream ? { stream: true } : {}),
     },
   };
@@ -833,9 +932,11 @@ export async function discoverProviderModels(
       await cancelResponse(response);
       return offline(`http_${response.status}`);
     }
-    const models = [...new Set(extractModels(await readJson(response, request, CATALOGUE_TIMEOUT_MS), safeSettings.provider))].sort();
+    const payload = await readJson(response, request, CATALOGUE_TIMEOUT_MS);
+    const models = [...new Set(extractModels(payload, safeSettings.provider))].sort();
     if (models.length === 0) return offline('empty_catalog');
-    return { models, source: 'remote' };
+    const reasoning = extractReasoningSupport(payload, safeSettings.provider);
+    return { models, source: 'remote', ...(Object.keys(reasoning).length ? { reasoning } : {}) };
   } catch (error) {
     if (error instanceof ProviderRequestError && error.code === 'aborted') throw error;
     return offline('network_unavailable');

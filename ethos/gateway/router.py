@@ -65,14 +65,24 @@ TERMINAL_BENCH_S = 3600.0
 
 
 def entry_key(entry: ModelEntry) -> str:
-    """The identity a failure is remembered under: provider and model.
+    """The identity a failure is remembered under: provider, model and endpoint.
 
     A string rather than the entry, because the entries are rebuilt every time
     the base model file changes -- a breaker keyed on object identity would
     quietly forget every failure it had recorded each time somebody saved a
     setting from the interface.
+
+    The endpoint is part of the identity because the same provider+model pair
+    can be served from two different addresses with opposite facts about them:
+    a pinned base model naming an NVIDIA model on a local Ollama server
+    (404 on every attempt) shares provider and model with the catalogue entry
+    that serves that same model correctly from NVIDIA. Keyed on
+    provider+model alone, failing the pinned entry excluded the working
+    catalogue entry from the failover ladder too -- the exact shape of the
+    outage where the agent retried a broken pairing while a live model sat
+    one slot behind it, excluded for a reason that was never its own.
     """
-    return f"{entry.provider}:{entry.model}"
+    return f"{entry.provider}:{entry.model}@{entry.base_url or ''}"
 
 
 class CircuitBreaker:

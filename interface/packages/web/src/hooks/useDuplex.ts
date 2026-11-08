@@ -104,10 +104,11 @@ export interface DuplexController extends AgentLinkController {
   saveDoor: (write: AgentDoorWrite) => Promise<AgentChannelSetup>;
   /**
    * Whether a launch opens on the provider and LLM settings rather than
-   * the chat: the shared file has never been written, or that setup did
-   * not leave a usable provider behind. Computed here, next to the
-   * snapshot and the credential it is read alongside, so the app decides
-   * where it stands from the same numbers rather than a second copy.
+   * the chat: the configuration file does not exist yet, or it names no
+   * usable provider. Computed here, next to the snapshot and the
+   * credential it is read alongside, so the app decides from the same
+   * numbers rather than a second copy. Before the bridge answers there is
+   * no persisted flag at all, which reads as a first launch.
    */
   shouldShowProviderSetup: boolean;
 }
@@ -440,10 +441,7 @@ export function useDuplex(): DuplexController {
     surface,
     bridgeStatus,
     shouldShowProviderSetup: shouldShowProviderSetupOnLaunch({
-      revision: remote?.revision ?? 0,
-      updatedAt: remote?.updatedAt ?? 0,
-      settings: snapshot.settings,
-      keyOnFile: remote?.credential.present ?? false,
+      firstLaunch: remote !== null ? !remote.persisted : true,
     }),
     configFile: remote?.configFile ?? '',
     credential: remote?.credential ?? { present: false, source: 'none', hint: '' },

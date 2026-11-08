@@ -10,6 +10,7 @@ import {
   LANGUAGES,
   MAX_PERSON_LENGTH,
   PROVIDER_DEFAULTS,
+  REASONING_LEVELS,
   type ProviderId,
   type Settings,
   type Theme,
@@ -29,7 +30,7 @@ type ValueField = Exclude<ConfigField, 'apiKey'>;
 
 const STRING_FIELDS = new Set<ConfigField>([
   'interface', 'agentUrl', 'agentPerson',
-  'provider', 'model', 'baseUrl', 'language', 'theme', 'accent',
+  'provider', 'model', 'baseUrl', 'reasoningLevel', 'language', 'theme', 'accent',
 ]);
 
 export function isValueField(field: ConfigField): field is ValueField {
@@ -77,6 +78,10 @@ function applyValue(settings: Settings, field: ConfigField, value: string): Sett
     case 'baseUrl':
       if (!isValidProviderEndpoint(value, settings.provider)) throw new CliError('invalid_value', { field });
       return { ...settings, baseUrl: value };
+    case 'reasoningLevel': {
+      if (!REASONING_LEVELS.includes(value as Settings['reasoningLevel'])) throw new CliError('invalid_value', { field });
+      return { ...settings, reasoningLevel: value as Settings['reasoningLevel'] };
+    }
     case 'language':
       if (!LANGUAGES.includes(value as Settings['language'])) throw new CliError('invalid_value', { field });
       return { ...settings, language: value as Settings['language'] };
@@ -109,6 +114,8 @@ function clearValue(settings: Settings, field: ConfigField): Settings {
       return { ...settings, model: providerDefault('model', settings.provider) };
     case 'baseUrl':
       return { ...settings, baseUrl: providerDefault('baseUrl', settings.provider) };
+    case 'reasoningLevel':
+      return { ...settings, reasoningLevel: DEFAULT_SETTINGS.reasoningLevel };
     case 'language':
       return { ...settings, language: DEFAULT_SETTINGS.language };
     case 'theme':

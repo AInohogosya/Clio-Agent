@@ -11,7 +11,7 @@ from uuid import uuid4
 import httpx
 
 from ethos import PRODUCT_NAME, __version__
-from ethos.config import EthosConfig, base_model_path, load_base_model
+from ethos.config import REASONING_LEVEL_BUDGETS, EthosConfig, base_model_path, load_base_model
 from ethos.db import Database
 from ethos.engine.stops import disposition_from_exception
 from ethos.gateway.client import backoff_delay
@@ -167,8 +167,8 @@ def failure_scope(exc: BaseException) -> str:
 
     `UnusableResponse` knows its own answer (`request_scoped`, set at the raise
     site where the reason is known). `ProviderError` knows it from the status
-    (401 and 403 are about the credential, and 410 about a retired model, not
-    the call). Everything else is a provider's mood: a 429, a timeout, a 5xx, a
+    (401 and 403 are about the credential, 404 and 410 about a model this
+    endpoint does not serve, not the call). Everything else is a provider's mood: a 429, a timeout, a 5xx, a
     connection error, and time is the only thing that has ever fixed any of them.
     """
     if isinstance(exc, UnusableResponse):
@@ -198,6 +198,8 @@ def _credential_diagnosis(exc: ProviderError) -> str:
         return f"no access to this model with this credential ({detail})"
     if exc.status == 410:
         return f"the model has been retired by the provider ({detail})"
+    if exc.status == 404:
+        return f"model not found on this endpoint ({detail})"
     if exc.status == 429:
         return f"rate limited or out of quota ({detail})"
     if exc.status >= 500:
@@ -267,8 +269,26 @@ class GatewayService:
             return
         self._base_stamp = stamp
         base = load_base_model(self.config.paths.home)
+        if base is None:
+            # The same fallback `load_config` applies at start-up: a home file
+            # that was deleted or no longer parses hands back to the shipped
+            # `config/base_model.yaml`, it does not leave the agent with no
+            # base model at all. Without this, deleting the override at
+            # runtime silently dropped the deployment's configured model
+            # while a restart would have restored it.
+            from ethos.config import config_dir, load_shipped_base_model
+
+            base = load_shipped_base_model(config_dir())
         if base == self._base:
             return
+        logger.warning(
+            "gateway.base_model_changed",
+            old_model=self._base.model if self._base else None,
+            old_base_url=self._base.base_url if self._base else None,
+            new_model=base.model if base else None,
+            new_base_url=base.base_url if base else None,
+            new_provider=base.provider if base else None,
+        )
         self._base = base
         self.config.models.base = base
         self.config.models.models = (
@@ -278,7 +298,7 @@ class GatewayService:
 
     async def probe_local_endpoints(self, timeout_s: float = 2.0) -> None:
         """
-        Asks each keyless loopback catalogue entry whether its endpoint exists.
+        Asks each keyless loopback entry whether its endpoint exists.
 
         A catalogue entry with no credential and a loopback base_url always reads
         as "available" — `available()` cannot tell an unauthenticated endpoint
@@ -304,34 +324,42 @@ class GatewayService:
         import ipaddress
         from urllib.parse import urlsplit
 
-        answers: dict[str, str | None] = {}
-        excluded: list[str] = []
-        for entry in list(self._catalogue):
-            if entry.pinned or entry.provider != "openai_compat":
-                continue
-            base_url = entry.base_url or ""
-            if not base_url:
-                continue
+        def _is_local(base_url: str) -> bool:
             host = urlsplit(base_url).hostname or ""
             lowered = host.rstrip(".").lower()
             try:
-                is_local = (
+                return (
                     lowered in ("localhost",) or lowered.endswith(".localhost")
                     or ipaddress.ip_address(host).is_loopback
                 )
             except ValueError:
-                continue
-            if not is_local or entry.api_key_env or self._api_key_for(entry):
-                continue
+                return False
+
+        # base_url -> problem or None
+        answers: dict[str, str | None] = {}
+
+        async def _probe(base_url: str) -> str | None:
             if base_url not in answers:
                 try:
                     probe = await self.http.get(f"{base_url}/models", timeout=timeout_s)
                     answers[base_url] = None if probe.status_code == 200 else f"HTTP {probe.status_code}"
                 except Exception as exc:
                     answers[base_url] = exc_brief(exc)
-            if answers[base_url] is None:
+            return answers[base_url]
+
+        excluded: list[str] = []
+        for entry in list(self._catalogue):
+            if entry.pinned or entry.provider != "openai_compat":
                 continue
-            excluded.append(f"{entry.model} @ {base_url} ({answers[base_url]})")
+            base_url = entry.base_url or ""
+            if not base_url or not _is_local(base_url):
+                continue
+            if entry.api_key_env or self._api_key_for(entry):
+                continue
+            problem = await _probe(base_url)
+            if problem is None:
+                continue
+            excluded.append(f"{entry.model} @ {base_url} ({problem})")
             self._catalogue.remove(entry)
             if entry in self.config.models.models:
                 self.config.models.models.remove(entry)
@@ -341,6 +369,33 @@ class GatewayService:
                 excluded=excluded,
                 action="removed from the live catalogue until restart; the shipped config is unchanged",
             )
+        # The pinned base model is probed the same way but never removed: a
+        # pin is a decision somebody made on purpose. It is benched instead
+        # (the modelled failure below carries scope "model", so the router
+        # records a terminal bench), which takes it out of selection for the
+        # bench window while leaving it visible in the configuration and in
+        # `model_status`. Skipping it entirely -- as this probe used to --
+        # left a keyless loopback pin that the endpoint could not serve
+        # (an NVIDIA model name on a local Ollama server, say) asked first
+        # for every request, answering 404 forever.
+        base = self._base
+        if base is not None and base.provider == "openai_compat":
+            base_url = base.base_url or ""
+            if base_url and _is_local(base_url) and not self._api_key_for(base.entry()):
+                problem = await _probe(base_url)
+                if problem is not None:
+                    pinned_entry = base.entry()
+                    self.router.record_failure(
+                        pinned_entry,
+                        ProviderError("probe", 404, problem, retryable=False),
+                    )
+                    logger.warning(
+                        "gateway.base_model_endpoint_unavailable",
+                        model=base.model,
+                        base_url=base_url,
+                        problem=problem,
+                        action="benched until restart or a successful call; catalogue failover serves in the meantime",
+                    )
 
     def _api_key_for(self, entry: Any) -> str:
         """
@@ -813,7 +868,14 @@ class GatewayService:
         says about that credential.
         """
         self.sync_base_model()
-        base_key = entry_key(self._base.entry()) if self._base is not None else None
+        # Identity for "is this the base model" is provider+model, not the
+        # endpoint-bearing `entry_key`: the catalogue can carry the same
+        # provider+model on a different address, and that row is still the
+        # model the deployment is pinned to.
+        base_key = (
+            f"{self._base.provider}:{self._base.model}"
+            if self._base is not None else None
+        )
         results: list[dict[str, Any]] = []
         seen: set[str] = set()
         for entry in self.config.models.models:
@@ -828,7 +890,10 @@ class GatewayService:
             # and the only thing that knows it is the service. A health check
             # that had to reach in for it would be reaching into a private field
             # to decide whether an installation is broken.
-            report["is_base"] = key == base_key
+            report["is_base"] = (
+                bool(getattr(entry, "pinned", False))
+                or f"{entry.provider}:{entry.model}" == base_key
+            )
             results.append(report)
         return results
 
@@ -915,6 +980,15 @@ class GatewayService:
         if request.tier == Tier.T0:
             raise ValueError("T0 (reflex) cognition must not call the model gateway")
         self.sync_base_model()
+        # The base model's reasoning level is the default budget for a request
+        # that did not name one — never an override. The solver and the
+        # deliberation name a budget of their own, tuned for their own call,
+        # and replacing it here would spend answers the ceiling was sized for.
+        # `off` sends nothing, exactly as before this field existed.
+        if request.reasoning_budget is None and self._base is not None:
+            default_budget = REASONING_LEVEL_BUDGETS.get(self._base.reasoning_level)
+            if default_budget is not None:
+                request = request.model_copy(update={"reasoning_budget": default_budget})
         if not self.config.models.models:
             exhaustive.log_model_failure(
                 request, request_id=uuid4().hex, requested_at=datetime.now(UTC),

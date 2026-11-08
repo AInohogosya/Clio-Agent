@@ -1,5 +1,5 @@
 import { isSafeTimestamp, MAX_TIMESTAMP, sanitizeStoredText } from '../security.js';
-import type { ChatMessage } from '../types.js';
+import { REASONING_LEVELS, type ChatMessage, type ReasoningLevel } from '../types.js';
 
 /**
  * The vocabulary of an agent link.
@@ -210,6 +210,14 @@ export interface AgentBaseModel {
   protocol: string;
   model: string;
   baseUrl: string;
+  /**
+   * How hard the base model may think, `off` when it names none.
+   *
+   * A default the gateway applies to a request only when the request did not
+   * name its own reasoning budget: a caller that tuned one keeps it, and this
+   * decides what the ones that did not ask for get.
+   */
+  reasoningLevel: ReasoningLevel;
   keyPresent: boolean;
   keyHint: string;
   /** The environment variable the file points at, when it points at one. */
@@ -231,6 +239,11 @@ export interface AgentBaseModelInput {
   provider: string;
   model: string;
   baseUrl: string;
+  /**
+   * How hard the model may think. Omitted means "leave the one on file as it
+   * is", the same way an empty `apiKey` keeps the stored one.
+   */
+  reasoningLevel?: ReasoningLevel;
   apiKey?: string;
   clearKey?: boolean;
   useEnv?: boolean;
@@ -291,6 +304,7 @@ export const BASE_MODEL_REFUSALS = [
   'unknown_provider',
   'invalid_model',
   'invalid_endpoint',
+  'invalid_reasoning_level',
   'key_required',
   'env_key_missing',
   'home_unwritable',
@@ -302,6 +316,35 @@ export function isBaseModelRefusal(value: unknown): value is BaseModelRefusal {
   return typeof value === 'string' && (BASE_MODEL_REFUSALS as readonly string[]).includes(value);
 }
 
+/** A reasoning level as a service reported it, or `off` when it reported none. */
+export function readReasoningLevel(value: unknown): ReasoningLevel {
+  return typeof value === 'string' && (REASONING_LEVELS as readonly string[]).includes(value)
+    ? (value as ReasoningLevel)
+    : 'off';
+}
+
+/**
+ * The per-model reasoning offer out of a discovery answer, or `null` when
+ * there is no map to read.
+ *
+ * Total, like every reader here: a map that is not an object, entries that
+ * are not arrays, levels that are not levels — all dropped, and a model left
+ * with nothing is left absent, which is "the provider did not describe it"
+ * rather than "it described it as accepting nothing".
+ */
+export function readReasoningSupport(value: unknown): Record<string, ReasoningLevel[]> | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const support: Record<string, ReasoningLevel[]> = {};
+  for (const [model, levels] of Object.entries(value as Record<string, unknown>)) {
+    if (!Array.isArray(levels)) continue;
+    const known = levels.filter((level): level is ReasoningLevel => (
+      typeof level === 'string' && (REASONING_LEVELS as readonly string[]).includes(level)
+    ));
+    if (known.length) support[text(model, LIMITS.model)] = known;
+  }
+  return Object.keys(support).length ? support : null;
+}
+
 export function emptyAgentBaseModel(): AgentBaseModel {
   return {
     configured: false,
@@ -309,6 +352,7 @@ export function emptyAgentBaseModel(): AgentBaseModel {
     protocol: '',
     model: '',
     baseUrl: '',
+    reasoningLevel: 'off',
     keyPresent: false,
     keyHint: '',
     keyEnv: '',
@@ -324,6 +368,7 @@ export function readAgentBaseModel(value: unknown): AgentBaseModel {
     protocol: text(source.protocol, LIMITS.code),
     model: text(source.model, LIMITS.model),
     baseUrl: text(source.base_url, LIMITS.endpoint),
+    reasoningLevel: readReasoningLevel(source.reasoning_level),
     keyPresent: bool(source.key_present),
     keyHint: text(source.key_hint, 32),
     keyEnv: text(source.key_env, LIMITS.code),
@@ -514,13 +559,17 @@ export type AgentEvent =
   | { type: 'agent'; kind: string; payload: Record<string, unknown> }
   | { type: 'error'; message: string };
 
-/** What the agent refuses, and why — the reasons a surface has to be able to say. */
+/** What the agent refuses, and why — the reasons a surface can be shown, except
+ * `agent_declined`, which ends a turn in silence and is shown as nothing. */
 export type AgentFailureCode =
   | 'agent_offline'
   | 'agent_unreachable'
   | 'agent_invalid_endpoint'
   | 'agent_not_running'
   | 'agent_stopped'
+  // The agent finished this turn in silence. It is a code for the turn
+  // lifecycle only, never a sentence on screen: no reply in one turn is not
+  // a decision not to reply, and a reply may still land later.
   | 'agent_declined'
   // The agent heard the question and never got to an answer: a model that
   // failed, ran out of room, or answered in prose. Kept apart from

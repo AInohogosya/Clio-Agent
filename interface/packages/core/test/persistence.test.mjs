@@ -50,7 +50,7 @@ test('settings read from anything but this code are the one valid shape', () => 
   assert.equal('simulation' in settings, false);
   assert.deepEqual(Object.keys(settings).sort(), [
     'accent', 'agentPerson', 'agentUrl', 'apiKey', 'baseUrl', 'interface',
-    'language', 'model', 'provider', 'theme',
+    'language', 'model', 'provider', 'reasoningLevel', 'theme',
   ]);
 });
 

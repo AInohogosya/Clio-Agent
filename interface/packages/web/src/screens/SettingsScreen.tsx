@@ -10,11 +10,13 @@ import {
   createTranslator,
    credentialsForProvider,
    discoveryProblem,
+   effectiveReasoningLevel,
    filterModels,
    filterProviders,
    isProviderId,
   languageLabel,
   identityFailureKey,
+  levelsForModel,
   MAX_AGENT_NAME_LENGTH,
   MAX_API_KEY_LENGTH,
   MAX_CREDENTIAL_LENGTH,
@@ -41,6 +43,7 @@ import {
   type Language,
   type ModelDiscoveryResult,
   type ProviderId,
+  type ReasoningLevel,
   type SavedApiKey,
   type Settings,
 } from '@project-phone/core';
@@ -94,6 +97,7 @@ interface SettingsScreenProps {
     provider: string;
     model: string;
     baseUrl: string;
+    reasoningLevel?: ReasoningLevel;
     apiKey?: string;
     clearKey?: boolean;
     useEnv?: boolean;
@@ -870,6 +874,14 @@ export function SettingsScreen({
     settings.interface === 'agent' ? { ...settings, apiKey: '' } : { ...settings }
   ));
   const [models, setModels] = useState<string[]>(() => (settings.model ? [settings.model] : []));
+  /**
+   * The reasoning levels each model in the last catalogue reported it
+   * accepts, by id — `undefined` until a run answers, and reset whenever the
+   * provider changes. A model absent from it is one the provider did not
+   * describe, and gets the full set: the offer is only ever narrowed by a
+   * report, never by silence.
+   */
+  const [reasoningSupport, setReasoningSupport] = useState<Record<string, ReasoningLevel[]> | undefined>(undefined);
   const [source, setSource] = useState<'remote' | 'offline'>('offline');
   const [discovering, setDiscovering] = useState(false);
   const [modelQuery, setModelQuery] = useState('');
@@ -1088,6 +1100,10 @@ export function SettingsScreen({
             // Only OpenAI has a default model; an agent on another provider
             // reports what it uses or the field stays empty.
             model: found.model || PROVIDER_DEFINITIONS[provider].defaultModel || '',
+            // The agent's own level, like its provider and model: in agent mode
+            // the shared file's copy is what this form keeps, and the agent's
+            // file is what is real.
+            reasoningLevel: found.reasoningLevel ?? 'off',
             // Deliberately left empty: the key is on the agent's side and this
             // page has never held it. `fileEnv` is what says so underneath, when
             // the agent reads one out of the environment rather than from a file.
@@ -1217,6 +1233,11 @@ export function SettingsScreen({
       if (serial !== requestSerial.current) return;
       setModels(result.models);
       setSource(result.source);
+      // The offer is read from the answer itself, so it is only replaced when
+      // the provider answered one to read it from. An offline fallback holds
+      // guesses and no metadata, and carrying the previous vendor's report
+      // into it would narrow the levels on evidence nobody gave.
+      if (result.source === 'remote') setReasoningSupport(result.reasoning);
       setDraft((current) => {
         // A catalogue that came from a failed probe is a list of guesses, and a
         // guess must not overwrite a model somebody already chose. Only a real
@@ -1296,6 +1317,9 @@ export function SettingsScreen({
     const definition = PROVIDER_DEFINITIONS[provider];
     setModels(definition.defaultModel ? [definition.defaultModel] : []);
     setSource('offline');
+    // A report about the previous vendor's models says nothing about this
+    // one's, and narrowing the levels on it would be evidence nobody gave.
+    setReasoningSupport(undefined);
     setModelQuery('');
     setEnvProvider(null);
     patchBase({ provider, ...credentialsForProvider(provider) });
@@ -1328,6 +1352,20 @@ export function SettingsScreen({
   ), [agentMode, base, baseTouched, draft, envActive]);
   const canSave = problem === null;
 
+  /**
+   * What the reasoning control may offer for the chosen model, and what it
+   * effectively holds.
+   *
+   * Reported levels narrow the offer; the absence of a report leaves all four
+   * standing, which is the default this screen falls back to for providers
+   * that say nothing. The level the draft holds is effective only when
+   * offered — anything else is `off` rather than a level sent to a model
+   * that may refuse it.
+   */
+  const availableLevels = levelsForModel(reasoningSupport, draft.model);
+  const effectiveLevel = effectiveReasoningLevel(reasoningSupport, draft.model, draft.reasoningLevel);
+  const levelReported = reasoningSupport?.[draft.model] !== undefined;
+
   const writeBaseModel = useCallback(async () => {
     if (!agentMode || !saveBaseModel) return null;
     // Only a base-model edit is a base-model write. A save that changed the
@@ -1348,6 +1386,10 @@ export function SettingsScreen({
       provider: draft.provider,
       model: draft.model,
       baseUrl: draft.baseUrl,
+      // The level is a base-model field like the three above it, so it is
+      // written with them and only when the person touched the base model —
+      // narrowed to what the chosen model accepts, like everything saved here.
+      reasoningLevel: effectiveLevel,
       ...(draft.apiKey.trim() ? { apiKey: draft.apiKey.trim() } : {}),
       // Only when the field is empty: a key that was typed is the one to use, and
       // a draft carrying both is a person who changed their mind twice.
@@ -1535,7 +1577,7 @@ export function SettingsScreen({
     // agent file still said OpenRouter — and the next open re-seeds the draft
     // from the agent file, reading as a mysterious revert.
     if (!agentMode || (!saveBaseModel && !saveIdentity)) {
-      onUpdate(commitDraftSettings(draft));
+      onUpdate(commitDraftSettings({ ...draft, reasoningLevel: effectiveLevel }));
       setDirty(false);
       setNotice(t('cliSavedShared'));
       return;
@@ -1576,7 +1618,7 @@ export function SettingsScreen({
       setBaseSaving(false);
       return;
     }
-    onUpdate(commitDraftSettings(draft));
+    onUpdate(commitDraftSettings({ ...draft, reasoningLevel: effectiveLevel }));
     setDirty(false);
 
     if (failed) {
@@ -1598,7 +1640,7 @@ export function SettingsScreen({
     // and reads as "NVIDIA reverted to OpenRouter". Base-model edits are only
     // persisted by Save (which writes the agent file first); closing with one
     // pending simply discards the draft, and non-base edits still autosave.
-    if (canSave && dirty && !(agentMode && baseTouched)) onUpdate(commitDraftSettings(draft));
+    if (canSave && dirty && !(agentMode && baseTouched)) onUpdate(commitDraftSettings({ ...draft, reasoningLevel: effectiveLevel }));
     onClose();
   };
 
@@ -1770,6 +1812,35 @@ export function SettingsScreen({
             onQuery={setModelQuery}
             source={source}
           />
+
+          <section>
+            <SectionLabel icon="spark">{t('reasoningLevel')}</SectionLabel>
+            <div className="grid grid-cols-4 gap-2">
+              {availableLevels.map((level) => (
+                <button
+                  aria-pressed={effectiveLevel === level}
+                  className={classNames(
+                    'rounded-lg border px-2 py-2 text-xs font-medium transition',
+                    effectiveLevel === level
+                      ? 'accent-border bg-[var(--accent-soft)] accent-text'
+                      : 'border-[var(--line)] text-[var(--ink-muted)] hover:border-[var(--line-strong)]',
+                  )}
+                  key={level}
+                  // `patchBase` rather than `patch`: in agent mode the level
+                  // belongs to the base model, so choosing one is what makes
+                  // the base-model write happen on Save.
+                  onClick={() => patchBase({ reasoningLevel: level })}
+                  type="button"
+                >
+                  {t(level === 'off' ? 'reasoningOff' : level === 'low' ? 'reasoningLow' : level === 'medium' ? 'reasoningMedium' : 'reasoningHigh')}
+                </button>
+              ))}
+            </div>
+            <p className="mt-2 text-[0.68rem] leading-5 text-[var(--ink-faint)]">
+              {t('reasoningLevelHint')}
+              {levelReported ? ` ${t('reasoningLevelReported')}` : ''}
+            </p>
+          </section>
 
           {/*
             The doors, and the only section on this page that writes a credential

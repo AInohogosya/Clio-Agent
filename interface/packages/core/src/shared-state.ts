@@ -112,6 +112,7 @@ export function publicSettingsEqual(left: Settings, right: Settings): boolean {
     && a.provider === b.provider
     && a.baseUrl === b.baseUrl
     && a.model === b.model
+    && a.reasoningLevel === b.reasoningLevel
     && a.language === b.language
     && a.theme === b.theme
     && a.accent === b.accent;
@@ -119,21 +120,6 @@ export function publicSettingsEqual(left: Settings, right: Settings): boolean {
 
 export function nextRevision(state: Pick<SharedState, 'revision'>): number {
   return state.revision >= MAX_REVISION ? MAX_REVISION : state.revision + 1;
-}
-
-/**
- * Whether this is a first launch: nothing has ever been written to the store.
- *
- * The empty state a surface builds before the shared file arrives is
- * revision 0 and updatedAt 0, and a real save is the only thing that moves
- * either — so the pair is the whole signal. A surface reads only the file
- * it has never written, and when that answer is this one the provider and
- * model screens come up before the chat. Once a save lands it never
- * comes up on this signal again; an unconfigured provider is a separate
- * signal that the launch logic checks alongside this one.
- */
-export function isFirstRun(state: Pick<SharedState, 'revision' | 'updatedAt'>): boolean {
-  return state.revision === 0 && state.updatedAt === 0;
 }
 
 export function normalizeCredential(value: unknown): CredentialStatus {
@@ -276,7 +262,7 @@ export function diffSettings(next: Settings, current: Settings): SettingsDelta {
   const fields: Array<keyof Settings> = [];
   const keys: Array<keyof Settings> = [
     'interface', 'agentUrl', 'agentPerson',
-    'provider', 'apiKey', 'baseUrl', 'model', 'language', 'theme', 'accent',
+    'provider', 'apiKey', 'baseUrl', 'model', 'reasoningLevel', 'language', 'theme', 'accent',
   ];
   for (const key of keys) {
     if (next[key] !== current[key]) fields.push(key);

@@ -249,6 +249,34 @@ export const PROVIDER_DEFAULTS: Record<ProviderId, { baseUrl: string; model?: st
 export const LANGUAGES = ['en', 'ja', 'zh'] as const;
 export type Language = (typeof LANGUAGES)[number];
 
+/**
+ * How hard the model may think before it answers.
+ *
+ * `off` is the absence of a setting rather than a level: it sends nothing and
+ * takes what the provider does by default, which is the behaviour this kit has
+ * always had, so it is also the default. The other three are real budgets —
+ * `low`, `medium` and `high` differ in how many tokens of thinking they allow,
+ * and how they reach the provider depends on the provider's own shape (see
+ * `provider-adapter.ts`).
+ */
+export const REASONING_LEVELS = ['off', 'low', 'medium', 'high'] as const;
+export type ReasoningLevel = (typeof REASONING_LEVELS)[number];
+
+/**
+ * The thinking budget each level allows, in tokens, or `null` for `off`.
+ *
+ * Sized to the thresholds the gateway already uses to name an effort
+ * (`_effort_for_budget` in `ethos/gateway/normalizer.py`: under 4k is low,
+ * under 16k is medium, above that high), so the same level reads the same way
+ * on both sides of the link.
+ */
+export const REASONING_TOKEN_BUDGETS: Record<ReasoningLevel, number | null> = Object.freeze({
+  off: null,
+  low: 2048,
+  medium: 8192,
+  high: 32768,
+});
+
 export const THEMES = ['dark', 'light'] as const;
 export type Theme = (typeof THEMES)[number];
 
@@ -288,6 +316,12 @@ export interface Settings {
   apiKey: string;
   baseUrl: string;
   model: string;
+  /**
+   * How hard the model may think. In `direct` mode this kit sends it with every
+   * request; in `agent` mode it is a copy of the base model's own level, and
+   * the agent's file is the real one.
+   */
+  reasoningLevel: ReasoningLevel;
   language: Language;
   theme: Theme;
   accent: string;
@@ -380,6 +414,17 @@ export interface ModelDiscoveryResult {
   source: 'remote' | 'offline';
   error?: string;
   keySource?: 'typed' | 'stored' | 'environment' | 'none' | string;
+  /**
+   * The reasoning levels each model reported it accepts, by model id.
+   *
+   * Present only on a `remote` result, and only for the models the provider
+   * said something about: a model absent from this map is one the provider
+   * did not describe, which is a different answer from a model described as
+   * accepting nothing. A map of `['off']` *is* a report — the model reasons
+   * not at all, and offering it Low/Medium/High would send parameters its
+   * endpoint refuses.
+   */
+  reasoning?: Record<string, ReasoningLevel[]>;
 }
 
 export interface ClientSnapshot {
@@ -412,6 +457,7 @@ export const DEFAULT_SETTINGS: Settings = {
   apiKey: '',
   baseUrl: PROVIDER_DEFAULTS.openai.baseUrl,
   model: PROVIDER_DEFAULTS.openai.model ?? '',
+  reasoningLevel: 'off',
   language: 'en',
   theme: 'dark',
   accent: DEFAULT_ACCENT,
@@ -433,6 +479,7 @@ export function createSettings(overrides: Partial<Settings> = {}): Settings {
   const apiKeyValue = ownValue(source, 'apiKey');
   const baseUrlValue = ownValue(source, 'baseUrl');
   const modelValue = ownValue(source, 'model');
+  const reasoningLevelValue = ownValue(source, 'reasoningLevel');
   const surface = INTERFACES.includes(interfaceValue as InterfaceId)
     ? interfaceValue as InterfaceId
     : DEFAULT_SETTINGS.interface;
@@ -462,6 +509,9 @@ export function createSettings(overrides: Partial<Settings> = {}): Settings {
   const model = isSafeModelName(modelValue) && modelValue.trim()
     ? modelValue.trim()
     : providerDefaults.model ?? '';
+  const reasoningLevel = REASONING_LEVELS.includes(reasoningLevelValue as ReasoningLevel)
+    ? reasoningLevelValue as ReasoningLevel
+    : DEFAULT_SETTINGS.reasoningLevel;
   return {
     interface: surface,
     agentUrl,
@@ -470,6 +520,7 @@ export function createSettings(overrides: Partial<Settings> = {}): Settings {
     apiKey,
     baseUrl,
     model,
+    reasoningLevel,
     language,
     theme,
     accent,

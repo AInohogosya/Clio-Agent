@@ -33,6 +33,7 @@ import {
   readEnvApiKeys,
   readIdentityReply,
   readPresence,
+  readReasoningSupport,
   readThought,
   type AgentBaseModel,
   type AgentBaseModelInput,
@@ -628,6 +629,9 @@ export class AgentClient {
       model: input.model.trim(),
       base_url: input.baseUrl.trim(),
     };
+    // Sent only when mentioned: omitted leaves the level on file as it is, and
+    // `off` is a real answer rather than an omission, so it is sent too.
+    if (input.reasoningLevel !== undefined) body.reasoning_level = input.reasoningLevel;
     if (input.apiKey?.trim()) body.api_key = input.apiKey.trim();
     if (input.clearKey) body.clear_key = true;
     // A typed key wins over the variable: somebody who has just pasted one is
@@ -777,15 +781,22 @@ export class AgentClient {
         source?: unknown;
         error?: unknown;
         key_source?: unknown;
+        reasoning?: unknown;
       };
       const models = Array.isArray(payload.models)
         ? payload.models.filter((entry): entry is string => typeof entry === 'string')
         : [];
+      // The per-model reasoning offer, read defensively like every other field
+      // on this link: a map of arrays of levels, filtered to the ones this kit
+      // knows. A model missing from it is one the provider did not describe,
+      // and the screen offers it the full set.
+      const reasoning = readReasoningSupport(payload.reasoning);
       return {
         models,
         source: payload.source === 'remote' ? 'remote' : 'offline',
         ...(typeof payload.error === 'string' ? { error: payload.error } : {}),
         ...(typeof payload.key_source === 'string' ? { keySource: payload.key_source } : {}),
+        ...(reasoning ? { reasoning } : {}),
       };
     } catch {
       // The service, not the provider: this is the one place where the fetch that
@@ -990,6 +1001,10 @@ export class AgentClient {
    * somebody the agent had chosen not to reply to every message it was sent,
    * when the truth was that it had not managed to think — and the two call for
    * opposite things, since one is worth sending again.
+   *
+   * The chosen kind ends the wait with `agent_declined`, and a surface shows
+   * nothing for it: finishing this turn in silence is not a decision never to
+   * reply, and a reply may still land later.
    */
   private settleDeclined(payload: Record<string, unknown>): void {
     const declined = typeof payload.message_id === 'string' ? payload.message_id : '';

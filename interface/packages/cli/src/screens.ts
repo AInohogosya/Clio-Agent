@@ -235,6 +235,7 @@ const FIELD_PAINTERS: Record<ConfigField, (value: string, state: SharedState, pa
   provider: (value, _state, palette) => palette.inkText(value),
   model: (value, _state, palette) => palette.inkText(value),
   baseUrl: (value, _state, palette) => palette.muted(value),
+  reasoningLevel: (value, _state, palette) => palette.muted(value),
   apiKey: (value, _state, palette) => (value
     ? `${palette.good('set')} ${palette.faint(value)}`
     : palette.warn('unset')),

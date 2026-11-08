@@ -116,16 +116,17 @@ class ProviderError(RuntimeError):
 
         * `model` -- the *credential or the endpoint instance* is at fault, and
           the request is not. A dead key, a revoked token, a quota spent for the
-          month. Asking the same request again returns the same status, and
-          sending it to the same endpoint returns the same status, so the only
-          thing that helps is a different candidate model. This is what 401 and
-          403 mean, and neither was being read this way: both are 4xx, both were
-          classified "not worth retrying", and the retry loop raised straight
-          through. A single-key deployment then returned that 401 to every
-          request at that tier for as long as the key stayed dead -- which is
-          correct -- while a deployment with a second candidate that would have
-          answered never tried it, because the exception left the loop before
-          `_next_entry` was ever reached.
+          month, a model this endpoint does not serve. Asking the same request
+          again returns the same status, and sending it to the same endpoint
+          returns the same status, so the only thing that helps is a different
+          candidate model. This is what 401, 403, 404 and 410 mean, and none
+          was being read this way: all are 4xx, all were classified "not worth
+          retrying", and the retry loop raised straight through. A single-key
+          deployment then returned that status to every request at that tier
+          for as long as it stayed dead -- which is correct -- while a
+          deployment with a second candidate that would have answered never
+          tried it, because the exception left the loop before `_next_entry`
+          was ever reached.
         * `request` -- the request is at fault: an oversized body, an unsupported
           parameter, a prompt the endpoint will not take. Different wording
           fixes it; the same words do not.
@@ -172,10 +173,18 @@ class ProviderError(RuntimeError):
 # plan the agent tried to make, for as long as the config named it, while the
 # catalogue full of live models went unasked.
 #
-# 404 is deliberately not here. It usually means the model name is wrong rather
-# than that the credential is, and a deployment with one base model misconfigured
-# should be told its model does not exist rather than quietly routed around it.
-_MODEL_SCOPED_STATUSES = frozenset({401, 403, 410})
+# 404 is here for the same reason 410 is: "model 'x' not found" on *this*
+# endpoint says nothing about the request and everything about the
+# model/endpoint pairing -- a model name carried over from another provider
+# (an NVIDIA name pointed at a local Ollama server, say) answers 404 on
+# every attempt here and may answer fine on the endpoint that serves it.
+# Left as provider-scoped, a pinned base model with a wrong pairing raised
+# straight through the retry loop (`not retryable and scope != model`), the
+# planner classified it as an unusable *request*, and the goal backed off
+# and re-asked the identical broken pairing every few minutes indefinitely:
+# the agent did nothing, forever, while a catalogue full of live models
+# went unasked. Model-scoped, the ladder moves to the next candidate.
+_MODEL_SCOPED_STATUSES = frozenset({401, 403, 404, 410})
 
 # The 429 bodies that mean the money is gone rather than the provider being
 # busy. Every phrase here is one a real endpoint actually sent: Ollama Cloud's

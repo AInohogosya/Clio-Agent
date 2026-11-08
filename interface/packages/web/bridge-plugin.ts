@@ -23,6 +23,7 @@ import {
 } from '@project-phone/core';
 import {
   configPath,
+  configFileExists,
   constantTimeEquals,
   emptyConfig,
   environmentApiKey,
@@ -254,6 +255,11 @@ function publicSnapshot(state: SharedState): unknown {
     messages: state.messages,
     configFile: boundedConfigPath(),
     credentialSource: hasEnvironmentApiKey() ? 'environment' : state.credential.present ? 'file' : 'none',
+    // Whether the configuration file exists at all, which is the bridge's
+    // half of the first-launch rule: a fresh install has not written it
+    // yet, and the page that cannot see the filesystem cannot know so
+    // unless it is told.
+    persisted: configFileExists(),
   };
 }
 

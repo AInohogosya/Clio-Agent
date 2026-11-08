@@ -456,6 +456,49 @@ test('a Gemini catalogue is read from its own shape', async () => {
   assert.deepEqual(result.models, ['gemini-1.5-pro', 'gemini-2.0-flash']);
 });
 
+test('a catalogue that reports reasoning support narrows the levels per model', async () => {
+  // OpenRouter's shape: `reasoning` present on the models that think, and
+  // `supported_parameters` on every entry. A reasoning model's entry lists
+  // `reasoning`; one that does not is a model that takes no thinking
+  // parameter at all, and offering it Low/Medium/High would send parameters
+  // its endpoint refuses.
+  const { fetcher } = recorder(() => jsonResponse({
+    data: [
+      {
+        id: 'openai/o3',
+        reasoning: { mandatory: true },
+        supported_parameters: ['max_tokens', 'reasoning'],
+      },
+      {
+        id: 'deepseek/deepseek-chat',
+        supported_parameters: ['max_tokens', 'temperature'],
+      },
+    ],
+  }));
+  const result = await discoverProviderModels(
+    createSettings({ provider: 'openrouter', apiKey: 'sk-test', baseUrl: 'https://openrouter.ai/api/v1' }),
+    fetcher,
+  );
+  assert.equal(result.source, 'remote');
+  assert.deepEqual(result.reasoning?.['openai/o3'], ['off', 'low', 'medium', 'high']);
+  assert.deepEqual(result.reasoning?.['deepseek/deepseek-chat'], ['off']);
+});
+
+test('a catalogue that says nothing about reasoning leaves no map, not an empty offer', async () => {
+  // OpenAI's plain shape carries no capability fields at all. Absence of a
+  // report must not read as "this model accepts nothing": the caller offers
+  // every level for a model nobody described.
+  const { fetcher } = recorder(() => jsonResponse({
+    data: [{ id: 'gpt-6.1-sol' }, { id: 'o3' }],
+  }));
+  const result = await discoverProviderModels(
+    createSettings({ provider: 'openai', apiKey: 'sk-test' }),
+    fetcher,
+  );
+  assert.equal(result.source, 'remote');
+  assert.equal(result.reasoning, undefined);
+});
+
 test('an unreachable endpoint still yields the offline catalogue', async () => {
   const result = await discoverProviderModels(
     createSettings({ provider: 'openai', apiKey: 'sk-test' }),

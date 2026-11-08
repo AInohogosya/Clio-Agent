@@ -824,6 +824,22 @@ class TierFloor(BaseModel):
 # Kept here beside the schema that validates it so the two cannot disagree.
 BASE_MODEL_PROVIDERS = ("anthropic", "openai", "google", "openai_compat")
 
+# How hard the base model may think, as a name a person can pick in the settings
+# screen. `off` is the absence of a budget rather than a level — no reasoning
+# parameter is sent and the provider does what it always did — and it is the
+# default, so a base model written before this field existed behaves exactly as
+# it did before. The token budgets line up with the effort thresholds the
+# gateway already uses to name a level from a budget
+# (`_effort_for_budget` in `gateway/normalizer.py`): under 4k is low, under 16k
+# is medium, above that high.
+REASONING_LEVELS = ("off", "low", "medium", "high")
+REASONING_LEVEL_BUDGETS: dict[str, int | None] = {
+    "off": None,
+    "low": 2048,
+    "medium": 8192,
+    "high": 32768,
+}
+
 # Model ids as vendors write them: `claude-3-5-sonnet-latest`,
 # `stealth/space-bunny-alpha`, `Qwen/Qwen2.5-32B-Instruct-AWQ`. No whitespace and
 # no control characters, because this string is interpolated into a request body
@@ -980,6 +996,11 @@ class BaseModelConfig(BaseModel):
     # vendor, and only the vendor can tell whether carrying it over is safe. Kept
     # so the file records the choice and not merely the adapter it maps to.
     vendor: str = ""
+    # How hard the model may think, for a request that did not name its own
+    # reasoning budget. A default rather than an override: the solver and the
+    # deliberation name a budget of their own, tuned for their own call, and
+    # this decides what the callers that did not ask for get.
+    reasoning_level: str = "off"
     # Every tier by default, including the ones the shipped catalogue is tuned
     # above: a pinned model is what this installation has, so the quality floors
     # in `models.yaml` — which are opinions about *that* catalogue — must not
@@ -1005,6 +1026,8 @@ class BaseModelConfig(BaseModel):
         """
         if self.provider not in BASE_MODEL_PROVIDERS:
             raise ValueError(f"unsupported base model provider {self.provider!r}")
+        if self.reasoning_level not in REASONING_LEVELS:
+            raise ValueError(f"unsupported reasoning level {self.reasoning_level!r}")
         if not _MODEL_NAME.fullmatch(self.model):
             raise ValueError(f"unusable model name {self.model!r}")
         if self.base_url is not None and not is_valid_base_url(self.base_url):

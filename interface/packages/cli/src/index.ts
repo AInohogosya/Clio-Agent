@@ -40,6 +40,7 @@ import {
   type DoorChoice,
 } from './channels.js';
 import {
+  configFileExists,
   configPath,
   createPhoneClient,
   hasEnvironmentApiKey,
@@ -568,7 +569,7 @@ async function runModels(runtime: Runtime): Promise<void> {
  * shared file alone would have the terminal report a change the gateway never
  * sees, which is the one outcome worse than refusing the command.
  */
-const BASE_MODEL_FIELDS = new Set<ConfigField>(['provider', 'model', 'baseUrl', 'apiKey']);
+const BASE_MODEL_FIELDS = new Set<ConfigField>(['provider', 'model', 'baseUrl', 'reasoningLevel', 'apiKey']);
 
 async function runConfig(runtime: Runtime): Promise<number> {
   const { options, config, render } = runtime;
@@ -685,6 +686,9 @@ async function pushBaseModel(
           : field === 'baseUrl'
             ? settings.baseUrl
             : (base?.baseUrl || settings.baseUrl),
+        // The level travels with the tuple like the three above it: the agent's
+        // for every field but itself, the one being changed for this one.
+        reasoningLevel: field === 'reasoningLevel' ? settings.reasoningLevel : (base?.reasoningLevel || settings.reasoningLevel),
         // The key is not sent. The agent's file holds its own — a literal one or
         // the name of a variable — and an empty field means "keep what is
         // there". The shared file's key belongs to the direct interface and to
@@ -725,9 +729,11 @@ function mirrorBaseModel(base: AgentBaseModel): PhoneConfig {
   const provider = isProviderId(base.provider) ? base.provider : current.settings.provider;
   const model = base.model || current.settings.model;
   const baseUrl = base.baseUrl || current.settings.baseUrl;
+  const reasoningLevel = base.reasoningLevel;
   if (provider === current.settings.provider
     && model === current.settings.model
-    && baseUrl === current.settings.baseUrl) {
+    && baseUrl === current.settings.baseUrl
+    && reasoningLevel === current.settings.reasoningLevel) {
     return current;
   }
   return saveConfig({
@@ -737,6 +743,7 @@ function mirrorBaseModel(base: AgentBaseModel): PhoneConfig {
       provider,
       model,
       baseUrl,
+      reasoningLevel,
       apiKey: provider === current.settings.provider ? current.settings.apiKey : '',
     }),
   }, { origin: 'cli' });
@@ -802,13 +809,11 @@ function runHelp(runtime: Runtime): void {
  * provider behind, never opens on the chat. The answer is the shared
  * first-launch rule, read off the same file the surface is about to load.
  */
-export function resolveLaunchMode(config: PhoneConfig, requested: 'chat' | 'setup' | 'firstRun'): 'chat' | 'setup' | 'firstRun' {
+export function resolveLaunchMode(config: PhoneConfig, requested: 'chat' | 'setup' | 'firstRun', firstLaunch?: boolean): 'chat' | 'setup' | 'firstRun' {
+  const launchIsFirst = firstLaunch ?? !configFileExists();
   if (requested === 'chat' || requested === 'firstRun') {
     if (shouldShowProviderSetupOnLaunch({
-      revision: config.revision,
-      updatedAt: config.updatedAt,
-      settings: config.settings,
-      keyOnFile: config.credential.present,
+      firstLaunch: launchIsFirst,
     })) {
       return 'firstRun';
     }

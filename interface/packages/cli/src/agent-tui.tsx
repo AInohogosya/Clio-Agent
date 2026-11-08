@@ -275,7 +275,7 @@ export function AgentTui({ initialConfig, debug, width, height, depth }: AgentTu
     clearConversation: () => {
       // The transcript is the agent's store. Clearing the local copy would only be
       // undone by the next event, so the honest thing is to decline and say why.
-      say(t('agentDeclined'), 'warning');
+      say(t('cliClearUnavailable'), 'warning');
     },
     interrupt: session.interrupt,
     quit: exit,
