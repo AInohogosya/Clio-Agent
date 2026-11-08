@@ -20,6 +20,42 @@ class IntentionStatus(str, Enum):
     cancelled = "cancelled"
 
 
+class IntentionEdgeRecord(BaseModel):
+    """One directed edge in a Recursive Intention Graph.
+
+    `parent_id` -> `child_id` with `edge_type` in
+    ``depends_on | verifies | synthesizes | informs``. `gate_policy` carries
+    the optional verification gate on the edge (e.g. a T3 judge requirement);
+    an empty policy means the edge is a plain ordering constraint.
+    """
+
+    parent_id: UUID
+    child_id: UUID
+    edge_type: str = "depends_on"
+    gate_policy: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+EDGE_TYPES = frozenset({"depends_on", "verifies", "synthesizes", "informs"})
+
+
+class WorkspaceLeaseRecord(BaseModel):
+    """A transactional workspace lease: an isolated worktree/snapshot per
+    intention with a budget ceiling and an allowed-paths fence."""
+
+    id: str
+    intention_id: UUID | None = None
+    kind: str = "git_worktree"
+    root_path: str = ""
+    base_ref: str | None = None
+    target_path: str | None = None
+    budget_limit_usd: float | None = None
+    allowed_paths: list[str] = Field(default_factory=list)
+    status: str = "active"
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
 class IntentionKind(str, Enum):
     goal = "goal"
     task = "task"
@@ -51,6 +87,14 @@ class IntentionRecord(BaseModel):
     deadline: datetime | None = None
     budget_usd: float | None = None
     spent_usd: float = 0.0
+    # Clio 3.2 (ethos): EV-proportional allocation + lease/assignment.
+    # `budget_allocated_usd` mirrors `budget_usd` when the allocator set it;
+    # `budget_spent_usd` is the ledger the lease gate enforces against.
+    budget_allocated_usd: float | None = None
+    budget_spent_usd: float = 0.0
+    expected_value: float | None = None
+    lease_id: str | None = None
+    assigned_principal_id: str | None = None
     resume_state: dict[str, Any] = Field(default_factory=dict)
     hypothesis: dict[str, Any] | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))

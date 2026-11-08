@@ -135,6 +135,8 @@ class GuardianGate:
         audit: AuditProtocol,
         verifier: DueProcessVerifier,
         control: Any = None,
+        leases: Any = None,
+        tool_manifests: Any = None,
     ):
         self.config = config
         self.registry = registry
@@ -143,6 +145,103 @@ class GuardianGate:
         self.audit = audit
         self.verifier = verifier
         self.control = control
+        # WorkspaceLease registry (ethos.threads.context.WorkspaceLeaseManager)
+        # and the toolshed manifest table. Both are optional so existing
+        # constructions keep working.
+        self.leases = leases
+        self.tool_manifests = tool_manifests
+
+    def _lease_for(self, intention_id: str | None) -> Any | None:
+        if self.leases is None or not intention_id:
+            return None
+        try:
+            for lease in getattr(self.leases, "leases", {}).values():
+                if str(getattr(lease, "intention_id", "") or "") == str(intention_id):
+                    return lease
+        except Exception:
+            return None
+        # The manager may be a plain dict of leases.
+        try:
+            if isinstance(self.leases, dict):
+                for lease in self.leases.values():
+                    if str(getattr(lease, "intention_id", "") or "") == str(intention_id):
+                        return lease
+        except Exception:
+            return None
+        return None
+
+    async def _review_lease(
+        self, tool: str, args: dict[str, Any],
+        intention_id: str | None, thread_id: str,
+        *, manifest: dict[str, Any] | None = None,
+    ) -> GateDecision | None:
+        """Lease allowed_paths + budget_limit and tool-manifest enforcement."""
+        lease = self._lease_for(intention_id)
+        if lease is not None:
+            from ethos.guardian.classifier import extract_paths
+
+            targets: list[str] = []
+            for key in ("path", "to_path", "cwd"):
+                value = args.get(key)
+                if isinstance(value, str) and value:
+                    targets.append(value)
+            if tool.startswith("shell"):
+                try:
+                    targets.extend(extract_paths(str(args.get("command", ""))))
+                except Exception:
+                    pass
+            from ethos.threads.context import check_allowed_path
+
+            for target in targets:
+                if not check_allowed_path(lease, target):
+                    reason = (
+                        f"path {target!r} is outside workspace lease {lease.id} "
+                        f"(allowed: {lease.allowed_paths or 'lease root'})"
+                    )
+                    await self.audit.append(
+                        actor=thread_id, category="guardian",
+                        summary=f"action blocked by workspace lease: {tool}",
+                        details={"lease_id": lease.id, "target": target, "args": _redacted(args)},
+                    )
+                    if self._field_mode():
+                        await self.audit.append(
+                            actor=thread_id, category="guardian",
+                            summary="workspace-lease fence audited, allowed in field mode",
+                            details={"lease_id": lease.id},
+                        )
+                        return None
+                    return GateDecision(Verdict.REJECT, GatePath.BLOCKED, reason)
+            limit = getattr(lease, "budget_limit_usd", None)
+            if limit is not None:
+                try:
+                    spent = float(getattr(lease, "budget_spent_usd", 0) or 0)
+                except (TypeError, ValueError):
+                    spent = 0.0
+                if spent > float(limit):
+                    reason = (
+                        f"workspace lease {lease.id} budget exceeded "
+                        f"(${spent:.2f} spent, ${float(limit):.2f} limit)"
+                    )
+                    await self.audit.append(
+                        actor=thread_id, category="guardian",
+                        summary=f"action blocked: lease budget exceeded: {tool}",
+                        details={"lease_id": lease.id, "limit": limit, "spent": spent},
+                    )
+                    if not self._field_mode():
+                        return GateDecision(Verdict.REJECT, GatePath.BLOCKED, reason)
+        if manifest:
+            from ethos.guardian.classifier import check_manifest_paths
+
+            blocked = check_manifest_paths(tool, args, manifest)
+            if blocked:
+                await self.audit.append(
+                    actor=thread_id, category="guardian",
+                    summary=f"action blocked by tool manifest: {tool}",
+                    details={"manifest": str(manifest)[:500], "reason": blocked},
+                )
+                if not self._field_mode():
+                    return GateDecision(Verdict.REJECT, GatePath.BLOCKED, blocked)
+        return None
 
     def _field_mode(self) -> bool:
         """Whether the gate keeps records instead of standing in the way.
@@ -253,6 +352,23 @@ class GuardianGate:
             decision = await self._check_money(money, tool, args, thread_id, intention_id)
             if decision is not None:
                 return decision
+
+        # Clio 3.2: workspace-lease fences and toolshed-manifest permissions
+        # run for every tool, destructive or not, before the destructive
+        # branch below.
+        manifest: dict[str, Any] | None = None
+        if self.tool_manifests is not None:
+            try:
+                if isinstance(self.tool_manifests, dict):
+                    manifest = self.tool_manifests.get(tool)
+                else:
+                    get = getattr(self.tool_manifests, "get", None)
+                    manifest = get(tool) if callable(get) else None
+            except Exception:
+                manifest = None
+        lease_decision = await self._review_lease(tool, args, intention_id, thread_id, manifest=manifest)
+        if lease_decision is not None:
+            return lease_decision
 
         if effects.is_destructive():
             return await self._review_destructive(

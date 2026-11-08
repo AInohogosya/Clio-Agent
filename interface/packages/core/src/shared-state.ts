@@ -121,6 +121,21 @@ export function nextRevision(state: Pick<SharedState, 'revision'>): number {
   return state.revision >= MAX_REVISION ? MAX_REVISION : state.revision + 1;
 }
 
+/**
+ * Whether this is a first launch: nothing has ever been written to the store.
+ *
+ * The empty state a surface builds before the shared file arrives is
+ * revision 0 and updatedAt 0, and a real save is the only thing that moves
+ * either — so the pair is the whole signal. A surface reads only the file
+ * it has never written, and when that answer is this one the provider and
+ * model screens come up before the chat. Once a save lands it never
+ * comes up on this signal again; an unconfigured provider is a separate
+ * signal that the launch logic checks alongside this one.
+ */
+export function isFirstRun(state: Pick<SharedState, 'revision' | 'updatedAt'>): boolean {
+  return state.revision === 0 && state.updatedAt === 0;
+}
+
 export function normalizeCredential(value: unknown): CredentialStatus {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return { present: false, source: 'none', hint: '' };

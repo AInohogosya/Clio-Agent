@@ -703,3 +703,35 @@ def _unique(items: list[str]) -> list[str]:
         if item not in seen:
             seen.append(item)
     return seen
+
+
+def check_manifest_paths(
+    tool: str, args: dict, manifest: dict | None,
+) -> str | None:
+    """Why a toolshed manifest blocks this call, or None when it allows it.
+
+    `allowed_paths` fences file tools; `allowed_hosts` fences network tools.
+    An empty fence allows everything (back-compat with pre-manifest tools).
+    """
+    if not manifest:
+        return None
+    allowed_paths = [str(p) for p in (manifest.get("allowed_paths") or []) if str(p)]
+    allowed_hosts = [str(p) for p in (manifest.get("allowed_hosts") or []) if str(p)]
+    targets = _unique([
+        str(args[key]) for key in ("path", "from_path", "to_path", "target", "file", "dir", "workdir")
+        if isinstance(args.get(key), str) and args.get(key)
+    ])
+    if tool == "shell.run" and isinstance(args.get("command"), str):
+        targets.extend(extract_paths(str(args["command"])))
+    for target in targets:
+        if allowed_paths and not any(
+            target == prefix or target.startswith(prefix.rstrip("/") + "/") or target.startswith(prefix)
+            for prefix in allowed_paths
+        ):
+            return f"{tool}: path {target!r} is not in the tool manifest allowed_paths"
+    for key in ("url", "host"):
+        value = args.get(key)
+        if isinstance(value, str) and value and allowed_hosts:
+            if not any(value.startswith(prefix) for prefix in allowed_hosts):
+                return f"{tool}: host {value!r} is not in the tool manifest allowed_hosts"
+    return None

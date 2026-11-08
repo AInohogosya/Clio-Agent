@@ -62,6 +62,12 @@ class DriveInputs(BaseModel):
     disk_free_ratio: float = 0.8
     budget_ratio: float = 1.0
     maintenance_due_h: float = 0.0
+    # Clio 3.2 DAG telemetry (see `MemoryStore.dag_telemetry`).
+    dag_blocked_edges: int = 0
+    dag_ready_count: int = 0
+    dag_budget_burn_usd: float = 0.0
+    leaf_verification_failures: int = 0
+    anomalous_outcomes: int = 0
 
     @classmethod
     def from_intentions(cls, intentions: Sequence[IntentionRecord], **kwargs: Any) -> DriveInputs:
@@ -152,18 +158,25 @@ def intent_urgency(item: dict[str, Any], now: datetime) -> float:
 
 def commitment_gain(inputs: DriveInputs, now: datetime | None = None) -> float:
     now = now or datetime.now(UTC)
-    return max(
+    base = max(
         (intent_urgency(item, now) for item in inputs.intentions),
         default=0.0,
     )
+    # Blocked critical-path nodes are pressure to unblock, not just to work.
+    blocked_boost = clip((inputs.dag_blocked_edges or 0) / 10.0) * 0.3
+    return clip(base + blocked_boost)
 
 
 def curiosity_gain(inputs: DriveInputs) -> float:
-    return clip(inputs.open_questions / 10.0) * 0.6
+    base = clip(inputs.open_questions / 10.0) * 0.6
+    anomalous = clip((inputs.anomalous_outcomes or 0) / 5.0) * 0.3
+    return clip(base + anomalous)
 
 
 def mastery_gain(inputs: DriveInputs) -> float:
-    return clip(inputs.failed_recent / 5.0) * 0.7
+    base = clip(inputs.failed_recent / 5.0) * 0.7
+    leaf_failures = clip((inputs.leaf_verification_failures or 0) / 5.0) * 0.3
+    return clip(min(base, 0.7) + leaf_failures)
 
 
 def creation_gain(inputs: DriveInputs) -> float:
@@ -171,7 +184,9 @@ def creation_gain(inputs: DriveInputs) -> float:
 
 
 def order_gain(inputs: DriveInputs) -> float:
-    return clip(inputs.unread_events / 50.0)
+    base = clip(inputs.unread_events / 50.0)
+    blocked = clip((inputs.dag_blocked_edges or 0) / 10.0) * 0.3
+    return clip(base + blocked)
 
 
 def social_gain(inputs: DriveInputs) -> float:

@@ -7,6 +7,7 @@ from ethos.prompts.deliberation import (
 )
 from ethos.prompts.gsl import (
     COMMISSIONED_ALREADY,
+    DELEGATION,
     DEGRADED_PLAN,
     DEVISE_PROMPT,
     EDIT_EXISTING_FILES,

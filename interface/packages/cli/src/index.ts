@@ -19,6 +19,7 @@ import {
   isProviderId,
   MAX_PROMPT_LENGTH,
   sanitizeTerminalText,
+  shouldShowProviderSetupOnLaunch,
   toChatMessages,
   type AgentBaseModel,
   type AgentControlAction,
@@ -791,7 +792,31 @@ function runHelp(runtime: Runtime): void {
   out(renderLines(helpScreen(render, VERSION)));
 }
 
-async function launchTui(runtime: Runtime, mode: 'chat' | 'setup'): Promise<void> {
+/**
+ * Which surface a plain `phone` opens on: the chat, or the provider and LLM
+ * settings first.
+ *
+ * `phone setup` needs no decision — the command named the thing. For the
+ * default launch the decision is about whether setup ever happened: a file
+ * that was never written, or one that still does not leave a usable
+ * provider behind, never opens on the chat. The answer is the shared
+ * first-launch rule, read off the same file the surface is about to load.
+ */
+export function resolveLaunchMode(config: PhoneConfig, requested: 'chat' | 'setup' | 'firstRun'): 'chat' | 'setup' | 'firstRun' {
+  if (requested === 'chat' || requested === 'firstRun') {
+    if (shouldShowProviderSetupOnLaunch({
+      revision: config.revision,
+      updatedAt: config.updatedAt,
+      settings: config.settings,
+      keyOnFile: config.credential.present,
+    })) {
+      return 'firstRun';
+    }
+  }
+  return requested;
+}
+
+async function launchTui(runtime: Runtime, mode: 'chat' | 'setup' | 'firstRun'): Promise<void> {
   if (!isInteractive()) {
     if (mode === 'setup') {
       out(renderLines(helpScreen(runtime.render, VERSION)));
@@ -810,7 +835,7 @@ async function launchTui(runtime: Runtime, mode: 'chat' | 'setup'): Promise<void
     // One full-screen surface, chosen by the setting rather than by the command.
     // `phone setup` is the one case that overrides it: a first run must be able
     // to reach the setup before it has an agent to talk to.
-    const useAgent = runtime.config.settings.interface === 'agent' && mode !== 'setup';
+    const useAgent = runtime.config.settings.interface === 'agent' && mode === 'chat';
     const element = useAgent
       ? React.createElement(AgentTui, {
         debug: runtime.options.debug,
@@ -934,7 +959,7 @@ async function run(options: CliOptions): Promise<number> {
       await launchTui(runtime, 'setup');
       return 0;
     default:
-      await launchTui(runtime, 'chat');
+      await launchTui(runtime, resolveLaunchMode(runtime.config, 'chat'));
       return 0;
   }
 }

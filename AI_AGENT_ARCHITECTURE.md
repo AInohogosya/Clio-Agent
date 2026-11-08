@@ -442,3 +442,92 @@ socket), `line` (signed webhook), `teams` (Bot Framework JWT), `googlechat` (ser
 `email` (IMAP poll/SMTP). Empty allowlist admits nobody; `accept_from_anyone` is a separate switch
 (`base.py:139-157`). `cl
 ...[truncated 6154 chars]
+## 23. Clio Agent 3.2 (`ethos`) — RIG, federation, leases, sessions
+
+Version 3.2 generalizes the 3.1 engines without a new org-chart or Kanban
+module. The resident core is preserved: tick loop, 8-state machine, T0–T3
+tiers, 7 drives, honesty guardrails, reversibility-first safety.
+
+**Schema** (`migrations/versions/0006_clio_3_2.py`): `intention_edges`
+(parent/child FKs, `edge_type` in `depends_on|verifies|synthesizes|informs`,
+`gate_policy` JSONB, unique `(parent,child,type)`); `intentions` gains
+`budget_allocated_usd, budget_spent_usd, expected_value, lease_id,
+assigned_principal_id`; `people` gains `kind(human|resident|service),
+capabilities, authority_scope, endpoint_uri`; `episodes/facts/knowhow/
+questions` gain `scope(private|project|org)` + `namespace_id` with indexes;
+`workspace_leases` (git_worktree|snapshot, allowed_paths, budget_limit,
+status active|committed|rolled_back).
+
+**Recursive Intention Graphs + EV allocation**: `MemoryStore.add_intention_edge()`
+with `CycleError` cycle rejection, `get_ready_intentions()` (active/proposed
+with `depends_on` predecessors `done`), `get_intention_subgraph(root)`
+(`ethos/memory/store.py`); `dag_has_cycle`, `allocate_ev_budgets` (value-per-
+dollar, H2-capped). Planner decomposition (`ethos/gsl/planner.py:
+needs_decomposition`, `decompose_into_children`, `decompose_and_persist`)
+keeps leaf plans at `<=7` steps while complex goals decompose into
+depends_on/verifies/synthesizes children; `GeneralSolverLoop._maybe_decompose`
+hooks it after understanding (`ethos/gsl/loop.py`). Gates
+(`ethos/gsl/verification.py: gate_children`, `gate_blocks_completion`,
+`_unlock_gate_children` in `loop.py`) unlock a `verifies` child judged by an
+independent diversity-family T3 model/peer resident then a `synthesizes`
+child, preserving the invariant that a judge never overturns failing
+objective checks. Thread allocation is EV-proportional
+(`ethos/threads/manager.py: allocate_child_budget`, `ev_weight`,
+`spawn_ready_branches` for parallel ready-node dispatch; worker `[:7]` in
+`ethos/threads/worker.py`). Workspace two-tier folding
+(`ethos/engine/workspace.py: summarize_dag`, `render_commitments`) renders a
+compressed DAG summary (completion ratio, critical-path blockers, budget
+burn, ready count) plus full focus detail. Drives
+(`ethos/engine/drives.py`: `dag_blocked_edges`, `leaf_verification_failures`,
+`anomalous_outcomes`) raise `order/commitment` on blocked critical paths,
+`mastery` on repeated verification failure, `curiosity` on anomalous
+outcomes; `Life._drive_inputs`/`_assemble_workspace` feed `dag_telemetry()`
+(`ethos/engine/life.py`).
+
+**Federated residents**: principal CRUD/matching by capabilities/trust/
+authority (`ethos/social/relationships.py: register_resident`,
+`list_residents`, `match_resident`). Bimodal etiquette
+(`ethos/social/etiquette.py: _principal_kind`, `is_resident_address`,
+`_deliver_resident`): humans keep quiet hours, 120-minute digests and 6/3/1
+caps; residents bypass via `OutboundPipeline.send` fast-path delivering
+structured JSON over `EventBus`. Commission kinds
+(`ethos/schemas/events.py: EventKind.COMMISSION_*`,
+`ethos/bus/event_bus.py: COMMISSION_KINDS`, `publish_commission`).
+Epistemic checks (`ethos/social/deliberation.py:
+evaluate_commission`, `deliberate_commission`) return
+`ask_clarification|deliberate_disagreement|boundary` for flawed/
+under-budgeted/outside-skill specs, route clean specs through
+`deliberate()`, and enforce `_withhold_unearned_progress()` on all
+inter-resident updates; prompt note in `ethos/prompts/deliberation.py:
+COMMISSION_NOTE`. Scoped retrieval (`ethos/memory/retrieval.py:
+_memory scoping in _row_to_hit/_candidates/retrieve`) unions private with
+authorized project/org namespaces (episodes stay private); nightly promotion
+(`ethos/memory/consolidate.py: _promote_scoped_memories`) promotes verified
+facts and high-success knowhow to project/org via T3 contradiction
+resolution and updates `self_model` skills/calibration from attempts.
+
+**Leases, sessions, toolshed**: `WorkspaceLease`/`WorkspaceLeaseManager`
+(`ethos/threads/context.py`: git worktree for repos, hardlink snapshot tree
+otherwise, `check_allowed_path`, per-target-locked `commit_lease`,
+`rollback_lease` with trash + snapshot `restore()` in
+`ethos/guardian/snapshots.py`); `GuardianGate.review()` enforces
+`allowed_paths`/`budget_limit_usd` (`ethos/guardian/gate.py:
+_review_lease`). Session drivers (`ethos/gateway/providers/base.py:
+SessionDriver`, `session_score` with `c_hat ~= 0`) participate in
+`ModelRouter.select` (`ethos/gateway/router.py: is_session_entry`,
+`marginal_cost`) scoring `q_m - mu*c_hat - nu*l_hat`; the gateway replays the
+normalized conversation on 429/breaker failover (`ethos/gateway/service.py:
+register_session_driver`, `replay_request`, `_session_replay`). Toolshed
+manifests (`ethos/toolhost/tools/toolshed.py`: `allowed_paths,
+allowed_hosts, secret_scopes, timeout_s`, SHA-256 `content_hash`,
+Ed25519 `verify_tool_signature`) are registered via `tools.register`,
+listed via `tools.list`, run via `tools.run` with hash/signature and
+fence checks, and enforced prior to execution by `GuardianGate.review()`
+with `ethos/guardian/classifier.py: check_manifest_paths`.
+
+**Tests**: `tests/unit/test_clio_3_2.py` covers DAG creation/cycle rejection,
+EV allocation, parallel ready dispatch helpers, T3 verification gating,
+two-tier folding, bimodal pipeline, `deliberate_disagreement`/`boundary`,
+private/org retrieval/promotion logic, lease commit/rollback isolation,
+zero-marginal-cost session scoring + failover replay, and manifest
+enforcement.

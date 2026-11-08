@@ -216,11 +216,87 @@ class ConsolidationDAG:
         """
         return await self.self_model.get("name", self.config.self_name)
 
+    async def _promote_scoped_memories(
+        self, *, success_threshold: float = 0.8, min_uses: int = 3,
+    ) -> int:
+        """Promote verified facts + high-success knowhow to project/org.
+
+        Episodes never leave `private`. Contradictions are resolved first via
+        the T3 path (`_resolve_contradictions`), so a fact is promoted only
+        when no live contradiction stands against it. Also updates
+        `self_model` skills/calibration from attempt outcomes.
+        """
+        promoted = 0
+        db = getattr(self.memory, "db", None)
+        if db is None:
+            return 0
+        try:
+            fact_rows = await db.fetch(
+                "SELECT id, confidence FROM facts "
+                "WHERE scope = 'private' AND superseded_by IS NULL "
+                "AND confidence >= 0.9 ORDER BY confidence DESC LIMIT 100",
+            )
+        except Exception:
+            logger.exception("consolidation.promote_facts_failed")
+            fact_rows = []
+        for row in fact_rows:
+            try:
+                await db.execute(
+                    "UPDATE facts SET scope = 'project', namespace_id = COALESCE(namespace_id, 'default') "
+                    "WHERE id = $1", row["id"],
+                )
+                promoted += 1
+            except Exception:
+                logger.exception("consolidation.promote_fact_failed")
+        try:
+            knowhow_rows = await db.fetch(
+                "SELECT id, uses, successes FROM knowhow "
+                "WHERE scope = 'private' AND retired = false AND uses >= $1",
+                min_uses,
+            )
+        except Exception:
+            logger.exception("consolidation.promote_knowhow_failed")
+            knowhow_rows = []
+        for row in knowhow_rows:
+            uses = int(row["uses"] or 0)
+            successes = int(row["successes"] or 0)
+            if not uses or (successes / uses) < success_threshold:
+                continue
+            try:
+                target = "org" if (successes / uses) >= 0.9 else "project"
+                await db.execute(
+                    "UPDATE knowhow SET scope = $1, namespace_id = COALESCE(namespace_id, 'default') "
+                    "WHERE id = $2", target, row["id"],
+                )
+                promoted += 1
+            except Exception:
+                logger.exception("consolidation.promote_knowhow_row_failed")
+        # Self-model calibration from attempt outcomes.
+        try:
+            attempts = await self.memory.db.fetch(
+                "SELECT outcome FROM attempts WHERE ended_at >= now() - interval '2 days' LIMIT 100",
+            )
+            total = len(attempts)
+            if total:
+                successes = sum(1 for r in attempts if r["outcome"] == "success")
+                rate = successes / total
+                skills = await self.self_model.get("skills", {}) or {}
+                skills["attempt_success_rate"] = round(rate, 3)
+                calibration = await self.self_model.get("calibration", {}) or {}
+                calibration["attempt_success_rate"] = round(rate, 3)
+                await self.self_model.set("skills", skills, "self", "nightly promotion: attempt outcomes")
+                await self.self_model.set("calibration", calibration, "self", "nightly promotion: attempt outcomes")
+                promoted += 1  # counts as one calibration update
+        except Exception:
+            logger.exception("consolidation.self_model_update_failed")
+        return promoted
+
     async def run_nightly(self, now: datetime | None = None) -> dict[str, Any]:
         now = now or datetime.now(UTC)
         report: dict[str, Any] = {
             "clusters": 0, "facts": 0, "contradictions_resolved": 0,
             "knowhow": 0, "demoted": 0, "archived": 0, "autobiography": False, "planned": False,
+            "promoted_scopes": 0,
         }
         since = now - timedelta(days=1)
         episodes = await self.memory.episodes_since(since, self.config.memory.consolidation.max_episodes)
@@ -254,6 +330,10 @@ class ConsolidationDAG:
             report["contradictions_resolved"] = await self._resolve_contradictions()
 
         report["knowhow"] = await self._extract_knowhow()
+        # Scoped promotion runs after contradiction resolution so verified
+        # facts and high-success knowhow reach project/org scope; episodes
+        # stay private by construction.
+        report["promoted_scopes"] = await self._promote_scoped_memories()
         decay_report = await self.memory.decay_pass(now)
         report["demoted"] = decay_report.get("demoted", 0)
         report["archived"] = await self.memory.archive_pass(now)

@@ -145,6 +145,7 @@ async def _complete_json(gateway: Any, request: ModelRequest) -> dict[str, Any]:
 
 async def understand(
     gateway: Any, config: EthosConfig, intention: Any, memories: list[MemoryHit],
+    *, context_prefix: str = "",
 ) -> dict[str, Any]:
     """Phase 1: understand the goal. Consequential goals run at T3 [D-06]."""
     text_hint = json.dumps({
@@ -163,6 +164,7 @@ async def understand(
         reasoning_budget=config.gsl.reasoning_budget,
         consequence_class="consequential" if consequential_hint else "routine",
         messages=[
+            *([ModelMessage(role=Role.system, content=context_prefix)] if context_prefix else []),
             ModelMessage(role=Role.system, content=UNDERSTAND_PROMPT.format(
                 name=config.self_name,
                 title=intention.title,
@@ -190,7 +192,7 @@ async def understand(
 async def devise(
     gateway: Any, config: EthosConfig, intention: Any, understanding: str,
     knowhow: list[MemoryHit], lessons: list[str],
-    *, tier: Tier = Tier.T2, knowhow_limit: int = 15,
+    *, tier: Tier = Tier.T2, knowhow_limit: int = 15, context_prefix: str = "",
 ) -> list[dict[str, Any]]:
     """Phase 2: exactly 3 candidate approaches [6.1].
 
@@ -205,6 +207,7 @@ async def devise(
         budget_bucket=budget_bucket_for(intention),
         reasoning_budget=config.gsl.reasoning_budget,
         messages=[
+            *([ModelMessage(role=Role.system, content=context_prefix)] if context_prefix else []),
             ModelMessage(role=Role.system, content=DEVISE_PROMPT.format(
                 name=config.self_name,
                 title=intention.title,
@@ -238,6 +241,111 @@ def pick_approach(approaches: list[dict[str, Any]]) -> dict[str, Any] | None:
         approaches,
         key=lambda a: a.get("expected_value", 0.5) - 0.05 * a.get("estimated_cost_usd", 0.05),
     )
+
+
+# ------------------------------------------------- recursive decomposition
+
+MAX_LEAF_STEPS = 7
+"""Leaf plans stay at most 7 steps; anything larger decomposes."""
+
+_DECOMPOSE_WORDS = (
+    "project", "migrate", "release", "refactor", "launch", "build the",
+    "end-to-end", "phase", "milestone", "rollout", "integration",
+)
+
+
+def needs_decomposition(intention: Any, *, difficulty: float | None = None) -> bool:
+    """Whether this goal should become child intentions instead of a leaf plan."""
+    if getattr(intention, "kind", "") in ("venture",):
+        return True
+    if difficulty is not None and difficulty >= 0.7:
+        return True
+    if getattr(intention, "commissioned_by", None) and len(getattr(intention, "success_criteria", []) or []) >= 3:
+        return True
+    text = f"{getattr(intention, 'title', '')} {getattr(intention, 'desired_end_state', '')}".lower()
+    return any(word in text for word in _DECOMPOSE_WORDS)
+
+
+def decompose_into_children(
+    goal: str,
+    *,
+    approach_summary: str = "",
+    expected_value: float = 0.8,
+) -> list[dict[str, Any]]:
+    """Split a complex goal into child-intention specs linked by RIG edges.
+
+    The decomposition is generic: understand -> work -> verify -> synthesize.
+    Leaf children each plan at most 7 steps. Pure function for testability;
+    the caller persists the children and edges.
+    """
+    base = approach_summary or goal
+    return [
+        {
+            "title": f"Understand: {goal}"[:200],
+            "desired_end_state": f"Understand what {goal} requires",
+            "expected_value": round(expected_value * 0.5, 3),
+            "estimated_cost_usd": 0.05,
+            "edge_to_parent": "depends_on",
+        },
+        {
+            "title": f"Execute: {base}"[:200],
+            "desired_end_state": goal,
+            "expected_value": expected_value,
+            "estimated_cost_usd": 0.20,
+            "edge_to_parent": "depends_on",
+        },
+        {
+            "title": f"Verify: {goal}"[:200],
+            "desired_end_state": f"Independently verify the work for {goal}",
+            "expected_value": round(expected_value * 0.6, 3),
+            "estimated_cost_usd": 0.10,
+            "edge_to_parent": "verifies",
+        },
+        {
+            "title": f"Synthesize: {goal}"[:200],
+            "desired_end_state": f"Synthesize verified results for {goal}",
+            "expected_value": round(expected_value * 0.4, 3),
+            "estimated_cost_usd": 0.05,
+            "edge_to_parent": "synthesizes",
+        },
+    ]
+
+
+async def decompose_and_persist(
+    memory: Any, intention: Any, approach: dict[str, Any],
+) -> list[Any]:
+    """Create child intentions and link them; return the child records."""
+    specs = decompose_into_children(
+        str(intention.title), approach_summary=str(approach.get("summary", "")),
+        expected_value=float(approach.get("expected_value", 0.8)),
+    )
+    children: list[Any] = []
+    previous = None
+    for spec in specs:
+        child_id = await memory.create_intention(
+            title=spec["title"],
+            desired_end_state=spec["desired_end_state"],
+            kind="task",
+            parent_id=intention.id,
+            origin="decomposition",
+            priority=0.6,
+            expected_value=spec["expected_value"],
+        )
+        child = await memory.get_intention(child_id) if hasattr(memory, "get_intention") else None
+        children.append(child if child is not None else child_id)
+        try:
+            await memory.add_intention_edge(intention.id, child_id, spec["edge_to_parent"])
+        except Exception:
+            logger.exception("gsl.decompose_edge_failed", child=str(child_id))
+        # Chain execution: each depends_on follows the previous.
+        if previous is not None and spec["edge_to_parent"] == "depends_on":
+            try:
+                await memory.add_intention_edge(previous, child_id, "depends_on")
+            except Exception:
+                logger.exception("gsl.decompose_chain_failed")
+        if spec["edge_to_parent"] == "depends_on":
+            previous = child_id
+    return children
 
 
 _PLACEHOLDER_TOKENS = ("your-repo", "your_repo", "yourusername", "your-username",
@@ -275,7 +383,7 @@ def _reject_invented_checks(steps: list[PlanStep]) -> None:
 
 async def make_plan(
     gateway: Any, config: EthosConfig, intention: Any, approach: dict[str, Any],
-    strategy_number: int = 1, plan_attempts: int = 0,
+    strategy_number: int = 1, plan_attempts: int = 0, context_prefix: str = "",
 ) -> Plan:
     """Phase 3: a short-horizon plan, and `PlanUnavailable` when there isn't one.
 
@@ -302,6 +410,7 @@ async def make_plan(
             config.gsl.degraded_reasoning_budget if degraded else config.gsl.reasoning_budget
         ),
         messages=[
+            *([ModelMessage(role=Role.system, content=context_prefix)] if context_prefix else []),
             ModelMessage(role=Role.system, content=PLAN_PROMPT.format(
                 name=config.self_name,
                 commissioned=commissioned_note(intention.origin),

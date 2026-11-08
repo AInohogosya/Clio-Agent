@@ -12,6 +12,77 @@ from ethos.schemas.models import ModelRequest, NormalizedResponse
 from ethos.schemas.tools import ToolSpec
 
 
+class SessionSessionError(RuntimeError):
+    """A stateful session/CLI backend failed mid-turn (incl. 429/breaker)."""
+
+    def __init__(self, message: str, *, status: int = 0, retry_after_s: float | None = None):
+        super().__init__(message)
+        self.status = status
+        self.retry_after_s = retry_after_s
+
+
+class SessionDriver(ABC):
+    """Stateful session/CLI driver (Clio 3.2).
+
+    Subscription-backed CLI/ACP backends carry a marginal token cost of
+    ~0 (the subscription is sunk), so the router scores them with
+    ``c_hat ~= 0``. Multi-turn state lives in the session, not in HTTP.
+    """
+
+    name: str = "session"
+    is_session: bool = True
+    marginal_cost_usd: float = 0.0
+
+    def __init__(self, *, session_id: str | None = None):
+        self.session_id = session_id or "default"
+        self._turn = 0
+
+    def available(self) -> bool:
+        return True
+
+    @abstractmethod
+    async def complete(self, request: ModelRequest, model: str) -> NormalizedResponse: ...
+
+    def conversation_snapshot(self, request: ModelRequest) -> dict[str, Any]:
+        """The normalized conversation state used to replay on failover."""
+        return {
+            "session_id": self.session_id,
+            "turn": self._turn,
+            "messages": [m.model_dump(mode="json") for m in request.messages],
+            "purpose": request.purpose,
+            "tier": request.tier.value,
+            "max_tokens": request.max_tokens,
+        }
+
+    def replay_context(self, snapshot: dict[str, Any]) -> ModelRequest:
+        """Rebuild a ModelRequest from a snapshot for the next provider."""
+        from ethos.schemas.models import ModelMessage, Role, Tier
+
+        messages = []
+        for raw in (snapshot.get("messages") or []):
+            try:
+                messages.append(ModelMessage(
+                    role=Role(str(raw.get("role", "user"))),
+                    content=raw.get("content"),
+                ))
+            except Exception:
+                continue
+        return ModelRequest(
+            tier=Tier(str(snapshot.get("tier", "T2"))),
+            purpose=str(snapshot.get("purpose", "session.replay")),
+            messages=messages,
+            max_tokens=int(snapshot.get("max_tokens", 4096)),
+        )
+
+
+def session_score(
+    quality: float, marginal_cost: float, latency_s: float,
+    *, mu: float = 0.0, nu: float = 0.0,
+) -> float:
+    """m* = q_m(class) - mu*c_hat - nu*l_hat, with c_hat ~= 0 for sessions."""
+    return quality - mu * marginal_cost - nu * latency_s
+
+
 class ProviderError(RuntimeError):
     def __init__(
         self,
@@ -187,7 +258,7 @@ class Provider(ABC):
                 self.http.post(url, headers=headers, json=payload, timeout=self.timeout_s),
                 timeout=self._POST_JSON_HARD_CEILING_S,
             )
-        except asyncio.TimeoutError as exc:
+        except TimeoutError as exc:
             raise ProviderError(
                 self.name, 0,
                 f"timeout: call exceeded hard ceiling of {self._POST_JSON_HARD_CEILING_S}s",

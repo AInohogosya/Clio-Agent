@@ -353,7 +353,7 @@ def test_it_is_told_its_capabilities_are_its_tools():
     """
     lowered = " ".join(build_identity_kernel("Aria").split()).lower()
     assert "what i can do is what my tools can do" in lowered
-    assert "neither claim more than the catalog carries" in lowered
+    assert "neither claim more than the catalog i was given carries" in lowered
     assert "nor deny what it carries" in lowered
 
 
@@ -405,7 +405,8 @@ def test_the_prompt_says_the_agent_thinks_without_being_prompted():
     lowered = kernel.lower()
     assert "nobody has to be talking to me for me to be thinking" in lowered
     assert "between conversations" in lowered
-    assert "there is no hour of the day at which i stop" in lowered
+    assert "the loop keeps running at any hour" in lowered
+    assert "resting" in lowered
 
 
 def test_the_agent_knows_the_night_is_an_ordinary_hour_for_it():
@@ -575,7 +576,7 @@ def test_a_refusal_is_told_to_be_a_decision_and_not_a_fault():
     """
     block = build_limits_block()
     lowered = " ".join(block.split()).lower()
-    assert "enforced outside me" in lowered
+    assert "the gate can actually stop a call on" in lowered
     assert "a decision, not a malfunction" in lowered
     assert "saying a thing was done" in lowered
 

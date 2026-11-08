@@ -16,6 +16,11 @@ logger = logging.getLogger(__name__)
 
 BUS_CHANNEL = "ethos_events"
 
+COMMISSION_KINDS = frozenset({
+    "commission.propose", "commission.accept", "commission.challenge",
+    "commission.artifact", "commission.verify",
+})
+
 # How many recently-seen event ids the dedupe set remembers.
 #
 # This set exists to make one event one event: `LISTEN/NOTIFY` on a connection
@@ -199,6 +204,20 @@ class EventBus:
                     event_id = await _do(c)
         del notify_body
         return event_id
+
+    async def publish_commission(
+        self,
+        kind: str,
+        payload: dict[str, Any],
+        *,
+        salience: float | None = None,
+    ) -> int:
+        """Inter-resident commission traffic: immediate, no etiquette gating."""
+        if kind not in COMMISSION_KINDS:
+            raise ValueError(f"not a commission kind: {kind!r}")
+        return await self.publish(
+            kind, {**payload, "resident_fast_path": True}, salience=salience,
+        )
 
     async def drain(self, consumer: str, kinds: list[str] | None = None, limit: int = 500) -> list[Event]:
         """Claim events not yet consumed by `consumer` (startup gap recovery)."""

@@ -15,15 +15,17 @@ from ethos.gsl.evaluator import ObjectiveChecker
 from ethos.gsl.planner import (
     PlanUnavailable,
     budget_bucket_for,
+    decompose_and_persist,
     devise,
     is_nothing_could_serve,
     is_rate_limited_failure,
     make_plan,
+    needs_decomposition,
     parse_json_block,
     pick_approach,
     understand,
 )
-from ethos.gsl.verification import VerificationLadder
+from ethos.gsl.verification import VerificationLadder, gate_blocks_completion, gate_children
 from ethos.observability.logger import get_logger
 from ethos.paths import user_home
 from ethos.prompts import (
@@ -513,7 +515,7 @@ class GeneralSolverLoop:
             # never succeed spends against a ceiling it never approaches.
             spy = _CostSpy(self.gateway)
             try:
-                data = await understand(spy, self.config, intention, memories)
+                data = await understand(spy, self.config, intention, memories, context_prefix=(ws.stable_prefix_text() if ws is not None else ""))
             except Exception as exc:
                 if is_rate_limited_failure(exc):
                     kind = "rate_limited"
@@ -534,6 +536,19 @@ class GeneralSolverLoop:
             await self._save_resume(intention, resume)
             for question in resume.get("questions", [])[:3]:
                 await self.memory.open_question(question, priority=0.4)
+            # Recursive decomposition: a complex goal becomes child intentions
+            # linked by depends_on/verifies/synthesizes edges, while the leaf
+            # plan itself stays at most 7 steps (make_plan caps it).
+            children = await self._maybe_decompose(intention, resume)
+            if children:
+                return SolverResult(
+                    outcome=SolverOutcome.step_done,
+                    thoughts=[
+                        f"understood goal: {resume.get('understanding', '')[:200]}",
+                        f"decomposed into {len(children)} child intention(s) (RIG)",
+                    ],
+                    cost_usd=cost,
+                )
             return SolverResult(
                 outcome=SolverOutcome.step_done,
                 thoughts=[f"understood goal: {resume.get('understanding', '')[:200]}"],
@@ -552,7 +567,7 @@ class GeneralSolverLoop:
                 plan, c = await self._strategy(
                     intention, resume,
                     strategy_number=int(resume.get("strategy_number", 1)),
-                    plan_attempts=self._plan_attempts(resume),
+                    plan_attempts=self._plan_attempts(resume), ws=ws,
                 )
             except PlanUnavailable as exc:
                 # No plan means no work, so this is a failure of the step rather
@@ -600,7 +615,7 @@ class GeneralSolverLoop:
             try:
                 new_plan, c = await self._strategy(
                     intention, resume, strategy_number=strategy_number,
-                    plan_attempts=self._plan_attempts(resume),
+                    plan_attempts=self._plan_attempts(resume), ws=ws,
                 )
             except PlanUnavailable as exc:
                 # The existing plan stays in place. Replacing it with nothing, or
@@ -729,7 +744,7 @@ class GeneralSolverLoop:
             )
 
     async def _strategy(self, intention: IntentionRecord, resume: dict[str, Any],
-                        strategy_number: int, plan_attempts: int = 0) -> tuple[Plan, float]:
+                        strategy_number: int, plan_attempts: int = 0, ws: Any = None) -> tuple[Plan, float]:
         """Choose an approach and plan from it, or raise `PlanUnavailable`.
 
         Every way of failing here raises, which is the point. This used to
@@ -757,7 +772,7 @@ class GeneralSolverLoop:
         attempts = await self.memory.list_attempts(intention.id, limit=5)
         lessons = [lesson for a in attempts for lesson in a.lessons]
         try:
-            approaches, c1 = await self._devise_with_cost(intention, resume, knowhow, lessons)
+            approaches, c1 = await self._devise_with_cost(intention, resume, knowhow, lessons, context_prefix=(ws.stable_prefix_text() if ws is not None else ""))
         except PlanUnavailable as exc:
             exc.cost_usd += cost
             raise
@@ -779,6 +794,7 @@ class GeneralSolverLoop:
         try:
             plan, c2 = await self._plan_with_cost(
                 intention, approach, strategy_number, plan_attempts=plan_attempts,
+                context_prefix=(ws.stable_prefix_text() if ws is not None else ""),
             )
         except PlanUnavailable as exc:
             exc.cost_usd += cost
@@ -790,7 +806,7 @@ class GeneralSolverLoop:
         return plan, cost
 
     async def _devise_with_cost(self, intention: Any, resume: dict[str, Any],
-                                knowhow: list[MemoryHit], lessons: list[str]) -> tuple[list[dict[str, Any]], float]:
+                                knowhow: list[MemoryHit], lessons: list[str], context_prefix: str = "") -> tuple[list[dict[str, Any]], float]:
         """Candidate approaches, or `PlanUnavailable`. Never an invented one.
 
         This used to swallow its failure and return `[]`, and an empty list was
@@ -836,7 +852,7 @@ class GeneralSolverLoop:
                     Tier.T2 if degraded or not resume.get("consequential")
                     else Tier.T3
                 ),
-                knowhow_limit=10,
+                knowhow_limit=10, **({"context_prefix": context_prefix} if context_prefix else {}),
             )
         except Exception as exc:
             logger.exception("gsl.devise_failed")
@@ -858,7 +874,7 @@ class GeneralSolverLoop:
         return approaches, spy.cost_usd
 
     async def _plan_with_cost(self, intention: Any, approach: dict[str, Any],
-                              strategy_number: int, plan_attempts: int = 0) -> tuple[Plan, float]:
+                              strategy_number: int, plan_attempts: int = 0, context_prefix: str = "") -> tuple[Plan, float]:
         """A plan, or `PlanUnavailable`. The two are never the same thing.
 
         The request itself, its degradation levers, and the no-padding invariant
@@ -880,7 +896,7 @@ class GeneralSolverLoop:
         spy = _CostSpy(self.gateway)
         try:
             plan = await make_plan(spy, self.config, intention, approach,
-                                   strategy_number, plan_attempts)
+                                   strategy_number, plan_attempts, context_prefix=context_prefix)
         except PlanUnavailable as exc:
             exc.cost_usd += spy.cost_usd
             raise
@@ -1421,6 +1437,67 @@ class GeneralSolverLoop:
             "their types and which are required. Call only names and arguments listed there."
         )
 
+    async def _unlock_gate_children(
+        self, intention: IntentionRecord, resume: dict[str, Any],
+        gate_policy: dict[str, Any],
+    ) -> list[Any]:
+        """Create the verifies + synthesizes children once output verifies.
+
+        Idempotent on `gate_children_created`: the verifies child is created
+        first, and the synthesizes child only exists once verification passed,
+        so a re-entered finish does not duplicate the pair.
+        """
+        if not gate_policy or resume.get("gate_children_created"):
+            return []
+        specs = gate_children(str(intention.title), gate_policy)
+        if not specs:
+            return []
+        created: list[Any] = []
+        previous_id = None
+        for spec in specs:
+            try:
+                child_id = await self.memory.create_intention(
+                    title=spec["title"],
+                    desired_end_state=spec["desired_end_state"],
+                    kind="task",
+                    parent_id=intention.id,
+                    origin="gate",
+                    priority=0.7,
+                )
+                await self.memory.add_intention_edge(
+                    intention.id, child_id, spec["edge_type"], spec.get("gate_policy") or {},
+                )
+                if previous_id is not None:
+                    await self.memory.add_intention_edge(previous_id, child_id, "depends_on")
+                previous_id = child_id
+                created.append(child_id)
+            except Exception:
+                logger.exception("gsl.gate_child_failed", intention=str(intention.id))
+        if created:
+            resume["gate_children_created"] = True
+            await self._save_resume(intention, resume)
+        return created
+
+    async def _maybe_decompose(
+        self, intention: IntentionRecord, resume: dict[str, Any],
+    ) -> list[Any]:
+        """Decompose a complex goal into child intentions on first planning."""
+        if resume.get("decomposed"):
+            return []
+        if not needs_decomposition(intention, difficulty=resume.get("difficulty")):
+            return []
+        try:
+            children = await decompose_and_persist(
+                self.memory, intention, {"summary": str(intention.title), "expected_value": 0.8},
+            )
+        except Exception:
+            logger.exception("gsl.decompose_failed", intention=str(intention.id))
+            return []
+        if children:
+            resume["decomposed"] = True
+            await self._save_resume(intention, resume)
+        return children
+
     async def _finish_goal(self, intention: IntentionRecord, resume: dict[str, Any],
                            plan: Plan) -> tuple[SolverResult, float]:
         cost = 0.0
@@ -1459,6 +1536,36 @@ class GeneralSolverLoop:
                 cost_usd=cost,
             ), cost
         if verification.passed:
+            gate_policy = resume.get("gate_policy") or (intention.constraints or {}).get("gate_policy") or {}
+            gate_block = gate_blocks_completion(verification, gate_policy)
+            if gate_block is not None:
+                verification.passed = False
+                verification.issues.append(gate_block)
+                for issue in [gate_block][:3]:
+                    await self.memory.record_episode(
+                        kind="verification_failed", summary=issue[:300],
+                        intention_id=intention.id, importance=0.7,
+                    )
+                await self.memory.update_intention(
+                    intention.id, status=IntentionStatus.in_progress.value,
+                )
+                return SolverResult(
+                    outcome=SolverOutcome.step_failed, verification=verification,
+                    thoughts=[gate_block],
+                    cost_usd=cost,
+                ), cost
+            created_gate_children = await self._unlock_gate_children(
+                intention, resume, gate_policy,
+            )
+            if created_gate_children:
+                return SolverResult(
+                    outcome=SolverOutcome.step_done, verification=verification,
+                    thoughts=[
+                        f"gate opened: {len(created_gate_children)} verification/synthesis "
+                        f"child(ren) created for {intention.title}",
+                    ],
+                    cost_usd=cost,
+                ), cost
             await self._close_attempt(intention, resume, "succeeded", cost)
             await self.memory.close_intention(intention.id, IntentionStatus.done.value,
                                               "verification passed")

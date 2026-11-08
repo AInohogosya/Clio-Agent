@@ -37,6 +37,73 @@ RECENT_THOUGHTS = 10
 CONTEXT_BLOCKS = ("thread", "recent", "conversations")
 
 
+def summarize_dag(
+    commitments: list[dict[str, Any]],
+    *,
+    focus_title: str | None = None,
+) -> tuple[list[str], list[dict[str, Any]]]:
+    """Two-tier commitments: compressed DAG summaries + focus detail.
+
+    Returns (summary_lines, focus_detail_rows). Pure function for tests.
+    Commitments may carry `telemetry` (completion ratio, blockers, burn,
+    ready count) and `edges`/`parent_id` to describe the DAG shape.
+    """
+    total = len(commitments)
+    done = sum(1 for c in commitments if c.get("status") == "done")
+    spent = sum(float(c.get("budget_spent_usd") or c.get("spent_usd") or 0) for c in commitments)
+    blocked = sum(int(c.get("blocked_count") or 0) for c in commitments)
+    ready = sum(1 for c in commitments if c.get("ready", False))
+    ratio = (done / total) if total else 0.0
+    summary = [
+        f"Active DAGs: {total} intention(s), {done} done ({ratio:.0%} complete)",
+        f"Critical-path blockers: {blocked} blocked edge(s); ready nodes: {ready}",
+        f"Budget burn: ${spent:.2f} across visible intentions",
+    ]
+    focus_detail: list[dict[str, Any]] = []
+    if focus_title:
+        for c in commitments:
+            if c.get("title") == focus_title:
+                focus_detail.append(c)
+        if not focus_detail and commitments:
+            focus_detail = [commitments[0]]
+    return summary, focus_detail
+
+
+def render_commitments(
+    commitments: list[dict[str, Any]],
+    *,
+    focus_title: str | None = None,
+) -> str:
+    """The commitments block: (a) DAG summaries, (b) focus detail."""
+    if not commitments:
+        return "## Commitments\n(none — nothing is owed)"
+    summary, focus_detail = summarize_dag(commitments, focus_title=focus_title)
+    lines = ["## Commitments (promises, in hand)", "### Intention DAGs (compressed)"]
+    lines.extend(f"- {line}" for line in summary)
+    lines.append("### Focus detail")
+    rows = focus_detail or commitments[:1]
+    for c in rows:
+        author = c.get("commissioned_by")
+        if not author or author == "self":
+            detail = "taken on by me"
+        else:
+            detail = f"asked for by {author}"
+        if c.get("deadline"):
+            detail += f", due {c['deadline']}"
+        else:
+            detail += ", no deadline"
+        telemetry = c.get("telemetry") or {}
+        extra = ""
+        if telemetry:
+            extra = (
+                f" [ratio={telemetry.get('completion_ratio', 0):.0%},"
+                f" blocked={telemetry.get('blocked_edges', 0)},"
+                f" ready={telemetry.get('ready_count', 0)}]"
+            )
+        lines.append(f"- {c.get('title', '?')} — {detail} [{c.get('status', '?')}]{extra}")
+    return "\n".join(lines)
+
+
 class Block:
     def __init__(self, name: str, text: str):
         self.name = name
@@ -133,31 +200,8 @@ class WorkspaceAssembler:
         blocks.append(Block("situation", situation))
 
         if commitments:
-            # Rendered as promises rather than as a dump of four fields.
-            #
-            # The row is a record and this is a page someone has to act on, and the
-            # difference is who is waiting: `commissioned_by=7f3a…` is a column,
-            # where "asked for by Mira" is a reason to do it today. Deadline is kept
-            # because it is how a promise gets ordered against another promise, but
-            # it is an annotation now rather than the content.
-            lines = ["## Commitments (promises, in hand)"]
-            for c in commitments[:12]:
-                # `self` and the empty column are one case and not two: both mean
-                # nobody asked for this, and both have to read as the agent's own
-                # choice. Filling the empty one in with a name and then rendering
-                # that as "asked for by <name>" leaves the agent waiting on a person
-                # called `me`.
-                author = c.get("commissioned_by")
-                if not author or author == "self":
-                    detail = "taken on by me"
-                else:
-                    detail = f"asked for by {author}"
-                if c.get("deadline"):
-                    detail += f", due {c['deadline']}"
-                else:
-                    detail += ", no deadline"
-                lines.append(f"- {c.get('title', '?')} — {detail} [{c.get('status', '?')}]")
-            blocks.append(Block("commitments", "\n".join(lines)))
+            focus_title = getattr(focus, "title", None) if focus else None
+            blocks.append(Block("commitments", render_commitments(commitments, focus_title=focus_title)))
         else:
             blocks.append(Block("commitments", "## Commitments\n(none — nothing is owed)"))
 

@@ -1,4 +1,4 @@
-import { useEffect, useState, type CSSProperties } from 'react';
+import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { createTranslator, type AgentControlAction } from '@project-phone/core';
 import { ChatScreen, type CoordinationState } from './screens/ChatScreen';
 import { AgentScreen } from './screens/AgentScreen';
@@ -36,10 +36,32 @@ export default function App() {
     historyLoading,
     loadOlderHistory,
   } = controller;
-  const [screen, setScreen] = useState<Screen>('main');
+  const [screen, setScreen] = useState<Screen>(() => (controller.shouldShowProviderSetup ? 'settings' : 'main'));
   const [armedEmergency, setArmedEmergency] = useState(false);
   const [pendingAction, setPendingAction] = useState<AgentControlAction | null>(null);
   const t = createTranslator(snapshot.settings.language);
+
+  // The launch decision, followed until the reader makes one of their own.
+  // Before the bridge answers the surface is holding defaults rather than
+  // the configured file, so the first paint is already "configure first";
+  // the snapshot that follows may say the install was set up long ago, and
+  // that answer replaces the guess. Once the reader has closed the settings
+  // or opened them on purpose, nothing here moves the screen for them again.
+  const choseScreen = useRef(false);
+  useEffect(() => {
+    if (choseScreen.current) return;
+    setScreen(controller.shouldShowProviderSetup ? 'settings' : 'main');
+  }, [controller.shouldShowProviderSetup]);
+
+  const closeSettings = () => {
+    choseScreen.current = true;
+    setScreen('main');
+  };
+
+  const openSettings = () => {
+    choseScreen.current = true;
+    setScreen('settings');
+  };
 
   useEffect(() => {
     const theme = snapshot.settings.theme;
@@ -83,7 +105,7 @@ export default function App() {
       {screen === 'settings' ? (
         <SettingsScreen
           discover={(candidate, signal, options) => controller.discoverModels(signal, candidate, options)}
-          onClose={() => setScreen('main')}
+          onClose={closeSettings}
           onUpdate={controller.updateSettings}
           clearIdentity={controller.clearIdentity}
           preview={preview}
@@ -114,7 +136,7 @@ export default function App() {
           onCloseIntention={(id) => void closeIntention(id)}
           onControl={runControl}
           onInterrupt={controller.interrupt}
-          onOpenSettings={() => setScreen('settings')}
+          onOpenSettings={openSettings}
           onRefresh={() => void refresh()}
           onSelectConversation={(id) => setConversation(
             conversations.find((entry) => entry.id === id) ?? null,
@@ -134,7 +156,7 @@ export default function App() {
           coordination={coordination}
           onClear={controller.clearConversation}
           onInterrupt={controller.interrupt}
-          onOpenSettings={() => setScreen('settings')}
+          onOpenSettings={openSettings}
           onSend={(text) => void controller.sendMessage(text)}
           snapshot={snapshot}
         />

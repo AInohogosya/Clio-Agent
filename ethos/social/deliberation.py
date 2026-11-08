@@ -1031,6 +1031,99 @@ class SocialCognition:
             decision.creates_intention = False
             decision.intention_spec = None
 
+    # --------------------------------------- federated commissions (3.2)
+
+    @staticmethod
+    def evaluate_commission(
+        spec: dict[str, Any], *, skills: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Epistemic check on a peer-resident commission. Pure.
+
+        Returns {"action", "reason", "detail"} where action is one of
+        `accept`, `ask_clarification`, `deliberate_disagreement`, `boundary`.
+        """
+        skills = skills or {}
+        required = spec.get("required_capability") or spec.get("capability")
+        if required and required not in skills and required not in (skills.get("skills") or []):
+            return {
+                "action": "boundary",
+                "reason": f"commission requires capability {required!r} outside calibrated skills",
+                "detail": {"required_capability": required},
+            }
+        budget = spec.get("budget_usd")
+        ceiling = skills.get("max_budget_usd") if isinstance(skills, dict) else None
+        if budget is not None and ceiling is not None:
+            try:
+                if float(budget) > float(ceiling):
+                    return {
+                        "action": "deliberate_disagreement",
+                        "reason": (
+                            f"commission budget ${float(budget):.2f} exceeds calibrated "
+                            f"ceiling ${float(ceiling):.2f}"
+                        ),
+                        "detail": {"budget_usd": budget, "ceiling": ceiling},
+                    }
+            except (TypeError, ValueError):
+                pass
+        summary = str(spec.get("summary") or spec.get("goal") or "").strip()
+        if len(summary) < 20 or not spec.get("budget_usd") and spec.get("needs_budget_clarification"):
+            return {
+                "action": "ask_clarification",
+                "reason": "commission spec is underspecified",
+                "detail": {"summary_length": len(summary)},
+            }
+        if not summary:
+            return {
+                "action": "ask_clarification",
+                "reason": "commission carries no goal summary",
+                "detail": {},
+            }
+        return {"action": "accept", "reason": "spec is within skills and budget", "detail": {}}
+
+    async def deliberate_commission(
+        self, spec: dict[str, Any], *, message: Message | None = None,
+        skills: dict[str, Any] | None = None,
+    ) -> SocialDecision:
+        """Route a peer-resident commission through deliberate(), with checks.
+
+        Local epistemic checks run first (flawed spec, under-budgeted,
+        outside skills) so a specialist can disagree without spending a model
+        call; a clean spec goes through the full `deliberate()` path.
+        `_withhold_unearned_progress()` is enforced on the outgoing update.
+        """
+        evaluation = self.evaluate_commission(spec, skills=skills)
+        if evaluation["action"] in ("boundary", "deliberate_disagreement"):
+            reason = evaluation.get("ignore_reason") or (
+                "boundary" if evaluation["action"] == "boundary" else "deliberate_disagreement"
+            )
+            decision = SocialDecision(
+                action=SocialAction.ignore,
+                reply_texts=[],
+                reason=evaluation["reason"],
+                ignore_reason=reason,
+                tier_used="T3",
+            )
+            state = await self._execution_state(None)
+            self._withhold_unearned_progress(decision, state)
+            return decision
+        if evaluation["action"] == "ask_clarification":
+            return SocialDecision(
+                action=SocialAction.ask_clarification,
+                reply_texts=[f"Could you clarify the commission? {evaluation['reason']}"],
+                reason=evaluation["reason"],
+                tier_used="T3",
+            )
+        if message is None:
+            return SocialDecision(
+                action=SocialAction.act_silently, reply_texts=[],
+                reason="commission accepted without an inbound message to deliberate",
+                tier_used="T3",
+            )
+        decision = await self.deliberate(message)
+        state = await self._execution_state(None)
+        self._withhold_unearned_progress(decision, state)
+        return decision
+
     async def _ask(
         self, prompt_messages: list[dict[str, str]], tier: Tier, consequential: bool,
     ) -> tuple[dict[str, Any], bool, int, str | None, bool]:

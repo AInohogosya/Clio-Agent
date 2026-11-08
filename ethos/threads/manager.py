@@ -25,6 +25,44 @@ _FAILED_RESULT_STATUSES = frozenset({
 })
 
 
+def ev_weight(expected_value: float | None, estimated_cost_usd: float | None) -> float:
+    """One child's claim on a shared budget: value per dollar."""
+    ev = 0.5 if expected_value is None else max(0.0, float(expected_value))
+    cost = 0.05 if estimated_cost_usd is None else max(1e-6, float(estimated_cost_usd))
+    return max(1e-9, ev / cost)
+
+
+def allocate_child_budget(
+    parent_budget_usd: float | None,
+    parent_spent_usd: float = 0.0,
+    *,
+    expected_value: float | None = None,
+    estimated_cost_usd: float | None = None,
+    peers: list[dict[str, Any]] | None = None,
+    h2_cap_usd: float | None = None,
+) -> float | None:
+    """This child intention's budget, carved EV-proportionally.
+
+    When `peers` are given the whole pool is split by value-per-dollar;
+    otherwise this child gets its weight against the field cost. Capped at
+    the H2 ceiling when one is supplied. Pure function for testability.
+    """
+    if parent_budget_usd is None:
+        return None
+    pool = max(0.0, float(parent_budget_usd) - max(0.0, float(parent_spent_usd)))
+    if h2_cap_usd is not None:
+        pool = min(pool, max(0.0, float(h2_cap_usd)))
+    if not peers:
+        return round(pool, 4)
+    from ethos.memory.store import allocate_ev_budgets
+
+    children = [
+        {"key": "self", "expected_value": expected_value, "estimated_cost_usd": estimated_cost_usd},
+        *peers,
+    ]
+    return allocate_ev_budgets(pool, children, h2_cap=None)["self"]
+
+
 def is_failed_result(result: Any) -> bool:
     """Whether a worker's returned envelope says the work did not finish.
 
@@ -83,12 +121,16 @@ class ThreadManager:
         audit: Any = None,
         worker_factory: Any = None,
         gateway: Any = None,
+        toolhost: Any = None,
+        self_model: Any = None,
     ):
         self.config = config
         self.memory = memory
         self.bus = bus
         self.audit = audit
         self.gateway = gateway
+        self.toolhost = toolhost
+        self.self_model = self_model
         """Threads that have not finished yet, keyed by thread id.
 
         Inserted when the handle is created and removed the moment it reaches a
@@ -225,8 +267,17 @@ class ThreadManager:
 
                 parent = await self.memory.get_intention(UUID(str(parent_intention_id)))
                 if parent is not None and parent.budget_usd is not None:
-                    remaining = max(0.0, parent.budget_usd - parent.spent_usd)
-                    budget_usd = round(remaining / 2, 4)
+                    h2_cap = float(
+                        getattr(self.config.permissions.hard_limits, "H2_capital_at_risk_usd", 0) or 0
+                    ) or None
+                    peers = spec.get("peers") or spec.get("siblings")
+                    budget_usd = allocate_child_budget(
+                        parent.budget_usd, parent.spent_usd,
+                        expected_value=spec.get("expected_value"),
+                        estimated_cost_usd=spec.get("estimated_cost_usd"),
+                        peers=peers if isinstance(peers, list) else None,
+                        h2_cap_usd=h2_cap,
+                    )
             except Exception:
                 logger.exception("threads.budget_carve_failed")
 
@@ -366,7 +417,75 @@ class ThreadManager:
     def _default_worker(self, spec: dict[str, Any]) -> Any:
         from ethos.threads.worker import run_thread
 
-        return run_thread(spec, self.config, self.memory, self.gateway)
+        return run_thread(spec, self.config, self.memory, self.gateway, toolhost=self.toolhost, self_model=self.self_model)
+
+    async def spawn_ready_branches(
+        self,
+        parent_intention_id: Any,
+        *,
+        extra_spec: dict[str, Any] | None = None,
+    ) -> list[ThreadHandle]:
+        """Dispatch ready DAG branches in parallel across ThreadManager.
+
+        Reads the parent's ready children (depends_on predecessors done) and
+        spawns one thread per branch, each budget-carved EV-proportionally.
+        Returns the handles; failures are logged, not raised, so one bad
+        branch never blocks its siblings.
+        """
+        from uuid import UUID
+
+        handles: list[ThreadHandle] = []
+        try:
+            ready = await self.memory.get_ready_intentions()
+        except Exception:
+            logger.exception("threads.ready_lookup_failed")
+            return handles
+        parent_uuid = None
+        try:
+            parent_uuid = UUID(str(parent_intention_id))
+        except (ValueError, TypeError):
+            parent_uuid = None
+        candidates: list[Any] = []
+        for intention in ready:
+            if parent_uuid is not None and getattr(intention, "parent_id", None) != parent_uuid:
+                continue
+            if parent_uuid is None and str(getattr(intention, "parent_id", "") or "") != str(parent_intention_id):
+                continue
+            candidates.append(intention)
+        if not candidates and parent_uuid is not None:
+            # Fall back to the parent's direct children when the global ready
+            # list is filtered differently.
+            try:
+                subgraph = await self.memory.get_intention_subgraph(parent_uuid)
+                candidates = [
+                    n for n in subgraph["intentions"]
+                    if n.id != parent_uuid and n.status in ("active", "proposed", "in_progress", "waiting")
+                ]
+            except Exception:
+                candidates = []
+        peers = [
+            {
+                "key": str(c.id),
+                "expected_value": getattr(c, "expected_value", None),
+                "estimated_cost_usd": (c.resume_state or {}).get("estimated_cost_usd")
+                if isinstance(getattr(c, "resume_state", None), dict) else None,
+            }
+            for c in candidates
+        ]
+        for intention in candidates[: max(0, self.config.threads.max_concurrent)]:
+            try:
+                spec: dict[str, Any] = {
+                    "goal": intention.title,
+                    "parent_intention_id": str(parent_intention_id),
+                    "peers": peers,
+                    "expected_value": getattr(intention, "expected_value", None),
+                    **(extra_spec or {}),
+                }
+                handle = await self.spawn_spec(spec)
+                handles.append(handle)
+            except Exception:
+                logger.exception("threads.spawn_branch_failed", intention=str(intention.id))
+        return handles
 
 
 def _uuid(value: str | None):

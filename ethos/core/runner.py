@@ -129,6 +129,7 @@ class CoreRuntime:
         )
         self.threads = ThreadManager(
             config, self.memory, bus=self.bus, audit=self.audit, gateway=self.gateway,
+            self_model=self.self_model,
         )
         from ethos.subagents import SubagentRegistry
 
@@ -147,6 +148,9 @@ class CoreRuntime:
                 "gateway": self.gateway,
             },
         )
+        # Wired after construction: the toolhost needs the thread manager as a
+        # service, and the thread worker needs the toolhost to execute steps.
+        self.threads.toolhost = self.toolhost
         self.attention = Attention(config, embedder=self.embedder, gateway=self.gateway,
                                    self_model=self.self_model)
         self.motivation = Motivation(config)

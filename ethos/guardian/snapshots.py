@@ -151,3 +151,29 @@ class SnapshotManager:
                     if len(out) >= limit:
                         break
         return out
+
+    async def restore(self, name: str, target: Path | None = None) -> Path:
+        """Restore a snapshot tree into `target` (rollback support)."""
+        source = self.snapshots_dir / name
+        if not source.exists():
+            raise SnapshotError(f"snapshot not found: {name}")
+        target = target or self.config.paths.home.expanduser()
+        await asyncio.to_thread(self._restore_tree, source, target)
+        return target
+
+    @staticmethod
+    def _restore_tree(source: Path, target: Path) -> None:
+        target.mkdir(parents=True, exist_ok=True)
+        for dirpath, _, files in os.walk(source):
+            rel = Path(dirpath).relative_to(source)
+            if rel.name == ".ethos-snapshot.json":
+                continue
+            dest_dir = target / rel
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            for name in files:
+                if name == ".ethos-snapshot.json":
+                    continue
+                try:
+                    shutil.copy2(Path(dirpath) / name, dest_dir / name)
+                except OSError:
+                    pass

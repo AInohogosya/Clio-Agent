@@ -150,7 +150,7 @@ async def _complete_json(gateway: Any, request: Any, config: Any = None, *,
     )
 
 
-async def run_thread(spec: dict[str, Any], config: EthosConfig, memory: Any, gateway: Any = None) -> Any:
+async def run_thread(spec: dict[str, Any], config: EthosConfig, memory: Any, gateway: Any = None, *, toolhost: Any = None, self_model: Any = None) -> Any:
     """A Thread is the same framework in a different frame: it gets a goal,
     a framing sentence, an isolated workdir, and the same memory + identity.
     A sub-agent role is the one exception: the frame belongs to another
@@ -179,7 +179,7 @@ async def run_thread(spec: dict[str, Any], config: EthosConfig, memory: Any, gat
         return {"status": "missing-intention", "goal": goal}
 
     memories = await memory.search(goal, k=8)
-    summary = await _pursue(goal, intention, memories, spec, config, memory, gateway, workdir)
+    summary = await _pursue(goal, intention, memories, spec, config, memory, gateway, workdir, toolhost=toolhost, self_model=self_model)
     return summary
 
 
@@ -291,6 +291,9 @@ async def _pursue(
     memory: Any,
     gateway: Any,
     workdir: Any,
+    *,
+    toolhost: Any = None,
+    self_model: Any = None,
 ) -> dict[str, Any]:
     import time
 
@@ -302,6 +305,27 @@ async def _pursue(
     from ethos.gsl.planner import pick_approach
 
     knowhow_text = "\n".join(f"- [{m.kind}] {m.summary}" for m in memories[:10]) or "(none)"
+    self_name = config.self_name
+    if self_model is not None:
+        try:
+            self_name = await self_model.get("name", config.self_name)
+        except Exception:
+            pass
+    catalog: list[dict[str, Any]] = []
+    if toolhost is not None:
+        try:
+            catalog = list(toolhost.catalog())
+        except Exception:
+            catalog = []
+    from ethos.prompts.identity import build_identity_kernel, build_limits_block, build_tool_catalog_block
+    context_prefix = "\n\n".join([
+        build_identity_kernel(self_name),
+        build_tool_catalog_block(catalog) if catalog else "## Tools\n(none registered in this thread)",
+        build_limits_block(),
+    ])
+
+    def _with_prefix(messages: list[Any]) -> list[Any]:
+        return [ModelMessage(role=Role.system, content=context_prefix), *messages]
     # `delegation_note` reads the work off an intention's fields, and this
     # worker has a goal string rather than an intention row — so the routing
     # detection reads the same fields off the shape it is given. Without it the
@@ -333,13 +357,13 @@ async def _pursue(
                 tier=Tier.T2,
                 purpose="thread.devise",
                 thread_id=str(spec.get("id")),
-                messages=[
+                messages=_with_prefix([
                     ModelMessage(role=Role.system, content=DEVISE_PROMPT.format(
-                        name=config.self_name, title=goal, desired_end_state=goal,
+                        name=self_name, title=goal, desired_end_state=goal,
                         understanding=goal, knowhow=knowhow_text, lessons="(none)",
                     )),
                     ModelMessage(role=Role.user, content="Devise 3 approaches."),
-                ],
+                ]),
                 max_tokens=1200,
             ),
             config,
@@ -364,9 +388,9 @@ async def _pursue(
                 tier=Tier.T2,
                 purpose="thread.plan",
                 thread_id=str(spec.get("id")),
-                messages=[
+                messages=_with_prefix([
                     ModelMessage(role=Role.system, content=PLAN_PROMPT.format(
-                        name=config.self_name, approach=approach.get("summary", ""),
+                        name=self_name, approach=approach.get("summary", ""),
                         commissioned=COMMISSIONED_ALREADY,
                         success_checks=SUCCESS_CHECKS_MATTER,
                         deliverable=VISIBLE_DELIVERABLE,
@@ -380,7 +404,7 @@ async def _pursue(
                         ),
                     )),
                     ModelMessage(role=Role.user, content="Produce the plan JSON."),
-                ],
+                ]),
                 max_tokens=1200,
             ),
             config,
@@ -390,7 +414,7 @@ async def _pursue(
         cost += plan_response.cost_usd
 
         steps = [
-            s for s in plan_data.get("steps", [])[:5]
+            s for s in plan_data.get("steps", [])[:7]
             if isinstance(s, dict) and s.get("description")
         ]
         if not steps:
@@ -401,9 +425,10 @@ async def _pursue(
         for i, step in enumerate(steps):
             step_id = str(step.get("id", f"s{i+1}"))
             stage = f"step {step_id}"
-            step_messages = [
+            step_tools = build_tool_catalog_block(catalog) if catalog else "(no tool catalog available in this thread; do not claim a tool you cannot name from the plan hints)"
+            step_messages = _with_prefix([
                 ModelMessage(role=Role.system, content=STEP_PROMPT.format(
-                    name=config.self_name, commissioned=COMMISSIONED_ALREADY,
+                    name=self_name, commissioned=COMMISSIONED_ALREADY,
                     editing=EDIT_EXISTING_FILES,
                     deliverable=VISIBLE_DELIVERABLE,
                     delegation=delegation_note(goal_as_intention),
@@ -416,12 +441,12 @@ async def _pursue(
                     ),
                     step_id=step_id,
                     step_description=step.get("description", ""),
-                    plan_state=dumps(plan_data.get("steps", [])[:5]),
+                    plan_state=dumps(plan_data.get("steps", [])[:7]),
                     memories=knowhow_text,
-                    tools="(same tool catalog as the Self)",
+                    tools=step_tools,
                 )),
                 ModelMessage(role=Role.user, content="Decide the next concrete action."),
-            ]
+            ])
             step_response = await _complete(gateway, ModelRequest(
                 tier=Tier.T2,
                 purpose="thread.step",
@@ -461,6 +486,25 @@ async def _pursue(
             thought = step_data_out.get("thought", "")
             if thought:
                 thoughts.append(str(thought)[:200])
+            if toolhost is not None:
+                from ethos.toolhost.server import ToolContext
+                for action in (step_data_out.get("actions") or [])[:6]:
+                    if not isinstance(action, dict) or not action.get("tool"):
+                        continue
+                    ctx = ToolContext(
+                        thread_id=str(spec.get("id")),
+                        intention_id=str(intention.id) if intention is not None else None,
+                        reason=f"thread step {step_id}: {step.get('description', '')[:120]}",
+                        commissioned_by=getattr(intention, "commissioned_by", None),
+                        idempotency_key=f"{spec.get('id')}:{step_id}:{len(thoughts)}",
+                    )
+                    try:
+                        result = await toolhost.execute(str(action["tool"]), dict(action.get("args") or {}), ctx)
+                        thoughts.append(f"{action['tool']} -> {'ok' if result.ok else 'failed'}: {str(result.content if result.ok else result.error)[:160]}")
+                    except Exception as exc:
+                        thoughts.append(f"{action['tool']} raised: {type(exc).__name__}: {exc}"[:200])
+            elif step_data_out.get("actions"):
+                thoughts.append("actions proposed but not executed (no toolhost in this thread)")
     except Exception as exc:
         return await _fail(exc)
 

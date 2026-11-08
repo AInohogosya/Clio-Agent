@@ -385,10 +385,11 @@ def test_a_failed_plan_is_revised_rather_than_abandoned() -> None:
 
     plan = " ".join(PLAN_PROMPT.split()).lower()
     assert "when a plan fails" in plan
-    assert "never give up" in plan
+    assert "do not give up on the intention because a plan did not work" in plan
+    assert "legitimate stop" in plan
     assert "revise the plan" in plan
     assert "empty plan" in plan
-    assert "information about the plan, not the end" in plan
+    assert "information about the plan, not by itself the end" in plan
 
     degraded = " ".join(DEGRADED_PLAN.split()).lower()
     assert "return no steps rather than inventing them" not in degraded
@@ -396,7 +397,7 @@ def test_a_failed_plan_is_revised_rather_than_abandoned() -> None:
     assert "never answer with an empty plan" in degraded
 
     devise = " ".join(DEVISE_PROMPT.split()).lower()
-    assert "failed approach is not the end" in devise
+    assert "failed approach is not by itself the end" in devise
     assert "never answer with an empty list" in devise
 
 

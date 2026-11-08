@@ -16,6 +16,64 @@ from ethos.schemas.models import ModelMessage, ModelRequest, Role, Tier
 logger = get_logger("ethos.gsl.verification")
 
 
+def gate_children(
+    goal: str, gate_policy: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """The verifies + synthesizes children a gate creates, if gated.
+
+    Returns [] when there is no gate policy. The verifies child is judged by
+    an independent diversity-family T3 model or peer resident; the
+    synthesizes child only unlocks after verification passes is enforced by
+    the caller ordering them via `depends_on` edges.
+    """
+    policy = gate_policy or {}
+    if not policy:
+        return []
+    family = str(policy.get("verifier_family") or "independent")
+    return [
+        {
+            "title": f"Verify (gate): {goal}"[:200],
+            "desired_end_state": f"Independent T3 verification of {goal} (family={family})",
+            "edge_type": "verifies",
+            "gate_policy": dict(policy),
+        },
+        {
+            "title": f"Synthesize (gate): {goal}"[:200],
+            "desired_end_state": f"Synthesize verified outcome of {goal}",
+            "edge_type": "synthesizes",
+            "gate_policy": {},
+        },
+    ]
+
+
+def gate_blocks_completion(
+    verification: Any, gate_policy: dict[str, Any] | None = None,
+) -> str | None:
+    """Why a gate holds completion, or None when it does not.
+
+    The invariant: a model judge can never overturn failing objective checks.
+    A `pass` verdict alongside `checks_failed` is a block, not a pass.
+    """
+    policy = gate_policy or {}
+    if not policy:
+        return None
+    if verification is None:
+        return "gate requires a verification result"
+    objective = getattr(verification, "objective", None)
+    notes = list(getattr(objective, "notes", []) or []) if objective is not None else []
+    checks_failed = [n for n in notes if n.startswith("failed check:")]
+    verifier = getattr(verification, "verifier", None) or {}
+    verdict = str(verifier.get("verdict", ""))
+    if checks_failed and verdict == "pass":
+        return (
+            "gate: the independent verifier passed over failing objective checks; "
+            "the failing checks stand and completion is blocked"
+        )
+    if policy.get("require_verifier_pass", True) and verdict in ("fail", "needs_human"):
+        return f"gate: verifier verdict is {verdict!r}, not pass"
+    return None
+
+
 def diverse_provider_hint(config: EthosConfig, producer_family: str | None) -> str | None:
     """A provider from a different diversity family than the producer's, or None.
 
@@ -68,7 +126,7 @@ async def run_model_verifier(
             )),
             ModelMessage(role=Role.user, content="Judge the artifact."),
         ],
-        max_tokens=600,
+        max_tokens=1200,
     )
     try:
         response = await gateway.complete(request)

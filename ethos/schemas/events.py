@@ -29,6 +29,12 @@ class EventKind:
     CONSOLIDATE_DONE = "consolidate.done"
     VERIFY_REQUEST = "verify.request"
     WAKE_NUDGE = "wake.nudge"
+    # Federated resident protocol (Clio 3.2).
+    COMMISSION_PROPOSE = "commission.propose"
+    COMMISSION_ACCEPT = "commission.accept"
+    COMMISSION_CHALLENGE = "commission.challenge"
+    COMMISSION_ARTIFACT = "commission.artifact"
+    COMMISSION_VERIFY = "commission.verify"
 
 
 class Trust(str, Enum):

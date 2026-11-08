@@ -83,7 +83,26 @@ class OutboundPipeline:
         )
         return int(count or 0)
 
+    async def _principal_kind(self, person_id: str | None) -> str:
+        """The kind of principal this address belongs to: human by default."""
+        if not person_id or self.relationships is None:
+            return "human"
+        try:
+            person = await self.relationships.get(person_id)
+        except Exception:
+            return "human"
+        if not person:
+            return "human"
+        return str(person.get("kind") or "human")
+
+    async def is_resident_address(self, person_id: str | None) -> bool:
+        return (await self._principal_kind(person_id)) == "resident"
+
     async def can_contact(self, person_id: str | None, urgency: str) -> tuple[bool, str]:
+        # Clio 3.2: residents take the fast path — no quiet hours, no digest,
+        # no daily interruption budget. Humans keep the full etiquette.
+        if person_id is not None and (await self.is_resident_address(person_id)):
+            return True, "resident fast-path bypasses human etiquette"
         now = self.now_fn().astimezone(clock_timezone(self.config.timezone))
         inter = self.config.permissions.interruption
         if urgency in (Urgency.high.value, Urgency.critical.value):
@@ -157,6 +176,10 @@ class OutboundPipeline:
         if urgency not in (u.value for u in Urgency):
             urgency = Urgency.normal.value
         key = conversation_key or key_for(channel, person_id)
+        # Clio 3.2 resident fast-path: structured JSON over the EventBus,
+        # immediately. No quiet hours, no digest, no daily budget.
+        if person_id is not None and (await self.is_resident_address(person_id)):
+            return await self._deliver_resident(person_id, channel, text, urgency, key, intention_id)
         # A reply to a named message is an answer, not an interruption.
         #
         # Every gate below this line — the digest window, quiet hours, the daily
@@ -351,6 +374,46 @@ class OutboundPipeline:
             )
             sent += 1
         return sent
+
+    async def _deliver_resident(
+        self, person_id: str, channel: str, text: str, urgency: str,
+        key: str, intention_id: Any, kind: str = "commission.artifact",
+    ) -> dict[str, Any]:
+        """Inter-resident delivery: structured JSON over the EventBus at once."""
+        detail: dict[str, Any] = {
+            "status": "sent", "resident_fast_path": True, "kind": kind,
+        }
+        if self.bus is not None:
+            try:
+                await self.bus.publish(kind, {
+                    "person_id": person_id, "channel": channel, "text": text,
+                    "urgency": urgency, "conversation_key": key,
+                    "intention_id": str(intention_id) if intention_id else None,
+                    "resident_fast_path": True,
+                })
+            except Exception:
+                logger.exception("etiquette.resident_publish_failed")
+        if self.sender is not None:
+            try:
+                result = await self.sender(
+                    person_id=person_id, channel=channel, text=text, urgency=urgency,
+                    conversation_key=key, in_reply_to=None,
+                )
+                if isinstance(result, dict):
+                    detail.update(result)
+            except Exception:
+                logger.exception("etiquette.resident_delivery_failed")
+                detail["status"] = "failed"
+        record = await self._record(
+            person_id, channel, text, urgency, key, None, intention_id,
+            status=detail.get("status", "sent"), detail=detail,
+        )
+        if self.relationships is not None:
+            try:
+                await self.relationships.note_contact(person_id, direction="outbound")
+            except Exception:
+                pass
+        return {"status": detail.get("status", "sent"), "message_id": record, "detail": detail}
 
     async def _deliver(self, person_id: str | None, channel: str, text: str, urgency: str,
                        conversation_key: str | None, in_reply_to: Any, intention_id: Any) -> dict[str, Any]:

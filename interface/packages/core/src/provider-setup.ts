@@ -84,6 +84,61 @@ export function setupProblem(step: SetupStep, draft: Settings, keyOnFile = false
 }
 
 /**
+ * Whether the provider and LLM are already configured enough to make the
+ * normal chat usable, or `false` when setup still has to happen.
+ *
+ * This is the first-launch rule both surfaces share: a fresh install has
+ * defaults but no credential yet, so it must meet the provider and model
+ * screen before the chat is useful. It reuses the same endpoint, key and
+ * model checks as `setupProblem` and `baseModelProblem` rather than keeping
+ * a second spelling of them.
+ *
+ * `direct` needs a credential from the settings or from `keyOnFile` (file or
+ * environment), when the provider requires one. In `agent` mode the shared
+ * key is not the agent's key, so only the model and endpoint are checked
+ * here; the agent's own base-model key is the agent side's answer, and the
+ * settings screen reads it there rather than from this surface.
+ */
+export function isProviderConfigured(settings: Settings, keyOnFile = false): boolean {
+  if (!isValidProviderEndpoint(settings.baseUrl, settings.provider)) return false;
+  if (!settings.baseUrl.trim()) return false;
+  if (!settings.model.trim()) return false;
+  if (!isProviderModelName(settings.model)) return false;
+  if (
+    settings.interface === 'direct'
+    && providerFor(settings.provider).requiresApiKey
+    && !settings.apiKey.trim()
+    && !keyOnFile
+  ) {
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Whether a launch opens on the provider and LLM settings rather than the
+ * chat: it has never been launched before, or that setup never finished.
+ *
+ * The two halves are separate signals on purpose. A brand-new file has
+ * revision and updatedAt at zero, which is what "first launch" means even
+ * for an install whose defaults already name a model — for `agent` installs
+ * that is the only way a fresh one is told apart from a working one that
+ * never touched the shared file. A saved file that still has no usable
+ * provider is the second: the person left setup without configuring, and
+ * the next launch is the second chance rather than a fresh start that the
+ * first-launch half would no longer catch.
+ */
+export function shouldShowProviderSetupOnLaunch(input: {
+  revision: number;
+  updatedAt: number;
+  settings: Settings;
+  keyOnFile?: boolean;
+}): boolean {
+  if (input.revision === 0 && input.updatedAt === 0) return true;
+  return !isProviderConfigured(input.settings, input.keyOnFile ?? false);
+}
+
+/**
  * What must be fixed before an *agent* draft can be saved.
  *
  * A separate question from `setupProblem`, and the answer is smaller: the address

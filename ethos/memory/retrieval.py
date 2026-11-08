@@ -294,14 +294,14 @@ class HybridRetriever:
     _QUERIES: dict[str, str] = {
         "episode": (
             "SELECT id::text AS id, kind, summary, body::text AS body, ts, importance, strength, "
-            "embedding::text AS emb, 'episode' AS source FROM episodes "
+            "embedding::text AS emb, 'episode' AS source, scope, namespace_id FROM episodes "
             "WHERE status = 'active' AND embedding IS NOT NULL "
             "ORDER BY embedding <=> $1::vector LIMIT $2"
         ),
         "fact": (
             "SELECT id::text AS id, 'fact' AS kind, subject || ': ' || statement AS summary, "
             "provenance::text AS body, updated_at AS ts, confidence AS importance, strength, "
-            "embedding::text AS emb, 'fact' AS source FROM facts "
+            "embedding::text AS emb, 'fact' AS source, scope, namespace_id FROM facts "
             "WHERE superseded_by IS NULL AND embedding IS NOT NULL "
             "ORDER BY embedding <=> $1::vector LIMIT $2"
         ),
@@ -309,14 +309,14 @@ class HybridRetriever:
             "SELECT id::text AS id, 'knowhow' AS kind, situation AS summary, evidence::text AS body, "
             "NULL::timestamptz AS ts, "
             "CASE WHEN uses > 0 THEN successes::real / uses::real ELSE 0.5 END AS importance, "
-            "0.5::real AS strength, embedding::text AS emb, 'knowhow' AS source "
+            "0.5::real AS strength, embedding::text AS emb, 'knowhow' AS source, scope, namespace_id "
             "FROM knowhow WHERE retired = false AND embedding IS NOT NULL "
             "ORDER BY embedding <=> $1::vector LIMIT $2"
         ),
         "question": (
             "SELECT id::text AS id, 'question' AS kind, text AS summary, NULL::text AS body, "
             "NULL::timestamptz AS ts, priority AS importance, 0.5::real AS strength, "
-            "embedding::text AS emb, 'question' AS source FROM questions "
+            "embedding::text AS emb, 'question' AS source, scope, namespace_id FROM questions "
             "WHERE status = 'open' AND embedding IS NOT NULL "
             "ORDER BY embedding <=> $1::vector LIMIT $2"
         ),
@@ -328,18 +328,29 @@ class HybridRetriever:
         self.cfg = cfg
 
     async def _candidates(
-        self, query_vec: list[float], k: int, kinds: set[str] | None = None
+        self, query_vec: list[float], k: int, kinds: set[str] | None = None,
+        *, scopes: set[str] | None = None, namespace_id: str | None = None,
     ) -> _Candidates:
         vec = to_pgvector(query_vec)
         wanted = self._QUERIES if not kinds else {
             kind: sql for kind, sql in self._QUERIES.items() if kind in kinds
         }
+        allowed = scopes if scopes is not None else {"private", "project", "org"}
         hits: list[MemoryHit] = []
         raw: list[str] = []
         for sql in wanted.values():
             rows = await self.db.fetch(sql, vec, k)
             for row in rows:
-                hits.append(self._row_to_hit(row, with_embedding=False))
+                hit = self._row_to_hit(row, with_embedding=False)
+                scope = hit.extra.get("scope") or "private"
+                if scope not in allowed:
+                    continue
+                # Episodes stay private. A namespace filter, when given, admits
+                # only that namespace for shared scopes.
+                if scope in ("project", "org") and namespace_id is not None:
+                    if (hit.extra.get("namespace_id") or "") != namespace_id:
+                        continue
+                hits.append(hit)
                 raw.append(row["emb"] or "")
         return self._pack(hits, raw, query_vec)
 
@@ -368,6 +379,14 @@ class HybridRetriever:
 
     @staticmethod
     def _row_to_hit(row: Any, with_embedding: bool = True) -> MemoryHit:
+        try:
+            scope = row["scope"] or "private"
+        except (KeyError, TypeError):
+            scope = "private"
+        try:
+            namespace_id = row["namespace_id"]
+        except (KeyError, TypeError):
+            namespace_id = None
         return MemoryHit(
             id=row["id"],
             kind=row["kind"] or "episode",
@@ -377,10 +396,16 @@ class HybridRetriever:
             importance=float(row["importance"] or 0.0),
             strength=float(row["strength"] or 0.0),
             embedding=parse_pgvector(row["emb"]) if with_embedding else None,
-            extra={"source": row["source"]},
+            extra={"source": row["source"], "scope": scope, "namespace_id": namespace_id},
         )
 
-    async def retrieve(self, query: str, k: int | None = None, kinds: set[str] | None = None) -> list[MemoryHit]:
+    async def retrieve(
+        self, query: str, k: int | None = None, kinds: set[str] | None = None,
+        *, scopes: set[str] | None = None, namespace_id: str | None = None,
+    ) -> list[MemoryHit]:
+        # Clio 3.2: `scopes` unions the resident's private store with
+        # authorized project/org namespaces. Episodes stay private-only.
+        allowed_scopes = scopes if scopes is not None else {"private", "project", "org"}
         k = k or self.cfg.retrieval.top_k
         # `k * 2` is a widening to give MMR and BM25 something to choose from, and
         # it was the only bound: a caller asking for 2,000 hits pulled 4,000 rows
@@ -398,7 +423,10 @@ class HybridRetriever:
         # `fact`, which is three quarters of the transfer and the parse thrown
         # away on every call. Asking only the table that can answer gives the
         # same list.
-        packed = await self._candidates(query_vec, candidate_k, kinds)
+        packed = await self._candidates(
+            query_vec, candidate_k, kinds, scopes=allowed_scopes,
+            namespace_id=namespace_id,
+        )
         candidates = packed.hits
         if not candidates:
             return []

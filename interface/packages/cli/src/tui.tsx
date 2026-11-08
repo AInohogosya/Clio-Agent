@@ -33,7 +33,7 @@ import {
 } from './tui-shared.js';
 import { hasEnvironmentApiKey, type PhoneConfig } from './config.js';
 
-export type LaunchMode = 'chat' | 'setup';
+export type LaunchMode = 'chat' | 'setup' | 'firstRun';
 
 export interface TuiProps {
   initialConfig: PhoneConfig;
@@ -61,7 +61,7 @@ const DEBUG_PANEL_ROWS = 8;
  */
 export function Tui({ initialConfig, debug, mode, width, height, depth }: TuiProps): React.ReactElement {
   const { exit } = useApp();
-  const [screen, setScreen] = useState<Screen>(mode === 'setup' ? 'settings' : 'chat');
+  const [screen, setScreen] = useState<Screen>(mode === 'chat' ? 'chat' : 'settings');
   const [overlay, setOverlay] = useState<Overlay>('none');
   const [input, setInput] = useState('');
   const [cursor, setCursor] = useState(0);
@@ -155,6 +155,10 @@ export function Tui({ initialConfig, debug, mode, width, height, depth }: TuiPro
           depth={depth}
           height={height - 2}
           onCancel={() => {
+            // `setup` was asked for on its own, so cancelling ends the run.
+            // `firstRun` was shown by the launch because there was nothing
+            // to talk with yet, and leaving it goes to the chat — the same
+            // place setting up lands — rather than out of the app.
             if (mode === 'setup') exit();
             else setScreen('chat');
           }}

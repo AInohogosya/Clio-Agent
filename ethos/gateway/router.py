@@ -123,7 +123,13 @@ class _BreakerState:
 
 
 class ModelRouter:
-    """m* = argmax over eligible models of [ q_m(class) - mu*c_hat - nu*lat_hat ] [D-21]."""
+    """m* = argmax over eligible models of [ q_m(class) - mu*c_hat - nu*lat_hat ] [D-21].
+
+    Clio 3.2: session/CLI entries carry ``c_hat ~= 0`` (the subscription is
+    sunk), so they win on quality alone. An entry is treated as a session
+    when ``provider == "session"`` or ``model_hint``/metadata marks it, or
+    when its provider id starts with ``session:``.
+    """
 
     def __init__(self, config: EthosConfig, cost_calculator: CostCalculator):
         self.config = config
@@ -190,6 +196,21 @@ class ModelRouter:
         floor_cfg = self.config.models.tiers.get(tier.value)
         return floor_cfg.floor if floor_cfg else 0.0
 
+    @staticmethod
+    def is_session_entry(entry: ModelEntry) -> bool:
+        """Whether this entry is a stateful session/CLI backend."""
+        provider = str(getattr(entry, "provider", "") or "").lower()
+        model = str(getattr(entry, "model", "") or "").lower()
+        return provider == "session" or provider.startswith("session:") or model.startswith("session:")
+
+    def marginal_cost(self, entry: ModelEntry, request: ModelRequest | None = None) -> float:
+        """The marginal cost of one call on this entry: ~0 for sessions."""
+        if self.is_session_entry(entry):
+            return 0.0
+        return self.costs.estimate(
+            entry.model, request, provider=entry.provider, base_url=entry.base_url or "",
+        )
+
     def score(self, entry: ModelEntry, quality_floor: float, request: ModelRequest | None = None) -> float:
         if entry.quality < quality_floor:
             return float("-inf")
@@ -197,9 +218,8 @@ class ModelRouter:
         # on its real cost. Under the old rate card every `:free` model carried
         # the invented default price and was scored as though it cost money --
         # which pushed the router toward paid models it did not need.
-        c_hat = self.costs.estimate(
-            entry.model, request, provider=entry.provider, base_url=entry.base_url or "",
-        )
+        # Sessions score with c_hat ~= 0.
+        c_hat = self.marginal_cost(entry, request)
         mu = self.config.gateway.routing.mu
         nu = self.config.gateway.routing.nu
         return entry.quality - mu * c_hat - nu * entry.latency_s

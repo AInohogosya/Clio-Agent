@@ -5,6 +5,7 @@ import {
   createSettings,
   DuplexClient,
   publicSettingsEqual,
+  shouldShowProviderSetupOnLaunch,
   type AgentBaseModel,
   type AgentBaseModelInput,
   type AgentClient,
@@ -101,6 +102,14 @@ export interface DuplexController extends AgentLinkController {
    */
   readDoors: () => Promise<AgentChannelSetup | null>;
   saveDoor: (write: AgentDoorWrite) => Promise<AgentChannelSetup>;
+  /**
+   * Whether a launch opens on the provider and LLM settings rather than
+   * the chat: the shared file has never been written, or that setup did
+   * not leave a usable provider behind. Computed here, next to the
+   * snapshot and the credential it is read alongside, so the app decides
+   * where it stands from the same numbers rather than a second copy.
+   */
+  shouldShowProviderSetup: boolean;
 }
 
 
@@ -430,6 +439,12 @@ export function useDuplex(): DuplexController {
     snapshot,
     surface,
     bridgeStatus,
+    shouldShowProviderSetup: shouldShowProviderSetupOnLaunch({
+      revision: remote?.revision ?? 0,
+      updatedAt: remote?.updatedAt ?? 0,
+      settings: snapshot.settings,
+      keyOnFile: remote?.credential.present ?? false,
+    }),
     configFile: remote?.configFile ?? '',
     credential: remote?.credential ?? { present: false, source: 'none', hint: '' },
     credentialSource: remote?.credentialSource ?? 'none',

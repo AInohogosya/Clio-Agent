@@ -23,6 +23,7 @@ dependencies = [
     "bashlex>=0.18",
     "pyrage>=1.1",
     "structlog>=24.1",
+    "networkx>=3.0",
     "fastapi>=0.111",
     "uvicorn[standard]>=0.30",
     "websockets>=12.0",

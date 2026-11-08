@@ -14,9 +14,11 @@ from ethos.memory.retrieval import HybridRetriever, parse_pgvector, to_pgvector
 from ethos.observability.logger import get_logger
 from ethos.schemas.events import EventKind
 from ethos.schemas.gsl import (
+    EDGE_TYPES,
     AttemptRecord,
     Bookmark,
     DecisionRecord,
+    IntentionEdgeRecord,
     IntentionRecord,
     IntentionStatus,
     StageNotice,
@@ -58,6 +60,80 @@ def _new_id() -> UUID:
     return uuid4()
 
 
+MEMORY_SCOPES = frozenset({"private", "project", "org"})
+
+
+def _check_scope(scope: str) -> str:
+    scope = (scope or "private").lower()
+    if scope not in MEMORY_SCOPES:
+        raise ValueError(f"unknown memory scope: {scope!r}")
+    return scope
+
+
+def _check_edge_type(edge_type: str) -> str:
+    edge_type = (edge_type or "depends_on").lower()
+    if edge_type not in EDGE_TYPES:
+        raise ValueError(f"unknown edge_type: {edge_type!r}")
+    return edge_type
+
+
+def dag_has_cycle(edges: list[tuple[str, str]]) -> bool:
+    """Whether a set of (parent, child) pairs would form a cycle. Pure."""
+    graph: dict[str, list[str]] = {}
+    nodes: set[str] = set()
+    for parent, child in edges:
+        graph.setdefault(parent, []).append(child)
+        nodes.add(parent)
+        nodes.add(child)
+    state: dict[str, int] = {n: 0 for n in nodes}
+
+    def visit(node: str) -> bool:
+        state[node] = 1
+        for nxt in graph.get(node, []):
+            if state.get(nxt, 0) == 1:
+                return True
+            if state.get(nxt, 0) == 0 and visit(nxt):
+                return True
+        state[node] = 2
+        return False
+
+    return any(state[n] == 0 and visit(n) for n in nodes)
+
+
+def allocate_ev_budgets(
+    total: float,
+    children: list[dict[str, Any]],
+    *,
+    h2_cap: float | None = None,
+) -> dict[str, float]:
+    """Split `total` across children proportionally to EV/cost.
+
+    Weight = expected_value (floored, default 0.5) * (1 / max(estimated_cost, eps))
+    — high value per dollar earns the larger share. Capped at `h2_cap` when
+    given. Returns {child_key: budget}. Pure: no I/O.
+    """
+    total = max(0.0, float(total))
+    if h2_cap is not None:
+        total = min(total, max(0.0, float(h2_cap)))
+    weights: list[float] = []
+    for child in children:
+        ev = child.get("expected_value")
+        ev = 0.5 if ev is None else max(0.0, float(ev))
+        cost = child.get("estimated_cost_usd")
+        cost = 0.05 if cost is None else max(1e-6, float(cost))
+        weights.append(max(1e-9, ev / cost))
+    weight_sum = sum(weights) or 1.0
+    out: dict[str, float] = {}
+    for child, weight in zip(children, weights, strict=True):
+        key = str(child.get("key") or child.get("title") or child.get("id") or len(out))
+        out[key] = round(total * weight / weight_sum, 4)
+    return out
+
+
+class CycleError(ValueError):
+    """Adding this edge would close a cycle in the intention DAG."""
+
+
 class MemoryStore:
     """Durable memory: episodes, facts, knowhow, questions, intentions,
     decisions and attempts. Postgres is the single source of truth [D-10]."""
@@ -88,17 +164,22 @@ class MemoryStore:
         importance: float | None = None,
         half_life_h: float | None = None,
         publish: bool = False,
+        scope: str = "private",
+        namespace_id: str | None = None,
     ) -> UUID:
+        scope = _check_scope(scope)
+        if scope == "private":
+            namespace_id = None
         importance = self.config.memory.episode.default_importance if importance is None else importance
         half_life_h = self.config.memory.episode.default_half_life_h if half_life_h is None else half_life_h
         vec = self.embedder.embed([summary])[0]
         ep_id = _new_id()
         await self.db.execute(
             "INSERT INTO episodes (id, ts, thread_id, kind, summary, body, intention_id, importance, "
-            "strength, half_life_h, last_access, access_count, status, embedding) "
-            "VALUES ($1, now(), $2, $3, $4, $5::jsonb, $6, $7, 0.5, $8, now(), 0, 'active', $9::vector)",
+            "strength, half_life_h, last_access, access_count, status, embedding, scope, namespace_id) "
+            "VALUES ($1, now(), $2, $3, $4, $5::jsonb, $6, $7, 0.5, $8, now(), 0, 'active', $9::vector, $10, $11)",
             ep_id, thread_id, kind, summary, json.dumps(body or {}), intention_id,
-            float(importance), float(half_life_h), to_pgvector(vec),
+            float(importance), float(half_life_h), to_pgvector(vec), scope, namespace_id,
         )
         if publish and self.bus is not None:
             await self.bus.publish(
@@ -180,7 +261,12 @@ class MemoryStore:
         provenance: dict[str, Any],
         field: str | None = None,
         supersede_similar: bool = True,
+        scope: str = "private",
+        namespace_id: str | None = None,
     ) -> UUID:
+        scope = _check_scope(scope)
+        if scope == "private":
+            namespace_id = None
         vec = self.embedder.embed([f"{subject}: {statement}"])[0]
         fact_id = _new_id()
         similar: Any = None
@@ -193,10 +279,10 @@ class MemoryStore:
             async with conn.transaction():
                 await conn.execute(
                     "INSERT INTO facts (id, subject, statement, confidence, provenance, field, "
-                    "valid_from, strength, embedding, updated_at) "
-                    "VALUES ($1, $2, $3, $4, $5::jsonb, $6, now(), 0.5, $7::vector, now())",
+                    "valid_from, strength, embedding, updated_at, scope, namespace_id) "
+                    "VALUES ($1, $2, $3, $4, $5::jsonb, $6, now(), 0.5, $7::vector, now(), $8, $9)",
                     fact_id, subject, statement, float(confidence),
-                    json.dumps(provenance), field, to_pgvector(vec),
+                    json.dumps(provenance), field, to_pgvector(vec), scope, namespace_id,
                 )
                 if similar:
                     for row in similar:
@@ -220,7 +306,11 @@ class MemoryStore:
 
     async def record_knowhow(
         self, situation: str, advice: str, evidence: dict[str, Any],
+        scope: str = "private", namespace_id: str | None = None,
     ) -> UUID:
+        scope = _check_scope(scope)
+        if scope == "private":
+            namespace_id = None
         kh_id = _new_id()
         vec = self.embedder.embed([f"{situation} -> {advice}"])[0]
         existing = await self.db.fetchrow(
@@ -229,14 +319,15 @@ class MemoryStore:
         )
         if existing:
             await self.db.execute(
-                "UPDATE knowhow SET evidence = $1::jsonb, uses = uses, embedding = $2::vector WHERE id = $3",
-                json.dumps(evidence), to_pgvector(vec), existing["id"],
+                "UPDATE knowhow SET evidence = $1::jsonb, uses = uses, embedding = $2::vector, "
+                "scope = $4, namespace_id = $5 WHERE id = $3",
+                json.dumps(evidence), to_pgvector(vec), existing["id"], scope, namespace_id,
             )
             return existing["id"]
         await self.db.execute(
-            "INSERT INTO knowhow (id, situation, advice, evidence, uses, successes, embedding, retired) "
-            "VALUES ($1, $2, $3, $4::jsonb, 0, 0, $5::vector, false)",
-            kh_id, situation, advice, json.dumps(evidence), to_pgvector(vec),
+            "INSERT INTO knowhow (id, situation, advice, evidence, uses, successes, embedding, retired, scope, namespace_id) "
+            "VALUES ($1, $2, $3, $4::jsonb, 0, 0, $5::vector, false, $6, $7)",
+            kh_id, situation, advice, json.dumps(evidence), to_pgvector(vec), scope, namespace_id,
         )
         return kh_id
 
@@ -253,13 +344,17 @@ class MemoryStore:
 
     async def open_question(
         self, text: str, priority: float = 0.5, origin_episode: UUID | None = None,
+        scope: str = "private", namespace_id: str | None = None,
     ) -> UUID:
+        scope = _check_scope(scope)
+        if scope == "private":
+            namespace_id = None
         q_id = _new_id()
         vec = self.embedder.embed([text])[0]
         await self.db.execute(
-            "INSERT INTO questions (id, text, origin_episode, priority, status, embedding) "
-            "VALUES ($1, $2, $3, $4, 'open', $5::vector)",
-            q_id, text, origin_episode, float(priority), to_pgvector(vec),
+            "INSERT INTO questions (id, text, origin_episode, priority, status, embedding, scope, namespace_id) "
+            "VALUES ($1, $2, $3, $4, 'open', $5::vector, $6, $7)",
+            q_id, text, origin_episode, float(priority), to_pgvector(vec), scope, namespace_id,
         )
         return q_id
 
@@ -361,16 +456,21 @@ class MemoryStore:
         deadline: datetime | None = None,
         budget_usd: float | None = None,
         hypothesis: dict[str, Any] | None = None,
+        expected_value: float | None = None,
+        assigned_principal_id: str | None = None,
+        lease_id: str | None = None,
     ) -> UUID:
         intent_id = _new_id()
         await self.db.execute(
             "INSERT INTO intentions (id, parent_id, kind, title, desired_end_state, success_criteria, "
             "constraints, origin, commissioned_by, status, priority, deadline, budget_usd, spent_usd, "
+            "expected_value, lease_id, assigned_principal_id, "
             "created_at, updated_at) "
-            "VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9, 'proposed', $10, $11, $12, 0, now(), now())",
+            "VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9, 'proposed', $10, $11, $12, 0, $13, $14, $15, now(), now())",
             intent_id, parent_id, kind, title, desired_end_state,
             json.dumps(success_criteria or []), json.dumps(constraints or {}),
             origin, commissioned_by, float(priority), deadline, budget_usd,
+            expected_value, lease_id, assigned_principal_id,
         )
         if self.bus is not None:
             await self.bus.publish(EventKind.INTENTION_UPDATE, {
@@ -393,6 +493,24 @@ class MemoryStore:
         constraints = decode_json_value(row["constraints"])
         resume = decode_json_value(row["resume_state"])
         hypothesis = decode_json_value(row["hypothesis"])
+        try:
+            budget_allocated = float(row["budget_allocated_usd"]) if row["budget_allocated_usd"] is not None else None
+        except (KeyError, TypeError, ValueError):
+            budget_allocated = None
+        try:
+            budget_spent = float(row["budget_spent_usd"] or 0)
+        except (KeyError, TypeError, ValueError):
+            budget_spent = 0.0
+        try:
+            expected_value = float(row["expected_value"]) if row["expected_value"] is not None else None
+        except (KeyError, TypeError, ValueError):
+            expected_value = None
+        def _opt_text(key: str) -> str | None:
+            try:
+                value = row[key]
+            except (KeyError, TypeError):
+                return None
+            return str(value) if value is not None else None
         return IntentionRecord(
             id=row["id"], parent_id=row["parent_id"], kind=row["kind"], title=row["title"],
             desired_end_state=row["desired_end_state"] or "", success_criteria=list(criteria or []),
@@ -401,6 +519,11 @@ class MemoryStore:
             priority=float(row["priority"] or 0.5), deadline=row["deadline"],
             budget_usd=float(row["budget_usd"]) if row["budget_usd"] is not None else None,
             spent_usd=float(row["spent_usd"] or 0),
+            budget_allocated_usd=budget_allocated,
+            budget_spent_usd=budget_spent,
+            expected_value=expected_value,
+            lease_id=_opt_text("lease_id"),
+            assigned_principal_id=_opt_text("assigned_principal_id"),
             resume_state=dict(resume or {}), hypothesis=hypothesis,
             created_at=row["created_at"], updated_at=row["updated_at"],
             closed_reason=row["closed_reason"],
@@ -714,6 +837,8 @@ class MemoryStore:
         allowed = {
             "status", "priority", "deadline", "budget_usd", "spent_usd", "resume_state",
             "hypothesis", "title", "desired_end_state", "closed_reason", "success_criteria", "constraints",
+            "budget_allocated_usd", "budget_spent_usd", "expected_value",
+            "lease_id", "assigned_principal_id",
         }
         sets: list[str] = []
         args: list[Any] = []
@@ -742,10 +867,17 @@ class MemoryStore:
 
     async def add_spend(self, intention_id: UUID, amount_usd: float) -> float:
         row = await self.db.fetchrow(
-            "UPDATE intentions SET spent_usd = COALESCE(spent_usd, 0) + $1, updated_at = now() "
-            "WHERE id = $2 RETURNING spent_usd", float(amount_usd), intention_id,
+            "UPDATE intentions SET spent_usd = COALESCE(spent_usd, 0) + $1, "
+            "budget_spent_usd = COALESCE(budget_spent_usd, 0) + $1, updated_at = now() "
+            "WHERE id = $2 RETURNING spent_usd, budget_spent_usd",
+            float(amount_usd), intention_id,
         )
-        return float(row["spent_usd"]) if row else 0.0
+        if row is None:
+            return 0.0
+        try:
+            return float(row["budget_spent_usd"] or row["spent_usd"] or 0)
+        except (TypeError, ValueError, KeyError):
+            return float(row["spent_usd"] or 0)
 
     async def close_intention(self, intention_id: UUID, status: str, reason: str) -> None:
         await self.update_intention(
@@ -862,4 +994,136 @@ class MemoryStore:
         else:
             rows = await self.db.fetch("SELECT * FROM env_entities ORDER BY key")
         return [_env_entity_dict(row) for row in rows]
+
+    # ------------------------------------------- recursive intention graphs
+
+    async def add_intention_edge(
+        self, parent_id: UUID, child_id: UUID, edge_type: str = "depends_on",
+        gate_policy: dict[str, Any] | None = None,
+    ) -> IntentionEdgeRecord:
+        """Link two intentions into a DAG, rejecting cycles."""
+        edge_type = _check_edge_type(edge_type)
+        if parent_id == child_id:
+            raise CycleError("an intention cannot depend on itself")
+        # Cycle check: the child must not already reach the parent.
+        existing = await self.db.fetch(
+            "SELECT parent_id, child_id FROM intention_edges LIMIT 10000",
+        )
+        pairs = [(str(r["parent_id"]), str(r["child_id"])) for r in existing]
+        pairs.append((str(parent_id), str(child_id)))
+        if dag_has_cycle(pairs):
+            raise CycleError(f"edge {parent_id} -> {child_id} ({edge_type}) would create a cycle")
+        await self.db.execute(
+            "INSERT INTO intention_edges (parent_id, child_id, edge_type, gate_policy, created_at) "
+            "VALUES ($1, $2, $3, $4::jsonb, now()) "
+            "ON CONFLICT (parent_id, child_id, edge_type) DO UPDATE SET gate_policy = $4::jsonb",
+            parent_id, child_id, edge_type, json.dumps(gate_policy or {}),
+        )
+        return IntentionEdgeRecord(
+            parent_id=parent_id, child_id=child_id, edge_type=edge_type,
+            gate_policy=dict(gate_policy or {}),
+        )
+
+    async def list_intention_edges(
+        self, intention_id: UUID | None = None, *, as_parent: bool = True,
+    ) -> list[IntentionEdgeRecord]:
+        if intention_id is None:
+            rows = await self.db.fetch(
+                "SELECT * FROM intention_edges ORDER BY created_at ASC LIMIT 10000",
+            )
+        elif as_parent:
+            rows = await self.db.fetch(
+                "SELECT * FROM intention_edges WHERE parent_id = $1 ORDER BY created_at ASC",
+                intention_id,
+            )
+        else:
+            rows = await self.db.fetch(
+                "SELECT * FROM intention_edges WHERE child_id = $1 ORDER BY created_at ASC",
+                intention_id,
+            )
+        out: list[IntentionEdgeRecord] = []
+        for r in rows:
+            out.append(IntentionEdgeRecord(
+                parent_id=r["parent_id"], child_id=r["child_id"],
+                edge_type=r["edge_type"],
+                gate_policy=dict(decode_json_value(r["gate_policy"]) or {}),
+                created_at=r["created_at"],
+            ))
+        return out
+
+    async def get_ready_intentions(
+        self, limit: int = 50,
+    ) -> list[IntentionRecord]:
+        """Active/proposed intentions whose `depends_on` predecessors are done."""
+        rows = await self.db.fetch(
+            "SELECT * FROM intentions i WHERE i.status IN ('active','proposed','in_progress','waiting') "
+            "AND NOT EXISTS ("
+            "  SELECT 1 FROM intention_edges e JOIN intentions pred ON pred.id = e.parent_id "
+            "  WHERE e.child_id = i.id AND e.edge_type = 'depends_on' "
+            "  AND pred.status <> 'done'"
+            ") ORDER BY i.priority DESC, i.created_at ASC LIMIT $1",
+            limit,
+        )
+        return [self._row_to_intention(r) for r in rows]
+
+    async def get_intention_subgraph(
+        self, root_id: UUID, *, max_depth: int = 8,
+    ) -> dict[str, Any]:
+        """All intentions reachable from `root_id` plus their edges."""
+        seen: set[UUID] = {root_id}
+        frontier: list[UUID] = [root_id]
+        edges: list[IntentionEdgeRecord] = []
+        for _ in range(max_depth):
+            if not frontier:
+                break
+            next_frontier: list[UUID] = []
+            for node in frontier:
+                for edge in await self.list_intention_edges(node, as_parent=True):
+                    edges.append(edge)
+                    if edge.child_id not in seen:
+                        seen.add(edge.child_id)
+                        next_frontier.append(edge.child_id)
+            frontier = next_frontier
+        intentions: list[IntentionRecord] = []
+        for node in seen:
+            record = await self.get_intention(node)
+            if record is not None:
+                intentions.append(record)
+        return {"root_id": str(root_id), "intentions": intentions, "edges": edges}
+
+    async def dag_telemetry(self, root_id: UUID | None = None) -> dict[str, Any]:
+        """Completion ratio, blockers, burn and ready count for the drives."""
+        if root_id is not None:
+            subgraph = await self.get_intention_subgraph(root_id)
+            nodes = subgraph["intentions"]
+            edges = subgraph["edges"]
+        else:
+            nodes = await self.list_intentions(limit=500)
+            edges = await self.list_intention_edges()
+        total = len(nodes)
+        done = sum(1 for n in nodes if n.status == "done")
+        blocked = 0
+        by_id = {n.id: n for n in nodes}
+        for edge in edges:
+            if edge.edge_type != "depends_on":
+                continue
+            child = by_id.get(edge.child_id)
+            parent = by_id.get(edge.parent_id)
+            if child is not None and child.status in _OPEN_INTENTION_STATUSES and (
+                parent is None or parent.status != "done"
+            ):
+                blocked += 1
+        burn = sum(float(n.spent_usd or 0) + float(n.budget_spent_usd or 0) for n in nodes)
+        allocated = sum(float(n.budget_usd or 0) for n in nodes)
+        ready = await self.get_ready_intentions(limit=500)
+        return {
+            "total": total,
+            "done": done,
+            "completion_ratio": (done / total) if total else 0.0,
+            "blocked_edges": blocked,
+            "budget_burn_usd": burn,
+            "budget_allocated_usd": allocated,
+            "ready_count": len(ready),
+            "root_id": str(root_id) if root_id else None,
+        }
 

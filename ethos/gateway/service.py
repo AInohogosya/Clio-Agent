@@ -514,6 +514,57 @@ class GatewayService:
             cap_s=cap, retry_after_s=retry_after_s,
         )
 
+    def register_session_driver(self, provider_key: str, driver: Any) -> None:
+        """Attach a stateful session/CLI driver to the gateway provider map."""
+        self.providers[provider_key] = driver
+
+    def replay_request(
+        self, request: ModelRequest, *, from_session: Any = None,
+    ) -> ModelRequest:
+        """Rebuild the request for the next provider after a session failure.
+
+        The normalized conversation (messages, purpose, tier, ceiling) is
+        snapshotted from the failing session and replayed verbatim onto the
+        router's next selection, so a mid-turn 429/breaker handover costs no
+        context.
+        """
+        if from_session is not None:
+            snapshot_fn = getattr(from_session, "conversation_snapshot", None)
+            if callable(snapshot_fn):
+                try:
+                    snapshot = snapshot_fn(request)
+                    replay_fn = getattr(self, "_session_replay", None)
+                    if callable(replay_fn):
+                        return replay_fn(snapshot)
+                    # Fall back to the request itself: the gateway already
+                    # carries the normalized conversation on the request.
+                    return request.model_copy(update={
+                        "messages": list(request.messages),
+                    })
+                except Exception:
+                    pass
+        return request
+
+    def _session_replay(self, snapshot: dict[str, Any]) -> ModelRequest:
+        """Rebuild a ModelRequest from a session snapshot (failover replay)."""
+        from ethos.schemas.models import ModelMessage, Role, Tier
+
+        messages = []
+        for raw in (snapshot.get("messages") or []):
+            try:
+                messages.append(ModelMessage(
+                    role=Role(str(raw.get("role", "user"))),
+                    content=raw.get("content"),
+                ))
+            except Exception:
+                continue
+        return ModelRequest(
+            tier=Tier(str(snapshot.get("tier", "T2"))),
+            purpose=str(snapshot.get("purpose", "session.replay")),
+            messages=messages,
+            max_tokens=int(snapshot.get("max_tokens", 4096)),
+        )
+
     def _next_entry(
         self, request: ModelRequest, failed: Any, tried: set[str], *,
         model_scoped: bool, transient: frozenset[str] = frozenset(),

@@ -441,6 +441,22 @@ class Life:
         last_contact_age_h = None
         if last_contact is not None and last_contact["last"] is not None:
             last_contact_age_h = (datetime.now(UTC) - last_contact["last"]).total_seconds() / 3600.0
+        try:
+            telemetry = await self.memory.dag_telemetry()
+        except Exception:
+            telemetry = {}
+        # Repeated leaf verification failures raise mastery; anomalous leaf
+        # outcomes open questions that raise curiosity.
+        leaf_failures = 0
+        try:
+            episodes = await self.memory.db.fetch(
+                "SELECT COUNT(*) AS n FROM episodes WHERE kind = 'verification_failed' "
+                "AND ts >= now() - interval '2 days'",
+            ) if getattr(self.memory, "db", None) is not None else []
+            if episodes:
+                leaf_failures = int(episodes[0]["n"] or 0)
+        except Exception:
+            leaf_failures = attempts_failed
         return DriveInputs.from_intentions(
             intentions,
             open_questions=len(questions),
@@ -449,6 +465,11 @@ class Life:
             unread_events=len(percepts),
             last_contact_age_h=last_contact_age_h,
             energy=self.deps.rhythm.energy(self.spent_discretionary_session),
+            dag_blocked_edges=int(telemetry.get("blocked_edges") or 0),
+            dag_ready_count=int(telemetry.get("ready_count") or 0),
+            dag_budget_burn_usd=float(telemetry.get("budget_burn_usd") or 0.0),
+            leaf_verification_failures=leaf_failures,
+            anomalous_outcomes=leaf_failures,
         )
 
     async def _choose_focus(self, percepts: list[Percept]) -> Focus | None:
@@ -506,6 +527,14 @@ class Life:
             )
         except Exception:
             budget = f"session ${self.spent_discretionary_session:.2f}"
+        # Clio 3.2 DAG telemetry for the two-tier commitments block.
+        try:
+            telemetry = await self.memory.dag_telemetry()
+        except Exception:
+            telemetry = {
+                "completion_ratio": 0.0, "blocked_edges": 0,
+                "budget_burn_usd": 0.0, "ready_count": 0,
+            }
         commitments = await self.memory.list_intentions(limit=12)
         memories = []
         query = self.focus.title if self.focus else "recent context"
@@ -529,6 +558,9 @@ class Life:
                     "status": c.status, "title": c.title, "priority": c.priority,
                     "deadline": c.deadline.isoformat() if c.deadline else None,
                     "commissioned_by": c.commissioned_by,
+                    "telemetry": telemetry,
+                    "spent_usd": c.spent_usd,
+                    "budget_spent_usd": getattr(c, "budget_spent_usd", c.spent_usd),
                 }
                 for c in commitments
             ],
