@@ -359,12 +359,16 @@ def test_budget_exception_carries_details():
 class _OverCapDB:
     """Answers every spend query as if every cap had been crossed."""
 
+    def __init__(self, usd: float = 999.0):
+        self.usd = usd
+
     async def fetchval(self, sql, *args):
-        return 999.0
+        return self.usd
 
 
 async def test_block_mode_refuses_the_call_when_the_caps_are_crossed(full_config):
     full_config.permissions.hard_limits.on_exceed = "block"
+    full_config.permissions.hard_limits.H2_daily_spend_usd = 20.0
     guard = SpendGuard(_OverCapDB(), full_config)
     with pytest.raises(BudgetExceededError):
         await guard.check("discretionary", est_cost=0.50)
@@ -379,16 +383,82 @@ async def test_warn_mode_keeps_the_agent_working_past_the_cap(full_config):
     the call proceeds.
     """
     full_config.permissions.hard_limits.on_exceed = "warn"
+    full_config.permissions.hard_limits.H2_daily_spend_usd = 20.0
     guard = SpendGuard(_OverCapDB(), full_config)
     await guard.check("discretionary", est_cost=0.50)  # must not raise
 
 
 async def test_the_budget_env_var_overrides_the_file(full_config, monkeypatch):
     full_config.permissions.hard_limits.on_exceed = "warn"
+    full_config.permissions.hard_limits.H2_daily_spend_usd = 20.0
     monkeypatch.setenv("ETHOS_BUDGET_MODE", "block")
     guard = SpendGuard(_OverCapDB(), full_config)
     with pytest.raises(BudgetExceededError):
         await guard.check("discretionary", est_cost=0.50)
+
+
+class _TokenDB:
+    """Answers USD queries from `usd` and token queries from `tokens`."""
+
+    def __init__(self, usd: float, tokens: float):
+        self.usd = usd
+        self.tokens = tokens
+
+    async def fetchval(self, sql, *args):
+        return self.tokens if "input_tokens" in sql else self.usd
+
+
+async def test_all_windows_disabled_by_default_enforces_nothing(full_config):
+    """With every window unset, even massive spend passes."""
+    full_config.permissions.hard_limits.on_exceed = "block"
+    # The shipped config caps the day ($20) and the month ($400) — the unattended
+    # frontier-model deployment wants real numbers with "block" — so the shipped
+    # values are cleared here to test the all-disabled case itself.
+    full_config.permissions.hard_limits.H2_daily_spend_usd = None
+    full_config.permissions.hard_limits.H2_monthly_spend_usd = None
+    assert full_config.permissions.hard_limits.enabled_limits() == {}
+    guard = SpendGuard(_OverCapDB(), full_config)
+    await guard.check("discretionary", est_cost=9999.0, est_tokens=999_999_999)
+
+
+async def test_the_shipped_config_caps_the_day_and_the_month(full_config):
+    """The deployment's own numbers: $20 a day, $400 a month, enforced."""
+    assert full_config.permissions.hard_limits.enabled_limits() == {
+        "daily": 20.0, "monthly": 400.0,
+    }
+    guard = SpendGuard(_OverCapDB(usd=25.0), full_config)
+    with pytest.raises(BudgetExceededError) as raised:
+        await guard.check("discretionary", est_cost=0.01)
+    assert raised.value.window == "daily"
+
+
+async def test_each_window_is_independently_enableable(full_config):
+    """Only the enabled window is enforced: hourly on, the shipped day/month off."""
+    full_config.permissions.hard_limits.on_exceed = "block"
+    # The shipped day/month caps are cleared so the test isolates the one window
+    # it is about, the way it did when the shipped config shipped no caps at all.
+    full_config.permissions.hard_limits.H2_daily_spend_usd = None
+    full_config.permissions.hard_limits.H2_monthly_spend_usd = None
+    full_config.permissions.hard_limits.H2_per_hour_limit = 5.0
+    assert full_config.permissions.hard_limits.enabled_limits() == {"per_hour": 5.0}
+    guard = SpendGuard(_TokenDB(usd=4.0, tokens=0), full_config)
+    await guard.check("discretionary", est_cost=0.50)
+    with pytest.raises(BudgetExceededError) as raised:
+        await guard.check("discretionary", est_cost=2.0)
+    assert raised.value.window == "per hour"
+
+
+async def test_token_unit_enforces_token_caps(full_config):
+    """With `budget_unit: tokens` the same caps are read as token counts."""
+    full_config.permissions.hard_limits.on_exceed = "block"
+    full_config.permissions.hard_limits.H2_daily_spend_usd = None
+    full_config.permissions.hard_limits.H2_monthly_spend_usd = None
+    full_config.permissions.hard_limits.budget_unit = "tokens"
+    full_config.permissions.hard_limits.H2_per_hour_limit = 1000.0
+    guard = SpendGuard(_TokenDB(usd=999.0, tokens=900.0), full_config)
+    await guard.check("discretionary", est_cost=0.01, est_tokens=50)
+    with pytest.raises(BudgetExceededError):
+        await guard.check("discretionary", est_cost=0.01, est_tokens=200)
 
 
 def test_estimate_tokens_positive(full_config):
@@ -580,6 +650,46 @@ async def test_a_model_not_found_on_this_endpoint_fails_over(full_config):
 
     assert missing.calls == 1, "the endpoint that does not serve the model is asked once"
     assert healthy.calls == 1, "and the request is served by a model that exists there"
+    assert response.text == "answered elsewhere"
+
+
+async def test_an_unpaid_plan_fails_over_instead_of_failing_the_request(full_config):
+    """A 402 is the money, not the mood: it fails over instead of ending the turn.
+
+    The shape that ate the replies: a catalogue entry on an endpoint whose plan
+    was out of credits answered "402 Payment Required -- Add usage credits or
+    subscribe" to everything. As provider-scoped *and* not retryable, it raised
+    straight through the retry loop on the first attempt, so every deliberation
+    that picked the unpaid entry first died on the spot and the message was
+    parked as a silence -- while live candidates one slot down went unasked.
+    Model-scoped like a dead key (401), it is asked once and the request is
+    served elsewhere.
+    """
+    assert ProviderError(
+        "openai_compat", 402, "Add usage credits or subscribe and save up to 66%",
+        retryable=False,
+    ).scope == "model"
+    # Narrowed to the two providers under test, so the entry the router picks
+    # first is a fact of this test and not of whichever key happens to be in
+    # the environment.
+    full_config.models.models = [
+        e for e in full_config.models.models if e.provider in ("anthropic", "openai")
+    ]
+    unpaid = FakeProvider(errors=[ProviderError(
+        "anthropic", 402, "Add usage credits or subscribe", retryable=False,
+    )])
+    healthy = FakeProvider(responses=[
+        NormalizedResponse(text="answered elsewhere", usage=Usage(input_tokens=10, output_tokens=2)),
+    ])
+    service = GatewayService(
+        full_config, db=None, providers={"anthropic": unpaid, "openai": healthy},
+    )
+    _no_waiting(full_config)
+
+    response = await service.complete(simple_request(tier=Tier.T2))
+
+    assert unpaid.calls == 1, "the endpoint out of credits is asked once"
+    assert healthy.calls == 1, "and the request is served by the model that could"
     assert response.text == "answered elsewhere"
 
 

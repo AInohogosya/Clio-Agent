@@ -27,6 +27,9 @@ function render({ provider = 'openai' } = {}) {
     onClose: () => undefined,
     onUpdate: () => undefined,
     settings: createSettings({ interface: 'direct', provider }),
+    // The provider list lives in the model category now — the screen is a
+    // sidebar of categories, not one long form — so the render opens there.
+    initialCategory: 'model',
   }));
 }
 

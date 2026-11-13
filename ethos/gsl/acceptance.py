@@ -331,7 +331,66 @@ def _project_commands(
     lint = _lint_command(root, code_paths, notes)
     if lint:
         add(*lint)
+    entrypoint = _entrypoint_command(root, notes)
+    if entrypoint:
+        add(*entrypoint)
     return commands
+
+
+def _entrypoint_command(
+    root: Path, notes: list[str],
+) -> tuple[str, list[str]] | None:
+    """Import the entry module the project declares, as a check.
+
+    The syntax check passes a package whose entry module was never written
+    as long as the files that *were* written parse — which is how a coding
+    agent was reported "built" while `python -m codeforge` died on
+    `ModuleNotFoundError: codeforge.cli` (2026-11-08): the missing file was
+    never in `changed_paths`, so no check ever imported it. Importing the
+    `[project.scripts]` target module — and, for a package with a
+    `__main__.py`, running it with `--help` — is the check that names the
+    file whose absence matters.
+    """
+    pyproject = root / "pyproject.toml"
+    if not pyproject.exists():
+        return None
+    try:
+        import tomllib
+
+        data = tomllib.loads(pyproject.read_text(encoding="utf-8", errors="replace"))
+    except (OSError, ValueError) as exc:
+        notes.append(f"could not parse {pyproject.name} for entrypoints: {exc}")
+        return None
+    scripts = ((data.get("project") or {}).get("scripts") or {})
+    modules: list[str] = []
+    for target in scripts.values():
+        module = str(target).split(":", 1)[0].strip()
+        if module and module not in modules:
+            modules.append(module)
+    if not modules:
+        return None
+    # `python -m <pkg> --help` exercises the entry module the way a person
+    # launches it; a plain import is the fallback for a module that is not
+    # a package. Both must exit zero — an import error is the failure.
+    import shlex
+
+    packages = [
+        m.split(".", 1)[0] for m in modules
+        if (root / m.split(".", 1)[0] / "__main__.py").exists()
+    ]
+    if packages:
+        pkg = packages[0]
+        return (
+            f"entrypoint {pkg} --help",
+            [sys.executable, "-m", pkg, "--help"],
+        )
+    module = modules[0]
+    return (
+        f"entrypoint import {module}",
+        [sys.executable, "-c", shlex.quote(
+            f"import importlib; importlib.import_module({module!r})"
+        )],
+    )
 
 
 def _test_command(

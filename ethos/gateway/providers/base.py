@@ -119,9 +119,9 @@ class ProviderError(RuntimeError):
           month, a model this endpoint does not serve. Asking the same request
           again returns the same status, and sending it to the same endpoint
           returns the same status, so the only thing that helps is a different
-          candidate model. This is what 401, 403, 404 and 410 mean, and none
-          was being read this way: all are 4xx, all were classified "not worth
-          retrying", and the retry loop raised straight through. A single-key
+          candidate model. This is what 401, 402, 403, 404 and 410 mean, and
+          none was being read this way: all are 4xx, all were classified "not
+          worth retrying", and the retry loop raised straight through. A single-key
           deployment then returned that status to every request at that tier
           for as long as it stayed dead -- which is correct -- while a
           deployment with a second candidate that would have answered never
@@ -151,8 +151,8 @@ class ProviderError(RuntimeError):
         return "provider"
 
 
-# 401, 403 and 410: the statuses that say something about the credential or the
-# model rather than about the call.
+# 401, 402, 403, 404 and 410: the statuses that say something about the
+# credential or the model rather than about the call.
 #
 # 401 and 403 are about the credential: `invalid api key`, `authentication_error`,
 # `permission denied`, `insufficient_quota`, `billing hard limit reached`. Every
@@ -161,6 +161,18 @@ class ProviderError(RuntimeError):
 # that took an agent down, because "a 4xx is not worth retrying" was true and
 # insufficient: it said the retry budget was the wrong lever without noticing that
 # the *model* was.
+#
+# 402 is here for the same reason 403 is, and it took the replies with it: an
+# endpoint whose plan is out of credits answers "402 Payment Required -- Add
+# usage credits or subscribe" (Ollama Cloud's wording) to everything it is
+# sent. It is the money, not the mood: the next request on that endpoint
+# returns the same 402 until somebody tops up, so waiting it out waits
+# forever. Left as provider-scoped it was also *not retryable*, and the two
+# together raised it straight through the retry loop on the first attempt --
+# the failover ladder never ran, every deliberation that picked the unpaid
+# entry first died on the spot, and the message was parked as a silence while
+# live candidates one slot down went unasked. Model-scoped, the entry is
+# benched and the ladder moves to the next candidate.
 #
 # 410 is the model itself, retired. A provider that stops serving a model answers
 # `410 Gone` -- "the model 'z-ai/glm-5.3' has reached its end of life on
@@ -184,20 +196,22 @@ class ProviderError(RuntimeError):
 # and re-asked the identical broken pairing every few minutes indefinitely:
 # the agent did nothing, forever, while a catalogue full of live models
 # went unasked. Model-scoped, the ladder moves to the next candidate.
-_MODEL_SCOPED_STATUSES = frozenset({401, 403, 404, 410})
+_MODEL_SCOPED_STATUSES = frozenset({401, 402, 403, 404, 410})
 
 # The 429 bodies that mean the money is gone rather than the provider being
 # busy. Every phrase here is one a real endpoint actually sent: Ollama Cloud's
-# "you (…) have reached your monthly usage limit", OpenRouter's "Key limit
-# exceeded (total limit)" and "insufficient_quota", OpenAI's "exceeded your
-# current quota", and the billing-ceiling wording. They are matched on the body
-# because no status distinguishes them from an ordinary rate limit, and they
+# "you (…) have reached your monthly usage limit" and "Add usage credits or
+# subscribe", OpenRouter's "Key limit exceeded (total limit)" and
+# "insufficient_quota", OpenAI's "exceeded your current quota", and the
+# billing-ceiling wording. They are matched on the body because no status
+# distinguishes them from an ordinary rate limit -- and the same words also
+# arrive on a 402, which the status set above already benches -- and they
 # are matched narrowly -- "rate limit", "too many requests" and "slow down" are
 # deliberately absent -- so the ordinary 429 keeps its wait-and-retry treatment.
 _EXHAUSTED_QUOTA = re.compile(
     r"monthly usage limit|usage limit reached|limit exceeded|insufficient_quota|"
     r"quota exceeded|exceeded your current quota|out of credit|"
-    r"credit balance is too low|billing hard limit",
+    r"credit balance is too low|billing hard limit|add usage credits",
     re.IGNORECASE,
 )
 

@@ -242,7 +242,7 @@ export function BackgroundScreenPane({ language, t }: { language: Language; t: A
 
       {activity.length > 0 ? (
         <div>
-          <SectionLabel>·</SectionLabel>
+          <SectionLabel icon="activity">{t('cliActivity')}</SectionLabel>
           <ul className="space-y-1">
             {activity.slice(0, 6).map((entry) => {
               const tone = ACTIVITY_TONE[entry.kind] ?? 'muted';

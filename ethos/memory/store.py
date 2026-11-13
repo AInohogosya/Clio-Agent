@@ -576,6 +576,55 @@ class MemoryStore:
             return None
         return self._row_to_intention(rows[0])
 
+    async def record_owner_decision_request(
+        self, intention: IntentionRecord, stage: str, detail: str = "",
+    ) -> StageNotice | None:
+        """Record that a decision only the owner can make is owed, at an address.
+
+        `record_stage_notice` answers for commissioned work: the commissioner
+        is on the intention, and their newest inbound row is the address. Work
+        the agent chose for itself has no commissioner, so the same park that a
+        commission would announce otherwise arrives in silence -- and the
+        repeat parks of 2026-11-08..10 (CodeForge, five times) arrived as
+        nothing at all. The owner's address is resolved the same durable way:
+        the newest inbound row in the store, whoever it is from, is the
+        conversation the owner is actually reading. Nobody inbound at all
+        means no address, and a notice with no address is a debt paid into a
+        void, so `None`.
+
+        Idempotent on `(intention_id, stage)` like every stage notice, so a
+        park counted twice writes one debt; a later park at a higher count
+        carries a new stage string and can ask again.
+        """
+        row = await self.db.fetchrow(
+            "SELECT person_id, channel, conversation_key FROM messages "
+            "WHERE direction = 'inbound' "
+            "ORDER BY ts DESC LIMIT 1",
+        )
+        if row is None:
+            return None
+        person_id = str(row["person_id"] or "owner")
+        notice = StageNotice(
+            intention_id=intention.id, stage=stage, title=intention.title or "",
+            detail=detail[:600], person_id=person_id,
+            channel=row["channel"], conversation_key=row["conversation_key"] or None,
+        )
+        try:
+            await self.db.execute(
+                "INSERT INTO stage_notices (id, intention_id, stage, title, detail, "
+                "person_id, channel, conversation_key) "
+                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8) "
+                "ON CONFLICT (intention_id, stage) DO NOTHING",
+                notice.id, notice.intention_id, notice.stage, notice.title,
+                notice.detail, notice.person_id, notice.channel, notice.conversation_key,
+            )
+        except Exception:
+            logger.warning(
+                "memory.owner_decision_request_failed", intention=str(intention.id)
+            )
+            return None
+        return notice
+
     async def list_parked_intentions(self, older_than_s: float, limit: int = 50) -> list[IntentionRecord]:
         """Parked intentions whose parking has aged past `older_than_s`.
 

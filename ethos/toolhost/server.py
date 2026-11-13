@@ -54,6 +54,7 @@ class ToolContext(BaseModel):
     consequential: bool = False
     cwd: str | None = None
     timeout_s: float | None = None
+    inside_subagent: str | None = None
 
 
 class ExecuteRequest(BaseModel):
@@ -106,6 +107,11 @@ class Toolhost:
         self.tools[tool.name] = tool
 
     def catalog(self) -> list[dict[str, Any]]:
+        from ethos.guardian.safety import effective_level, usable_tool_names
+
+        level = effective_level(self.config, self.gate.control if hasattr(self.gate, "control") else None)
+        names = [tool.name for tool in sorted(self.tools.values(), key=lambda t: t.name)]
+        allowed = set(usable_tool_names(names, level))
         return [
             {
                 "name": tool.name,
@@ -113,6 +119,7 @@ class Toolhost:
                 "input_schema": tool.input_schema,
             }
             for tool in sorted(self.tools.values(), key=lambda t: t.name)
+            if tool.name in allowed
         ]
 
     def service(self, name: str) -> Any:
@@ -242,6 +249,7 @@ class Toolhost:
                 intention_id=ctx.intention_id,
                 commissioned_by=ctx.commissioned_by,
                 thread_id=ctx.thread_id,
+                inside_subagent=ctx.inside_subagent,
             )
             if not decision.allowed:
                 await self._finish(journal_id, "rejected", {"reason": decision.reason}, None)
@@ -479,5 +487,26 @@ def create_toolhost_app(host: Toolhost) -> FastAPI:
     @app.post("/execute")
     async def execute(request: ExecuteRequest) -> ToolResult:
         return await host.execute(request.tool, request.args, request.context)
+
+    @app.get("/approvals")
+    async def list_approvals() -> list[dict[str, Any]]:
+        manager = getattr(host.gate, "approvals", None)
+        return manager.list_pending() if manager is not None else []
+
+    @app.post("/approvals/{approval_id}/approve")
+    async def approve(approval_id: str) -> dict[str, Any]:
+        manager = getattr(host.gate, "approvals", None)
+        if manager is None:
+            return {"ok": False, "error": "no approval channel"}
+        request = manager.approve(approval_id, by="owner")
+        return {"ok": request is not None, "approval": request.to_dict() if request else None}
+
+    @app.post("/approvals/{approval_id}/deny")
+    async def deny(approval_id: str) -> dict[str, Any]:
+        manager = getattr(host.gate, "approvals", None)
+        if manager is None:
+            return {"ok": False, "error": "no approval channel"}
+        request = manager.deny(approval_id, by="owner")
+        return {"ok": request is not None, "approval": request.to_dict() if request else None}
 
     return app

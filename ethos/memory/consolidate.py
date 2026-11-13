@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 
 from ethos.config import EthosConfig
+from ethos.gateway.calibration import write_model_quality
 from ethos.memory.self_model import SelfModel
 from ethos.memory.store import MemoryStore
 from ethos.observability.logger import get_logger
@@ -15,6 +16,11 @@ from ethos.schemas.events import EventKind
 from ethos.schemas.models import ModelMessage, ModelRequest, Role, Tier
 
 logger = get_logger("ethos.consolidate")
+
+# A model with fewer solver-loop calls than this is not judged: three calls
+# prove nothing about a model, and an unproven model keeps its catalogue
+# opinion.
+QUALITY_CALIBRATION_MIN_SAMPLES = 20
 
 
 class GatewayLike(Protocol):
@@ -164,8 +170,16 @@ RECENT FACTS:
 {facts}"""
 
 PLAN_PROMPT = """You are {name}. Plan tomorrow: choose the 3 most valuable open intentions to
-advance, and one curiosity worth pursuing. Respond with strict JSON:
-{{"day_plan": {{"advance": [{{"title": "...", "why": "..."}}], "curiosity": "...", "note_to_self": "..."}}}}
+advance, one curiosity worth pursuing, and -- when something you saw today is
+worth building toward over more than a day -- one venture: a lasting direction
+of your own, not a task somebody could close. Respond with strict JSON:
+{{"day_plan": {{"advance": [{{"title": "...", "why": "..."}}], "curiosity": "...", "venture": {{"title": "...", "desired_end_state": "...", "why": "..."}}, "note_to_self": "..."}}}}
+
+The venture may be null when nothing seen today deserves one. It is not a
+task: tasks end, a venture is what the creation drive pushes on for weeks.
+Prefer naming one only when the day's episodes and facts genuinely suggest a
+direction -- a gap you kept noticing, a capability you lack, something you
+would build if nobody stopped you.
 
 OPEN INTENTIONS:
 {intentions}
@@ -339,6 +353,7 @@ class ConsolidationDAG:
         report["archived"] = await self.memory.archive_pass(now)
         report["autobiography"] = await self._autobiography(episodes)
         report["planned"] = await self._plan_next_day(now)
+        report["models_calibrated"] = await self._calibrate_models(now)
 
         await self.memory.record_episode(
             kind="consolidation", summary="nightly consolidation completed",
@@ -504,15 +519,77 @@ class ConsolidationDAG:
         plan = data.get("day_plan")
         if not plan:
             return False
+        venture = plan.get("venture")
+        if isinstance(venture, dict) and str(venture.get("title") or "").strip():
+            title = str(venture["title"]).strip()[:200]
+            desired = str(venture.get("desired_end_state") or venture.get("why") or title).strip()[:400]
+            try:
+                await self.memory.create_intention(
+                    title=title,
+                    desired_end_state=desired,
+                    kind="venture",
+                    origin="self",
+                    priority=0.6,
+                )
+            except Exception:
+                logger.exception("consolidation.venture_failed")
+        else:
+            venture = None
         notes_dir = self.config.paths.notes
         notes_dir.mkdir(parents=True, exist_ok=True)
         path = notes_dir / f"plan-{(now + timedelta(days=1)).date().isoformat()}.md"
         lines = [f"# {name}'s plan for {(now + timedelta(days=1)).date().isoformat()}", ""]
         for item in plan.get("advance", []):
             lines.append(f"- [ ] {item.get('title','')} — {item.get('why','')}")
+        if venture:
+            lines.append(
+                f"- Venture: {venture.get('title','')} — {venture.get('desired_end_state','')}"
+            )
         if plan.get("curiosity"):
             lines.append(f"- Curiosity: {plan['curiosity']}")
         if plan.get("note_to_self"):
             lines.append(f"\n> {plan['note_to_self']}")
         path.write_text("\n".join(lines), encoding="utf-8")
+        return True
+
+    async def _calibrate_models(self, now: datetime) -> bool:
+        """Re-score the model catalogue from what its calls actually did.
+
+        The `quality` numbers in `models.yaml` are opinions written before any
+        call was made, and one of them -- a model marked 1.0 -- turned out to
+        be the deployment's default answer for every tier. What a model did in
+        the solver loop is the only honest quality signal this program has:
+        `model_calls` carries per-call status for every `gsl.*` purpose, so
+        the nightly pass computes each model's ok-rate over the last seven
+        days and writes it where the router reads it
+        (`ethos/gateway/calibration.py`). The router applies the penalty
+        itself; this job only measures and records. Fewer than the minimum
+        sample leaves a model unjudged -- three calls prove nothing.
+        """
+        try:
+            rows = await self.memory.db.fetch(
+                "SELECT model, provider, count(*) AS n, "
+                "count(*) FILTER (WHERE status = 'ok') AS ok "
+                "FROM model_calls "
+                "WHERE purpose LIKE 'gsl.%' AND ts >= now() - make_interval(days => 7) "
+                "GROUP BY model, provider HAVING count(*) >= $1",
+                QUALITY_CALIBRATION_MIN_SAMPLES,
+            )
+        except Exception:
+            logger.exception("consolidation.calibration_query_failed")
+            return False
+        stats = {
+            f"{row['provider']}::{row['model']}": {
+                "provider": row["provider"],
+                "model": row["model"],
+                "calls": int(row["n"]),
+                "ok": int(row["ok"]),
+                "ok_rate": round(float(row["ok"]) / float(row["n"]), 4),
+                "calibrated_at": now.isoformat(),
+            }
+            for row in rows
+        }
+        write_model_quality(self.config.paths.data_dir, stats)
+        if stats:
+            logger.info("consolidation.models_calibrated", models=len(stats))
         return True

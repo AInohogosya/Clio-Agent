@@ -317,6 +317,11 @@ async def _pursue(
             catalog = list(toolhost.catalog())
         except Exception:
             catalog = []
+    from ethos.guardian.safety import effective_level
+
+    _control = getattr(getattr(toolhost, "gate", None), "control", None) if toolhost is not None else None
+    _safety_level = effective_level(config, _control)
+    _catalog_names = [str(entry.get("name")) for entry in catalog] if catalog else None
     from ethos.prompts.identity import build_identity_kernel, build_limits_block, build_tool_catalog_block
     context_prefix = "\n\n".join([
         build_identity_kernel(self_name),
@@ -394,7 +399,7 @@ async def _pursue(
                         commissioned=COMMISSIONED_ALREADY,
                         success_checks=SUCCESS_CHECKS_MATTER,
                         deliverable=VISIBLE_DELIVERABLE,
-                        delegation=delegation_note(goal_as_intention),
+                        delegation=delegation_note(goal_as_intention, safety_level=_safety_level, catalog_names=_catalog_names),
                         title=goal, desired_end_state=goal,
                         constraints=render_constraints(
                             getattr(goal_as_intention, "constraints", None)
@@ -431,7 +436,7 @@ async def _pursue(
                     name=self_name, commissioned=COMMISSIONED_ALREADY,
                     editing=EDIT_EXISTING_FILES,
                     deliverable=VISIBLE_DELIVERABLE,
-                    delegation=delegation_note(goal_as_intention),
+                    delegation=delegation_note(goal_as_intention, safety_level=_safety_level, catalog_names=_catalog_names),
                     title=goal,
                     intention_end_state=getattr(
                         goal_as_intention, "desired_end_state", ""
@@ -497,6 +502,7 @@ async def _pursue(
                         reason=f"thread step {step_id}: {step.get('description', '')[:120]}",
                         commissioned_by=getattr(intention, "commissioned_by", None),
                         idempotency_key=f"{spec.get('id')}:{step_id}:{len(thoughts)}",
+                        inside_subagent=(str(spec.get("role") or "") if str(spec.get("role") or "") in ("foundry", "apex", "axiom") else None),
                     )
                     try:
                         result = await toolhost.execute(str(action["tool"]), dict(action.get("args") or {}), ctx)

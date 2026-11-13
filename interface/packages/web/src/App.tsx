@@ -26,6 +26,7 @@ export default function App() {
     control,
     undoAction,
     closeIntention,
+    decideApproval,
     refresh,
     conversation,
     conversations,
@@ -34,7 +35,9 @@ export default function App() {
     setConversation,
     history,
     historyLoading,
+    historyQuery,
     loadOlderHistory,
+    searchHistory,
   } = controller;
   const [screen, setScreen] = useState<Screen>(() => (controller.shouldShowProviderSetup ? 'settings' : 'main'));
   const [armedEmergency, setArmedEmergency] = useState(false);
@@ -109,10 +112,16 @@ export default function App() {
           onUpdate={controller.updateSettings}
           clearIdentity={controller.clearIdentity}
           preview={preview}
+          safetyLevel={link === 'online' ? view.control.safety_level : null}
+          setSafetyLevel={(level) => control(
+            level === null ? 'safety_level_reset' : `safety_level_${level}` as AgentControlAction,
+          ).then(() => undefined)}
           readBaseModel={controller.readBaseModel}
           readDoors={controller.readDoors}
           readEnvApiKeys={controller.readEnvApiKeys}
           readIdentity={controller.readIdentity}
+          readAgentConfig={controller.readAgentConfig}
+          saveAgentConfig={controller.saveAgentConfig}
           saveBaseModel={controller.saveBaseModel}
           saveDoor={controller.saveDoor}
           saveIdentity={controller.saveIdentity}
@@ -143,9 +152,12 @@ export default function App() {
           )}
           onSend={(text) => void controller.sendMessage(text)}
           onUndo={(id) => void undoAction(id)}
+          onDecideApproval={(id, verb) => void decideApproval(id, verb)}
           onLoadOlderHistory={() => void loadOlderHistory()}
           history={history}
           historyLoading={historyLoading}
+          historyQuery={historyQuery}
+          onSearchHistory={(query) => void searchHistory(query)}
           pendingAction={pendingAction}
           snapshot={snapshot}
           streaming={streaming}

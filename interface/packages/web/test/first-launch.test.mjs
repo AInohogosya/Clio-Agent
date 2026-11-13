@@ -19,8 +19,11 @@ import App from '../src/App.tsx';
 test('the first frame is the settings screen', () => {
   const markup = renderToStaticMarkup(createElement(App));
   assert.ok(markup.includes(translate('en', 'settings')), 'the settings heading is missing');
-  assert.ok(markup.includes(translate('en', 'provider')), 'the provider controls are missing');
-  assert.ok(markup.includes(translate('en', 'model')), 'the model controls are missing');
+  // The screen is a sidebar of categories now, and the first frame opens on the
+  // interface choice: agent or direct, which is the one decision a first run has
+  // to make before any provider field means anything.
+  assert.ok(markup.includes(translate('en', 'interfaceLabel')), 'the interface choice is missing');
+  assert.ok(markup.includes(translate('en', 'catConnection')), 'the categories are missing');
 });
 
 test('the first frame is not the chat', () => {

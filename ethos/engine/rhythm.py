@@ -109,7 +109,12 @@ class RhythmController:
     def energy(self, spent_discretionary_usd: float, rest_minutes: float = 0.0, now: datetime | None = None) -> float:
         """E = min(1 - s_d/B_d, circadian) + rho_rest, clipped to [0, cap]."""
         cfg = self.config.rhythm.energy
-        budget = self.config.permissions.hard_limits.H2_daily_spend_usd * (1 - self.config.gateway.budget.commitment_reserve_pct)
+        daily_cap = self.config.permissions.hard_limits.H2_daily_spend_usd
+        if daily_cap is None or daily_cap <= 0:
+            # No daily cap (the default): spend cannot drain energy.
+            budget = 0.0
+        else:
+            budget = daily_cap * (1 - self.config.gateway.budget.commitment_reserve_pct)
         first = 1.0 - (spent_discretionary_usd / budget if budget > 0 else 0.0)
         second = self.circadian(now)
         rest_blocks = int((self.rest_minutes_accumulated + rest_minutes) // 30)

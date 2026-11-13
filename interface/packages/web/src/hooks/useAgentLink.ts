@@ -44,6 +44,8 @@ export interface AgentLinkController {
   control: (action: AgentControlAction) => Promise<void>;
   undoAction: (id: string) => Promise<void>;
   closeIntention: (id: string) => Promise<void>;
+  /** Approves (`approve`) or denies (`deny`) a command the gate is holding. */
+  decideApproval: (id: string, verb: 'approve' | 'deny') => Promise<void>;
   refresh: () => Promise<void>;
   reconnect: () => void;
   /**
@@ -121,6 +123,10 @@ export interface AgentLinkController {
    * conversation this surface is on.
    */
   loadOlderHistory: () => Promise<void>;
+  /** What the timeline is showing instead of a page, when it shows a search. */
+  historyQuery: string | null;
+  /** Searches the past into the same pane; an empty query restores the page view. */
+  searchHistory: (query: string) => Promise<void>;
 }
 
 /**
@@ -268,6 +274,7 @@ export function useAgentLink(
 
   useEffect(() => {
     setHistory(emptyAgentHistory());
+    setHistoryQuery(null);
     setHistoryFor(conversation?.id ?? null);
   }, [conversation?.id]);
 
@@ -372,6 +379,58 @@ export function useAgentLink(
     if (mounted.current) setNotice(`close:${id}`);
   }, [transport]);
 
+  /**
+   * Approves or denies a command the guardian is holding for a person.
+   *
+   * Decided against the client directly rather than through the transport,
+   * because the decision is not a turn — it is the owner's authority acting on
+   * one tool run, and the refresh that follows is the snapshot showing the
+   * list without it.
+   */
+  const decideApproval = useCallback(async (id: string, verb: 'approve' | 'deny') => {
+    const client = agentRef.current;
+    if (!client) return;
+    if (verb === 'approve') await client.approveApproval(id);
+    else await client.denyApproval(id);
+    await client.refresh();
+  }, []);
+
+  /**
+   * `/find` — a search over the past, into the same pane "load older" fills.
+   *
+   * A search result is a page like any other page: the union-by-id keeps the
+   * pages already loaded, the flag on the state says the pane is showing a
+   * search, and the pane's heading says what was searched for. A new
+   * conversation clears it, exactly as it clears loaded pages.
+   */
+  const [historyQuery, setHistoryQuery] = useState<string | null>(null);
+  const searchHistory = useCallback(async (query: string) => {
+    const selected = conversation;
+    const client = agentRef.current;
+    const wanted = query.trim();
+    if (!client) return;
+    if (!wanted) {
+      setHistoryQuery(null);
+      setHistory(emptyAgentHistory());
+      setHistoryFor(null);
+      return;
+    }
+    setHistoryLoading(true);
+    try {
+      const page = await client.history({
+        q: wanted,
+        limit: 60,
+        ...(selected?.person ? { person: selected.person } : {}),
+      });
+      if (!mounted.current) return;
+      setHistoryFor(selected?.id ?? null);
+      setHistoryQuery(wanted);
+      setHistory(page);
+    } finally {
+      if (mounted.current) setHistoryLoading(false);
+    }
+  }, [conversation]);
+
   const refresh = useCallback(async () => {
     await agent.refresh();
   }, [agent]);
@@ -400,6 +459,7 @@ export function useAgentLink(
     control,
     undoAction,
     closeIntention,
+    decideApproval,
     refresh,
     reconnect,
     conversations,
@@ -411,10 +471,12 @@ export function useAgentLink(
     history,
     historyLoading,
     loadOlderHistory,
+    historyQuery,
+    searchHistory,
   }), [
     current, currentTransport, view, link, streaming, notice,
-    dismissNotice, control, undoAction, closeIntention, refresh, reconnect,
+    dismissNotice, control, undoAction, closeIntention, decideApproval, refresh, reconnect,
     conversations, conversation, doors, closed, refreshDoors,
-    history, historyLoading, loadOlderHistory,
+    history, historyLoading, loadOlderHistory, historyQuery, searchHistory,
   ]);
 }

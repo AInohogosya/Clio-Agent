@@ -76,15 +76,22 @@ export function Tui({ initialConfig, debug, mode, width, height, depth }: TuiPro
     [snapshot.settings.accent, snapshot.settings.theme, depth],
   );
 
-  const sidebar = width >= WIDE_AT;
+  // The sidebar answers to the width and to the reader: a preference against it
+  // holds at any width, and the pane becomes the whole screen.
+  const sidebar = width >= WIDE_AT && snapshot.settings.showSidebar;
   const sidebarWidth = sidebar ? SIDEBAR_WIDTH : 0;
   const chatWidth = Math.max(20, width - sidebarWidth - (sidebar ? 1 : 0));
   const debugRows = debug ? DEBUG_PANEL_ROWS : 0;
   const chatHeight = Math.max(MIN_CHAT_HEIGHT, height - CHROME_ROWS - debugRows);
 
   const lines = useMemo(
-    () => transcriptLines(snapshot.messages, { width: chatWidth - 2, language: snapshot.settings.language }),
-    [snapshot.messages, chatWidth, snapshot.settings.language],
+    () => transcriptLines(snapshot.messages, {
+      width: chatWidth - 2,
+      language: snapshot.settings.language,
+      showTimestamps: snapshot.settings.showTimestamps,
+      density: snapshot.settings.density,
+    }),
+    [snapshot.messages, chatWidth, snapshot.settings],
   );
   const visible = windowLines(lines, chatHeight, scroll);
   const limit = maxScroll(lines, chatHeight);
@@ -135,9 +142,9 @@ export function Tui({ initialConfig, debug, mode, width, height, depth }: TuiPro
     return (
       <Box flexDirection="column" height={height} paddingX={1} width={width}>
         <HelpOverlay
-          commands={HELP_COMMANDS}
+          commands={helpCommands(t)}
           height={height - 2}
-          keys={HELP_KEYS}
+          keys={helpKeys(t)}
           keyWidth={18}
           noteKey="cliSyncNote"
           palette={palette}
@@ -229,29 +236,36 @@ export function Tui({ initialConfig, debug, mode, width, height, depth }: TuiPro
   );
 }
 
-const HELP_KEYS: Array<[string, string]> = [
-  ['Enter', 'Send the message.'],
-  ['PgUp / PgDn', 'Scroll the transcript by a screen.'],
-  ['↑ / ↓', 'Scroll one line.'],
-  ['← / →', 'Move the caret in the composer.'],
-  ['Esc', 'Close a panel, interrupt a reply, jump to the newest line, or open settings.'],
-  ['Ctrl-S', 'Open the provider setup.'],
-  ['Ctrl-L', 'Clear the conversation in both interfaces.'],
-  ['Ctrl-K', 'Discard the composer.'],
-  ['Ctrl-Q / Ctrl-C', 'Leave the line.'],
-];
+function helpKeys(t: ReturnType<typeof createTranslator>): Array<[string, string]> {
+  return [
+    ['Enter', t('kbdEnterSend')],
+    ['PgUp / PgDn', t('kbdScrollScreen')],
+    ['↑ / ↓', t('kbdScrollLine')],
+    ['← / →', t('kbdCaret')],
+    ['Esc', t('kbdEscPanel')],
+    ['Ctrl-S', t('kbdCtrlS')],
+    ['Ctrl-L', t('kbdCtrlL')],
+    ['Ctrl-K', t('kbdCtrlK')],
+    ['Ctrl-Q / Ctrl-C', t('kbdCtrlQ')],
+  ];
+}
 
-const HELP_COMMANDS: Array<[string, string]> = [
-  ['/help', 'Show or hide this panel.'],
-  ['/settings', 'Open the provider setup.'],
-  ['/clear', 'Clear the shared transcript.'],
-  ['/interrupt', 'Stop a reply in flight.'],
-  ['/theme', 'Switch between dark and light.'],
-  ['/lang', 'Cycle the interface language.'],
-  ['/accent [#hex]', 'Cycle the accent, or set it with /accent #0EA5E9.'],
-  ['/send <text>', 'Send a message without leaving the composer.'],
-  ['/quit', 'Leave the line.'],
-];
+function helpCommands(t: ReturnType<typeof createTranslator>): Array<[string, string]> {
+  return [
+    ['/help', t('cmdHelp')],
+    ['/settings', t('cmdSettings')],
+    ['/clear', t('cmdClear')],
+    ['/interrupt', t('cmdInterrupt')],
+    ['/theme', t('cmdTheme')],
+    ['/lang', t('cmdLang')],
+    ['/accent [#hex]', t('cmdAccent')],
+    ['/density [compact|comfortable]', t('cmdDensity')],
+    ['/timestamps [on|off]', t('cmdTimestamps')],
+    ['/sidebar [on|off]', t('cmdSidebar')],
+    ['/send <text>', t('cmdSend')],
+    ['/quit', t('cmdQuit')],
+  ];
+}
 
 function Header({
   palette,

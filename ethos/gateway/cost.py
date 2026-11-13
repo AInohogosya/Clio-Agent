@@ -4,7 +4,7 @@ import json
 import os
 import time
 from collections.abc import Mapping
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from ethos.config import EthosConfig
@@ -39,6 +39,37 @@ def start_of_day(now: datetime | None = None) -> datetime:
 
 def start_of_month(now: datetime | None = None) -> datetime:
     return start_of_day(now).replace(day=1)
+
+
+# Trailing windows for the sub-daily caps. Daily and monthly stay calendar
+# windows; these are "the last N seconds" so a per-minute cap bites during a
+# burst and releases when the burst ends, rather than at a clock boundary.
+
+WINDOW_SECONDS: dict[str, float] = {
+    "per_minute": 60.0,
+    "per_10_minutes": 600.0,
+    "per_hour": 3600.0,
+    "per_5_hours": 18000.0,
+}
+
+
+def _aware(now: datetime | None = None) -> datetime:
+    moment = now or datetime.now(UTC)
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=UTC)
+    return moment.astimezone(UTC)
+
+
+def window_start(window: str, now: datetime | None = None) -> datetime:
+    """The instant a window's spend starts being counted from."""
+    moment = _aware(now)
+    if window in WINDOW_SECONDS:
+        return moment - timedelta(seconds=WINDOW_SECONDS[window])
+    if window == "daily":
+        return start_of_day(moment)
+    if window == "monthly":
+        return start_of_month(moment)
+    raise ValueError(f"unknown spend window {window!r}")
 
 
 # The single spend query. `SpendGuard` and the dashboard bridge both go through
@@ -78,6 +109,23 @@ GROUP BY 1
 ORDER BY 1
 """
 
+# Token-count spend, on the same `status = 'ok'` terms as SPEND_SQL. Total
+# tokens is every billed token bucket added together: prompt, cache reads,
+# cache writes, completion and reasoning.
+TOKEN_SQL = """
+SELECT COALESCE(SUM(
+  COALESCE(input_tokens, 0)
+  + COALESCE(cached_input_tokens, 0)
+  + COALESCE(cache_write_tokens, 0)
+  + COALESCE(output_tokens, 0)
+  + COALESCE(reasoning_tokens, 0)
+), 0) AS total
+FROM model_calls
+WHERE ts >= $1 AND status = 'ok'
+"""
+
+TOKEN_BY_BUCKET_SQL = TOKEN_SQL + " AND budget_bucket = $2"
+
 
 async def spend_totals(db: Database | None, since: datetime) -> dict[str, float]:
     """Day and month totals from the ledger, on the guard's own terms."""
@@ -88,12 +136,22 @@ async def spend_totals(db: Database | None, since: datetime) -> dict[str, float]
     return {"day_total": float(day), "month_total": float(month)}
 
 
+async def token_totals(db: Database | None, since: datetime) -> float:
+    """Token total since `since`, on the guard's own terms."""
+    if db is None:
+        return 0.0
+    return float(await db.fetchval(TOKEN_SQL, since) or 0.0)
+
+
 class BudgetExceededError(RuntimeError):
-    def __init__(self, message: str, bucket: str, spent: float, cap: float):
+    def __init__(self, message: str, bucket: str, spent: float, cap: float,
+                 window: str | None = None, unit: str | None = None):
         super().__init__(message)
         self.bucket = bucket
         self.spent = spent
         self.cap = cap
+        self.window = window
+        self.unit = unit
 
 
 class CostCalculator:
@@ -209,6 +267,33 @@ class CostCalculator:
             6,
         )
 
+    def estimate_tokens(
+        self,
+        request: ModelRequest | None = None,
+    ) -> int:
+        """What the next call is expected to consume in tokens, before it is made.
+
+        The token twin of `estimate`: the same request read the same way, but
+        answered as a token count so a cap configured in tokens can be checked
+        before any tokens exist.
+        """
+        if request is None:
+            return 4_800
+        est_input = estimate_tokens(request)
+        est_reasoning = min(request.reasoning_budget or 0, request.max_tokens)
+        est_output = max(0, min(request.max_tokens, 800) - est_reasoning)
+        return est_input + est_output + est_reasoning
+
+    def token_usage_of(self, usage: Usage) -> int:
+        """Total tokens a finished call consumed, all buckets combined."""
+        return (
+            usage.input_tokens
+            + usage.cached_input_tokens
+            + usage.cache_write_tokens
+            + usage.output_tokens
+            + usage.reasoning_tokens
+        )
+
 
 class SpendGuard:
     """Enforces H2 (financial exposure caps) at the gateway boundary.
@@ -219,6 +304,11 @@ class SpendGuard:
     agent stops it for the rest of the day, which for a tool meant to carry
     someone's whole working day is the one failure the money was supposed to
     prevent. `on_exceed: block` restores the hard raise.
+
+    Every window is individually enableable and all are disabled by default
+    (see `HardLimitsConfig.spend_limits`). A `None` cap enforces nothing and
+    costs no query; a set cap is checked on each call in the configured
+    `budget_unit` (USD cost or token count).
     """
 
     WARN_INTERVAL_S = 300.0
@@ -226,11 +316,17 @@ class SpendGuard:
     def __init__(self, db: Database | None, config: EthosConfig):
         self.db = db
         self.config = config
-        self.daily_cap = config.permissions.hard_limits.H2_daily_spend_usd
-        self.monthly_cap = config.permissions.hard_limits.H2_monthly_spend_usd
+        limits = config.permissions.hard_limits
+        self.daily_cap = limits.H2_daily_spend_usd
+        self.monthly_cap = limits.H2_monthly_spend_usd
+        self.unit = (getattr(limits, "budget_unit", "usd") or "usd").strip().lower()
         reserve_pct = config.gateway.budget.commitment_reserve_pct
-        self.commitment_cap = round(self.daily_cap * reserve_pct, 6)
-        self.discretionary_cap = round(self.daily_cap - self.commitment_cap, 6)
+        if self.daily_cap is not None:
+            self.commitment_cap = round(self.daily_cap * reserve_pct, 6)
+            self.discretionary_cap = round(self.daily_cap - self.commitment_cap, 6)
+        else:
+            self.commitment_cap = None
+            self.discretionary_cap = None
         self._last_warn: dict[str, float] = {}
 
     async def _start_of_day(self) -> datetime:
@@ -255,6 +351,30 @@ class SpendGuard:
             "day_discretionary": float(day_discretionary),
         }
 
+    async def window_spends(self) -> dict[str, dict[str, float]]:
+        """Spend per enabled window, in both units.
+
+        Returns ``{window: {"usd": float, "tokens": float}}`` for every
+        enabled window only. Disabled windows are absent, so a caller can
+        tell "nothing spent" from "window off".
+        """
+        enabled = self.config.permissions.hard_limits.enabled_limits()
+        if self.db is None or not enabled:
+            return {}
+        now = _aware()
+        totals: dict[str, dict[str, float]] = {}
+        for window in enabled:
+            start = window_start(window, now)
+            usd = float(await self.db.fetchval(SPEND_SQL, start) or 0.0)
+            tokens = float(await self.db.fetchval(TOKEN_SQL, start) or 0.0)
+            totals[window] = {"usd": usd, "tokens": tokens}
+        return totals
+
+    def _fmt(self, value: float) -> str:
+        if self.unit == "tokens":
+            return f"{value:,.0f}"
+        return f"{value:.2f}"
+
     def _soft_mode(self) -> bool:
         """Whether a breach warns rather than raises.
 
@@ -267,46 +387,73 @@ class SpendGuard:
             mode = str(getattr(self.config.permissions.hard_limits, "on_exceed", "block"))
         return mode.strip().lower() == "warn"
 
-    async def check(self, bucket: str, est_cost: float) -> None:
+    async def check(self, bucket: str, est_cost: float,
+                    est_tokens: int | None = None) -> None:
         if self.db is None:
             return
-        # Nothing to protect against when the next call is expected to be free.
-        # Skipping the query matters more than it looks: on a deployment whose
-        # whole traffic is free models this is the difference between four
-        # round-trips to Postgres before every request and none.
-        if est_cost <= 0.0:
+        enabled = self.config.permissions.hard_limits.enabled_limits()
+        # With every window disabled (the default) there is nothing to
+        # protect against and the check costs zero queries.
+        if not enabled:
             return
-        spend = await self.spend()
+        # Nothing to protect against when the next call is expected to be
+        # free in the active unit. Skipping the query matters more than it
+        # looks: on a deployment whose whole traffic is free models this is
+        # the difference between four round-trips to Postgres before every
+        # request and none.
+        if self.unit == "tokens":
+            if est_tokens is not None and est_tokens <= 0:
+                return
+            if est_tokens is None and est_cost <= 0.0:
+                return
+        elif est_cost <= 0.0:
+            # A free call in USD mode can still be a token spend, so when
+            # token mode is also relevant we only skip if both are zero. In
+            # pure USD mode a zero-cost call cannot breach a USD cap.
+            if est_tokens is None:
+                return
+        estimate = float(est_tokens) if (self.unit == "tokens" and est_tokens is not None) else float(est_cost)
+        if estimate <= 0.0:
+            return
+        totals = await self.window_spends()
         breaches: list[tuple[str, str, float, float]] = []
-        if spend["month_total"] + est_cost > self.monthly_cap:
-            breaches.append((
-                "month",
-                f"monthly spend cap exceeded: {spend['month_total']:.2f} + {est_cost:.4f} > {self.monthly_cap:.2f}",
-                spend["month_total"], self.monthly_cap,
-            ))
-        if spend["day_total"] + est_cost > self.daily_cap:
-            breaches.append((
-                "day",
-                f"daily spend cap exceeded: {spend['day_total']:.2f} + {est_cost:.4f} > {self.daily_cap:.2f}",
-                spend["day_total"], self.daily_cap,
-            ))
-        if bucket == "commitment" and spend["day_commitment"] + est_cost > self.commitment_cap:
-            breaches.append((
-                "commitment",
-                f"commitment reserve exceeded: {spend['day_commitment']:.2f} + {est_cost:.4f} > {self.commitment_cap:.2f}",
-                spend["day_commitment"], self.commitment_cap,
-            ))
-        if bucket == "discretionary" and spend["day_discretionary"] + est_cost > self.discretionary_cap:
-            breaches.append((
-                "discretionary",
-                f"discretionary budget exhausted: {spend['day_discretionary']:.2f} + {est_cost:.4f} > {self.discretionary_cap:.2f}",
-                spend["day_discretionary"], self.discretionary_cap,
-            ))
+        for window, cap in enabled.items():
+            spent = totals.get(window, {}).get(self.unit, 0.0)
+            if spent + estimate > cap:
+                label = window.replace("_", " ")
+                breaches.append((
+                    label,
+                    f"{label} {self.unit} cap exceeded: {self._fmt(spent)} + {self._fmt(estimate)} > {self._fmt(cap)}",
+                    spent, cap,
+                ))
+        # Commitment/discretionary split only applies when the daily cap
+        # that defines it is enabled.
+        if self.daily_cap is not None:
+            if self.unit == "tokens":
+                start_day = await self._start_of_day()
+                commitment_total = float(await self.db.fetchval(TOKEN_BY_BUCKET_SQL, start_day, "commitment") or 0.0)
+                discretionary_total = float(await self.db.fetchval(TOKEN_BY_BUCKET_SQL, start_day, "discretionary") or 0.0)
+            else:
+                spend = await self.spend()
+                commitment_total = spend["day_commitment"]
+                discretionary_total = spend["day_discretionary"]
+            if bucket == "commitment" and self.commitment_cap is not None and commitment_total + estimate > self.commitment_cap:
+                breaches.append((
+                    "commitment",
+                    f"commitment reserve exceeded: {self._fmt(commitment_total)} + {self._fmt(estimate)} > {self._fmt(self.commitment_cap)}",
+                    commitment_total, self.commitment_cap,
+                ))
+            if bucket == "discretionary" and self.discretionary_cap is not None and discretionary_total + estimate > self.discretionary_cap:
+                breaches.append((
+                    "discretionary",
+                    f"discretionary budget exhausted: {self._fmt(discretionary_total)} + {self._fmt(estimate)} > {self._fmt(self.discretionary_cap)}",
+                    discretionary_total, self.discretionary_cap,
+                ))
         if not breaches:
             return
         if not self._soft_mode():
             b_bucket, message, spent, cap = breaches[0]
-            raise BudgetExceededError(message, bucket=b_bucket, spent=spent, cap=cap)
+            raise BudgetExceededError(message, bucket=b_bucket, spent=spent, cap=cap, window=b_bucket, unit=self.unit)
         # Soft mode: say it once per bucket per interval rather than on every
         # call, so a working afternoon past the cap is one visible line on the
         # dashboard, not a wall of them in the log the person stopped reading.
@@ -318,6 +465,7 @@ class SpendGuard:
             logger.warning(
                 "spend.soft_cap_exceeded", bucket=b_bucket,
                 spent=round(spent, 4), cap=cap, est_cost=round(est_cost, 6),
+                est_tokens=est_tokens, unit=self.unit,
                 message=message, action="allowed (on_exceed: warn)",
             )
 

@@ -29,12 +29,16 @@ import {
   readAgentHistory,
   readAgentMessage,
   readAgentView,
+  readApexSession,
+  readApprovals,
   readBaseModelReply,
   readEnvApiKeys,
   readIdentityReply,
   readPresence,
   readReasoningSupport,
   readThought,
+  type AgentApproval,
+  type AgentApexSession,
   type AgentBaseModel,
   type AgentBaseModelInput,
   type AgentChannelSetup,
@@ -526,6 +530,45 @@ export class AgentClient {
     });
   }
 
+  // ------------------------------------------------------------- the approvals
+
+  /**
+   * The commands the guardian is holding for a person's decision, read fresh.
+   *
+   * The snapshot carries the same list; this is the write-adjacent read a
+   * surface uses right after acting, so an approve is followed by an answer
+   * rather than by the next poll interval.
+   */
+  async approvals(): Promise<AgentApproval[]> {
+    return this.getOr<AgentApproval[]>('/api/approvals', [], readApprovals);
+  }
+
+  /** Approves one held command. A 404 names an approval that already resolved. */
+  async approveApproval(id: string): Promise<void> {
+    const approvalId = id.trim();
+    if (!approvalId) throw new AgentRequestError('agent_refused', 'no_approval_id');
+    const endpoints = this.requireEndpoints();
+    const response = await this.post(
+      `${endpoints.http}/api/approvals/${encodeURIComponent(approvalId)}/approve`,
+      { by: this.personId },
+    );
+    if (response.status === 404) throw new AgentRequestError('agent_refused', 'no_such_approval');
+    if (!response.ok) throw new AgentRequestError('agent_unreachable', `http_${response.status}`);
+  }
+
+  /** Denies one held command: the step is journalled as rejected, nothing runs. */
+  async denyApproval(id: string): Promise<void> {
+    const approvalId = id.trim();
+    if (!approvalId) throw new AgentRequestError('agent_refused', 'no_approval_id');
+    const endpoints = this.requireEndpoints();
+    const response = await this.post(
+      `${endpoints.http}/api/approvals/${encodeURIComponent(approvalId)}/deny`,
+      { by: this.personId },
+    );
+    if (response.status === 404) throw new AgentRequestError('agent_refused', 'no_such_approval');
+    if (!response.ok) throw new AgentRequestError('agent_unreachable', `http_${response.status}`);
+  }
+
   // ----------------------------------------------------------- the base model
 
   /**
@@ -678,11 +721,20 @@ export class AgentClient {
    * an empty page rather than an error in the timeline — a history that cannot
    * be reached reads as "nothing older", which is what the pane can say.
    */
-  async history(options: { before?: string; person?: string; channel?: string } = {}): Promise<AgentHistoryPage> {
+  async history(options: {
+    before?: string;
+    person?: string;
+    channel?: string;
+    /** A text search over the past, as the bridge's `q` parameter names it. */
+    q?: string;
+    limit?: number;
+  } = {}): Promise<AgentHistoryPage> {
     const params = new URLSearchParams();
     if (options.before) params.set('before', options.before);
     if (options.person) params.set('person', options.person);
     if (options.channel) params.set('channel', options.channel);
+    if (options.q) params.set('q', options.q);
+    if (options.limit) params.set('limit', String(Math.trunc(options.limit)));
     const query = params.toString();
     return this.getOr('/api/messages', emptyAgentHistory(), readAgentHistory, {
       query: query ? `?${query}` : '',
@@ -825,6 +877,17 @@ export class AgentClient {
   }
 
   /**
+   * The background screen relay's session, or `null` when there is no run.
+   *
+   * Read-only by construction: the relay answers only GETs and reports
+   * `readOnly: true`, and this client only ever fetches — a surface that can
+   * see a desktop run cannot touch it from here.
+   */
+  async apexScreenSession(): Promise<AgentApexSession | null> {
+    return this.getOr<AgentApexSession | null>('/api/apex-screen/session', null, readApexSession);
+  }
+
+  /**
    * What the agent has been named, or `null` when the agent cannot be asked.
    *
    * `null` and "nobody has named it" are different answers and both are reachable, so
@@ -880,6 +943,39 @@ export class AgentClient {
     body: Record<string, unknown>,
   ): Promise<{ ok: true; payload: unknown } | { ok: false; refusal: string }> {
     return this.postWithRefusal('/api/channels', body, isChannelRefusal);
+  }
+
+  /** Every Clio Agent setting as flat values, or null when it cannot be asked. */
+  async readAgentConfig(): Promise<Record<string, string | number | boolean | null> | null> {
+    const endpoints = this.endpoints;
+    if (!endpoints) return null;
+    try {
+      const response = await this.fetcher(`${endpoints.http}/api/agent-config`, {
+        method: 'GET',
+        headers: { accept: 'application/json' },
+      });
+      if (!response.ok) return null;
+      const payload = (await response.json().catch(() => null)) as { values?: unknown } | null;
+      if (!payload || typeof payload.values !== 'object' || payload.values === null || Array.isArray(payload.values)) return null;
+      return payload.values as Record<string, string | number | boolean | null>;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Writes a subset of Clio Agent settings. Values keyed by field id. */
+  async saveAgentConfig(values: Record<string, string | number | boolean | null>): Promise<Record<string, string | number | boolean | null>> {
+    const endpoints = this.requireEndpoints();
+    const response = await this.fetcher(`${endpoints.http}/api/agent-config`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', accept: 'application/json' },
+      body: JSON.stringify({ values }),
+    });
+    const payload = (await response.json().catch(() => ({}))) as { values?: Record<string, string | number | boolean | null>; error?: string; detail?: string };
+    if (!response.ok) {
+      throw new AgentRequestError('agent_refused', payload.error ?? `http_${response.status}`);
+    }
+    return payload.values ?? {};
   }
 
   private async post(url: string, body: unknown): Promise<Response> {

@@ -17,14 +17,18 @@ import {
   type AgentControlAction,
   type AgentConversation,
   type AgentDoor,
+  type AgentDoorWrite,
+  type AgentHistoryPage,
   type AgentLinkStatus,
   type AgentTransport,
   type AgentView,
   type ChatMessage,
   type ClientSnapshot,
+  type EnvApiKey,
   type Settings,
 } from '@project-phone/core';
 import { doorRefusalText, doorSummary, findConversation, resolveDoor, type DoorChoice, type DoorRefusal } from './channels.js';
+import { toggleWord } from './tui-input.js';
 import { saveConfig, watchConfig, type PhoneConfig } from './config.js';
 import {
   appendDebug,
@@ -101,6 +105,18 @@ export interface AgentSession {
   control: (action: AgentControlAction) => void;
   undoAction: (id: string, tool: string) => void;
   closeIntention: (id: string, title: string) => void;
+  /** Approves or denies a command the guardian is holding for a person. */
+  approveOrDeny: (id: string, verb: 'approve' | 'deny', tool: string) => Promise<void>;
+  /** Loads a page of the past, or a search over it, into panel state. */
+  loadHistory: (argument: string, mode: 'page' | 'search') => Promise<void>;
+  /** The page `/history` or `/find` last fetched, if any. */
+  historyPage: { page: AgentHistoryPage; query: string } | null;
+  /** Which providers the agent's process holds an environment key for. */
+  envKeys: EnvApiKey[];
+  /** Reports the agent's env keys, never their values. */
+  showEnvKeys: () => void;
+  /** Edits one door: `/door set <n|door> <field> <value>`. */
+  editDoor: (argument: string) => Promise<void>;
   /** Shows the agent's base model, or writes the one named by `argument`. */
   setBaseModel: (argument: string, say: (text: string, tone?: Tone) => void) => void;
   /** Reports what the agent is called, or names it the word `argument` holds. */
@@ -188,6 +204,11 @@ export function useAgentSession(
    * would be lost every time the list was replaced.
    */
   const [doors, setDoors] = useState<AgentDoor[]>([]);
+  // The page `/history`/`/find` last fetched, and the env-key report `/keys`
+  // read. Both are reads the reader asked for once, so they are panel state
+  // rather than transcript state: the transcript is the agent's record.
+  const [historyPage, setHistoryPage] = useState<{ page: AgentHistoryPage; query: string } | null>(null);
+  const [envKeys, setEnvKeys] = useState<EnvApiKey[]>([]);
   // The terminal's own line, not the browser's: `web` is the conversation the
   // standard web interface conducts, and starting there would put this
   // terminal's words in somebody else's pane.
@@ -502,6 +523,122 @@ export function useAgentSession(
       });
   }, [say, t, transport]);
 
+  const approveOrDeny = useCallback(async (id: string, verb: 'approve' | 'deny', tool: string) => {
+    try {
+      if (verb === 'approve') await agent.approveApproval(id);
+      else await agent.denyApproval(id);
+      if (mounted.current) say(t(verb === 'approve' ? 'cliApprovalApproved' : 'cliApprovalDenied', { tool }), 'success');
+    } catch {
+      if (mounted.current) say(t('cliApprovalGone'), 'warning');
+    }
+  }, [agent, say, t]);
+
+  /**
+   * `/history [n]` and `/find <text>` — the past, on request.
+   *
+   * The snapshot is the live window and the transcript is narrowed to one
+   * conversation; the bridge's `/api/messages` is the road to everything
+   * older, paged backwards, delivered-only — the same road the browser's
+   * "load older" button drives. A page lands as panel state rather than
+   * injected into the transcript: the transcript is the agent's record, and
+   * something fetched retroactively did not happen in this conversation now.
+   */
+  const loadHistory = useCallback(async (argument: string, mode: 'page' | 'search') => {
+    try {
+      const page = await agent.history({
+        person: localDoor ? undefined : address || undefined,
+        channel: localDoor ? undefined : channel,
+        q: mode === 'search' ? argument.trim() : undefined,
+        limit: 30,
+      });
+      setHistoryPage({ page, query: mode === 'search' ? argument.trim() : '' });
+      if (mounted.current) {
+        say(t(page.messages.length ? 'cliHistoryLoaded' : 'cliHistoryEmpty', { count: page.messages.length }), 'accent');
+      }
+    } catch {
+      if (mounted.current) say(t('agentUnreachable'), 'warning');
+    }
+  }, [address, agent, channel, localDoor, say, t]);
+
+  /**
+   * `/keys` — which providers the agent's process can already see a key for.
+   *
+   * Names and hints only, never values — the same contract the settings
+   * screen's "use env key" runs on. The list renders in the approvals panel,
+   * which is the session's general "waiting on the deployment" surface.
+   */
+  const showEnvKeys = useCallback(() => {
+    void agent.readEnvApiKeys()
+      .then((keys) => {
+        if (!mounted.current) return;
+        setEnvKeys(keys);
+        say(t(keys.length ? 'cliKeysLoaded' : 'cliKeysNone', { count: keys.length }), keys.length ? 'accent' : 'warning');
+      })
+      .catch(() => {
+        if (mounted.current) say(t('agentUnreachable'), 'warning');
+      });
+  }, [agent, say, t]);
+
+  /**
+   * `/door set <n|door> <field> <value>` — door editing from the terminal.
+   *
+   * The web settings screen has door cards; here the vocabulary is the
+   * one-shot CLI's (`phone channels set`), reused over the same
+   * `AgentClient.saveDoor`. The field names are the write's own: enabled,
+   * acceptFromAnyone, allowed (comma-separated), address. A credential is
+   * deliberately not settable from a command line for the same reason the
+   * base model is not: a key typed into a terminal scrollback is a key that
+   * never leaves it.
+   */
+  const editDoor = useCallback(async (argument: string) => {
+    const parts = argument.trim().split(/\s+/).filter(Boolean);
+    const [doorRef, field, ...rest] = parts;
+    if (!doorRef || !field) {
+      say(t('cliDoorUsage'), 'warning');
+      return;
+    }
+    const value = rest.join(' ');
+    const row = /^\d+$/.test(doorRef) ? Number.parseInt(doorRef, 10) : null;
+    const door = row !== null
+      ? doors[row - 1]
+      : doors.find((candidate) => candidate.id === doorRef || channelLabel(candidate.id).toLowerCase() === doorRef.toLowerCase());
+    if (!door) {
+      say(t('cliChannelsRange', { count: doors.length }), 'warning');
+      return;
+    }
+    const write: AgentDoorWrite = { id: door.id, enabled: door.enabled };
+    const normalized = field.trim().toLowerCase();
+    if (normalized === 'enabled' || normalized === 'acceptfromanyone') {
+      const word = toggleWord(value) ?? (value ? null : 'on');
+      if (!word) {
+        say(t('cliDoorUsage'), 'warning');
+        return;
+      }
+      if (normalized === 'enabled') write.enabled = word === 'on';
+      else write.acceptFromAnyone = word === 'on';
+    } else if (normalized === 'allowed') {
+      write.allowed = value.split(',').map((entry) => entry.trim()).filter(Boolean);
+    } else if (normalized === 'address') {
+      if (!value) {
+        say(t('cliDoorUsage'), 'warning');
+        return;
+      }
+      write.address = value;
+    } else {
+      say(t('cliDoorUsage'), 'warning');
+      return;
+    }
+    try {
+      await agent.saveDoor(write);
+      // The write's answer is the setup form's shape; the panel's list is the
+      // doors read, so re-read rather than re-shape one into the other.
+      setDoors(await agent.doors());
+      say(t('cliDoorSaved', { door: channelLabel(door.id) }), 'success');
+    } catch {
+      say(t('agentRefused'), 'warning');
+    }
+  }, [agent, doors, say, t]);
+
   const reconnect = useCallback(() => {
     void agent.connect();
   }, [agent]);
@@ -605,6 +742,17 @@ export function useAgentSession(
         .catch(() => say(t('agentNameUnreachable'), 'warning'));
       return;
     }
+    // `clear` is the un-set form, matching the settings screen's emptied field:
+    // the agent falls back to whatever its config calls it. It lives on the
+    // command as a word rather than as a second command, because `/name` is the
+    // whole vocabulary of this setting on a terminal and a `/unnamed` beside it
+    // would be a second spelling of one idea.
+    if (wanted.toLowerCase() === 'clear') {
+      void agent.clearIdentity()
+        .then(() => say(t('agentNameCleared'), 'success'))
+        .catch((error: unknown) => say(t(identityFailureKey(error)), 'warning'));
+      return;
+    }
     void agent.saveIdentity(wanted)
       .then(() => say(`${t('agentNameSaved', { name: wanted })} ${t('agentNameRestart')}`, 'success'))
       .catch((error: unknown) => say(t(identityFailureKey(error)), 'warning'));
@@ -644,6 +792,12 @@ export function useAgentSession(
     control,
     undoAction,
     closeIntention,
+    approveOrDeny,
+    loadHistory,
+    historyPage,
+    envKeys,
+    showEnvKeys,
+    editDoor,
     setBaseModel,
     setAgentName,
     setChannel,

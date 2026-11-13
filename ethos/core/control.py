@@ -71,6 +71,7 @@ class ControlPlane:
         self.pause_actions = False
         self.emergency = False
         self.preview = False
+        self.safety_level: int | None = None
         # This process is *ending*, as opposed to the agent being stopped. Only a
         # signal sets it, and it is the one thing that ends the life loop: a stop
         # from a surface parks the agent (see `Life.life`) so the Resume button
@@ -129,6 +130,8 @@ class ControlPlane:
                 # the checkbox would be showing the safe thing and the machine
                 # would be doing the other one.
                 self.preview = bool(attrs.get("preview", False))
+                raw_level = attrs.get("safety_level")
+                self.safety_level = int(raw_level) if isinstance(raw_level, int) and raw_level in (1, 2, 3, 4) else None
                 # `stopped` is a record of how the last run ended, not an order
                 # to the next one, so a fresh start does not inherit it: the
                 # process being started *is* the owner's restart, and treating
@@ -241,6 +244,7 @@ class ControlPlane:
             "stopped": self.stopped,
             "emergency": self.emergency,
             "preview": self.preview,
+            "safety_level": self.safety_level,
             "updated_at": datetime.now(UTC).isoformat(),
         }
         if changed is None:
@@ -306,6 +310,12 @@ class ControlPlane:
         elif action == "preview_off":
             self.preview = False
             changed = {"preview"}
+        elif action in ("safety_level_1", "safety_level_2", "safety_level_3", "safety_level_4"):
+            self.safety_level = int(action[-1])
+            changed = {"safety_level"}
+        elif action == "safety_level_reset":
+            self.safety_level = None
+            changed = {"safety_level"}
         else:
             return {"ok": False, "error": f"unknown action {action}"}
         self._after_change(before)
@@ -370,6 +380,8 @@ class ControlPlane:
                 self.pause_actions = bool(attrs.get("pause_actions", False))
                 self.emergency = bool(attrs.get("emergency", False))
             self.preview = bool(attrs.get("preview", False))
+            raw_level = attrs.get("safety_level")
+            self.safety_level = int(raw_level) if isinstance(raw_level, int) and raw_level in (1, 2, 3, 4) else None
             self._after_change(before)
         except Exception:
             logger.warning("control.row_recheck_failed")
@@ -397,6 +409,7 @@ class ControlPlane:
             "stopped": self.stopped,
             "emergency": self.emergency,
             "preview": self.preview,
+            "safety_level": self.safety_level,
         }
 
     def install_signal_handlers(self) -> None:

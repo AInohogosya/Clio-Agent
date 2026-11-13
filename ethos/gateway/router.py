@@ -5,6 +5,7 @@ from collections import deque
 from dataclasses import dataclass, field
 
 from ethos.config import EthosConfig, ModelEntry
+from ethos.gateway.calibration import QualityCalibration
 from ethos.gateway.cost import CostCalculator
 from ethos.schemas.models import ModelRequest, Tier
 
@@ -144,6 +145,12 @@ class ModelRouter:
     def __init__(self, config: EthosConfig, cost_calculator: CostCalculator):
         self.config = config
         self.costs = cost_calculator
+        # Measured quality from the nightly calibration
+        # (`memory/consolidate.py::_calibrate_models`). A catalogue `quality`
+        # is an opinion written before any call; this adjusts it with the
+        # model's measured solver-loop ok-rate. Missing file or missing
+        # record leave the catalogue opinion untouched.
+        self.calibration = QualityCalibration(config.paths.data_dir)
         self.breakers: dict[str, _BreakerState] = {
             entry_key(m): _BreakerState(
                 breaker=CircuitBreaker(
@@ -221,6 +228,14 @@ class ModelRouter:
             entry.model, request, provider=entry.provider, base_url=entry.base_url or "",
         )
 
+    def quality_of(self, entry: ModelEntry) -> float:
+        """The catalogue quality adjusted by the nightly calibration."""
+        base = float(getattr(entry, "quality", 0.0) or 0.0)
+        try:
+            return self.calibration.effective_quality(base, entry.provider, entry.model)
+        except Exception:
+            return base
+
     def score(self, entry: ModelEntry, quality_floor: float, request: ModelRequest | None = None) -> float:
         if entry.quality < quality_floor:
             return float("-inf")
@@ -232,7 +247,12 @@ class ModelRouter:
         c_hat = self.marginal_cost(entry, request)
         mu = self.config.gateway.routing.mu
         nu = self.config.gateway.routing.nu
-        return entry.quality - mu * c_hat - nu * entry.latency_s
+        # The measured quality, not the catalogue opinion, competes here: a
+        # model that failed a third of its solver calls last week does not
+        # deserve the top slot its YAML claim earned it. The floor check above
+        # still reads the catalogue value -- an entry the catalogue never
+        # admitted to a tier stays out of it, whatever it measured.
+        return self.quality_of(entry) - mu * c_hat - nu * entry.latency_s
 
     def select(
         self,

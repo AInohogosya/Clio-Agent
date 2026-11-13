@@ -857,3 +857,94 @@ def test_open_work_progress_separates_stalled_from_never_started() -> None:
     assert "Open work and its last recorded action" in flat
     assert "40 min ago" in flat
     assert "does not mean the work never started" in flat
+
+
+def test_open_work_progress_lists_the_current_focus_first() -> None:
+    """The focus is the one intention the reply must name, and it used to be
+    the one it could not see.
+
+    `_open_work_progress` was called without the focus, ordered by priority
+    with a top-5 limit that GSL child tasks (0.6) filled ahead of real
+    commitments (0.5) — so the focused intention was absent from the reply
+    prompt entirely, and the reply inferred its state from the
+    conversation. The focus now leads the list, marked as the focus.
+    """
+    now = datetime.now(UTC)
+
+    class _Db:
+        def __init__(self) -> None:
+            self.queries: list[str] = []
+
+        async def fetch(self, query: str, *args: Any) -> list[dict[str, Any]]:
+            self.queries.append(query)
+            if "i.title = $1" in query:
+                return []
+            return [
+                {
+                    "title": "Build the terminal coding agent",
+                    "status": "in_progress",
+                    "created_at": now,
+                    "resume_state": {},
+                    "last_action": now,
+                    "last_tool": "shell.run",
+                    "last_status": "ok",
+                },
+                {
+                    "title": "Review the Helium folder",
+                    "status": "in_progress",
+                    "created_at": now,
+                    "resume_state": {},
+                    "last_action": now,
+                    "last_tool": "shell.run",
+                    "last_status": "ok",
+                },
+            ]
+
+    social = SocialCognition(_config("focus-first"), db=_Db())
+
+    lines = asyncio.run(social._open_work_progress("Review the Helium folder"))
+
+    assert lines, "open work is reported"
+    assert "Review the Helium folder" in lines[0], "the focus leads the list"
+    assert "this is the current focus" in lines[0]
+    assert any("parent_id IS NOT NULL" in q for q in social.db.queries), (
+        "proposed GSL children no longer crowd commitments out of the list"
+    )
+
+
+def test_open_work_progress_fetches_a_focus_outside_the_top_rows() -> None:
+    """A focus beyond the limit is fetched by title, not dropped."""
+    now = datetime.now(UTC)
+
+    class _Db:
+        async def fetch(self, query: str, *args: Any) -> list[dict[str, Any]]:
+            if "i.title = $1" in query:
+                return [
+                    {
+                        "title": "Review the Helium folder",
+                        "status": "in_progress",
+                        "created_at": now,
+                        "resume_state": {},
+                        "last_action": now,
+                        "last_tool": "fs.read",
+                        "last_status": "ok",
+                    },
+                ]
+            return [
+                {
+                    "title": "Build the terminal coding agent",
+                    "status": "in_progress",
+                    "created_at": now,
+                    "resume_state": {},
+                    "last_action": now,
+                    "last_tool": "shell.run",
+                    "last_status": "ok",
+                },
+            ]
+
+    social = SocialCognition(_config("focus-fetch"), db=_Db())
+
+    lines = asyncio.run(social._open_work_progress("Review the Helium folder"))
+
+    assert lines and "Review the Helium folder" in lines[0]
+    assert "fs.read" in lines[0], "the focus line carries its own journal row"

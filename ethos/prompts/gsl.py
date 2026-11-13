@@ -368,7 +368,12 @@ _DELEGATION_ROUTING = """
 For this intention specifically: {sentence}"""
 
 
-def delegation_note(intention: Any) -> str:
+def delegation_note(
+    intention: Any,
+    *,
+    safety_level: int | None = None,
+    catalog_names: list[str] | None = None,
+) -> str:
     """The delegation text for one intention: the relationship, plus the routing.
 
     `DELEGATION` is the standing text every plan and step reads. Two things
@@ -383,6 +388,15 @@ def delegation_note(intention: Any) -> str:
     own decision stated back to it, so it defers to the plan if the work
     turns out not to be what it sounds like; the named sentence does not.
     """
+    if safety_level == 1 or (
+        catalog_names is not None
+        and not any(str(name).startswith("subagent.") for name in catalog_names)
+    ):
+        return (
+            "Sub-agents are not provided at safety level 1: no commands and no "
+            "sub-agents are available. Stay in dialogue and say so plainly if "
+            "the work would need a command or a sub-agent."
+        )
     text = " ".join(
         str(part or "")
         for part in (

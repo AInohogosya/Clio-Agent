@@ -281,6 +281,17 @@ export const THEMES = ['dark', 'light'] as const;
 export type Theme = (typeof THEMES)[number];
 
 /**
+ * How much room the transcript gives each turn.
+ *
+ * `comfortable` is the spacing a conversation reads well at; `compact` trades
+ * the air for rows, which is how a long transcript stays readable on a small
+ * screen. Both surfaces ask the same question and get the same answer, so a
+ * reader moving between them is not re-learning where a turn begins.
+ */
+export const DENSITIES = ['comfortable', 'compact'] as const;
+export type Density = (typeof DENSITIES)[number];
+
+/**
  * What the surfaces are talking to.
  *
  * `agent` is an agent: a process with its own state, which decides for itself
@@ -325,6 +336,14 @@ export interface Settings {
   language: Language;
   theme: Theme;
   accent: string;
+  /** Clock beside each turn. Off leaves the words to speak for themselves. */
+  showTimestamps: boolean;
+  /** How much room a turn takes: `comfortable` spaces, `compact` packs. */
+  density: Density;
+  /** The instrument column beside the conversation. Off, the conversation is the screen. */
+  showSidebar: boolean;
+  /** Whether Enter sends a web draft. Off, Enter is a newline and the chord sends. */
+  enterToSend: boolean;
 }
 
 /**
@@ -461,6 +480,10 @@ export const DEFAULT_SETTINGS: Settings = {
   language: 'en',
   theme: 'dark',
   accent: DEFAULT_ACCENT,
+  showTimestamps: true,
+  density: 'comfortable',
+  showSidebar: true,
+  enterToSend: true,
 };
 
 function ownValue<T extends object, K extends keyof T>(source: T, key: K): T[K] | undefined {
@@ -480,6 +503,10 @@ export function createSettings(overrides: Partial<Settings> = {}): Settings {
   const baseUrlValue = ownValue(source, 'baseUrl');
   const modelValue = ownValue(source, 'model');
   const reasoningLevelValue = ownValue(source, 'reasoningLevel');
+  const showTimestampsValue = ownValue(source, 'showTimestamps');
+  const densityValue = ownValue(source, 'density');
+  const showSidebarValue = ownValue(source, 'showSidebar');
+  const enterToSendValue = ownValue(source, 'enterToSend');
   const surface = INTERFACES.includes(interfaceValue as InterfaceId)
     ? interfaceValue as InterfaceId
     : DEFAULT_SETTINGS.interface;
@@ -512,6 +539,22 @@ export function createSettings(overrides: Partial<Settings> = {}): Settings {
   const reasoningLevel = REASONING_LEVELS.includes(reasoningLevelValue as ReasoningLevel)
     ? reasoningLevelValue as ReasoningLevel
     : DEFAULT_SETTINGS.reasoningLevel;
+  // Appearance fields are booleans and one enum, and each is checked on its own
+  // rather than trusted: a config file written by hand, or a draft older than
+  // the field, must fall back to the default rather than carrying a type the
+  // surfaces would then have to defend against.
+  const showTimestamps = typeof showTimestampsValue === 'boolean'
+    ? showTimestampsValue
+    : DEFAULT_SETTINGS.showTimestamps;
+  const density = DENSITIES.includes(densityValue as Density)
+    ? densityValue as Density
+    : DEFAULT_SETTINGS.density;
+  const showSidebar = typeof showSidebarValue === 'boolean'
+    ? showSidebarValue
+    : DEFAULT_SETTINGS.showSidebar;
+  const enterToSend = typeof enterToSendValue === 'boolean'
+    ? enterToSendValue
+    : DEFAULT_SETTINGS.enterToSend;
   return {
     interface: surface,
     agentUrl,
@@ -524,5 +567,9 @@ export function createSettings(overrides: Partial<Settings> = {}): Settings {
     language,
     theme,
     accent,
+    showTimestamps,
+    density,
+    showSidebar,
+    enterToSend,
   };
 }

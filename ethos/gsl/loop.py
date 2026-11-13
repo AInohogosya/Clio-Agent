@@ -140,6 +140,36 @@ def _delivered_note(resume: dict[str, Any]) -> str:
     return ("; files: " + ", ".join(paths)) if paths else ""
 
 
+# Park reasons that name the world, not the work. Each pattern is a failure
+# the agent cannot repair by trying again: an unpaid key (HTTP 402), a tier
+# nothing can serve, an approval that timed out with nobody at the switch, a
+# budget the owner set. The park reason starts with a count and a stage, so
+# the patterns are substring matches and deliberately narrow -- a goal parked
+# for "verification failed" is the loop's own problem and stays reopenable.
+_ENVIRONMENT_BLOCKERS = (
+    "http 402",
+    "http 403",
+    "http 410",
+    "budgetexceedederror",
+    "budget exhausted",
+    "no_model",
+    "nomodelavailable",
+    "no model is eligible",
+    "no model available",
+    "manual approval",
+    "approval channel",
+    "approval timed out",
+    "approval timeout",
+    "no approval channel",
+)
+
+
+def _environment_blocked(reason: str) -> bool:
+    """Whether a park reason says the blockage is the environment's, not the work's."""
+    lowered = (reason or "").lower()
+    return any(marker in lowered for marker in _ENVIRONMENT_BLOCKERS)
+
+
 def _same_check(candidate: dict[str, Any], original: dict[str, Any]) -> bool:
     """Whether two checks are the same claim, ignoring key order."""
     keys = {k: v for k, v in candidate.items() if v not in (None, "")}
@@ -658,7 +688,23 @@ class GeneralSolverLoop:
             resume.setdefault("artifacts", []).extend(
                 a for a in step_result.actions if isinstance(a, dict)
             )
-            resume["artifacts"] = (resume.get("artifacts") or [])[-20:]
+            # The cap used to be a plain tail slice: a deliverable written
+            # early in a long run fell out of the last 20 actions, and the
+            # verifier was then handed step descriptions of a later attempt
+            # with no deliverable in them — it failed the work 970 times
+            # while the summary file sat on disk (2026-11-08/09). Writes and
+            # edits are the deliverable; keep every one of them and cap only
+            # the rest.
+            artifacts = resume.get("artifacts") or []
+            writes = [
+                a for a in artifacts
+                if isinstance(a, dict) and a.get("tool") in ("fs.write", "fs.edit")
+            ]
+            rest = [
+                a for a in artifacts
+                if not (isinstance(a, dict) and a.get("tool") in ("fs.write", "fs.edit"))
+            ]
+            resume["artifacts"] = writes + rest[-20:]
             resume["last_action"] = step_result.actions[-1] if step_result.actions else {}
             resume["next_planned_step"] = plan.next_step().description if plan.next_step() else "finish"
             await self._save_resume(intention, resume)
@@ -934,7 +980,7 @@ class GeneralSolverLoop:
                     commissioned=commissioned_note(intention.origin),
                     editing=EDIT_EXISTING_FILES,
                     deliverable=VISIBLE_DELIVERABLE,
-                    delegation=delegation_note(intention),
+                    delegation=self._delegation_note(intention),
                     title=intention.title,
                     intention_end_state=intention.desired_end_state or "-",
                     constraints=render_constraints(
@@ -1452,6 +1498,19 @@ class GeneralSolverLoop:
             "their types and which are required. Call only names and arguments listed there."
         )
 
+    def _delegation_note(self, intention: Any) -> str:
+        from ethos.guardian.safety import effective_level
+
+        control = getattr(self.toolhost.gate, "control", None) if self.toolhost is not None and hasattr(self.toolhost, "gate") else None
+        level = effective_level(self.config, control)
+        names = None
+        try:
+            if self.toolhost is not None:
+                names = [str(entry.get("name")) for entry in self.toolhost.catalog()]
+        except Exception:
+            names = None
+        return delegation_note(intention, safety_level=level, catalog_names=names)
+
     async def _unlock_gate_children(
         self, intention: IntentionRecord, resume: dict[str, Any],
         gate_policy: dict[str, Any],
@@ -1738,7 +1797,7 @@ class GeneralSolverLoop:
             "changed_files": sorted({
                 str(p) for p in changed_paths(actions)
             }),
-            "diffs": diffs[-6:],
+            "diffs": diffs[-10:],
             "last_results": actions[-8:],
         }
 
@@ -1881,6 +1940,21 @@ class GeneralSolverLoop:
         The open question is the third. It is what the agent will be drawn to
         next, and a question carrying the reason is a question it can actually
         answer rather than one that only records that there was a question.
+
+        Two things a park now also does, both learned from the field:
+
+        - It counts. `park_count` in the resume state is how many times this
+          goal has parked, so "parked again" is a fact with a number instead of
+          a fresh surprise; the reopen sweep's bound reads the same number.
+        - It classifies the blockage. A reason that names the environment --
+          a dead key (HTTP 402), no model for the tier, an approval that never
+          arrived -- is flagged `blocked_on_environment`, and the sweep leaves
+          it parked: reopening a goal whose key is out of credits re-asks the
+          identical request and parks again, which is how five CodeForge
+          parks filled 2026-11-08..10 without anyone being told. A first park
+          that is an environment block, and any park that reaches the sweep
+          bound, is escalated to the owner as a decision request -- the one
+          decision the park cannot make for itself.
         """
         state = resume if resume is not None else dict(intention.resume_state or {})
         state["parked_reason"] = reason[:500]
@@ -1889,6 +1963,11 @@ class GeneralSolverLoop:
         # loop needs to know how long the pause has been running to decide
         # when the work is owed another chance.
         state["parked_at_epoch"] = time.time()
+        park_count = int(state.get("park_count") or 0) + 1
+        state["park_count"] = park_count
+        environment_blocked = _environment_blocked(reason)
+        if environment_blocked:
+            state["blocked_on_environment"] = True
         await self.memory.update_intention(intention.id, resume_state=state)
         await self.memory.close_intention(intention.id, IntentionStatus.parked.value, reason)
         await self.memory.open_question(
@@ -1898,6 +1977,47 @@ class GeneralSolverLoop:
             intention, IntentionStatus.parked.value,
             (reason + _delivered_note(state))[:800],
         )
+        await self._escalate_park(intention, park_count, environment_blocked, reason, state)
+
+    async def _escalate_park(
+        self, intention: IntentionRecord, park_count: int,
+        environment_blocked: bool, reason: str, state: dict[str, Any],
+    ) -> None:
+        """Turn the park the sweep will not reopen into a question for the owner.
+
+        Commissioned work is already covered: `_notice_stage` owes the
+        commissioner a word at every park. This is for the rest -- self-chosen
+        work, ventures, maintenance -- whose parks otherwise reach nobody, and
+        for the last park of anything: the sweep bound
+        (`gsl.park_reopen_max`) is the system saying it will not try this
+        again on its own, and a stop nobody is told about is a silent drop.
+        The stage string carries the count, so each escalation level asks
+        once and a reopened goal that parks again can escalate afresh.
+        """
+        reopen_max = int(getattr(self.config.gsl, "park_reopen_max", 0) or 0)
+        final_park = reopen_max > 0 and park_count >= reopen_max
+        if not (environment_blocked or final_park):
+            return
+        try:
+            has_request = getattr(self.memory, "record_owner_decision_request", None)
+            if has_request is None:
+                return
+            detail = (
+                f"parked #{park_count}"
+                + (" — blocked on the environment" if environment_blocked else "")
+                + f": {reason}"
+            )
+            notice = await has_request(
+                intention, f"parked-escalation-{park_count}", detail,
+            )
+            if notice is not None:
+                logger.info(
+                    "gsl.park_escalated", intention=str(intention.id),
+                    park_count=park_count, environment=environment_blocked,
+                    person=notice.person_id,
+                )
+        except Exception:
+            logger.exception("gsl.park_escalate_failed", intention=str(intention.id))
 
     async def _notice_stage(
         self, intention: IntentionRecord, stage: str, detail: str = "",

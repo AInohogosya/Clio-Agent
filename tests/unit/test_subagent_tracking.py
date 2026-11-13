@@ -495,3 +495,58 @@ def test_apex_health_reports_available_when_the_whole_chain_imports(monkeypatch)
 
     assert health["available"] is True
     assert health["import"] == "in-process"
+
+
+def test_a_not_started_claim_about_started_work_is_withheld() -> None:
+    """The mirror guard: 'haven't started X' is also a journal claim.
+
+    2026-11-09: the reply said "I haven't started the Helium review" while
+    Helium review was the current focus with 86 journaled actions — the
+    reply snapshot could not see it, so the sentence was inferred from the
+    conversation instead. The per-intention progress line is the evidence,
+    and a claim that names that work as unstarted is withheld against it.
+    """
+    from ethos.social.deliberation import claims_work_not_started
+
+    assert claims_work_not_started("I haven't started the Helium review.")
+    assert claims_work_not_started("Still checking — I have not yet started it.")
+    assert not claims_work_not_started("I'm on it — next message is the result.")
+
+    social = SocialCognition(_config("guard-not-started"))
+    decision = _decision("Still checking — I haven't started the Helium review.")
+    state = _state(journaled=["shell.run -> ok"])
+    state.progress = [
+        "[in_progress] Review the Helium folder on the desktop to understand "
+        "the AI agent: last action shell.run (ok) 14 min ago; this is the "
+        "current focus",
+    ]
+
+    social._withhold_unearned_progress(decision, state)
+
+    assert decision.reply_texts == [], (
+        "a not-started claim about work the journal shows as started"
+    )
+    assert decision.action is SocialAction.act_silently
+    assert decision.decided is False
+    assert "had not started" in decision.reason
+
+
+def test_a_not_started_claim_about_other_work_stands() -> None:
+    """The guard pins the claim to the work it names, not to any work.
+
+    Started Helium work must not withhold an honest 'haven't started the
+    CodeForge build' — the token match is per-title, so unrelated started
+    work does not disarm a true negative claim.
+    """
+    social = SocialCognition(_config("guard-not-started-other"))
+    decision = _decision("I haven't started the CodeForge build yet.")
+    state = _state(journaled=["shell.run -> ok"])
+    state.progress = [
+        "[in_progress] Review the Helium folder on the desktop to understand "
+        "the AI agent: last action shell.run (ok) 14 min ago",
+    ]
+
+    social._withhold_unearned_progress(decision, state)
+
+    assert decision.reply_texts == ["I haven't started the CodeForge build yet."]
+    assert decision.decided is True

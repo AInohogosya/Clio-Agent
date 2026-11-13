@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from collections import deque
 from datetime import UTC, datetime, timedelta
@@ -26,6 +27,8 @@ from ethos.schemas.models import ModelMessage, ModelRequest, Role, Tier
 from ethos.schemas.reverie import ReverieResult
 from ethos.social.conversation import open_conversations, render_conversations
 from ethos.social.deliberation import NO_CAP, effective_attempt_caps
+from ethos.social.verbosity import normalise_verbosity
+from ethos.social.verbosity import verbosity_interval_min as _verbosity_interval_min
 
 logger = get_logger("ethos.life")
 
@@ -39,6 +42,23 @@ PARKED_HEARTBEAT_S = 30.0
 # on the scale of the park backoff; a sweep that is late costs a late reopen,
 # which against half an hour of parking is nothing.
 PARK_REOPEN_CHECK_S = 300.0
+
+# How long `in_progress` work may sit with no focus and no update before the
+# zombie sweep parks it. Two hours: long enough that a genuinely running
+# task (which updates its intention on every step) never trips it, short
+# enough that a stranded goal becomes a visible, noticed park the same
+# evening instead of a silent loss.
+ZOMBIE_STALE_S = 2 * 3600.0
+
+# Words that sequence new work behind work already in hand ("once that is
+# finished, review X"). A message carrying one marks the commission as
+# following the suspended focus rather than preempting it.
+_SEQUENCED_RE = re.compile(
+    r"\b(?:once|after|when|following|next|then|upon)\b.{0,60}\b"
+    r"(?:finished|done|complete|over|built|ready|working|running|in progress)\b"
+    r"|\b(?:once|after)\s+(?:that|this|it|the\s+\w+)\b",
+    re.IGNORECASE,
+)
 
 # How many thoughts the running buffer keeps.
 #
@@ -175,7 +195,15 @@ class Life:
                 thread_id=deps.thread_id,
             )
         self.focus: Focus | None = None
-        self._suspended_focus: Focus | None = None
+        # Work suspended for an interruption, as a stack rather than one slot.
+        # One slot meant a second interruption — or a new commission taking the
+        # pass — silently discarded the first suspended goal: it stayed
+        # `in_progress` in the store with no focus, no attempt closure and
+        # nothing that would ever pick it back up (observed 2026-11-08: the
+        # CodeForge build was dropped this way when the Helium review was
+        # commissioned mid-attempt). A stack keeps every suspended goal owed
+        # the pass back, in LIFO order, until it settles.
+        self._suspended_stack: list[Focus] = []
         self.spent_discretionary_session = 0.0
         self.cycles = 0
         self._percept_queue: Any = None
@@ -203,6 +231,35 @@ class Life:
         # true forever; only the count says whether the goal is being starved.
         self._inbound_deferrals: int = 0
         self._last_park_sweep: float = 0.0
+        self._last_zombie_sweep: float = 0.0
+
+    @property
+    def _suspended_focus(self) -> Focus | None:
+        """The most recently suspended goal, or None.
+
+        Kept as a property over `_suspended_stack` so the one-slot reads and
+        writes that predate the stack keep working: reading gives the top of
+        the stack, assigning replaces the whole stack (None empties it).
+        """
+        return self._suspended_stack[-1] if self._suspended_stack else None
+
+    @_suspended_focus.setter
+    def _suspended_focus(self, value: Focus | None) -> None:
+        self._suspended_stack = [value] if value is not None else []
+
+    def _push_suspended(self, focus: Focus | None) -> None:
+        """Suspend a goal for an interruption, without discarding earlier ones."""
+        if focus is None or focus.intention_id is None:
+            return
+        if any(
+            item.intention_id == focus.intention_id for item in self._suspended_stack
+        ):
+            return
+        self._suspended_stack.append(focus)
+
+    def _pop_suspended(self) -> Focus | None:
+        """The most recently suspended goal, spent exactly once."""
+        return self._suspended_stack.pop() if self._suspended_stack else None
 
     # ------------------------------------------------------------- wake
 
@@ -522,8 +579,10 @@ class Life:
         budget = "unknown"
         try:
             state = await self.deps.gateway.budget()
+            daily_cap = state.get("daily_cap")
+            cap_text = f"/${daily_cap:.2f}" if daily_cap is not None else " (no daily cap)"
             budget = (
-                f"day ${state['day_total']:.2f}/${state['daily_cap']:.2f}, "
+                f"day ${state['day_total']:.2f}{cap_text}, "
                 f"commitment ${state['day_commitment']:.2f}, discretionary ${state['day_discretionary']:.2f}"
             )
         except Exception:
@@ -660,10 +719,9 @@ class Life:
                 self.focus is not None
                 and self.focus.kind != "social"
                 and self.focus.intention_id is not None
-                and self._suspended_focus is None
             ):
                 await self.bookmark(self.focus)
-                self._suspended_focus = self.focus
+                self._push_suspended(self.focus)
             tier = "T3" if self._message_is_consequential(inbound[0]) else "T2"
             social_decision = await self.deps.social.deliberate(
                 message=inbound[0],
@@ -675,6 +733,40 @@ class Life:
             return Decision(
                 kind="social", tier=tier, social=social_decision.model_dump(mode="json"),
                 rationale=f"social deliberation for {inbound[0].person_id}: immediate (attention gate removed)",
+            )
+
+        progress = await self._proactive_progress_due()
+        if progress is not None:
+            self.states.transition(State.NOTIFYING, "proactive progress worth sharing")
+            return Decision(
+                kind="progress", tier="T2", stage=progress,
+                rationale=f"proactive progress for {progress.get('person_id')}: '{progress.get('title')}'",
+            )
+
+        # Reverie preempts held work when its clock is due, and it costs one
+        # pass, not the focus. The branch used to sit below the focus handback,
+        # which meant it was reachable only when the focus was empty -- and the
+        # focus is essentially never empty: a goal with a pending step hands
+        # itself back every cycle (`_settled_focus`), so over a three-day run
+        # with 12,159 cycles the idle branch beneath it fired 25 times and the
+        # one path that can start work nobody asked for -- reverie, the only
+        # origin of ventures -- never committed anything. A due reverie is the
+        # same shape of event as an inbound message: a reason this pass is not
+        # about the held goal, taken for one cycle and returned after. The
+        # focus is left exactly where it is -- no bookmark, no suspension --
+        # because reverie writes a thought and possibly a venture intention;
+        # it does not spend the focus, and the next cycle's commission bypass
+        # and deadline check still outrank whatever it picked up.
+        if (
+            self.focus is not None
+            and self.focus.intention_id is not None
+            and self.focus.kind != "social"
+            and self.reverie is not None
+            and self.deps.rhythm.reverie_due()
+        ):
+            return Decision(
+                kind="reverie", tier="T1",
+                rationale="idle clock due: choosing what to be drawn to (focus held)",
             )
 
         if self.focus is not None and self.focus.intention_id is not None:
@@ -861,6 +953,8 @@ class Life:
             outcome.commission = commissioned
         elif decision.kind == "notify" and decision.stage is not None:
             outcome.ok = await self._notify_stage(decision.stage)
+        elif decision.kind == "progress" and decision.stage is not None:
+            outcome.ok = await self._report_progress(decision.stage)
         elif decision.kind == "mind_wander":
             cost = await self._mind_wander()
             outcome.cost_usd += cost
@@ -997,6 +1091,12 @@ class Life:
             reason = str(resume.get("parked_reason") or intention.closed_reason or "")
             if reason.startswith("budget exhausted"):
                 continue
+            if reason.startswith("zombie:"):
+                # Parked by the zombie sweep for having no focus and no
+                # activity: reopening it on the park backoff would recreate
+                # the strand the sweep exists to end. It stays parked —
+                # visible, noticed, and reopenable by a person — until then.
+                continue
             # A placeholder named after a drive is not owed work, so it is not
             # owed a reopen either. The sweep exists to give real work another
             # chance; an "advance_commitment" row parked by its own fake loop
@@ -1006,6 +1106,18 @@ class Life:
             # (see `Motivation.choose_focus`) this only guards the ones that
             # already exist.
             if intention.origin == "impulse" and intention.title in IMPULSE_TARGETS:
+                continue
+            # An environment blocker is not the goal being impossible and not
+            # the loop having failed: it is the world missing a thing only the
+            # owner can supply -- a dead key (HTTP 402), no model for the tier,
+            # an approval that never arrived. Reopening it on a backoff asks
+            # the identical broken request again and parks it again; observed
+            # live over 2026-11-08/09/10, the CodeForge commissions rode this
+            # sweep for days. Such a goal stays parked -- visible in the
+            # snapshot, escalated to the owner at park time (see `Gsl._park`)
+            # -- until the owner changes the world, which is a person's
+            # decision, not a sweep's.
+            if resume.get("blocked_on_environment"):
                 continue
             reopens = int(resume.get("park_reopens") or 0)
             if gsl_cfg.park_reopen_max > 0 and reopens >= gsl_cfg.park_reopen_max:
@@ -1035,7 +1147,85 @@ class Life:
                 reason=reason[:200],
             )
 
-    async def _act_social(self, social: dict[str, Any]) -> dict[str, str] | None:
+    async def _maybe_park_zombies(self) -> None:
+        """Park `in_progress` work nothing is working on, with a notice.
+
+        A focus preemption used to strand a goal exactly here: `in_progress`
+        in the store, no focus, no journal activity, no attempt closure —
+        and nothing that would ever notice, because every query that reports
+        on open work looks at the focused intention or the newest rows. The
+        goal then sat open indefinitely while replies (reading a snapshot
+        that could not see it) reported the *next* task as not started.
+
+        The sweep is the other half of the suspended-focus stack: work the
+        stack is holding is owed the pass back and is exempt; everything
+        else that has been untouched — by focus or by journal — for
+        `ZOMBIE_STALE_S` is parked, its dangling attempt closed, and a
+        stage notice recorded so the person is told. Parked-for-zombie work
+        is not reopened by the park sweep (see the `zombie:` check there):
+        reopening it would recreate the strand.
+        """
+        if time.monotonic() - self._last_zombie_sweep < PARK_REOPEN_CHECK_S:
+            return
+        self._last_zombie_sweep = time.monotonic()
+        try:
+            rows = await self.memory.list_intentions(
+                statuses=[IntentionStatus.in_progress.value], limit=50,
+            )
+        except Exception:
+            logger.warning("life.zombie_sweep_failed")
+            return
+        if not rows:
+            return
+        held = {
+            f.intention_id for f in self._suspended_stack if f.intention_id is not None
+        }
+        if self.focus is not None and self.focus.intention_id is not None:
+            held.add(self.focus.intention_id)
+        now = datetime.now(UTC)
+        for intention in rows:
+            if intention.id in held:
+                continue
+            updated = intention.updated_at
+            if updated is None or (now - updated).total_seconds() < ZOMBIE_STALE_S:
+                continue
+            reason = (
+                f"zombie: in_progress with no focus and no update for "
+                f"{round((now - updated).total_seconds() / 3600.0, 1)} h; "
+                f"parked so it is visible rather than stranded"
+            )
+            try:
+                resume = dict(intention.resume_state or {})
+                attempt_id = resume.pop("attempt_id", None)
+                if attempt_id:
+                    end_attempt = getattr(self.memory, "end_attempt", None)
+                    if end_attempt is not None:
+                        await end_attempt(
+                            UUID(str(attempt_id)), "preempted",
+                            {"intention_id": str(intention.id),
+                             "title": (intention.title or "")[:200]},
+                            ["focus was preempted and the work was never resumed"],
+                            0.0,
+                        )
+                await self.memory.update_intention(
+                    intention.id,
+                    status=IntentionStatus.parked.value,
+                    closed_reason=reason[:800],
+                    resume_state=resume,
+                )
+                record_notice = getattr(self.memory, "record_stage_notice", None)
+                if record_notice is not None:
+                    await record_notice(intention, "parked", reason)
+                logger.info(
+                    "life.zombie_parked", intention=str(intention.id),
+                    title=(intention.title or "")[:120],
+                )
+            except Exception:
+                logger.exception(
+                    "life.zombie_park_failed", intention=str(intention.id),
+                )
+
+    async def _act_social(self, social: dict[str, Any]) -> dict[str, Any] | None:
         """Carry out one turn's social decision.
 
         Returns the work this turn committed to, as `{"intention_id", "title"}`, or
@@ -1102,7 +1292,7 @@ class Life:
             await self.deps.social.mark_handled(message, decided)
             await self._announce_decline(message, decision)
             return None
-        commission: dict[str, str] | None = None
+        commission: dict[str, Any] | None = None
         if decision.creates_intention and decision.intention_spec:
             spec = decision.intention_spec
             title = str(spec.get("title") or "commission").strip() or "commission"
@@ -1123,6 +1313,34 @@ class Life:
                     deadline=_deadline_from_spec(spec.get("deadline_iso")),
                 )
                 commission = {"intention_id": str(intention_id), "title": title}
+                # A follow-up that sequences the new work behind the work in
+                # hand ("once that is finished, review X") is recorded as a
+                # dependency, not just promised in prose: the edge is what
+                # `get_ready_intentions` and the drives read, and without it
+                # the ordering lived only in the reply that announced it —
+                # which is how the prior work came to be discarded for the
+                # work sequenced behind it (2026-11-08). `_settled_focus`
+                # honors the flag by returning the suspended focus.
+                prior = self._suspended_focus
+                if prior is not None and prior.intention_id is not None:
+                    sequenced = bool(
+                        _SEQUENCED_RE.search(str(getattr(message, "text", "") or ""))
+                    )
+                    commission["sequenced"] = sequenced
+                    if sequenced:
+                        add_edge = getattr(self.memory, "add_intention_edge", None)
+                        if add_edge is not None:
+                            try:
+                                await add_edge(
+                                    prior.intention_id, intention_id,
+                                    edge_type="depends_on",
+                                )
+                            except Exception:
+                                logger.warning(
+                                    "life.sequenced_edge_failed",
+                                    prior=str(prior.intention_id),
+                                    commission=str(intention_id),
+                                )
         # What this turn has to say, one message per text.
         #
         # A deliberation writes its reply as a list of short texts, and the list
@@ -1252,6 +1470,185 @@ class Life:
             planned=bool(resume.get("plan")),
         )
         return existing
+
+    # ----------------------------------------------------- proactive progress
+
+    async def _proactive_progress_due(self) -> dict[str, Any] | None:
+        """An open commission whose real progress has not yet been shared.
+
+        A liberty, not a duty, gated in both directions: the interval per
+        person's verbosity level (quiet: only milestones, spaced out;
+        detailed: every verified step) *and* fresh journaled actions since
+        the last word to that person. A check that finds neither sends
+        nothing, so the interval cannot spam.
+        """
+        if not bool(getattr(self.config.social, "proactive_enabled", True)):
+            return None
+        if not hasattr(self.deps.social, "compose_progress_note"):
+            return None
+        candidates: list[Any] = []
+        if self.focus is not None and self.focus.intention_id is not None:
+            try:
+                focus_intention = await self.memory.get_intention(self.focus.intention_id)
+            except Exception:
+                focus_intention = None
+            if focus_intention is not None and getattr(focus_intention, "commissioned_by", None):
+                candidates.append(focus_intention)
+        try:
+            open_work = await self.memory.list_intentions(limit=12)
+        except Exception:
+            open_work = []
+        for intention in open_work or []:
+            commissioned_by = getattr(intention, "commissioned_by", None)
+            if not commissioned_by or not getattr(intention, "is_open", None):
+                continue
+            status = str(getattr(intention, "status", "") or "")
+            if status not in ("proposed", "active", "in_progress", "waiting", "awaiting_review"):
+                continue
+            if self.focus is not None and intention.id == self.focus.intention_id:
+                continue
+            candidates.append(intention)
+        db = getattr(self.memory, "db", None)
+        for intention in candidates[:4]:
+            person_id = str(intention.commissioned_by or "")
+            level = "balanced"
+            getter = getattr(self.deps.social, "get_verbosity", None)
+            if getter is not None:
+                try:
+                    level = normalise_verbosity(await getter(person_id))
+                except Exception:
+                    level = "balanced"
+            interval = _verbosity_interval_min(level)
+            last_outbound: datetime | None = None
+            channel: str | None = None
+            if db is not None:
+                try:
+                    row = await db.fetchrow(
+                        "SELECT max(ts) AS last_out, min(channel) AS channel FROM messages "
+                        "WHERE direction = 'outbound' AND person_id = $1 AND intention_id = $2",
+                        person_id, intention.id,
+                    )
+                    last_outbound = row["last_out"] if row else None
+                    channel = row["channel"] if row and row["channel"] else None
+                except Exception:
+                    last_outbound = None
+                if channel is None:
+                    try:
+                        inbound_row = await db.fetchrow(
+                            "SELECT channel FROM messages WHERE direction = 'inbound' "
+                            "AND person_id = $1 ORDER BY ts DESC LIMIT 1",
+                            person_id,
+                        )
+                        channel = inbound_row["channel"] if inbound_row else None
+                    except Exception:
+                        channel = None
+            if last_outbound is not None:
+                age_min = (datetime.now(UTC) - last_outbound).total_seconds() / 60.0
+                if age_min < interval:
+                    continue
+            # Fresh evidence of movement since the last word. Quiet asks
+            # for a real milestone (>=3 journal actions), not one action.
+            need = 3 if level == "quiet" else 1
+            fresh = 0
+            if db is not None:
+                try:
+                    if last_outbound is None:
+                        row = await db.fetchval(
+                            "SELECT COUNT(*) FROM action_journal WHERE intention_id = $1",
+                            intention.id,
+                        )
+                    else:
+                        row = await db.fetchval(
+                            "SELECT COUNT(*) FROM action_journal "
+                            "WHERE intention_id = $1 AND ts_start > $2",
+                            intention.id, last_outbound,
+                        )
+                    fresh = int(row or 0)
+                except Exception:
+                    fresh = need
+            else:
+                fresh = need
+            if fresh < need:
+                continue
+            progress = self._progress_summary(intention, fresh)
+            if not progress:
+                continue
+            return {
+                "intention_id": str(intention.id),
+                "title": str(intention.title or ""),
+                "person_id": person_id,
+                "channel": channel or "web",
+                "progress": progress,
+                "verbosity": level,
+            }
+        return None
+
+    @staticmethod
+    def _progress_summary(intention: Any, fresh_actions: int = 0) -> str:
+        resume = getattr(intention, "resume_state", None) or {}
+        if isinstance(resume, str):
+            import json as _json
+
+            try:
+                resume = _json.loads(resume)
+            except ValueError:
+                resume = {}
+        plan = resume.get("plan") or {}
+        steps = plan.get("steps") or []
+        done = sum(1 for step in steps if isinstance(step, dict) and step.get("status") == "done")
+        artifacts = resume.get("artifacts") or []
+        delivered = [
+            str(action.get("args", {}).get("path") or "")
+            for action in artifacts
+            if isinstance(action, dict) and action.get("ok", True)
+            and str((action.get("args") or {}).get("path") or "")
+        ][-2:]
+        current = ""
+        for step in steps:
+            if isinstance(step, dict) and step.get("status") != "done":
+                current = str(step.get("description") or "")[:140]
+                break
+        parts: list[str] = []
+        if steps:
+            parts.append(f"{done} of {len(steps)} plan steps verified done")
+        elif fresh_actions:
+            parts.append(f"{fresh_actions} new actions journaled")
+        if delivered:
+            parts.append("files written: " + ", ".join(delivered))
+        if current:
+            parts.append(f"now: {current}")
+        return "; ".join(parts)
+
+    async def _report_progress(self, stage: dict[str, Any]) -> bool:
+        """Share one proactive progress note, model-composed and etiquette-checked."""
+        title = str(stage.get("title") or "")
+        progress = str(stage.get("progress") or "")
+        person_id = stage.get("person_id")
+        text = await self.deps.social.compose_progress_note(
+            title=title, progress=progress, person_id=person_id,
+            preview=self._preview(),
+        )
+        if not text:
+            return False
+        try:
+            await self.deps.comms_out.send(
+                person_id=person_id,
+                channel=stage.get("channel") or "web",
+                text=text,
+                urgency=Urgency.normal.value,
+                conversation_key=stage.get("conversation_key"),
+                in_reply_to=None,
+                intention_id=stage.get("intention_id"),
+            )
+        except Exception as exc:
+            logger.warning("life.progress_send_failed", error=str(exc)[:200])
+            return False
+        await self._record_outbound_notice_turn(
+            {"title": title, "person_id": person_id, "stage": "progress",
+             "channel": stage.get("channel"), "intention_id": stage.get("intention_id"),
+             "conversation_key": stage.get("conversation_key")}, text,
+        )
+        return True
 
     # ----------------------------------------------------- stage notices
 
@@ -1903,8 +2300,7 @@ class Life:
             # out of focus with its promise still open. Every path that
             # settles on nothing now hands the pass back rather than dropping
             # it on the floor.
-            settled = self._suspended_focus
-            self._suspended_focus = None
+            settled = self._pop_suspended()
         return settled
 
     def _settled_focus(self, decision: Decision, outcome: Outcome) -> Focus | None:
@@ -1941,7 +2337,32 @@ class Life:
                 # is one deep on purpose, and a stale entry left here would
                 # resurface after the new work's own social turns and steal
                 # the pass from work that is still owed.
-                self._suspended_focus = None
+                #
+                # Two corrections to that, both from the same live failure
+                # (2026-11-08): a one-deep slot silently discarded the
+                # suspended goal — `in_progress` in the store, no focus, no
+                # attempt closure, nothing that would ever resume it — when a
+                # follow-up message commissioned new work mid-attempt. And a
+                # message that sequences the new work *after* the suspended
+                # work ("once that is finished, review X") was treated as an
+                # immediate preemption, discarding the very work it was
+                # sequenced behind.
+                #
+                # So: the suspended stack is preserved either way (the newer
+                # promise's own settlement hands the pass back down the
+                # stack), and a sequenced commission does not take the pass
+                # at all until the work it follows has settled — it is
+                # recorded as a `depends_on` edge at commission time, and
+                # this turn returns the suspended focus so the prior work
+                # resumes on the following tick.
+                commission = outcome.commission or {}
+                if commission.get("sequenced") and self._suspended_focus is not None:
+                    logger.info(
+                        "life.sequenced_commission_queued",
+                        commission=str(focus.intention_id),
+                        after=str(self._suspended_focus.intention_id),
+                    )
+                    return self._pop_suspended()
                 return focus
             # No new work was commissioned: the pass returns to what the social
             # turn interrupted, so immediate replies do not dissolve the
@@ -2227,6 +2648,7 @@ class Life:
         """
         await self._pace()
         await self._maybe_reopen_parked()
+        await self._maybe_park_zombies()
         percepts = await self.perceive()
         appraisal = await self.deps.attention.appraise(
             percepts, self.focus,
@@ -2255,10 +2677,10 @@ class Life:
             # the exact lottery the commission focus exists to take the work
             # out of.
             interrupted = self.focus
-            owed = self._goal_is_owed() and self._suspended_focus is None
+            owed = self._goal_is_owed()
             await self.bookmark(interrupted)
             if owed:
-                self._suspended_focus = interrupted
+                self._push_suspended(interrupted)
             self.focus = appraisal.new_focus
             await self._roll_on_focus_change(previous_focus, self.focus)
         elif self.focus is None:

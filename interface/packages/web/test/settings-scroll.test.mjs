@@ -41,11 +41,16 @@ test('a wheel over the settings header and margin still turns the page', () => {
   assert.match(source, /overflow-y-auto[^"]*" ref=\{body\}/, 'the wheel is forwarded to something other than the scroll box');
 });
 
-test('the reading column keeps the width it had', () => {
+test('the reading column is the scroll box, and it fills the page', () => {
   const source = readFileSync(SCREEN, 'utf8');
   const scroller = source.match(/<div className="[^"]*overflow-y-auto[^"]*" ref=\{body\}>/);
   assert.ok(scroller, 'the settings page has no scroll box');
-  assert.match(scroller[0], /max-w-3xl/, 'the reading column moved, and with it the card and everything in it');
+  // The column is the scroll box itself now — the settings page is a full-width
+  // instrument panel rather than a centred card — so the width that must not
+  // move is the scroll box's own: it has to be the flexed body of the screen,
+  // not a second nested column the wheel has to be aimed at.
+  assert.match(scroller[0], /flex-1/, 'the reading column stopped filling the screen');
+  assert.match(scroller[0], /min-w-0/, 'the reading column can be pushed wider than its parent');
 });
 
 test('no screen translates a wheel itself', () => {

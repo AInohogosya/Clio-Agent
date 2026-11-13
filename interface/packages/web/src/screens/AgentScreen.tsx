@@ -36,7 +36,7 @@ import {
   type AgentT,
 } from '../components/agent/agent-kit';
 
-type Panel = 'intentions' | 'actions' | 'thoughts' | 'budget' | 'guardian' | 'screen';
+type Panel = 'intentions' | 'actions' | 'thoughts' | 'budget' | 'guardian' | 'screen' | 'approvals';
 
 const PANELS: Array<{ id: Panel; label: TranslationKey; icon: 'edit' | 'database' | 'spark' | 'activity' | 'shield' | 'cpu' }> = [
   { id: 'intentions', label: 'panelIntentions', icon: 'edit' },
@@ -45,6 +45,7 @@ const PANELS: Array<{ id: Panel; label: TranslationKey; icon: 'edit' | 'database
   { id: 'screen', label: 'panelScreen', icon: 'cpu' },
   { id: 'budget', label: 'panelBudget', icon: 'activity' },
   { id: 'guardian', label: 'panelGuardian', icon: 'shield' },
+  { id: 'approvals', label: 'panelApprovals', icon: 'shield' },
 ];
 
 interface AgentScreenProps {
@@ -61,6 +62,8 @@ interface AgentScreenProps {
   onInterrupt: () => void;
   onUndo: (id: string) => void;
   onCloseIntention: (id: string) => void;
+  /** Approves or denies a command the gate is holding for a person. */
+  onDecideApproval: (id: string, verb: 'approve' | 'deny') => void;
   onRefresh: () => void;
   onOpenSettings: () => void;
   /** Everyone the agent is talking to, out of the transcript, most recent first. */
@@ -78,6 +81,10 @@ interface AgentScreenProps {
   historyLoading: boolean;
   /** Asks for the page before the oldest message currently shown. */
   onLoadOlderHistory: () => void;
+  /** What the timeline is showing instead of a page, when it shows a search. */
+  historyQuery: string | null;
+  /** Searches the past; an empty query restores the page view. */
+  onSearchHistory: (query: string) => void;
 }
 
 /**
@@ -109,6 +116,7 @@ export function AgentScreen({
   onInterrupt,
   onUndo,
   onCloseIntention,
+  onDecideApproval,
   onRefresh,
   onOpenSettings,
   conversations,
@@ -119,12 +127,19 @@ export function AgentScreen({
   history,
   historyLoading,
   onLoadOlderHistory,
+  historyQuery,
+  onSearchHistory,
 }: AgentScreenProps) {
   const language = snapshot.settings.language;
   const t = useMemo(() => createTranslator(language), [language]);
   const [panel, setPanel] = useState<Panel>('intentions');
   const [draft, setDraft] = useState('');
   const now = Date.now();
+  // The reader's own arrangements, read off the settings: whether the
+  // instrument column stands beside the conversation, and how much room a
+  // turn takes.
+  const showSidebar = snapshot.settings.showSidebar;
+  const compact = snapshot.settings.density === 'compact';
 
   /**
    * The people, named the way this screen names them.
@@ -175,7 +190,7 @@ export function AgentScreen({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <header className="shrink-0 border-b border-[var(--line)] px-4 py-3 sm:px-6">
+      <header className="shrink-0 border-b border-[var(--line)] px-4 py-3 sm:px-6" style={{ background: 'var(--glass)', backdropFilter: 'blur(14px)' }}>
         <div className="mx-auto flex w-full max-w-[1600px] flex-wrap items-center justify-between gap-x-6 gap-y-3">
           <PresenceSummary t={t} view={view} />
 
@@ -203,7 +218,10 @@ export function AgentScreen({
         <CycleStrip t={t} view={view} />
       </header>
 
-      <div className="mx-auto grid w-full max-w-[1600px] min-h-0 flex-1 grid-cols-1 gap-4 overflow-hidden px-4 pb-4 pt-4 lg:grid-cols-[minmax(0,1fr)_23rem]">
+      <div className={classNames(
+        'mx-auto grid w-full max-w-[1600px] min-h-0 flex-1 grid-cols-1 gap-4 overflow-hidden px-4 pb-4 pt-4',
+        showSidebar && 'lg:grid-cols-[minmax(0,1fr)_23rem]',
+      )}>
         <TimelinePane
           closedChannels={closedChannels}
           conversation={current}
@@ -212,10 +230,12 @@ export function AgentScreen({
           draft={draft}
           history={history}
           historyLoading={historyLoading}
+          historyQuery={historyQuery}
           language={language}
           onDraft={setDraft}
           onInterrupt={onInterrupt}
           onLoadOlderHistory={onLoadOlderHistory}
+          onSearchHistory={onSearchHistory}
           onSelectChannel={selectChannel}
           onSelectConversation={onSelectConversation}
           onSubmit={submit}
@@ -223,40 +243,45 @@ export function AgentScreen({
           t={t}
         />
 
-        <aside className="hidden min-h-0 flex-col gap-3 lg:flex">
-          {/* One line, scrollable rather than wrapped: a tab row that reflows
-              changes which panel a reader is looking at when the window is
-              resized, and a control that moves is a control that is missed. */}
-          <div className="scrollbar-thin flex shrink-0 gap-1.5 overflow-x-auto" role="group">
-            {PANELS.map((entry) => (
-              <button
-                aria-pressed={panel === entry.id}
-                className={classNames(
-                  'instrument-button inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-lg border px-2.5 py-1.5 text-[0.68rem] font-medium transition',
-                  panel === entry.id
-                    ? 'border-[var(--accent-line)] bg-[var(--accent-soft)] accent-text'
-                    : 'border-[var(--line)] bg-[var(--canvas-raised)] text-[var(--ink-faint)] hover:text-[var(--ink-muted)]',
-                )}
-                key={entry.id}
-                onClick={() => setPanel(entry.id)}
-                type="button"
-              >
-                <Icon name={entry.icon} size={12} />
-                <span>{t(entry.label)}</span>
-              </button>
-            ))}
-          </div>
-          <section className="instrument-panel scrollbar-thin min-h-0 flex-1 overflow-y-auto rounded-2xl p-4">
-            {panel === 'intentions' ? (
-              <IntentionsPane language={language} now={now} onClose={onCloseIntention} t={t} view={view} />
-            ) : null}
-            {panel === 'actions' ? <ActionsPane language={language} onUndo={onUndo} t={t} view={view} /> : null}
-            {panel === 'thoughts' ? <ThoughtsPane language={language} t={t} view={view} /> : null}
-            {panel === 'screen' ? <BackgroundScreenPane language={language} t={t} /> : null}
-            {panel === 'budget' ? <BudgetPane language={language} t={t} view={view} /> : null}
-            {panel === 'guardian' ? <GuardianPane language={language} now={now} t={t} view={view} /> : null}
-          </section>
-        </aside>
+        {showSidebar ? (
+          <aside className="hidden min-h-0 flex-col gap-3 lg:flex">
+            {/* One line, scrollable rather than wrapped: a tab row that reflows
+                changes which panel a reader is looking at when the window is
+                resized, and a control that moves is a control that is missed. */}
+            <div className="instrument-panel scrollbar-thin flex shrink-0 gap-1.5 overflow-x-auto rounded-2xl p-2" role="group">
+              {PANELS.map((entry) => (
+                <button
+                  aria-pressed={panel === entry.id}
+                  className={classNames(
+                    'instrument-button inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-xl border px-3 py-2 text-[0.72rem] font-bold transition',
+                    panel === entry.id
+                      ? 'accent-border bg-[var(--accent-soft)] accent-text shadow-sm'
+                      : 'border-transparent bg-transparent text-[var(--ink-faint)] hover:bg-[var(--canvas-well)] hover:text-[var(--ink-muted)]',
+                  )}
+                  key={entry.id}
+                  onClick={() => setPanel(entry.id)}
+                  type="button"
+                >
+                  <Icon name={entry.icon} size={13} />
+                  <span>{t(entry.label)}</span>
+                </button>
+              ))}
+            </div>
+            <section className="instrument-panel scrollbar-thin min-h-0 flex-1 overflow-y-auto rounded-3xl p-5">
+              {panel === 'intentions' ? (
+                <IntentionsPane language={language} now={now} onClose={onCloseIntention} t={t} view={view} />
+              ) : null}
+              {panel === 'actions' ? <ActionsPane language={language} onUndo={onUndo} t={t} view={view} /> : null}
+              {panel === 'thoughts' ? <ThoughtsPane language={language} t={t} view={view} /> : null}
+              {panel === 'screen' ? <BackgroundScreenPane language={language} t={t} /> : null}
+              {panel === 'budget' ? <BudgetPane language={language} t={t} view={view} /> : null}
+              {panel === 'guardian' ? <GuardianPane language={language} now={now} t={t} view={view} /> : null}
+              {panel === 'approvals' ? (
+                <ApprovalsPane onDecide={onDecideApproval} t={t} view={view} />
+              ) : null}
+            </section>
+          </aside>
+        ) : null}
       </div>
     </div>
   );
@@ -329,29 +354,41 @@ function LifecycleControls({
   onArmEmergency: (armed: boolean) => void;
 }) {
   const busy = Boolean(pendingAction);
+  // Pause and resume are one decision read two ways, so the header carries one
+  // button that changes with the state rather than both, one of them disabled.
+  // Three live controls at rest — pause, stop, and the armed emergency — each
+  // of which does something now, instead of a row of half-dead buttons.
+  const dormant = control.paused || control.stopped;
   return (
     <div className="flex flex-wrap items-center gap-2">
-      <Button
-        disabled={busy || control.paused}
-        icon="pause"
-        variant="outline"
-        onClick={() => onControl('pause_all')}
-        title={t('controlPauseAll')}
-      >
-        {t('controlPauseAll')}
-      </Button>
-      <Button
-        disabled={busy || (!control.paused && !control.stopped)}
-        icon="play"
-        variant="outline"
-        onClick={() => onControl('resume')}
-        title={t('controlResume')}
-      >
-        {t('controlResume')}
-      </Button>
+      {dormant ? (
+        // The way back is the primary control when the agent is dormant: the
+        // reader who paused it is the reader most likely to be unpausing it.
+        <Button disabled={busy} icon="play" variant="primary" onClick={() => onControl('resume')} title={t('controlResume')}>
+          {t('controlResume')}
+        </Button>
+      ) : (
+        <Button disabled={busy} icon="pause" variant="outline" onClick={() => onControl('pause_all')} title={t('controlPauseAll')}>
+          {t('controlPauseAll')}
+        </Button>
+      )}
+      {/* Pause-actions is a different decision from pause-everything — the agent
+          stays talkative and drops its tools — so it keeps its own button. It
+          was the one lifecycle verb the terminal had and the browser did not. */}
+      {!dormant ? (
+        <Button
+          disabled={busy}
+          icon={control.pause_actions ? 'play' : 'pause'}
+          variant={control.pause_actions ? 'primary' : 'outline'}
+          onClick={() => onControl(control.pause_actions ? 'resume' : 'pause_actions')}
+          title={control.pause_actions ? t('controlResume') : t('controlPauseActions')}
+        >
+          {control.pause_actions ? t('controlResume') : t('controlPauseActions')}
+        </Button>
+      ) : null}
       <Button
         disabled={busy || control.stopped}
-        icon="pause"
+        icon="stop"
         variant="outline"
         onClick={() => onControl('stop')}
         title={t('controlStop')}
@@ -418,7 +455,7 @@ function CycleStrip({ view, t }: { view: AgentView; t: AgentT }) {
 function TimelinePane({
   snapshot, draft, language, t, onDraft, onSubmit, onInterrupt,
   conversations, doors, closedChannels, conversation, onSelectChannel, onSelectConversation,
-  history, historyLoading, onLoadOlderHistory,
+  history, historyLoading, onLoadOlderHistory, historyQuery, onSearchHistory,
 }: {
   snapshot: ClientSnapshot;
   draft: string;
@@ -436,6 +473,8 @@ function TimelinePane({
   history: AgentHistoryPage;
   historyLoading: boolean;
   onLoadOlderHistory: () => void;
+  historyQuery: string | null;
+  onSearchHistory: (query: string) => void;
 }) {
   /**
    * What this pane shows: one conversation, narrowed by the person named above
@@ -467,6 +506,11 @@ function TimelinePane({
       .filter((message) => !messages.some((live) => live.id === message.id)),
     [history, conversation, messages],
   );
+  // The search box: one query, remembered until it is cleared or the
+  // conversation changes. A search result page replaces the "load older"
+  // stack in the same pane, so the two roads into the past draw identically.
+  const [searchDraft, setSearchDraft] = useState('');
+  const search = () => onSearchHistory(searchDraft.trim());
   const feed = useConversationFeed();
   // A messaging app is a door several people talk through, so it is the one
   // place with a list of names under the bar. The interfaces are one
@@ -499,10 +543,33 @@ function TimelinePane({
   };
 
   return (
-    <section className="instrument-panel flex min-h-[22rem] min-w-0 flex-col overflow-hidden rounded-2xl lg:min-h-0" aria-label={t('panelTimeline')}>
-      <div className="flex shrink-0 flex-wrap items-center justify-between gap-x-3 gap-y-2 border-b border-[var(--line)] px-4 py-3 sm:px-5">
+    <section className="instrument-panel flex min-h-[22rem] min-w-0 flex-col overflow-hidden rounded-3xl lg:min-h-0" aria-label={t('panelTimeline')}>
+      <div className="flex shrink-0 flex-wrap items-center justify-between gap-x-3 gap-y-2 border-b border-[var(--line)] px-5 py-3.5 sm:px-6">
         <SectionLabel icon="command">{t('panelTimeline')}</SectionLabel>
         <div className="flex items-center gap-2">
+          <form
+            className="flex items-center gap-1"
+            onSubmit={(event) => {
+              event.preventDefault();
+              search();
+            }}
+          >
+            <input
+              aria-label={t('historySearchTitle')}
+              className="w-36 rounded-lg border border-[var(--line)] bg-[var(--canvas-raised)] px-2.5 py-1.5 text-xs text-[var(--ink)] outline-none transition placeholder:text-[var(--ink-faint)] focus:border-[var(--accent)]"
+              onChange={(event) => setSearchDraft(event.target.value)}
+              placeholder={t('historySearchTitle')}
+              value={searchDraft}
+            />
+            <Button icon="database" variant="outline" onClick={search}>
+              {t('historySearchTitle')}
+            </Button>
+          </form>
+          {historyQuery ? (
+            <Button icon="close" variant="outline" onClick={() => { setSearchDraft(''); onSearchHistory(''); }} title={t('controlCancel')}>
+              {t('historySearchTitle')}: {historyQuery}
+            </Button>
+          ) : null}
           <span className="text-[0.68rem] text-[var(--ink-faint)]">
             {messages.length === 1
               ? t('messageCountOne', { count: messages.length })
@@ -538,7 +605,9 @@ function TimelinePane({
       </div>
 
       <ConversationFeed
-        contentClassName="space-y-4 px-4 py-5 sm:px-6"
+        contentClassName={snapshot.settings.density === 'compact'
+          ? 'space-y-2 px-4 py-3 sm:px-6'
+          : 'space-y-4 px-4 py-5 sm:px-6'}
         feed={feed}
         label={t('jumpToLatest')}
       >
@@ -546,8 +615,10 @@ function TimelinePane({
           // The control offers itself before any page has been fetched — that is
           // the only way to ask for the first one — and leaves once a fetch has
           // come back saying there is nothing older. A conversation with no
-          // messages at all has no cursor to page from, so it offers nothing.
-          const atEnd = history.messages.length > 0 && !history.hasMore;
+          // messages at all has no cursor to page from, so it offers nothing —
+          // and a search result is a view, not a place in the scrollback, so the
+          // paging button stands down while one is showing.
+          const atEnd = (history.messages.length > 0 && !history.hasMore) || historyQuery !== null;
           const hasSomething = messages.length > 0 || olderMessages.length > 0;
           return conversation && hasSomething && !atEnd ? (
             <div className="flex justify-center pb-1">
@@ -568,9 +639,11 @@ function TimelinePane({
           return (
             <MessageRow
               clock={formatClock(message.createdAt, language)}
+              density={snapshot.settings.density}
               key={message.id}
               message={message}
               sender={sender}
+              showTimestamps={snapshot.settings.showTimestamps}
               truncateSender
             />
           );
@@ -605,9 +678,11 @@ function TimelinePane({
             return (
               <MessageRow
                 clock={formatClock(message.createdAt, language)}
+                density={snapshot.settings.density}
                 key={message.id}
                 message={message}
                 sender={sender}
+                showTimestamps={snapshot.settings.showTimestamps}
                 truncateSender
               />
             );
@@ -631,6 +706,7 @@ function TimelinePane({
         onSubmit={send}
         onInterrupt={onInterrupt}
         pending={snapshot.pending}
+        enterToSend={snapshot.settings.enterToSend}
         // Said above the field, and enforced here: a conversation on a door the
         // agent has stopped having can still be read, and a question typed into
         // it would go nowhere while the pane said it had been asked. The same is
@@ -656,9 +732,10 @@ function IntentionsPane({
   now: number;
   onClose: (id: string) => void;
 }) {
+  // No heading of its own: the tab row above already names the open pane, and
+  // a second copy of the same word is height spent saying nothing.
   return (
     <div>
-      <SectionLabel icon="edit">{t('panelIntentions')}</SectionLabel>
       {view.intentions.length === 0 ? (
         <EmptyNote>{t('intentionsEmpty')}</EmptyNote>
       ) : (
@@ -683,7 +760,6 @@ function ActionsPane({
   const [open, setOpen] = useState<string | null>(null);
   return (
     <div>
-      <SectionLabel icon="database">{t('panelActions')}</SectionLabel>
       {view.actions.length === 0 ? (
         <EmptyNote>{t('actionsEmpty')}</EmptyNote>
       ) : (
@@ -742,7 +818,6 @@ function ActionsPane({
 function ThoughtsPane({ view, t, language }: { view: AgentView; t: AgentT; language: Language }) {
   return (
     <div>
-      <SectionLabel icon="spark">{t('panelThoughts')}</SectionLabel>
       {view.thoughts.length === 0 ? (
         <EmptyNote>{t('thoughtsEmpty')}</EmptyNote>
       ) : (
@@ -769,7 +844,6 @@ function BudgetPane({ view, t, language }: { view: AgentView; t: AgentT; languag
   return (
     <div className="space-y-4">
       <div>
-        <SectionLabel icon="activity">{t('panelBudget')}</SectionLabel>
         <div className="flex items-baseline justify-between gap-2">
           <span className="text-xs text-[var(--ink-faint)]">{t('budgetToday')}</span>
           <span className="font-mono text-sm text-[var(--ink)]">{formatUsd(total, language)}</span>
@@ -928,6 +1002,100 @@ function GuardianPane({ view, t, language, now }: { view: AgentView; t: AgentT; 
           </ul>
         )}
       </div>
+    </div>
+  );
+}
+
+/**
+ * Commands the guardian is holding for a person's decision.
+ *
+ * The terminal's twin reads the same snapshot field. Each row names the tool,
+ * the reason the gate held it, and — expanded — the redacted arguments, so a
+ * decision is made with the command in front of the reader rather than a tool
+ * name alone. Approve runs it; deny journals it as rejected; both are one
+ * click, and the next snapshot shows the list without the row.
+ */
+function ApprovalsPane({
+  view, t, onDecide,
+}: {
+  view: AgentView;
+  t: AgentT;
+  onDecide: (id: string, verb: 'approve' | 'deny') => void;
+}) {
+  const [open, setOpen] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const decide = (id: string, verb: 'approve' | 'deny') => {
+    setBusy(id);
+    try {
+      onDecide(id, verb);
+    } finally {
+      setBusy(null);
+    }
+  };
+  return (
+    <div>
+      {view.approvals.length === 0 ? (
+        <EmptyNote>{t('approvalsEmpty')}</EmptyNote>
+      ) : (
+        <>
+          <p className="mb-3 text-[0.65rem] leading-4 text-[var(--ink-faint)]">{t('approvalsHint')}</p>
+          <ul className="space-y-2">
+            {view.approvals.map((approval) => {
+              const expanded = open === approval.id;
+              return (
+                <li className="rounded-xl border border-[var(--line)] px-3 py-2" key={approval.id}>
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--warn)] signal-pulse" />
+                        <span className="truncate font-mono text-xs text-[var(--ink)]">{approval.tool}</span>
+                        {approval.safety_level ? (
+                          <span className="shrink-0 text-[0.62rem] text-[var(--ink-faint)]">L{approval.safety_level}</span>
+                        ) : null}
+                      </div>
+                      <p className="mt-0.5 text-[0.65rem] leading-4 text-[var(--ink-muted)]">{approval.reason}</p>
+                      {approval.args ? (
+                        <button
+                          className="mt-1 text-[0.65rem] accent-text underline underline-offset-2"
+                          onClick={() => setOpen(expanded ? null : approval.id)}
+                          type="button"
+                        >
+                          {t('actionArgs')}
+                        </button>
+                      ) : null}
+                    </div>
+                    <div className="flex shrink-0 gap-1.5">
+                      <Button
+                        disabled={busy === approval.id}
+                        icon="play"
+                        variant="primary"
+                        onClick={() => decide(approval.id, 'approve')}
+                        title={t('approvalApprove')}
+                      >
+                        {t('approvalApprove')}
+                      </Button>
+                      <Button
+                        disabled={busy === approval.id}
+                        icon="close"
+                        variant="outline"
+                        onClick={() => decide(approval.id, 'deny')}
+                        title={t('approvalDeny')}
+                      >
+                        {t('approvalDeny')}
+                      </Button>
+                    </div>
+                  </div>
+                  {expanded && approval.args ? (
+                    <pre className="mt-2 overflow-x-auto rounded-lg bg-[var(--canvas-well)] p-2 text-[0.62rem] leading-4 text-[var(--ink-muted)]">
+                      {JSON.stringify(approval.args, null, 2)}
+                    </pre>
+                  ) : null}
+                </li>
+              );
+            })}
+          </ul>
+        </>
+      )}
     </div>
   );
 }

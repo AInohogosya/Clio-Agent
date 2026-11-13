@@ -26,9 +26,11 @@ export type IconName =
   | 'settings'
   | 'shield'
   | 'spark'
+  | 'stop'
   | 'sun'
   | 'terminal'
-  | 'trash';
+  | 'trash'
+  | 'user';
 
 interface IconProps {
   name: IconName;
@@ -44,6 +46,7 @@ const paths: Record<IconName, ReactNode> = {
   check: <path d="m5 12 4 4L19 6" />,
   chevron: <path d="m9 18 6-6-6-6" />,
   close: <><path d="M6 6l12 12" /><path d="M18 6 6 18" /></>,
+  stop: <rect x="7" y="7" width="10" height="10" rx="1.5" />,
   command: <><path d="M18 3a3 3 0 1 0 0 6h-3V6a3 3 0 1 0-3 3h3v6a3 3 0 1 0 3-3v-3h3a3 3 0 1 0 0-6h-3V3Z" /><path d="M9 9h6v6H9z" /></>,
   cpu: <><rect x="6" y="6" width="12" height="12" rx="2" /><path d="M9 9h6v6H9z" /><path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4" /></>,
   database: <><ellipse cx="12" cy="5" rx="7" ry="3" /><path d="M5 5v7c0 1.7 3.1 3 7 3s7-1.3 7-3V5" /><path d="M5 12v7c0 1.7 3.1 3 7 3s7-1.3 7-3v-7" /></>,
@@ -66,6 +69,7 @@ const paths: Record<IconName, ReactNode> = {
   sun: <><circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" /></>,
   terminal: <><path d="m4 5 6 7-6 7M12 19h8" /></>,
   trash: <><path d="M4 7h16M10 11v5M14 11v5" /><path d="m6 7 1 13h10l1-13M9 7V4h6v3" /></>,
+  user: <><circle cx="12" cy="8" r="4" /><path d="M4 21c0-3.9 3.6-6.5 8-6.5s8 2.6 8 6.5" /></>,
 };
 
 export function Icon({ name, size = 18, strokeWidth = 1.8, className }: IconProps) {

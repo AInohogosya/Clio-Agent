@@ -48,24 +48,26 @@ export function Panel({
   badge?: string;
   badgeTone?: Tone;
 }): React.ReactElement {
+  const border = borderColor ?? palette.lineStrong;
   return (
     <Box
-      borderColor={borderColor ?? palette.line}
-      borderStyle="round"
+      borderColor={border}
+      borderStyle={palette.depth === 0 ? 'single' : 'round'}
       flexDirection={flexDirection}
       flexGrow={flexGrow}
       paddingX={paddingX}
+      paddingY={0}
       width={width}
     >
       {title || badge ? (
         <Box justifyContent="space-between" marginBottom={1}>
           {title ? (
-            <Text bold color={palette.inkFaint}>
-              {label(title)}
+            <Text bold color={palette.ink}>
+              {title}
             </Text>
           ) : <Text> </Text>}
           {badge ? (
-            <Text backgroundColor={palette.accentSoft} color={toneHex(palette, badgeTone)}>
+            <Text bold backgroundColor={palette.accentSoft} color={toneHex(palette, badgeTone)}>
               {` ${badge} `}
             </Text>
           ) : null}
@@ -102,12 +104,24 @@ export function StatusPill({
   status: Tone;
   children: string;
 }): React.ReactElement {
+  const dot = status === 'muted' ? '○' : '●';
   return (
-    <Text color={toneHex(palette, status)}>
-      <Text>{status === 'muted' ? '○' : '●'}</Text>
-      {` ${children}`}
+    <Text bold color={toneHex(palette, status)}>
+      {`${dot} ${children}`}
     </Text>
   );
+}
+
+/**
+ * Slide-switch rendering for the terminal: (● ON) / (○ OFF).
+ * ASCII terminals fall back to [ON] / [OFF] so the switch still reads
+ * without unicode round glyphs.
+ */
+export function SwitchGlyph({ palette, on }: { palette: Palette; on: boolean }): React.ReactElement {
+  const ascii = palette.depth === 0;
+  const track = on ? (ascii ? '[ON ]' : '[━━●─]') : (ascii ? '[OFF]' : '[─○━━]');
+  const color = on ? palette.accent : palette.inkFaint;
+  return <Text bold color={color}>{`${track} ${on ? 'ON' : 'OFF'}`}</Text>;
 }
 
 export function Meta({ palette, label: text, tone = 'muted', children }: { palette: Palette; label: string; tone?: Tone; children: React.ReactNode }): React.ReactElement {
@@ -115,7 +129,7 @@ export function Meta({ palette, label: text, tone = 'muted', children }: { palet
     <Box gap={1} justifyContent="space-between">
       <Text color={palette.inkFaint}>{text}</Text>
       <Box flexGrow={1} justifyContent="flex-end" overflow="hidden">
-        <Text color={toneHex(palette, tone)} wrap="truncate">
+        <Text bold={tone !== 'muted'} color={toneHex(palette, tone)} wrap="truncate">
           {children}
         </Text>
       </Box>

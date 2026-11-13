@@ -67,6 +67,21 @@ class OutboundPipeline:
         budgets = self.config.permissions.interruption.daily_budgets
         return budgets.get(relation or "other", budgets.get("other", 1))
 
+    async def _verbosity_for(self, person_id: str | None) -> str:
+        if not person_id or self.relationships is None:
+            return "balanced"
+        getter = getattr(self.relationships, "get_preference", None)
+        if getter is None:
+            return "balanced"
+        try:
+            raw = await getter(person_id, "communication_verbosity", "balanced")
+        except Exception:
+            return "balanced"
+        return str(raw or "balanced").lower()
+
+    def _budget_for_verbosity(self, base: int, verbosity: str) -> int:
+        return {"quiet": max(1, base // 2), "balanced": base, "detailed": base * 3}.get(verbosity, base)
+
     async def _contact_count_today(self, person_id: str) -> int:
         if self.db is None:
             return 0
@@ -123,7 +138,9 @@ class OutboundPipeline:
         if self.relationships is not None and person_id:
             person = await self.relationships.get(person_id)
             relation = person.get("relation") if person else None
-        budget = self.daily_budget(relation)
+        budget = self._budget_for_verbosity(
+            self.daily_budget(relation), await self._verbosity_for(person_id),
+        )
         if person_id:
             used = await self._contact_count_today(person_id)
             if used >= budget:
@@ -258,6 +275,12 @@ class OutboundPipeline:
                 person_id, key, channel, text, urgency, intention_id,
                 "already said on this conversation; the person has it",
             )
+        # Quiet verbosity batches mid-task notes into the digest instead of
+        # sending each one at once; the words still arrive, just together and
+        # rarely. Terminal stage notices reach here too, so a quiet person is
+        # still told when work ends — just not told about every step.
+        if (await self._verbosity_for(person_id)) == "quiet":
+            return await self._enqueue_digest(person_id, channel, text, urgency, intention_id)
         allowed, why = await self.can_contact(person_id, urgency)
         if not allowed:
             return await self._enqueue_digest(person_id, channel, text, urgency, intention_id)

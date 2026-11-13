@@ -353,8 +353,13 @@ def test_the_catalog_is_not_much_larger_than_it_has_to_be():
     the guard had thirty-four tokens of room — less than the smallest tool that
     can exist. A capability the agent needs is worth the raise; a paragraph in
     its description is not, and this guard still says so.
+
+    2610, not 2550: shell.run carries the `&&`-never-`;` lesson (2026-11-08), and
+    the guard had one token of room. Thirty tokens in the cached prefix is the
+    price of the agent never again reporting a masked failure as a verified
+    build; the description was trimmed to its sentence and still did not fit.
     """
-    assert len(render(registered_tools())) // 4 < 2550
+    assert len(render(registered_tools())) // 4 < 2610
 
 
 @pytest.mark.parametrize("tool", registered_tools(), ids=lambda t: t["name"])

@@ -112,9 +112,15 @@ class CoreRuntime:
         self.snapshots = SnapshotManager(config, db=db)
         self.journal = ActionJournal(db=db)
         self.verifier = ModelDueProcessVerifier(self.gateway, config.self_name)
+        from ethos.guardian.approval import ApprovalManager
+
+        self.approvals = ApprovalManager(
+            default_timeout_s=float(getattr(config.permissions, "approval_timeout_s", 300.0) or 300.0)
+        )
         self.guardian = GuardianGate(
             config, registry=self.registry, trash=self.trash, snapshots=self.snapshots,
             audit=self.audit, verifier=self.verifier, control=self.control,
+            approvals=self.approvals,
         )
 
         self.relationships = RelationshipStore(config, db=db)

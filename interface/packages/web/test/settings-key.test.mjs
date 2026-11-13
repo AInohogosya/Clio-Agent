@@ -37,6 +37,10 @@ function render({ credential = NONE, language = 'en' } = {}) {
     onClose: () => undefined,
     onUpdate: () => undefined,
     settings: createSettings({ interface: 'direct', language }),
+    // The key field lives in the model category now — the screen is a sidebar of
+    // categories, not one long form — so the render opens there. The first frame
+    // is the general category's subject, and there is another file for that.
+    initialCategory: 'model',
   }));
 }
 

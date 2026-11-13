@@ -10,3 +10,4 @@ export * from './provider-setup.js';
 export * from './duplex-client.js';
 
 export * from './agent/index.js';
+export * from './agent-config.js';

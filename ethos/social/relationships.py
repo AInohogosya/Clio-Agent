@@ -153,6 +153,36 @@ class RelationshipStore:
         scored.sort(key=lambda item: item[0], reverse=True)
         return scored[0][1]
 
+    async def set_preference(self, person_id: str, key: str, value: Any) -> None:
+        if self.db is None or not person_id:
+            return
+        row = await self.db.fetchrow(
+            "SELECT preferences FROM people WHERE id = $1", person_id,
+        )
+        prefs: dict[str, Any] = {}
+        if row is not None:
+            raw = row["preferences"]
+            if isinstance(raw, str):
+                try:
+                    prefs = json.loads(raw) or {}
+                except ValueError:
+                    prefs = {}
+            elif isinstance(raw, dict):
+                prefs = dict(raw)
+        prefs[key] = value
+        await self.db.execute(
+            "INSERT INTO people (id, display_name, relation, channels, preferences, trust, last_contact, notes) "
+            "VALUES ($1, '', 'known', '{}'::jsonb, $2::jsonb, 0.5, NULL, '') "
+            "ON CONFLICT (id) DO UPDATE SET preferences = $2::jsonb",
+            person_id, json.dumps(prefs),
+        )
+
+    async def get_preference(self, person_id: str, key: str, default: Any = None) -> Any:
+        person = await self.get(person_id) if person_id else None
+        if person is None:
+            return default
+        return (person.get("preferences") or {}).get(key, default)
+
     async def upsert(self, person_id: str, display_name: str, relation: str = "known",
                      trust: float = 0.5, channels: dict | None = None,
                      preferences: dict | None = None) -> None:

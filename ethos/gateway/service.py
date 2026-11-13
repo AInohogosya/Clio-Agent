@@ -200,6 +200,8 @@ def _credential_diagnosis(exc: ProviderError) -> str:
         return f"the model has been retired by the provider ({detail})"
     if exc.status == 404:
         return f"model not found on this endpoint ({detail})"
+    if exc.status == 402:
+        return f"out of credits on this endpoint ({detail})"
     if exc.status == 429:
         return f"rate limited or out of quota ({detail})"
     if exc.status >= 500:
@@ -976,6 +978,15 @@ class GatewayService:
         ]
         return min(costs) if costs else 0.0
 
+    def _cheapest_expected_tokens(self, request: ModelRequest) -> int:
+        """The token twin of `_cheapest_expected_cost`.
+
+        Token estimates do not vary by model, so this is the request's own
+        size estimate; kept as a method so the two pre-flight numbers stay
+        paired.
+        """
+        return self.costs.estimate_tokens(request)
+
     async def complete(self, request: ModelRequest) -> NormalizedResponse:
         if request.tier == Tier.T0:
             raise ValueError("T0 (reflex) cognition must not call the model gateway")
@@ -1003,7 +1014,11 @@ class GatewayService:
         # rather than after a round-trip. It was a flat $0.05, which is a real
         # amount of money and a number with no connection to the request.
         try:
-            await self.spend.check(request.budget_bucket, self._cheapest_expected_cost(request))
+            await self.spend.check(
+                request.budget_bucket,
+                self._cheapest_expected_cost(request),
+                est_tokens=self._cheapest_expected_tokens(request),
+            )
         except BudgetExceededError as exc:
             exhaustive.log_model_failure(
                 request, request_id=uuid4().hex, requested_at=datetime.now(UTC),
@@ -1040,6 +1055,7 @@ class GatewayService:
                     entry.model, attempt_request,
                     provider=entry.provider, base_url=entry.base_url or "",
                 ),
+                est_tokens=self.costs.estimate_tokens(attempt_request),
             )
             await self.limiter.acquire(
                 entry.provider, entry.model, entry.rpm, entry.tpm, estimate_tokens(attempt_request)
@@ -1320,12 +1336,18 @@ class GatewayService:
 
     async def budget_state(self) -> dict[str, Any]:
         spend = await self.spend.spend()
+        windows = await self.spend.window_spends()
+        limits = self.config.permissions.hard_limits
         return {
             **spend,
             "daily_cap": self.spend.daily_cap,
             "monthly_cap": self.spend.monthly_cap,
             "commitment_cap": self.spend.commitment_cap,
             "discretionary_cap": self.spend.discretionary_cap,
+            "budget_unit": self.spend.unit,
+            "caps": limits.spend_limits(),
+            "enabled_caps": limits.enabled_limits(),
+            "windows": windows,
         }
 
     async def load_live_prices(self, *, fetch: bool = False) -> int:

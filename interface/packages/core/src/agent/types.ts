@@ -26,6 +26,11 @@ export const AGENT_CONTROL_ACTIONS = [
   'emergency_stop',
   'preview_on',
   'preview_off',
+  'safety_level_1',
+  'safety_level_2',
+  'safety_level_3',
+  'safety_level_4',
+  'safety_level_reset',
 ] as const;
 export type AgentControlAction = (typeof AGENT_CONTROL_ACTIONS)[number];
 
@@ -48,6 +53,7 @@ export interface AgentControl {
    * in, and no lifecycle verb touches it in either direction.
    */
   preview: boolean;
+  safety_level: number | null;
 }
 
 export interface AgentFocus {
@@ -128,11 +134,22 @@ export interface AgentDailySpend {
  * repeats the number it was built with is a dashboard that quietly starts lying
  * the day the cap is retuned.
  */
+export type BudgetUnit = 'usd' | 'tokens';
+
 export interface AgentBudgetCaps {
   daily_usd: number;
   monthly_usd: number;
   commitment_usd: number;
   discretionary_usd: number;
+  /** Per-window caps, `null` when that window is disabled. */
+  per_minute: number | null;
+  per_10_minutes: number | null;
+  per_hour: number | null;
+  per_5_hours: number | null;
+  daily: number | null;
+  monthly: number | null;
+  /** What every enabled window's number means. */
+  budget_unit: BudgetUnit;
 }
 
 export interface AgentBudget {
@@ -547,10 +564,33 @@ export interface AgentView {
   budget: AgentBudget;
   guardian: AgentGuardian;
   messages: AgentMessage[];
+  /** Commands the gate is holding for a person's decision; empty when none or unknown. */
+  approvals: AgentApproval[];
   /** When this view was last reconciled with the agent, in epoch milliseconds. */
   updatedAt: number;
   /** False until the first snapshot has been read; an empty view is not "nothing happened". */
   loaded: boolean;
+}
+
+/**
+ * One command the guardian is holding for a person's decision.
+ *
+ * At safety levels 2-3 a network command (and APEX below 4) waits, fail-closed,
+ * for this decision until `approval_timeout_s` passes. Every field is a string
+ * because the toolhost's `ApprovalManager` keeps them as strings and this type
+ * crosses a process boundary unchanged — `id` is the handle both surfaces'
+ * approve/deny verbs take.
+ */
+export interface AgentApproval {
+  id: string;
+  tool: string;
+  reason: string;
+  /** Redacted arguments, as the gate journalled them. */
+  args?: Record<string, unknown> | null;
+  thread_id?: string | null;
+  intention_id?: string | null;
+  safety_level?: number | null;
+  created_at?: string | null;
 }
 
 export type AgentEvent =
@@ -708,12 +748,15 @@ function parseBoundedJson(value: string): unknown {
 
 export function readControl(value: unknown): AgentControl {
   const source = record(value);
+  const rawLevel = source.safety_level;
+  const safety_level = [1, 2, 3, 4].includes(rawLevel as number) ? (rawLevel as number) : null;
   return {
     paused: bool(source.paused),
     pause_actions: bool(source.pause_actions),
     stopped: bool(source.stopped),
     emergency: bool(source.emergency),
     preview: bool(source.preview),
+    safety_level,
   };
 }
 
@@ -851,11 +894,25 @@ function readDailySpend(value: unknown): AgentDailySpend {
  */
 function readCaps(value: unknown): AgentBudgetCaps {
   const source = record(value);
+  const windows = record(source);
+  const nullable = (key: string): number | null => {
+    const raw = windows[key];
+    if (raw === null || raw === undefined || raw === '') return null;
+    const n = amount(raw);
+    return n > 0 ? n : null;
+  };
   return {
     daily_usd: amount(source.daily_usd),
     monthly_usd: amount(source.monthly_usd),
     commitment_usd: amount(source.commitment_usd),
     discretionary_usd: amount(source.discretionary_usd),
+    per_minute: nullable('per_minute'),
+    per_10_minutes: nullable('per_10_minutes'),
+    per_hour: nullable('per_hour'),
+    per_5_hours: nullable('per_5_hours'),
+    daily: nullable('daily'),
+    monthly: nullable('monthly'),
+    budget_unit: source.budget_unit === 'tokens' ? 'tokens' : 'usd',
   };
 }
 
@@ -970,6 +1027,57 @@ export function emptyAgentHistory(): AgentHistoryPage {
   return { messages: [], hasMore: false, oldest: null };
 }
 
+/** Reads one pending approval off the snapshot, refusing to invent fields. */
+export function readAgentApproval(value: unknown): AgentApproval {
+  const source = record(value);
+  const args = record(source.args);
+  return {
+    id: identifier(source.id),
+    tool: text(source.tool, LIMITS.code) || 'unknown',
+    reason: text(source.reason, LIMITS.text),
+    args: Object.keys(args).length ? args : null,
+    thread_id: maybeText(source.thread_id, LIMITS.code),
+    intention_id: maybeText(source.intention_id, LIMITS.code),
+    safety_level: typeof source.safety_level === 'number' && Number.isFinite(source.safety_level)
+      ? Math.trunc(source.safety_level)
+      : null,
+    created_at: maybeText(source.created_at, LIMITS.code),
+  };
+}
+
+export function readApprovals(value: unknown): AgentApproval[] {
+  return list(value).slice(0, 24).map(readAgentApproval);
+}
+
+/** What the APEX screen relay reports about the run it is streaming. */
+export interface AgentApexSession {
+  active: boolean;
+  goal: string | null;
+  status: string | null;
+  step: number | null;
+  mode: string | null;
+  readOnly: boolean;
+  started_at: string | null;
+  updated_at: string | null;
+}
+
+export function readApexSession(value: unknown): AgentApexSession | null {
+  const source = record(value);
+  // A relay that answers is a relay with a session, but a payload with none of
+  // the fields is a service that only looks like one — `null` says so.
+  if (!source.goal && !source.status && source.active === undefined) return null;
+  return {
+    active: bool(source.active),
+    goal: maybeText(source.goal, LIMITS.text),
+    status: maybeText(source.status, LIMITS.code),
+    step: typeof source.step === 'number' && Number.isFinite(source.step) ? Math.trunc(source.step) : null,
+    mode: maybeText(source.mode, LIMITS.code),
+    readOnly: bool(source.readOnly),
+    started_at: maybeText(source.started_at, LIMITS.code),
+    updated_at: maybeText(source.updated_at, LIMITS.code),
+  };
+}
+
 /** An empty view. Never `null`: a surface with nothing to draw still has to draw. */
 export function emptyAgentView(now = 0): AgentView {
   return {
@@ -984,6 +1092,7 @@ export function emptyAgentView(now = 0): AgentView {
     budget: readBudget(null),
     guardian: readGuardian(null),
     messages: [],
+    approvals: [],
     updatedAt: now,
     loaded: false,
   };
@@ -1005,6 +1114,7 @@ export function readAgentView(value: unknown, now = 0): AgentView {
     actions: list(source.actions).slice(0, LIMITS.actions).map(readAction),
     budget: readBudget(source.budget),
     guardian: readGuardian(source.guardian),
+    approvals: readApprovals(source.approvals),
     messages: list(source.messages).slice(-LIMITS.messages).map(readAgentMessage),
     updatedAt: now,
     loaded: true,

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  AGENT_CONFIG_CATEGORIES,
   agentDraftProblem,
   baseModelFailureKey,
   channelFailureKey,
@@ -8,12 +9,17 @@ import {
   commitDraftSettings,
   createSettings,
   createTranslator,
+  fieldsForCategory,
+   fieldLabel,
+   fieldHint,
+   fieldPlaceholder,
    credentialsForProvider,
    discoveryProblem,
    effectiveReasoningLevel,
    filterModels,
    filterProviders,
    isProviderId,
+   isAdvancedAgentConfigCategory,
   languageLabel,
   identityFailureKey,
   levelsForModel,
@@ -48,7 +54,7 @@ import {
   type Settings,
 } from '@project-phone/core';
 import { Icon, type IconName } from '../components/Icon';
-import { Button, FieldLabel, Input, SectionLabel, Select, Textarea, classNames } from '../components/Primitives';
+import { Button, FieldLabel, Input, SectionLabel, Select, Segmented, Switch, Textarea, classNames } from '../components/Primitives';
 import { useWheelScroll } from '../hooks/useWheelScroll';
 
 interface SettingsScreenProps {
@@ -138,7 +144,45 @@ interface SettingsScreenProps {
    * told the opposite of what happened.
    */
   setPreview?: (on: boolean) => Promise<void>;
+  /** The agent's live safety level (`null` = configured value), for the permissions category. */
+  safetyLevel?: number | null;
+  /** Writes the safety level with the same control verbs every lifecycle control uses. */
+  setSafetyLevel?: (level: number | null) => Promise<void>;
+  /** The category the screen opens on. Tests use it to reach a deep one statically. */
+  initialCategory?: SettingsCategory;
+  readAgentConfig?: () => Promise<Record<string, string | number | boolean | null> | null>;
+  saveAgentConfig?: (values: Record<string, string | number | boolean | null>) => Promise<Record<string, string | number | boolean | null>>;
 }
+
+type SettingsCategory = 'general' | 'connection' | 'model' | 'budget' | 'deliberation' | 'solver' | 'rhythm' | 'memory' | 'permissions' | 'messaging' | 'appearance';
+
+const CATEGORY_LABEL_KEY: Record<SettingsCategory, 'catGeneral' | 'catConnection' | 'catModel' | 'catBudget' | 'catDeliberation' | 'catSolver' | 'catRhythm' | 'catMemory' | 'catPermissions' | 'catMessaging' | 'catAppearance'> = {
+  general: 'catGeneral',
+  connection: 'catConnection',
+  model: 'catModel',
+  budget: 'catBudget',
+  deliberation: 'catDeliberation',
+  solver: 'catSolver',
+  rhythm: 'catRhythm',
+  memory: 'catMemory',
+  permissions: 'catPermissions',
+  messaging: 'catMessaging',
+  appearance: 'catAppearance',
+};
+
+const CATEGORY_ICON: Record<SettingsCategory, IconName> = {
+  general: 'settings',
+  connection: 'link',
+  model: 'cpu',
+  budget: 'shield',
+  deliberation: 'spark',
+  solver: 'cpu',
+  rhythm: 'moon',
+  memory: 'search',
+  permissions: 'shield',
+  messaging: 'link',
+  appearance: 'palette' as IconName,
+};
 
 const PROVIDER_ICONS: Partial<Record<ProviderId, IconName>> = {
   openrouter: 'globe',
@@ -541,25 +585,18 @@ function DoorCard({
   const receiver = door.host ? `http://${door.host}:${door.port ?? 8730}${door.path ?? ''}` : '';
 
   return (
-    <div className="instrument-panel rounded-xl p-4">
+    <div className="instrument-panel rounded-2xl p-5">
       <div className="flex items-center justify-between gap-3">
-        <span className="flex items-center gap-2 text-sm font-medium text-[var(--ink)]">
-          <Icon name="link" size={15} />
+        <span className="flex items-center gap-2.5 text-sm font-bold text-[var(--ink)]">
+          <span className="flex h-8 w-8 items-center justify-center rounded-lg border border-[var(--line-strong)] bg-[var(--canvas-well)] accent-text"><Icon name="link" size={15} /></span>
           {channelLabel(door.id)}
         </span>
-        <button
-          aria-pressed={open}
-          className={classNames(
-            'rounded-lg border px-2.5 py-1 text-xs font-medium transition',
-            open
-              ? 'accent-border bg-[var(--accent-soft)] accent-text'
-              : 'border-[var(--line)] text-[var(--ink-muted)] hover:border-[var(--line-strong)]',
-          )}
-          onClick={() => setOpen((current) => !current)}
-          type="button"
-        >
-          {t('doorOpen')}
-        </button>
+        <span className={classNames('rounded-full border px-3 py-1 text-[0.68rem] font-bold uppercase tracking-[0.12em]', open ? 'border-[var(--accent-line)] bg-[var(--accent-soft)] accent-text' : 'border-[var(--line)] text-[var(--ink-faint)]')}>
+          {open ? t('on') : t('off')}
+        </span>
+      </div>
+      <div className="mt-4">
+        <Switch id={"door-open-" + door.id} checked={open} label={t('doorOpen')} onChange={(next) => setOpen(next)} />
       </div>
 
       <div className="mt-3 space-y-3">
@@ -618,34 +655,14 @@ function DoorCard({
         ))}
 
         {door.allowlist ? (
-          <div>
-            {/* A real checkbox, for the reason the preview-mode one is: this is one
-                on/off setting whose whole meaning is the tick. It sits above the
-                allowlist rather than inside it because the two are answers to
-                different questions — "who do I know" and "do I answer strangers
-                too" — and putting one inside the other makes it read as a comment
-                on the list rather than as its own decision. */}
-            <label className="flex items-start gap-2.5">
-              <input
-                checked={openToAll}
-                className="mt-0.5 h-4 w-4 shrink-0 accent-[var(--accent)]"
-                onChange={(event) => setOpenToAll(event.target.checked)}
-                type="checkbox"
-              />
-              <span className="min-w-0">
-                <span className="block text-xs font-medium text-[var(--ink)]">
-                  {t('doorOpenToAll')}
-                </span>
-                <span className="mt-0.5 block text-[0.68rem] leading-5 text-[var(--ink-faint)]">
-                  {t('doorOpenToAllHint')}
-                </span>
-                {openToAll ? (
-                  <span className="mt-0.5 block text-[0.68rem] leading-5 text-[var(--accent-text)]">
-                    {t('doorOpenToAllWarn')}
-                  </span>
-                ) : null}
-              </span>
-            </label>
+          <div className="space-y-3">
+            <Switch
+              checked={openToAll}
+              id={"door-all-" + door.id}
+              label={t('doorOpenToAll')}
+              hint={openToAll ? t('doorOpenToAllWarn') : t('doorOpenToAllHint')}
+              onChange={(next) => setOpenToAll(next)}
+            />
 
             <div className="mt-3">
               <FieldLabel hint={door.allowlist}>{t('doorAdmit')}</FieldLabel>
@@ -755,51 +772,85 @@ function PreviewModeCard({
   const t = useMemo(() => createTranslator(language), [language]);
   const on = preview === true;
   const unreachable = preview === null;
-  const describedBy = unreachable ? 'preview-mode-state' : undefined;
 
   return (
-    <div className="instrument-panel rounded-xl p-4">
-      <div className="flex items-start gap-3">
-        <input
-          aria-describedby={describedBy}
-          checked={on}
-          className="preview-toggle mt-0.5 h-4 w-4 shrink-0 cursor-pointer disabled:cursor-not-allowed"
-          disabled={unreachable || saving}
-          id="preview-mode"
-          onChange={(event) => onToggle(event.target.checked)}
-          type="checkbox"
-        />
-        <div className="min-w-0">
-          <label
-            className={classNames(
-              'flex items-center gap-2 text-sm font-medium',
-              unreachable ? 'text-[var(--ink-muted)]' : 'cursor-pointer text-[var(--ink)]',
-            )}
-            htmlFor="preview-mode"
-          >
-            <Icon name="shield" size={15} />
-            {t('previewMode')}
-          </label>
-          <p className="mt-2 text-[0.68rem] leading-5 text-[var(--ink-faint)]">
-            {unreachable ? t('previewModeUnreachable') : t('previewModeHint')}
-          </p>
-          <p
-            className={classNames(
-              'mt-2 text-[0.68rem] font-medium',
-              on ? 'accent-text' : 'text-[var(--ink-muted)]',
-            )}
-            id="preview-mode-state"
-          >
-            {saving
-              ? t('previewModeSaving')
-              : unreachable
-                ? t('previewModeUnreachable')
-                : on
-                  ? t('previewModeOn')
-                  : t('previewModeOff')}
-          </p>
-        </div>
+    <div className="instrument-panel rounded-2xl p-5">
+      <Switch
+        checked={on}
+        disabled={unreachable || saving}
+        id="preview-mode"
+        label={t('previewMode')}
+        hint={unreachable ? t('previewModeUnreachable') : saving ? t('previewModeSaving') : on ? t('previewModeOn') : t('previewModeOff')}
+        onChange={(next) => onToggle(next)}
+      />
+      {!unreachable && !saving ? (
+        <p className="mt-3 text-[0.72rem] leading-relaxed text-[var(--ink-faint)]">{t('previewModeHint')}</p>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * The safety level, as four named choices and a reset.
+ *
+ * The same four-level system `docs/safety-levels.md` spells out, read off the
+ * agent's own lifecycle row and written with the same control verbs every other
+ * lifecycle control uses. It lives in the permissions category because it is a
+ * standing policy rather than a right-now decision — the header is where a
+ * person stops an agent, and this is where they decide what an unattended agent
+ * may do at all.
+ */
+function SafetyLevelCard({
+  language, safetyLevel, saving, onSet,
+}: {
+  language: Language;
+  safetyLevel: number | null;
+  saving: boolean;
+  onSet: (level: number | null) => void;
+}) {
+  const t = useMemo(() => createTranslator(language), [language]);
+  const options: Array<{ level: number | null; label: string; hint: string }> = [
+    { level: 1, label: t('safetyLevel1'), hint: t('safetyLevel1Hint') },
+    { level: 2, label: t('safetyLevel2'), hint: t('safetyLevel2Hint') },
+    { level: 3, label: t('safetyLevel3'), hint: t('safetyLevel3Hint') },
+    { level: 4, label: t('safetyLevel4'), hint: t('safetyLevel4Hint') },
+  ];
+  const configured = safetyLevel === null;
+  return (
+    <div className="instrument-panel rounded-2xl p-5">
+      <p className="text-sm font-semibold text-[var(--ink)]">{t('safetyLevelTitle')}</p>
+      <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+        {options.map((option) => {
+          const selected = safetyLevel === option.level;
+          return (
+            <button
+              aria-pressed={selected}
+              className={classNames(
+                'instrument-panel flex flex-col rounded-xl p-3 text-left',
+                selected ? 'accent-border ring-1 ring-[var(--accent-halo)]' : 'hover:border-[var(--line-strong)]',
+              )}
+              disabled={saving}
+              key={option.label}
+              onClick={() => onSet(option.level)}
+              type="button"
+            >
+              <span className="text-sm font-medium text-[var(--ink)]">{option.label}</span>
+              <span className="mt-0.5 text-[0.66rem] leading-4 text-[var(--ink-faint)]">{option.hint}</span>
+            </button>
+          );
+        })}
       </div>
+      <button
+        className="mt-3 text-[0.68rem] accent-text underline underline-offset-2 disabled:opacity-50"
+        disabled={saving || configured}
+        onClick={() => onSet(null)}
+        type="button"
+      >
+        {t('safetyLevelReset')}
+      </button>
+      <p className="mt-2 text-[0.68rem] leading-5 text-[var(--ink-faint)]">
+        {saving ? t('previewModeSaving') : configured ? t('safetyLevelUnset') : t('safetyLevelActive', { level: String(safetyLevel) })}
+      </p>
     </div>
   );
 }
@@ -859,8 +910,13 @@ export function SettingsScreen({
   readDoors,
   saveDoor,
   preview = null,
+  safetyLevel = null,
   setPreview,
+  setSafetyLevel,
+  initialCategory,
   credential = { present: false, source: 'none', hint: '' },
+  readAgentConfig,
+  saveAgentConfig,
 }: SettingsScreenProps) {
   const t = useMemo(() => createTranslator(settings.language), [settings.language]);
   // The draft as the form holds it.
@@ -944,6 +1000,16 @@ export function SettingsScreen({
   // given comes back with the answer after the write, so a second copy would be a
   // second thing to fall out of step with the machine.
   const [previewSaving, setPreviewSaving] = useState(false);
+  const [safetySaving, setSafetySaving] = useState(false);
+  // OS-style categories: headings in a sidebar on the right, one pane per
+  // category, instead of one long scroll. `general` is the landing pane.
+  const [activeCategory, setActiveCategory] = useState<SettingsCategory>(initialCategory ?? 'general');
+  // The tuning categories live behind an "Advanced settings" fold in the
+  // sidebar — folded by default, since each one is a wall of knobs; see
+  // `renderSidebar` below.
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [agentConfig, setAgentConfig] = useState<Record<string, string | number | boolean | null> | null>(null);
+  const [agentConfigSaving, setAgentConfigSaving] = useState(false);
   // What the service in front of us can do, and whether it answered at all.
   const seeded = useRef(false);
   // The body of this page, which is the only thing on the screen that scrolls.
@@ -1159,6 +1225,36 @@ export function SettingsScreen({
       })
       .catch(() => undefined);
   }, [agentMode, alive, readDoors]);
+
+  // Clio Agent settings (budget, solver, rhythm, …) — read once on the way in.
+  useEffect(() => {
+    if (!agentMode || !readAgentConfig) return;
+    void readAgentConfig()
+      .then((found) => { if (alive()) setAgentConfig(found); })
+      .catch(() => undefined);
+  }, [agentMode, alive, readAgentConfig]);
+
+  const patchAgentField = (id: string, value: string | number | boolean | null) => {
+    setAgentConfig((current) => ({ ...(current ?? {}), [id]: value }));
+    setError(null);
+    setNotice(null);
+  };
+
+  const saveAgentSettings = async () => {
+    if (!saveAgentConfig || agentConfig === null) return;
+    setAgentConfigSaving(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const saved = await saveAgentConfig(agentConfig);
+      setAgentConfig(saved);
+      setNotice(t('agentConfigSaved'));
+    } catch {
+      setError(t('agentConfigFailed'));
+    } finally {
+      setAgentConfigSaving(false);
+    }
+  };
 
   /**
    * A name typed into the field.
@@ -1563,6 +1659,21 @@ export function SettingsScreen({
     }
   };
 
+  const writeSafetyLevel = async (level: number | null): Promise<void> => {
+    if (!agentMode || !setSafetyLevel) return;
+    setSafetySaving(true);
+    setError(null);
+    setNotice(null);
+    try {
+      await setSafetyLevel(level);
+      setNotice(t('safetyLevelSaved'));
+    } catch {
+      setError(t('safetyLevelFailed'));
+    } finally {
+      setSafetySaving(false);
+    }
+  };
+
   const save = async () => {
     if (problem !== null) {
       setError(t(problem));
@@ -1644,17 +1755,155 @@ export function SettingsScreen({
     onClose();
   };
 
+  const renderAgentFields = (category: SettingsCategory) => {
+    const fields = fieldsForCategory(category);
+    if (!fields.length) return null;
+    return (
+      <section className="space-y-4">
+        <SectionLabel icon={CATEGORY_ICON[category]}>{t(CATEGORY_LABEL_KEY[category])}</SectionLabel>
+        {category === 'budget' ? (
+          <p className="text-[0.72rem] leading-5 text-[var(--ink-faint)]">{t('budgetUnitHint')}</p>
+        ) : null}
+        {agentConfig === null ? (
+          <p className="text-[0.72rem] leading-5 text-[var(--ink-faint)]">{t('agentConfigUnreachable')}</p>
+        ) : fields.map((field) => {
+          const value = agentConfig[field.id];
+          const display = value === null ? '' : String(value);
+          const label = fieldLabel(field, draft.language);
+          const hint = fieldHint(field, draft.language);
+          const placeholder = fieldPlaceholder(field, draft.language);
+          if (field.type === 'boolean') {
+            return (
+              <Switch
+                key={field.id}
+                id={"switch-" + field.id}
+                checked={Boolean(value)}
+                label={label}
+                hint={hint}
+                onChange={(next) => patchAgentField(field.id, next)}
+              />
+            );
+          }
+          if (field.type === 'number' && field.nullable) {
+            const on = value !== null;
+            return (
+              <div key={field.id} className="instrument-well rounded-2xl border border-[var(--line)] p-4">
+                <Switch
+                  id={"switch-" + field.id}
+                  checked={on}
+                  label={label}
+                  hint={hint ?? (on ? t('budgetOnHint') : t('budgetOffHint'))}
+                  onChange={(next) => {
+                    if (next) patchAgentField(field.id, 0);
+                    else patchAgentField(field.id, null);
+                  }}
+                />
+                <div className={classNames('mt-3 transition', !on && 'pointer-events-none opacity-40')}>
+                  <Input
+                    inputMode="numeric"
+                    onChange={(event) => {
+                      const raw = event.target.value.trim();
+                      if (raw === '') { patchAgentField(field.id, null); return; }
+                      const n = Number(raw);
+                      if (Number.isFinite(n)) patchAgentField(field.id, n);
+                    }}
+                    placeholder={placeholder}
+                    type="number"
+                    value={display}
+                  />
+                </div>
+              </div>
+            );
+          }
+          if (field.type === 'select') {
+            return (
+              <div key={field.id}>
+                <FieldLabel hint={hint}>{label}</FieldLabel>
+                <Select onChange={(event) => patchAgentField(field.id, event.target.value)} value={display}>
+                  {(field.options ?? []).map((opt) => <option key={opt} value={opt}>{opt}</option>)}
+                </Select>
+              </div>
+            );
+          }
+          return (
+            <div key={field.id}>
+              <FieldLabel hint={hint}>{label}</FieldLabel>
+              <Input
+                inputMode={field.type === 'number' ? 'numeric' : undefined}
+                onChange={(event) => {
+                  if (field.type === 'number') {
+                    const raw = event.target.value.trim();
+                    if (raw === '') { patchAgentField(field.id, field.nullable ? null : 0); return; }
+                    const n = Number(raw);
+                    if (Number.isFinite(n)) patchAgentField(field.id, n);
+                  } else {
+                    patchAgentField(field.id, event.target.value);
+                  }
+                }}
+                placeholder={placeholder}
+                type={field.type === 'number' ? 'number' : 'text'}
+                value={display}
+              />
+            </div>
+          );
+        })}
+        {fields.length ? (
+          <div className="flex items-center justify-between gap-3 pt-1">
+            <span className="text-[0.68rem] text-[var(--ink-faint)]">{t('agentConfigRestart')}</span>
+            <Button disabled={agentConfigSaving || agentConfig === null || !saveAgentConfig} icon="check" onClick={() => void saveAgentSettings()} variant="outline">
+              {t('save')}
+            </Button>
+          </div>
+        ) : null}
+      </section>
+    );
+  };
+
+  const visibleCategories = (AGENT_CONFIG_CATEGORIES as SettingsCategory[]).filter((c) => {
+    if (!agentMode && isAdvancedAgentConfigCategory(c)) return false;
+    return true;
+  });
+  const basicCategories = visibleCategories.filter((c) => !isAdvancedAgentConfigCategory(c));
+  const advancedCategories = visibleCategories.filter((c) => isAdvancedAgentConfigCategory(c));
+
+  const toggleAdvanced = () => {
+    // Folding the group while one of its panes is open would leave the pane
+    // lit over a sidebar with nothing lit in it, so folding lands on `general`.
+    if (advancedOpen && isAdvancedAgentConfigCategory(activeCategory)) setActiveCategory('general');
+    setAdvancedOpen(!advancedOpen);
+  };
+
+  const renderCategoryButton = (cat: SettingsCategory) => {
+    const active = activeCategory === cat;
+    return (
+      <button
+        aria-pressed={active}
+        className={classNames(
+          'flex items-center gap-3 rounded-xl px-3.5 py-3 text-left text-sm transition',
+          active
+            ? 'accent-border bg-[var(--accent-soft)] shadow-sm ring-1 ring-[var(--accent-halo)]'
+            : 'hover:bg-[var(--canvas-well)]',
+        )}
+        key={cat}
+        onClick={() => setActiveCategory(cat)}
+        type="button"
+      >
+        <span className={classNames('flex h-7 w-7 items-center justify-center rounded-lg border', active ? 'accent-border bg-[var(--canvas-raised)] accent-text' : 'border-[var(--line)] bg-[var(--canvas-well)] text-[var(--ink-faint)]')}>
+          <Icon name={CATEGORY_ICON[cat]} size={14} />
+        </span>
+        <span className={active ? 'accent-text font-bold' : 'font-medium text-[var(--ink-muted)]'}>{t(CATEGORY_LABEL_KEY[cat])}</span>
+      </button>
+    );
+  };
+
   return (
-    // The wheel handler belongs on the whole screen rather than on the body
-    // below, because the gap it fills is exactly the part the body does not
-    // cover: the pinned header, and any margin outside a centred column.
     <div className="flex min-h-0 flex-1 flex-col" onWheel={wheelToBody}>
-      <header className="shrink-0 border-b border-[var(--line)] px-4 py-4 sm:px-7 lg:px-10">
-        <div className="mx-auto flex w-full max-w-3xl items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-[var(--line-strong)] bg-[var(--canvas-raised)] text-[var(--accent)] shadow-emboss"><Icon name="settings" size={19} /></div>
+      <header className="shrink-0 border-b border-[var(--line)] px-4 py-4 sm:px-7 lg:px-10" style={{ background: 'var(--glass)', backdropFilter: 'blur(14px)' }}>
+        <div className="mx-auto flex w-full max-w-6xl items-center justify-between gap-4">
+          <div className="flex items-center gap-3.5">
+            <div className="flex h-11 w-11 items-center justify-center rounded-2xl border border-[var(--accent-line)] bg-[var(--accent-soft)] accent-text shadow-emboss"><Icon name="settings" size={20} /></div>
             <div>
-              <h1 className="text-sm font-semibold tracking-wide text-[var(--ink)]">{t('settings')}</h1>
+              <h1 className="text-base font-bold tracking-tight text-[var(--ink)]">{t('settings')}</h1>
               <p className="text-xs text-[var(--ink-faint)]">
                 {draft.interface === 'agent' ? t('agentTitle') : t('providerSetup')}
               </p>
@@ -1664,288 +1913,261 @@ export function SettingsScreen({
         </div>
       </header>
 
-      {/* The reading column, and the only thing on the screen that scrolls. It is
-          narrower than the screen on purpose, so the header above stays put
-          while a long form scrolls under it — which means it also leaves two
-          kinds of ground that do not scroll with it: the header, and the margin
-          either side. The wheel handler on the screen above is what covers
-          those two; see `useWheelScroll`. */}
-      <div className="mx-auto w-full max-w-3xl min-h-0 flex-1 overflow-y-auto px-4 pb-8 pt-5 sm:px-7 lg:px-10" ref={body}>
-        <div className="instrument-panel space-y-6 rounded-2xl p-5 sm:p-7">
-          <section>
-            <SectionLabel icon="link">{t('interfaceLabel')}</SectionLabel>
-            <div className="grid gap-2 sm:grid-cols-2">
-              {INTERFACES.map((entry) => {
-                const selected = draft.interface === entry.id;
-                return (
-                  <button
-                    aria-pressed={selected}
-                    className={classNames(
-                      'instrument-panel flex items-start gap-3 rounded-xl p-3 text-left',
-                      selected ? 'accent-border ring-1 ring-[var(--accent-halo)]' : 'hover:border-[var(--line-strong)]',
-                    )}
-                    key={entry.id}
-                    onClick={() => patch({ interface: entry.id })}
-                    type="button"
-                  >
-                    <Icon className={selected ? 'accent-text mt-0.5 shrink-0' : 'mt-0.5 shrink-0 text-[var(--ink-muted)]'} name={entry.icon} size={16} />
-                    <span className="min-w-0">
-                      <span className="block truncate text-sm font-medium text-[var(--ink)]">{t(entry.label)}</span>
-                      <span className="mt-0.5 block text-[0.66rem] leading-4 text-[var(--ink-faint)]">{t(entry.hint)}</span>
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-          </section>
-
-          {agentMode ? (
-            <section className="space-y-4">
-              {/* First on the screen, above even the agent's name, and that is the whole
-                  argument for putting it there rather than with the other agent-owned
-                  settings further down. Everything else on this page describes the
-                  agent — what it is called, which model it thinks with, which doors
-                  it has — and none of it changes what the agent is allowed to do
-                  while you are reading it. This one does, it takes effect the moment
-                  it is pressed rather than on Save, and it is the thing to reach for
-                  when you have just started an agent on a machine and want to watch
-                  it before letting it touch anything. A control like that belongs
-                  where it is seen without scrolling, beside the choice of who you
-                  are even talking to.
-
-                  Inside the agent's block, so in `direct` mode it is not offered at
-                  all: this page then talks to a model provider and holds no tools,
-                  and a box promising to switch them off would be a control over
-                  nothing — the one setting here that could not be made true, which
-                  is why it is left out rather than shown and quietly inert. */}
-              {setPreview ? (
-                <PreviewModeCard
-                  language={draft.language}
-                  onToggle={(next) => void writePreview(next)}
-                  preview={preview}
-                  saving={previewSaving}
-                />
+      <div className="mx-auto flex w-full max-w-6xl min-h-0 flex-1 gap-5 px-4 pt-6 sm:px-7 lg:px-10 pb-10">
+        <aside className="instrument-panel sticky top-0 h-max w-60 shrink-0 self-start rounded-2xl p-3">
+          <SectionLabel icon="settings">{t('settingsCategory')}</SectionLabel>
+          <div className="flex flex-col gap-1">
+            {basicCategories.map(renderCategoryButton)}
+            {advancedCategories.length ? (
+              <div className="mt-2 flex flex-col gap-1">
+                <button
+                  aria-expanded={advancedOpen}
+                  className={classNames(
+                    'flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition',
+                    advancedOpen
+                      ? 'accent-border bg-[var(--accent-soft)] accent-text'
+                      : 'border-[var(--line)] text-[var(--ink-muted)] hover:border-[var(--line-strong)]',
+                  )}
+                  onClick={toggleAdvanced}
+                  type="button"
+                >
+                  <Icon className={classNames('transition-transform', advancedOpen ? 'rotate-90' : '')} name="chevron" size={13} />
+                  {t('catAdvanced')}
+                </button>
+                {advancedOpen ? advancedCategories.map(renderCategoryButton) : null}
+              </div>
+            ) : null}
+          </div>
+        </aside>
+        <div className="instrument-panel min-w-0 flex-1 space-y-6 rounded-3xl p-6 sm:p-8 overflow-y-auto" ref={body}>
+          {activeCategory === 'general' ? (
+            <>
+              <section>
+                <SectionLabel icon="link">{t('interfaceLabel')}</SectionLabel>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {INTERFACES.map((entry) => {
+                    const selected = draft.interface === entry.id;
+                    return (
+                      <button
+                        aria-pressed={selected}
+                        className={classNames(
+                          'instrument-panel flex items-start gap-3 rounded-xl p-3 text-left',
+                          selected ? 'accent-border ring-1 ring-[var(--accent-halo)]' : 'hover:border-[var(--line-strong)]',
+                        )}
+                        key={entry.id}
+                        onClick={() => patch({ interface: entry.id })}
+                        type="button"
+                      >
+                        <Icon className={selected ? 'accent-text mt-0.5 shrink-0' : 'mt-0.5 shrink-0 text-[var(--ink-muted)]'} name={entry.icon} size={16} />
+                        <span className="min-w-0">
+                          <span className="block truncate text-sm font-medium text-[var(--ink)]">{t(entry.label)}</span>
+                          <span className="mt-0.5 block text-[0.66rem] leading-4 text-[var(--ink-faint)]">{t(entry.hint)}</span>
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </section>
+              {agentMode ? (
+                <section className="space-y-4">
+                  {setPreview ? (
+                    <PreviewModeCard
+                      language={draft.language}
+                      onToggle={(next) => void writePreview(next)}
+                      preview={preview}
+                      saving={previewSaving}
+                    />
+                  ) : null}
+                  <div>
+                    <FieldLabel>{t('agentName')}</FieldLabel>
+                    <div className="relative">
+                      <Icon className="pointer-events-none absolute left-3 top-3 text-[var(--ink-faint)]" name="spark" size={17} />
+                      <Input
+                        className="pl-10"
+                        disabled={!saveIdentity || identity === null}
+                        maxLength={MAX_AGENT_NAME_LENGTH}
+                        onChange={(event) => patchName(event.target.value)}
+                        placeholder={t('agentNamePlaceholder')}
+                        value={name}
+                      />
+                    </div>
+                    <p className="mt-2 text-[0.68rem] leading-5 text-[var(--ink-faint)]">{t('agentNameHint')}</p>
+                  </div>
+                </section>
               ) : null}
-              {/* What it is called, where it is, and who you are to it. */}
-              <div>
-                <FieldLabel>{t('agentName')}</FieldLabel>
-                <div className="relative">
-                  <Icon className="pointer-events-none absolute left-3 top-3 text-[var(--ink-faint)]" name="spark" size={17} />
-                  <Input
-                    className="pl-10"
-                    // Disabled rather than merely ignored when the agent cannot be
-                    // asked: a field that accepts an edit this form has nowhere to
-                    // save is a promise the save button cannot keep.
-                    disabled={!saveIdentity || identity === null}
-                    maxLength={MAX_AGENT_NAME_LENGTH}
-                    onChange={(event) => patchName(event.target.value)}
-                    placeholder={t('agentNamePlaceholder')}
-                    value={name}
-                  />
-                </div>
-                <p className="mt-2 text-[0.68rem] leading-5 text-[var(--ink-faint)]">{t('agentNameHint')}</p>
-              </div>
-              <div>
-                <FieldLabel hint="loopback">{t('agentEndpoint')}</FieldLabel>
-                <div className="relative">
-                  <Icon className="pointer-events-none absolute left-3 top-3 text-[var(--ink-faint)]" name="server" size={17} />
-                  <Input
-                    className="pl-10 font-mono"
-                    maxLength={MAX_ENDPOINT_LENGTH}
-                    onChange={(event) => patch({ agentUrl: event.target.value })}
-                    placeholder={createSettings().agentUrl}
-                    spellCheck={false}
-                    value={draft.agentUrl}
-                  />
-                </div>
-                <p className="mt-2 text-[0.68rem] leading-5 text-[var(--ink-faint)]">{t('agentEndpointHint')}</p>
-              </div>
-              <div>
-                <FieldLabel>{t('agentPerson')}</FieldLabel>
-                <div className="relative">
-                  <Icon className="pointer-events-none absolute left-3 top-3 text-[var(--ink-faint)]" name="home" size={17} />
-                  <Input
-                    className="pl-10"
-                    maxLength={MAX_PERSON_LENGTH}
-                    onChange={(event) => patch({ agentPerson: event.target.value })}
-                    placeholder="owner"
-                    value={draft.agentPerson}
-                  />
-                </div>
-                <p className="mt-2 text-[0.68rem] leading-5 text-[var(--ink-faint)]">{t('agentPersonHint')}</p>
-              </div>
-            </section>
+              {renderAgentFields('general')}
+            </>
           ) : null}
 
-          {/* The provider, key, endpoint and model block is the same component
-              tree in both modes, and it is the only one. A form that showed a
-              different set of controls depending on which interface was in use
-              was a form whose controls could not be compared, and the differences
-              were all mine: a status line, a "forget key" button, a note about
-              which agent was behind it. None of them were asked for, and a
-              section that looks different is a section nobody trusts. */}
-          <CredentialSection
-            draft={draft}
-            envActive={envActive}
-            envKey={envKey}
-            fileEnv={fileEnv}
-            // Offered only where this page owns the write. In direct mode the
-            // shared file is cleared by `phone config unset apiKey` and by
-            // nothing else — see `savedApiKey`.
-            onForgetKey={savedKey.removable ? () => void forgetBaseModelKey() : null}
-            forgettingKey={baseKeyForgetting}
-            onApiKey={patchApiKey}
-            onCommitApiKey={discoverOnKeyBlur}
-            onChooseProvider={chooseProvider}
-            onToggleEnvKey={toggleEnvKey}
-            patch={patchBase}
-            savedKey={savedKey}
-          />
-
-          <ModelSection
-            discovering={discovering}
-            draft={draft}
-            filtered={filteredModels}
-            modelQuery={modelQuery}
-            onChoose={setModel}
-            onDiscover={() => void runDiscovery(draft, envActive)}
-            onQuery={setModelQuery}
-            source={source}
-          />
-
-          <section>
-            <SectionLabel icon="spark">{t('reasoningLevel')}</SectionLabel>
-            <div className="grid grid-cols-4 gap-2">
-              {availableLevels.map((level) => (
-                <button
-                  aria-pressed={effectiveLevel === level}
-                  className={classNames(
-                    'rounded-lg border px-2 py-2 text-xs font-medium transition',
-                    effectiveLevel === level
-                      ? 'accent-border bg-[var(--accent-soft)] accent-text'
-                      : 'border-[var(--line)] text-[var(--ink-muted)] hover:border-[var(--line-strong)]',
-                  )}
-                  key={level}
-                  // `patchBase` rather than `patch`: in agent mode the level
-                  // belongs to the base model, so choosing one is what makes
-                  // the base-model write happen on Save.
-                  onClick={() => patchBase({ reasoningLevel: level })}
-                  type="button"
-                >
-                  {t(level === 'off' ? 'reasoningOff' : level === 'low' ? 'reasoningLow' : level === 'medium' ? 'reasoningMedium' : 'reasoningHigh')}
-                </button>
-              ))}
-            </div>
-            <p className="mt-2 text-[0.68rem] leading-5 text-[var(--ink-faint)]">
-              {t('reasoningLevelHint')}
-              {levelReported ? ` ${t('reasoningLevelReported')}` : ''}
-            </p>
-          </section>
-
-          {/*
-            The doors, and the only section on this page that writes a credential
-            the agent reads with a bot token rather than with an API key.
-
-            In the agent's own block because that is where they belong: a door is
-            the deployment's, and a credential for it does not belong in a
-            settings file the browser and the terminal share. Nothing here is held
-            after the save either — the page is told which credentials exist, never
-            what any of them says, which is the only way a form can offer a field
-            for a secret it does not keep.
-          */}
-          {agentMode ? (
-            <section className="border-t border-[var(--line)] pt-5">
-              <div className="flex items-center justify-between gap-3">
-                <SectionLabel icon="link">{t('doorSection')}</SectionLabel>
-                <button
-                  aria-expanded={doorsExpanded}
-                  className={classNames(
-                    'flex shrink-0 items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs font-medium transition',
-                    doorsExpanded
-                      ? 'accent-border bg-[var(--accent-soft)] accent-text'
-                      : 'border-[var(--line)] text-[var(--ink-muted)] hover:border-[var(--line-strong)]',
-                  )}
-                  onClick={() => setDoorsExpanded((current) => !current)}
-                  type="button"
-                >
-                  {doorsExpanded ? t('doorSectionHide') : t('doorSectionShow')}
-                  <Icon
-                    className={classNames('transition-transform', doorsExpanded ? 'rotate-90' : '')}
-                    name="chevron"
-                    size={13}
-                  />
-                </button>
-              </div>
-              {doorsExpanded ? (
-                <div className="space-y-4">
-                  <div>
-                    <p className="text-[0.68rem] leading-5 text-[var(--ink-faint)]">
-                      {doors === null && readDoors ? t('doorUnreachable') : t('doorSectionHint')}
-                    </p>
-                    {doors?.file ? (
-                      <p className="mt-1 text-[0.68rem] leading-5 text-[var(--ink-faint)]">
-                        {t('doorSavedIn', { file: doors.file })}
-                      </p>
-                    ) : null}
-                  </div>
-                  {doors?.doors.map((door) => (
-                    <DoorCard
-                      door={door}
-                      key={door.id}
-                      language={draft.language}
-                      onSave={writeDoor}
-                      saving={doorSaving === door.id}
+          {activeCategory === 'connection' ? (
+            <>
+              <section className="space-y-4">
+                <SectionLabel icon="link">{t('agentEndpoint')}</SectionLabel>
+                <div>
+                  <FieldLabel hint="loopback">{t('agentEndpoint')}</FieldLabel>
+                  <div className="relative">
+                    <Icon className="pointer-events-none absolute left-3 top-3 text-[var(--ink-faint)]" name="server" size={17} />
+                    <Input
+                      className="pl-10 font-mono"
+                      maxLength={MAX_ENDPOINT_LENGTH}
+                      onChange={(event) => patch({ agentUrl: event.target.value })}
+                      placeholder={createSettings().agentUrl}
+                      spellCheck={false}
+                      value={draft.agentUrl}
                     />
+                  </div>
+                  <p className="mt-2 text-[0.68rem] leading-5 text-[var(--ink-faint)]">{t('agentEndpointHint')}</p>
+                </div>
+                <div>
+                  <FieldLabel>{t('agentPerson')}</FieldLabel>
+                  <div className="relative">
+                    <Icon className="pointer-events-none absolute left-3 top-3 text-[var(--ink-faint)]" name="home" size={17} />
+                    <Input
+                      className="pl-10"
+                      maxLength={MAX_PERSON_LENGTH}
+                      onChange={(event) => patch({ agentPerson: event.target.value })}
+                      placeholder="owner"
+                      value={draft.agentPerson}
+                    />
+                  </div>
+                  <p className="mt-2 text-[0.68rem] leading-5 text-[var(--ink-faint)]">{t('agentPersonHint')}</p>
+                </div>
+              </section>
+              {renderAgentFields('connection')}
+            </>
+          ) : null}
+
+          {activeCategory === 'model' ? (
+            <>
+              <CredentialSection
+                draft={draft}
+                envActive={envActive}
+                envKey={envKey}
+                fileEnv={fileEnv}
+                onForgetKey={savedKey.removable ? () => void forgetBaseModelKey() : null}
+                forgettingKey={baseKeyForgetting}
+                onApiKey={patchApiKey}
+                onCommitApiKey={discoverOnKeyBlur}
+                onChooseProvider={chooseProvider}
+                onToggleEnvKey={toggleEnvKey}
+                patch={patchBase}
+                savedKey={savedKey}
+              />
+              <ModelSection
+                discovering={discovering}
+                draft={draft}
+                filtered={filteredModels}
+                modelQuery={modelQuery}
+                onChoose={setModel}
+                onDiscover={() => void runDiscovery(draft, envActive)}
+                onQuery={setModelQuery}
+                source={source}
+              />
+              <section>
+                <SectionLabel icon="spark">{t('reasoningLevel')}</SectionLabel>
+                <div className="grid grid-cols-4 gap-2">
+                  {availableLevels.map((level) => (
+                    <button
+                      aria-pressed={effectiveLevel === level}
+                      className={classNames(
+                        'rounded-lg border px-2 py-2 text-xs font-medium transition',
+                        effectiveLevel === level
+                          ? 'accent-border bg-[var(--accent-soft)] accent-text'
+                          : 'border-[var(--line)] text-[var(--ink-muted)] hover:border-[var(--line-strong)]',
+                      )}
+                      key={level}
+                      onClick={() => patchBase({ reasoningLevel: level })}
+                      type="button"
+                    >
+                      {t(level === 'off' ? 'reasoningOff' : level === 'low' ? 'reasoningLow' : level === 'medium' ? 'reasoningMedium' : 'reasoningHigh')}
+                    </button>
                   ))}
                 </div>
-              ) : null}
+                <p className="mt-2 text-[0.68rem] leading-5 text-[var(--ink-faint)]">
+                  {t('reasoningLevelHint')}
+                  {levelReported ? ` ${t('reasoningLevelReported')}` : ''}
+                </p>
+              </section>
+            </>
+          ) : null}
+
+          {activeCategory === 'budget' ? renderAgentFields('budget') : null}
+          {activeCategory === 'deliberation' ? renderAgentFields('deliberation') : null}
+          {activeCategory === 'solver' ? renderAgentFields('solver') : null}
+          {activeCategory === 'rhythm' ? renderAgentFields('rhythm') : null}
+          {activeCategory === 'memory' ? renderAgentFields('memory') : null}
+          {activeCategory === 'permissions' && agentMode && setSafetyLevel ? (
+            <SafetyLevelCard
+              language={draft.language}
+              onSet={(level) => void writeSafetyLevel(level)}
+              safetyLevel={safetyLevel}
+              saving={safetySaving}
+            />
+          ) : null}
+          {activeCategory === 'permissions' ? renderAgentFields('permissions') : null}
+
+          {activeCategory === 'messaging' && agentMode ? (
+            <section>
+              <SectionLabel icon="link">{t('doorSection')}</SectionLabel>
+              <div>
+                <p className="text-[0.68rem] leading-5 text-[var(--ink-faint)]">
+                  {doors === null && readDoors ? t('doorUnreachable') : t('doorSectionHint')}
+                </p>
+                {doors?.file ? (
+                  <p className="mt-1 text-[0.68rem] leading-5 text-[var(--ink-faint)]">
+                    {t('doorSavedIn', { file: doors.file })}
+                  </p>
+                ) : null}
+              </div>
+              {doors?.doors.map((door) => (
+                <DoorCard
+                  door={door}
+                  key={door.id}
+                  language={draft.language}
+                  onSave={writeDoor}
+                  saving={doorSaving === door.id}
+                />
+              ))}
             </section>
           ) : null}
 
-          <section className="space-y-4 border-t border-[var(--line)] pt-5">
-            <SectionLabel icon="palette">{t('appearance')}</SectionLabel>
-            <div>
-              <FieldLabel>{t('language')}</FieldLabel>
-              <div className="grid grid-cols-3 gap-2">
-                {(['en', 'ja', 'zh'] as const).map((language) => (
-                  <button
-                    aria-pressed={draft.language === language}
-                    className={classNames(
-                      'rounded-lg border px-2 py-2 text-xs font-medium transition',
-                      draft.language === language
-                        ? 'accent-border bg-[var(--accent-soft)] accent-text'
-                        : 'border-[var(--line)] text-[var(--ink-muted)] hover:border-[var(--line-strong)]',
-                    )}
-                    key={language}
-                    onClick={() => patch({ language })}
-                    type="button"
-                  >
-                    {languageLabel(language)}
-                  </button>
-                ))}
-              </div>
-            </div>
-            <div>
-              <FieldLabel>{t('theme')}</FieldLabel>
-              <div className="grid grid-cols-2 gap-2">
-                <button aria-pressed={draft.theme === 'dark'} className={classNames('flex items-center justify-center gap-2 rounded-lg border px-3 py-2 text-xs font-medium', draft.theme === 'dark' ? 'accent-border bg-[var(--accent-soft)] accent-text' : 'border-[var(--line)] text-[var(--ink-muted)]')} onClick={() => patch({ theme: 'dark' })} type="button"><Icon name="moon" size={15} />{t('dark')}</button>
-                <button aria-pressed={draft.theme === 'light'} className={classNames('flex items-center justify-center gap-2 rounded-lg border px-3 py-2 text-xs font-medium', draft.theme === 'light' ? 'accent-border bg-[var(--accent-soft)] accent-text' : 'border-[var(--line)] text-[var(--ink-muted)]')} onClick={() => patch({ theme: 'light' })} type="button"><Icon name="sun" size={15} />{t('light')}</button>
-              </div>
-            </div>
-            <div>
-              <FieldLabel hint={draft.accent}>{t('accent')}</FieldLabel>
-              <div className="flex items-center gap-3">
-                <input
-                  aria-label={t('accent')}
-                  className="h-10 w-14 cursor-pointer rounded-lg border border-[var(--line)] bg-[var(--canvas-well)]"
-                  onChange={(event) => patch({ accent: event.target.value.toUpperCase() })}
-                  type="color"
-                  value={isValidAccent(draft.accent) ? draft.accent : '#F97316'}
+          {activeCategory === 'appearance' ? (
+            <section className="space-y-5">
+              <SectionLabel icon="palette">{t('appearance')}</SectionLabel>
+              <div>
+                <FieldLabel>{t('language')}</FieldLabel>
+                <Segmented
+                  value={draft.language}
+                  onChange={(language) => patch({ language })}
+                  options={(['en', 'ja', 'zh'] as const).map((language) => ({ value: language, label: languageLabel(language) }))}
                 />
-                <Input className="font-mono uppercase" maxLength={7} onChange={(event) => patch({ accent: event.target.value })} value={draft.accent} />
               </div>
-            </div>
-          </section>
+              <div>
+                <FieldLabel>{t('theme')}</FieldLabel>
+                <Segmented
+                  value={draft.theme}
+                  onChange={(theme) => patch({ theme })}
+                  options={[
+                    { value: 'dark', label: <span className="inline-flex items-center gap-2"><Icon name="moon" size={14} />{t('dark')}</span> },
+                    { value: 'light', label: <span className="inline-flex items-center gap-2"><Icon name="sun" size={14} />{t('light')}</span> },
+                  ]}
+                />
+              </div>
+              <div>
+                <FieldLabel hint={draft.accent}>{t('accent')}</FieldLabel>
+                <div className="flex items-center gap-3">
+                  <input
+                    aria-label={t('accent')}
+                    className="h-10 w-14 cursor-pointer rounded-lg border border-[var(--line)] bg-[var(--canvas-well)]"
+                    onChange={(event) => patch({ accent: event.target.value.toUpperCase() })}
+                    type="color"
+                    value={isValidAccent(draft.accent) ? draft.accent : '#F97316'}
+                  />
+                  <Input className="font-mono uppercase" maxLength={7} onChange={(event) => patch({ accent: event.target.value })} value={draft.accent} />
+                </div>
+              </div>
+            </section>
+          ) : null}
 
           {error ? (
             <div className="flex items-start gap-2 rounded-lg border border-[var(--danger-line)] bg-[var(--danger-soft)] px-3 py-2.5 text-xs text-[var(--danger)]">
@@ -1953,7 +2175,6 @@ export function SettingsScreen({
             </div>
           ) : null}
           {notice && !error ? <p className="text-xs text-[var(--ok)]">{notice}</p> : null}
-
           <div className="flex items-center justify-between gap-3 border-t border-[var(--line)] pt-5">
             <span className="flex items-center gap-2 text-[0.68rem] text-[var(--ink-faint)]">
               <Icon name="shield" size={13} />

@@ -19,6 +19,13 @@ app = typer.Typer(
 )
 db_app = typer.Typer(help="Database operations.")
 app.add_typer(db_app, name="db")
+safety_app = typer.Typer(help="Four-level safety system. Levels: 1 dialogue-only, 2 every command on approval, 3 internet commands on approval, 4 no approval.")
+app.add_typer(safety_app, name="safety")
+approvals_app = typer.Typer(help="Manual approvals waiting on the owner.")
+app.add_typer(approvals_app, name="approvals")
+
+venture_app = typer.Typer(help="Ventures: the agent's own long-horizon directions.")
+app.add_typer(venture_app, name="venture")
 
 
 def _release_line() -> str:
@@ -312,8 +319,13 @@ async def _serve_toolhost(config) -> None:
     snapshots = SnapshotManager(config, db=db)
     journal = ActionJournal(db=db)
     verifier = ModelDueProcessVerifier(None, config.self_name)
+    from ethos.guardian.approval import ApprovalManager
+
+    approvals = ApprovalManager(
+        default_timeout_s=float(getattr(config.permissions, "approval_timeout_s", 300.0) or 300.0)
+    )
     gate = GuardianGate(config, registry=registry, trash=trash, snapshots=snapshots,
-                         audit=audit, verifier=verifier, control=control)
+                         audit=audit, verifier=verifier, control=control, approvals=approvals)
     host = Toolhost(config, gate=gate, journal=journal, services={
         "memory": memory, "registry": registry, "trash": trash,
     })
@@ -616,6 +628,220 @@ def status(
         typer.echo(f"  interface:  down ({interface_detail})")
 
     raise typer.Exit(0 if alive else 1)
+
+
+@safety_app.command()
+def show() -> None:
+    """Show the effective safety level and where it came from."""
+    from ethos.guardian.safety import describe_level, effective_level
+
+    config = load_config()
+    level = effective_level(config, None)
+    env_level = os.environ.get("ETHOS_SAFETY_LEVEL")
+    typer.echo(f"safety level: {level} ({describe_level(level)})")
+    typer.echo(f"  config (permissions.yaml): {config.permissions.safety_level}")
+    typer.echo(f"  ETHOS_SAFETY_LEVEL: {env_level or '(unset)'}")
+    typer.echo("  live override: set with `ethos safety set 1|2|3|4`, clear with `ethos safety reset`")
+
+
+@safety_app.command("set")
+def set_level(
+    level: int = typer.Argument(..., help="1=dialogue-only, 2=all on approval, 3=internet on approval, 4=no approval"),
+) -> None:
+    """Switch the running agent to a level, live, without a restart."""
+    if level not in (1, 2, 3, 4):
+        typer.secho("safety level must be 1, 2, 3 or 4", fg=typer.colors.RED, err=True)
+        raise typer.Exit(2)
+    from ethos.guardian.safety import describe_level
+
+    asyncio.run(_set_control_safety_level(level))
+    typer.echo(f"safety level {level} ({describe_level(level)}) set live")
+
+
+@safety_app.command("reset")
+def reset_level() -> None:
+    """Clear the live override; the level falls back to config/env."""
+    asyncio.run(_set_control_safety_level(None))
+    typer.echo("live safety override cleared; falling back to config/env")
+
+
+async def _set_control_safety_level(level: int | None) -> None:
+    import json
+    from datetime import UTC, datetime
+
+    from ethos.core.control import CONTROL_KEY, CONTROL_KIND
+    from ethos.db import Database
+
+    config = load_config()
+    db = await Database.connect(
+        effective_dsn(config),
+        min_pool=1,
+        max_pool=1,
+        command_timeout_s=config.database.command_timeout_s,
+        connect_timeout_s=config.database.connect_timeout_s,
+    )
+    try:
+        merge = {"safety_level": level, "updated_at": datetime.now(UTC).isoformat()}
+        await db.execute(
+            "INSERT INTO env_entities (id, kind, key, attrs, owner, last_verified_at, health) "
+            "VALUES (gen_random_uuid(), $1, $2, $3::jsonb, $4, now(), 'ok') "
+            "ON CONFLICT (key) DO UPDATE SET attrs = ("
+            "  SELECT jsonb_object_agg(key, value) FROM ("
+            "    SELECT key, value FROM jsonb_each(COALESCE(env_entities.attrs, '{}'::jsonb))"
+            "    WHERE key NOT IN (SELECT key FROM jsonb_each($3::jsonb))"
+            "    UNION ALL"
+            "    SELECT key, value FROM jsonb_each($3::jsonb)"
+            "  ) merged"
+            "), last_verified_at = now()",
+            CONTROL_KIND, CONTROL_KEY, json.dumps(merge), "control",
+        )
+    finally:
+        await db.close()
+
+
+@approvals_app.command("list")
+def list_approvals() -> None:
+    """List manual approvals waiting on the owner."""
+    import json
+
+    config = load_config()
+    client, _ = _toolhost_http_client(config, timeout_s=10.0)
+    try:
+        response = client.get("/approvals")
+        response.raise_for_status()
+        pending = response.json()
+    finally:
+        client.close()
+    if not pending:
+        typer.echo("no pending approvals")
+        return
+    for item in pending:
+        typer.echo(f"{item.get('id')}  {item.get('tool')}  level {item.get('safety_level')}")
+        typer.echo(f"  {item.get('reason')}")
+        typer.echo(f"  args: {json.dumps(item.get('args'), default=str)[:400]}")
+
+
+@approvals_app.command("approve")
+def approve(id: str = typer.Argument(..., help="approval id")) -> None:
+    """Approve one pending command."""
+    config = load_config()
+    client, _ = _toolhost_http_client(config, timeout_s=10.0)
+    try:
+        response = client.post(f"/approvals/{id}/approve")
+        response.raise_for_status()
+        result = response.json()
+    finally:
+        client.close()
+    typer.echo(f"approved={result.get('ok')}")
+
+
+@approvals_app.command("deny")
+def deny(id: str = typer.Argument(..., help="approval id")) -> None:
+    """Deny one pending command."""
+    config = load_config()
+    client, _ = _toolhost_http_client(config, timeout_s=10.0)
+    try:
+        response = client.post(f"/approvals/{id}/deny")
+        response.raise_for_status()
+        result = response.json()
+    finally:
+        client.close()
+    typer.echo(f"denied ok={result.get('ok')}")
+
+
+def _toolhost_http_client(config, timeout_s: float = 10.0):
+
+    from ethos.gateway.client import open_endpoint_client
+
+    socket_path = str(config.paths.run_dir / "toolhost.sock")
+    host = config.gateway.host
+    port = config.gateway.toolhost_port
+    client, base = open_endpoint_client(socket_path, host, port, timeout_s=timeout_s, virtual_host="toolhost.local")
+    return client, base
+
+
+@venture_app.command("add")
+def venture_add(
+    title: str = typer.Argument(..., help="what the venture is, in one line"),
+    desired_end_state: str = typer.Option("", "--end-state", "-e", help="what is observably true when it is real"),
+    priority: float = typer.Option(0.6, "--priority", "-p", min=0.0, max=1.0),
+    activate: bool = typer.Option(True, "--activate/--proposed", help="active is workable by the drives now"),
+) -> None:
+    """Open a venture intention: a direction of the agent's own.
+
+    Ventures are the `push_venture` drive's only subject
+    (`ethos/engine/drives.py::IMPULSE_TARGETS`): an impulse that names a
+    venture with none open honestly declines, so a deployment with no
+    ventures has a creation drive that never does anything. The nightly
+    plan may mint one; this command mints one on purpose. `kind='venture'`
+    is the load-bearing part -- a task titled the same way is invisible to
+    the drive.
+    """
+    import asyncio
+
+    from ethos.db import Database
+
+    async def _add() -> object:
+        import json
+
+        from uuid import uuid4
+
+        from ethos.schemas.events import EventKind
+
+        config = load_config()
+        db = await Database.connect(config.database.dsn, min_pool=1, max_pool=1)
+        try:
+            intention_id = uuid4()
+            await db.execute(
+                "INSERT INTO intentions (id, kind, title, desired_end_state, success_criteria, "
+                "constraints, origin, status, priority, created_at, updated_at) "
+                "VALUES ($1, 'venture', $2, $3, '[]'::jsonb, '{}'::jsonb, 'owner', $4, $5, now(), now())",
+                intention_id, title, desired_end_state or title,
+                "active" if activate else "proposed", float(priority),
+            )
+            await db.execute(
+                "INSERT INTO events (kind, source, payload) VALUES ($1, 'cli', $2)",
+                EventKind.INTENTION_UPDATE,
+                json.dumps({
+                    "intention_id": str(intention_id), "status": "active" if activate else "proposed",
+                    "title": title, "kind": "venture", "origin": "owner", "priority": priority,
+                }),
+            )
+            await db.execute("SELECT pg_notify('ethos_events', '')")
+        finally:
+            await db.close()
+        return intention_id
+
+    intention_id = asyncio.run(_add())
+    typer.echo(f"venture opened: {intention_id} — {title}")
+
+
+@venture_app.command("list")
+def venture_list() -> None:
+    """List venture intentions and their states."""
+    import asyncio
+
+    from ethos.db import Database
+
+    async def _list() -> list[dict]:
+        config = load_config()
+        db = await Database.connect(config.database.dsn, min_pool=1, max_pool=1)
+        try:
+            rows = await db.fetch(
+                "SELECT id, title, status, priority, created_at::date AS created "
+                "FROM intentions WHERE kind = 'venture' "
+                "ORDER BY created_at DESC LIMIT 50",
+            )
+            return [dict(r) for r in rows]
+        finally:
+            await db.close()
+
+    rows = asyncio.run(_list())
+    if not rows:
+        typer.echo("no ventures")
+        return
+    for row in rows:
+        typer.echo(f"{row['id']}  [{row['status']}] p={row['priority']}  {row['title']}  ({row['created']})")
 
 
 @app.command("await-agent")

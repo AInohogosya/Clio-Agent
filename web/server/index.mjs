@@ -2395,12 +2395,21 @@ function commitmentReserveShare() {
 }
 
 async function budgetCaps() {
-  const none = { daily_usd: 0, monthly_usd: 0, commitment_usd: 0, discretionary_usd: 0 };
+  const none = {
+    daily_usd: 0, monthly_usd: 0, commitment_usd: 0, discretionary_usd: 0,
+    per_minute: null, per_10_minutes: null, per_hour: null, per_5_hours: null,
+    daily: null, monthly: null,
+    budget_unit: "usd",
+  };
   try {
     const raw = await fs.promises.readFile(path.join(CONFIG_DIR, "permissions.yaml"), "utf8");
     const limits = loadYaml(raw)?.hard_limits;
     if (!limits || typeof limits !== "object") return none;
     const number = (value) => (typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0);
+    const nullable = (value) => {
+      const n = number(value);
+      return n > 0 ? n : null;
+    };
     const daily = number(limits.H2_daily_spend_usd);
     const commitment = daily * commitmentReserveShare();
     return {
@@ -2408,6 +2417,13 @@ async function budgetCaps() {
       monthly_usd: number(limits.H2_monthly_spend_usd),
       commitment_usd: commitment,
       discretionary_usd: daily - commitment,
+      per_minute: nullable(limits.H2_per_minute_limit),
+      per_10_minutes: nullable(limits.H2_per_10_minutes_limit),
+      per_hour: nullable(limits.H2_per_hour_limit),
+      per_5_hours: nullable(limits.H2_per_5_hours_limit),
+      daily: nullable(limits.H2_daily_spend_usd),
+      monthly: nullable(limits.H2_monthly_spend_usd),
+      budget_unit: limits.budget_unit === "tokens" ? "tokens" : "usd",
     };
   } catch {
     return none;
@@ -2441,6 +2457,7 @@ async function controlState() {  const row = await pool.query(
     stopped: Boolean(attrs.stopped),
     emergency: Boolean(attrs.emergency),
     preview: Boolean(attrs.preview),
+    safety_level: [1, 2, 3, 4].includes(attrs.safety_level) ? attrs.safety_level : null,
   };
 }
 
@@ -2519,6 +2536,18 @@ async function readView() {
     ),
     budgetCaps(),
   ]);
+  // Approvals live in the toolhost process, not in Postgres, so they ride
+  // alongside the queries rather than inside the Promise.all — and they are
+  // best-effort by construction: a toolhost that is restarting must not turn
+  // the whole snapshot into a 503. An empty list is "nothing waiting", which
+  // is also what a toolhost with no gate answers, and a surface that cannot
+  // tell those apart has lost nothing either way.
+  let approvals = [];
+  try {
+    approvals = await listApprovals();
+  } catch {
+    approvals = [];
+  }
   const cycle = latestCycle.rows[0] ?? null;
   // When the agent was last *heard*, not when it last finished a cycle.
   //
@@ -2577,6 +2606,10 @@ async function readView() {
       auditHead: auditHead.rows[0] ?? null,
       protectedCount: Number(protectedCount.rows[0]?.n ?? 0),
     },
+    // Commands waiting on a person. Carried on the snapshot so both surfaces
+    // see them without polling a second endpoint, and so "the agent is quiet"
+    // can be told apart from "the agent is waiting for you".
+    approvals,
   };
 }
 
@@ -2663,6 +2696,168 @@ app.get("/api/messages", handle(async (req, res) => {
  * refused, and a request with no browser provenance at all — a terminal, `curl`
  * — is allowed, because that is the owner.
  */
+// ---------------------------------------------------------------------------
+// Clio Agent settings (token budget + every config file), for the settings
+// screens. One allowlist maps a field id to its YAML cell; GET returns the
+// flat values, POST merges a subset back. Writes go to config/*.yaml, the
+// files `ethos.config.load_config` reads, atomically (tmp + rename).
+// ---------------------------------------------------------------------------
+const AGENT_CONFIG_FIELDS = [
+  { id: "general.self_name", file: "ethos.yaml", path: "self_name", type: "text" },
+  { id: "general.timezone", file: "ethos.yaml", path: "timezone", type: "select", options: ["local", "UTC", "Asia/Tokyo", "America/Los_Angeles", "Europe/London"] },
+  { id: "gateway.host", file: "ethos.yaml", path: "gateway.host", type: "text" },
+  { id: "gateway.port", file: "ethos.yaml", path: "gateway.port", type: "number", min: 1, max: 65535 },
+  { id: "gateway.toolhost_port", file: "ethos.yaml", path: "gateway.toolhost_port", type: "number", min: 1, max: 65535 },
+  { id: "workers.count", file: "ethos.yaml", path: "workers.count", type: "number", min: 1, max: 32 },
+  { id: "threads.max_concurrent", file: "ethos.yaml", path: "threads.max_concurrent", type: "number", min: 1, max: 64 },
+  { id: "threads.max_depth", file: "ethos.yaml", path: "threads.max_depth", type: "number", min: 1, max: 16 },
+  { id: "threads.mode", file: "ethos.yaml", path: "threads.mode", type: "select", options: ["inprocess", "subprocess"] },
+  { id: "hard_limits.budget_unit", file: "permissions.yaml", path: "hard_limits.budget_unit", type: "select", options: ["usd", "tokens"] },
+  { id: "hard_limits.H2_per_minute_limit", file: "permissions.yaml", path: "hard_limits.H2_per_minute_limit", type: "number", nullable: true, min: 0 },
+  { id: "hard_limits.H2_per_10_minutes_limit", file: "permissions.yaml", path: "hard_limits.H2_per_10_minutes_limit", type: "number", nullable: true, min: 0 },
+  { id: "hard_limits.H2_per_hour_limit", file: "permissions.yaml", path: "hard_limits.H2_per_hour_limit", type: "number", nullable: true, min: 0 },
+  { id: "hard_limits.H2_per_5_hours_limit", file: "permissions.yaml", path: "hard_limits.H2_per_5_hours_limit", type: "number", nullable: true, min: 0 },
+  { id: "hard_limits.H2_daily_spend_usd", file: "permissions.yaml", path: "hard_limits.H2_daily_spend_usd", type: "number", nullable: true, min: 0 },
+  { id: "hard_limits.H2_monthly_spend_usd", file: "permissions.yaml", path: "hard_limits.H2_monthly_spend_usd", type: "number", nullable: true, min: 0 },
+  { id: "hard_limits.on_exceed", file: "permissions.yaml", path: "hard_limits.on_exceed", type: "select", options: ["warn", "block"] },
+  { id: "hard_limits.H2_capital_at_risk_usd", file: "permissions.yaml", path: "hard_limits.H2_capital_at_risk_usd", type: "number", min: 0 },
+  { id: "hard_limits.money_threshold_usd", file: "permissions.yaml", path: "hard_limits.money_threshold_usd", type: "number", min: 0 },
+  { id: "gateway.routing.mu", file: "ethos.yaml", path: "gateway.routing.mu", type: "number", min: 0 },
+  { id: "gateway.routing.nu", file: "ethos.yaml", path: "gateway.routing.nu", type: "number", min: 0 },
+  { id: "gateway.circuit_breaker.max_failures", file: "ethos.yaml", path: "gateway.circuit_breaker.max_failures", type: "number", min: 1 },
+  { id: "gateway.circuit_breaker.cooldown_s", file: "ethos.yaml", path: "gateway.circuit_breaker.cooldown_s", type: "number", min: 0 },
+  { id: "gateway.retry.max_retries", file: "ethos.yaml", path: "gateway.retry.max_retries", type: "number", min: 0, max: 50 },
+  { id: "gateway.retry.backoff_s", file: "ethos.yaml", path: "gateway.retry.backoff_s", type: "number", min: 0 },
+  { id: "gateway.retry.max_backoff_s", file: "ethos.yaml", path: "gateway.retry.max_backoff_s", type: "number", min: 0 },
+  { id: "gateway.retry.fail_over", file: "ethos.yaml", path: "gateway.retry.fail_over", type: "boolean" },
+  { id: "social.deliberation_max_tokens", file: "social.yaml", path: "deliberation_max_tokens", type: "number", min: 500, max: 200000 },
+  { id: "social.deliberation_escalated_max_tokens", file: "social.yaml", path: "deliberation_escalated_max_tokens", type: "number", min: 500, max: 500000 },
+  { id: "social.execution_state_window_min", file: "social.yaml", path: "execution_state_window_min", type: "number", min: 1 },
+  { id: "social.execution_state_max_actions", file: "social.yaml", path: "execution_state_max_actions", type: "number", min: 1 },
+  { id: "social.max_deliberation_attempts", file: "social.yaml", path: "max_deliberation_attempts", type: "number", min: 0 },
+  { id: "social.proactive_enabled", file: "social.yaml", path: "proactive_enabled", type: "boolean" },
+  { id: "social.proactive_progress_interval_min", file: "social.yaml", path: "proactive_progress_interval_min", type: "number", min: 1 },
+  { id: "gsl.understand_tokens", file: "gsl.yaml", path: "understand_tokens", type: "number", min: 100, max: 100000 },
+  { id: "gsl.devise_tokens", file: "gsl.yaml", path: "devise_tokens", type: "number", min: 100, max: 100000 },
+  { id: "gsl.plan_tokens", file: "gsl.yaml", path: "plan_tokens", type: "number", min: 100, max: 100000 },
+  { id: "gsl.step_tokens", file: "gsl.yaml", path: "step_tokens", type: "number", min: 100, max: 100000 },
+  { id: "gsl.reflect_tokens", file: "gsl.yaml", path: "reflect_tokens", type: "number", min: 100, max: 100000 },
+  { id: "gsl.degraded_reasoning_budget", file: "gsl.yaml", path: "degraded_reasoning_budget", type: "number", min: 0, max: 100000 },
+  { id: "gsl.reasoning_budget", file: "gsl.yaml", path: "reasoning_budget", type: "number", min: 0, max: 100000 },
+  { id: "gsl.model_hint", file: "gsl.yaml", path: "model_hint", type: "text" },
+  { id: "gsl.plan_attempts_before_degrade", file: "gsl.yaml", path: "plan_attempts_before_degrade", type: "number", min: 0 },
+  { id: "gsl.plan_attempts_before_park", file: "gsl.yaml", path: "plan_attempts_before_park", type: "number", min: 0 },
+  { id: "gsl.plan_backoff_s", file: "gsl.yaml", path: "plan_backoff_s", type: "number", min: 0 },
+  { id: "gsl.plan_backoff_max_s", file: "gsl.yaml", path: "plan_backoff_max_s", type: "number", min: 0 },
+  { id: "gsl.max_strategies", file: "gsl.yaml", path: "max_strategies", type: "number", min: 0 },
+  { id: "gsl.verify_code", file: "gsl.yaml", path: "verify_code", type: "boolean" },
+  { id: "gsl.verify_step_checks", file: "gsl.yaml", path: "verify_step_checks", type: "boolean" },
+  { id: "gsl.unverified_is_failure", file: "gsl.yaml", path: "unverified_is_failure", type: "boolean" },
+  { id: "rhythm.energy.night_floor", file: "rhythm.yaml", path: "energy.night_floor", type: "number", min: 0, max: 1 },
+  { id: "rhythm.energy.peak_hour", file: "rhythm.yaml", path: "energy.peak_hour", type: "number", min: 0, max: 24 },
+  { id: "rhythm.energy.low_energy", file: "rhythm.yaml", path: "energy.low_energy", type: "number", min: 0, max: 1 },
+  { id: "rhythm.focus.max_session_min", file: "rhythm.yaml", path: "focus.max_session_min", type: "number", min: 1 },
+  { id: "rhythm.focus.micro_break_min", file: "rhythm.yaml", path: "focus.micro_break_min", type: "number", min: 0 },
+  { id: "rhythm.reverie.enabled", file: "rhythm.yaml", path: "reverie.enabled", type: "boolean" },
+  { id: "rhythm.reverie.max_tokens", file: "rhythm.yaml", path: "reverie.max_tokens", type: "number", min: 50, max: 10000 },
+  { id: "rhythm.reverie.min_gap_min", file: "rhythm.yaml", path: "reverie.min_gap_min", type: "number", min: 1 },
+  { id: "rhythm.reverie.max_gap_min", file: "rhythm.yaml", path: "reverie.max_gap_min", type: "number", min: 1 },
+  { id: "memory.retrieval.top_k", file: "memory.yaml", path: "retrieval.top_k", type: "number", min: 1, max: 500 },
+  { id: "memory.retrieval.candidate_k", file: "memory.yaml", path: "retrieval.candidate_k", type: "number", min: 1, max: 1000 },
+  { id: "memory.retrieval.mmr_lambda", file: "memory.yaml", path: "retrieval.mmr_lambda", type: "number", min: 0, max: 1 },
+  { id: "memory.context.max_turns", file: "memory.yaml", path: "context.max_turns", type: "number", min: 1, max: 500 },
+  { id: "memory.context.max_chars", file: "memory.yaml", path: "context.max_chars", type: "number", min: 100, max: 100000 },
+  { id: "permissions.safety_level", file: "permissions.yaml", path: "safety_level", type: "select", options: ["1", "2", "3", "4"] },
+  { id: "permissions.sudo_allowed", file: "permissions.yaml", path: "sudo_allowed", type: "boolean" },
+  { id: "permissions.approval_timeout_s", file: "permissions.yaml", path: "approval_timeout_s", type: "number", min: 0 },
+  { id: "permissions.guardian.mode", file: "permissions.yaml", path: "guardian.mode", type: "select", options: ["field", "normal"] },
+  { id: "permissions.network.deny_private_ranges", file: "permissions.yaml", path: "network.deny_private_ranges", type: "boolean" },
+  { id: "ethos.subagents.tier", file: "ethos.yaml", path: "subagents.tier", type: "select", options: ["T1", "T2", "T3"] },
+  { id: "ethos.subagents.model_name", file: "ethos.yaml", path: "subagents.model_name", type: "text" },
+];
+const AGENT_CONFIG_MAP = new Map(AGENT_CONFIG_FIELDS.map((f) => [f.id, f]));
+
+function getPath(obj, dotted) {
+  let cur = obj;
+  for (const part of dotted.split(".")) {
+    if (cur === null || typeof cur !== "object") return undefined;
+    cur = cur[part];
+  }
+  return cur;
+}
+function setPath(obj, dotted, value) {
+  const parts = dotted.split(".");
+  let cur = obj;
+  for (let i = 0; i < parts.length - 1; i++) {
+    const part = parts[i];
+    if (cur[part] === null || typeof cur[part] !== "object" || Array.isArray(cur[part])) cur[part] = {};
+    cur = cur[part];
+  }
+  cur[parts[parts.length - 1]] = value;
+}
+function readAgentConfigValues() {
+  const cache = new Map();
+  const values = {};
+  for (const field of AGENT_CONFIG_FIELDS) {
+    if (!cache.has(field.file)) cache.set(field.file, readYamlFile(path.join(CONFIG_DIR, field.file)) ?? {});
+    const raw = getPath(cache.get(field.file), field.path);
+    if (raw === null || raw === undefined) values[field.id] = field.nullable ? null : (field.type === "boolean" ? false : field.type === "number" ? 0 : "");
+    else if (field.type === "boolean") values[field.id] = raw === true || raw === 1 || raw === "true";
+    else if (field.type === "number") { const n = Number(raw); values[field.id] = Number.isFinite(n) ? n : (field.nullable ? null : 0); }
+    else values[field.id] = String(raw);
+  }
+  return values;
+}
+function writeAgentConfigValues(incoming) {
+  if (!incoming || typeof incoming !== "object" || Array.isArray(incoming)) return { error: "unknown_field" };
+  const byFile = new Map();
+  for (const [id, raw] of Object.entries(incoming)) {
+    const field = AGENT_CONFIG_MAP.get(id);
+    if (!field) return { error: "unknown_field", detail: id };
+    let value;
+    if (field.nullable && (raw === null || raw === undefined || raw === "")) value = null;
+    else if (field.type === "boolean") value = raw === true || raw === "true" || raw === 1;
+    else if (field.type === "number") {
+      const n = typeof raw === "string" ? Number(raw.trim()) : raw;
+      if (typeof n !== "number" || !Number.isFinite(n)) return { error: "invalid_value", detail: id };
+      if (field.min !== undefined && n < field.min) return { error: "invalid_value", detail: id };
+      if (field.max !== undefined && n > field.max) return { error: "invalid_value", detail: id };
+      value = n;
+    } else if (field.type === "select") {
+      const s = String(raw ?? "").trim();
+      if (field.options && !field.options.includes(s)) return { error: "invalid_value", detail: id };
+      // safety_level stored as number in YAML
+      value = id === "permissions.safety_level" ? Number(s) : s;
+    } else {
+      const s = String(raw ?? "").trim();
+      if (s.length > 500) return { error: "invalid_value", detail: id };
+      value = s;
+    }
+    if (!byFile.has(field.file)) byFile.set(field.file, []);
+    byFile.get(field.file).push({ field, value });
+  }
+  for (const [file, writes] of byFile) {
+    const target = path.join(CONFIG_DIR, file);
+    const data = readYamlFile(target) ?? {};
+    for (const { field, value } of writes) setPath(data, field.path, value);
+    const tmp = `${target}.tmp-${process.pid}`;
+    fs.writeFileSync(tmp, dumpYaml(data), { mode: 0o644 });
+    fs.renameSync(tmp, target);
+    logExhaustive("settings.change", { actor: "web", what: `agent_config:${file}`, fields: writes.map((w) => w.field.id) });
+  }
+  return { values: readAgentConfigValues() };
+}
+
+app.get("/api/agent-config", handle(async (_req, res) => {
+  res.json({ values: readAgentConfigValues() });
+}));
+app.post("/api/agent-config", handle(async (req, res) => {
+  if (!sameOwner(req)) return res.status(403).json({ error: "cross_origin_refused" });
+  const result = writeAgentConfigValues(req.body?.values ?? req.body);
+  if (result?.error) return res.status(400).json({ error: result.error, ...(result.detail ? { detail: result.detail } : {}) });
+  res.json(result);
+}));
+
 function sameOwner(req) {
   const site = req.get("sec-fetch-site");
   if (site && site !== "same-origin" && site !== "none") return false;
@@ -2853,6 +3048,11 @@ const CONTROL_FLAGS = {
   // by key, so a surface that only knows `preview` never touches the others.
   preview_on: { preview: true },
   preview_off: { preview: false },
+  safety_level_1: { safety_level: 1 },
+  safety_level_2: { safety_level: 2 },
+  safety_level_3: { safety_level: 3 },
+  safety_level_4: { safety_level: 4 },
+  safety_level_reset: { safety_level: null },
 };
 
 app.post("/api/control", handle(async (req, res) => {
@@ -3076,6 +3276,120 @@ app.post("/api/intentions/:id/close", handle(async (req, res) => {
 }));
 
 /**
+ * Manual approvals: the one decision a level-2/3 gate waits on a person for.
+ *
+ * At safety levels 2-3 a network command (and APEX, at any level below 4)
+ * creates a pending approval inside the toolhost's `ApprovalManager` and the
+ * step waits — fail-closed — for `approval_timeout_s`. Until now the only road
+ * to that decision was the `ethos approvals` CLI on the agent's machine; the
+ * interfaces had none, which is why 2026-11-08..10 filled the action journal
+ * with `rejected (timeout)` rows: the steps asked, nobody was watching the one
+ * surface that could answer, and five hours later the command was denied.
+ *
+ * These three routes are the bridge over that gap. The toolhost is a *separate
+ * process* speaking HTTP over its unix socket (`run_dir/toolhost.sock`; TCP
+ * 8701 where the platform has no sockets), so the bridge does what it always
+ * does — a read-only proxy with no state of its own. Every route is
+ * `sameOwner`-guarded like the other writes: an approval is the owner's
+ * authority acting on a tool run, and a cross-origin page does not get to
+ * spend it.
+ */
+const TOOLHOST_SOCK = process.env.ETHOS_TOOLHOST_SOCK
+  ?? path.join(process.env.ETHOS_HOME ?? path.join(os.homedir(), ".ethos"), "run", "toolhost.sock");
+const TOOLHOST_TCP = process.env.ETHOS_TOOLHOST_URL ?? "http://127.0.0.1:8701";
+const TOOLHOST_TIMEOUT_MS = 4000;
+
+function toolhostRequest(method, requestPath, body) {
+  return new Promise((resolve, reject) => {
+    const payload = body === undefined ? null : JSON.stringify(body);
+    const options = {
+      method,
+      path: requestPath,
+      headers: {
+        host: "toolhost.local",
+        ...(payload === null ? {} : {
+          "content-type": "application/json",
+          "content-length": Buffer.byteLength(payload),
+        }),
+      },
+      timeout: TOOLHOST_TIMEOUT_MS,
+    };
+    const finish = (response) => {
+      const chunks = [];
+      response.on("data", (chunk) => chunks.push(chunk));
+      response.on("end", () => {
+        const raw = Buffer.concat(chunks).toString("utf8");
+        let parsed = null;
+        try { parsed = raw ? JSON.parse(raw) : null; } catch { parsed = { raw }; }
+        resolve({ status: response.statusCode, body: parsed });
+      });
+      response.on("error", reject);
+    };
+    let request;
+    try {
+      // The socket first: it is what the toolhost binds wherever the platform
+      // has AF_UNIX, which is every deployment but the rarest Windows one.
+      request = http.request({ ...options, socketPath: TOOLHOST_SOCK }, finish);
+    } catch (error) {
+      reject(error);
+      return;
+    }
+    request.on("error", (error) => {
+      // A missing socket means the toolhost took the TCP branch; one fallback
+      // attempt, and a failure there is the answer — the toolhost is down.
+      if (error?.code === "ECONNREFUSED" || error?.code === "ENOENT" || error?.code === "EACCES") {
+        const fallback = http.request({ ...options, ...new URL(TOOLHOST_TCP) }, finish);
+        fallback.on("error", reject);
+        fallback.setTimeout(TOOLHOST_TIMEOUT_MS, () => fallback.destroy(new Error("toolhost timeout")));
+        if (payload !== null) fallback.write(payload);
+        fallback.end();
+        return;
+      }
+      reject(error);
+    });
+    request.setTimeout(TOOLHOST_TIMEOUT_MS, () => request.destroy(new Error("toolhost timeout")));
+    if (payload !== null) request.write(payload);
+    request.end();
+  });
+}
+
+async function listApprovals() {
+  const { status, body } = await toolhostRequest("GET", "/approvals");
+  if (status !== 200) throw new Error(`toolhost approvals ${status}`);
+  return Array.isArray(body) ? body : (body?.approvals ?? []);
+}
+
+app.get("/api/approvals", handle(async (req, res) => {
+  if (!sameOwner(req)) {
+    return res.status(403).json({ error: "cross_origin_refused" });
+  }
+  res.json(await listApprovals());
+}));
+
+async function decideApproval(req, res, verb) {
+  if (!sameOwner(req)) {
+    return res.status(403).json({ error: "cross_origin_refused" });
+  }
+  const id = text(req.params.id, 128);
+  if (!id) return res.status(400).json({ error: "invalid_id" });
+  const by = typeof req.body?.by === "string" && req.body.by.trim() ? req.body.by.trim() : "web";
+  const { status, body } = await toolhostRequest("POST", `/approvals/${encodeURIComponent(id)}/${verb}`, { by });
+  if (status === 404) return res.status(404).json({ error: "no_such_approval" });
+  if (status !== 200) {
+    return res.status(502).json({ error: "toolhost_refused", detail: body ?? null });
+  }
+  res.json({ ok: true, approval: body });
+}
+
+app.post("/api/approvals/:id/approve", handle(async (req, res) => {
+  await decideApproval(req, res, "approve");
+}));
+
+app.post("/api/approvals/:id/deny", handle(async (req, res) => {
+  await decideApproval(req, res, "deny");
+}));
+
+/**
  * The background screen: a read-only window onto an APEX sub-agent's run.
  *
  * When the agent delegates desktop work, the run happens on a surface the
@@ -3258,6 +3572,19 @@ function phoneConfigPath() {
 function phoneDisplayPath() {
   const full = phoneConfigPath();
   return full.length > PHONE_MAX_PATH_LENGTH ? `${full.slice(0, PHONE_MAX_PATH_LENGTH)}…` : full;
+}
+
+// Same rule as core's `configFileExists`: an ENOENT is a fresh install,
+// and any other stat failure is "not first launch" rather than a verdict,
+// so a momentary read failure cannot bring back the setup screen.
+function phoneConfigFileExists() {
+  try {
+    fs.lstatSync(phoneConfigPath());
+    return true;
+  } catch (error) {
+    if (error && error.code === "ENOENT") return false;
+    return true;
+  }
 }
 
 function phoneText(value, max) {
@@ -3538,6 +3865,10 @@ function publicPhoneState(state) {
     messages: state.messages,
     configFile: phoneDisplayPath(),
     credentialSource: credential.source,
+    // The page cannot see the filesystem; this is the bridge's half of the
+    // first-launch rule. Without it the page falls back to "no answer yet",
+    // which reads as first launch on every load.
+    persisted: phoneConfigFileExists(),
   };
 }
 

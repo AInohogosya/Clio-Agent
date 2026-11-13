@@ -263,8 +263,14 @@ export function Composer({
         )}
         {/* The cap is enforced on code units, so the counter counts them too:
             a counter that counts columns would read "over" while a wide-char
-            draft is still accepted, and the other way round for ASCII. */}
-        <Text color={palette.inkFaint}>{`${input.length}/${MAX_TERMINAL_TEXT_LENGTH}`}</Text>
+            draft is still accepted, and the other way round for ASCII. Shown
+            only near the cap — a limit nobody is close to is not information,
+            and a row of it beside every draft is noise. */}
+        {input.length >= MAX_TERMINAL_TEXT_LENGTH * 0.7 ? (
+          <Text color={input.length >= MAX_TERMINAL_TEXT_LENGTH ? palette.warning : palette.inkFaint}>
+            {`${input.length}/${MAX_TERMINAL_TEXT_LENGTH}`}
+          </Text>
+        ) : null}
       </Box>
     </Box>
   );

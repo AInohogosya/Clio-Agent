@@ -115,7 +115,11 @@ export function publicSettingsEqual(left: Settings, right: Settings): boolean {
     && a.reasoningLevel === b.reasoningLevel
     && a.language === b.language
     && a.theme === b.theme
-    && a.accent === b.accent;
+    && a.accent === b.accent
+    && a.showTimestamps === b.showTimestamps
+    && a.density === b.density
+    && a.showSidebar === b.showSidebar
+    && a.enterToSend === b.enterToSend;
 }
 
 export function nextRevision(state: Pick<SharedState, 'revision'>): number {

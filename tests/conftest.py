@@ -277,6 +277,7 @@ class NoopControl:
         self.stopped = False
         self.emergency = False
         self.preview = False
+        self.safety_level = None
 
     async def wait_resume(self) -> None:
         await asyncio.sleep(3600)

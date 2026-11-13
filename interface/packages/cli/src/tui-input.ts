@@ -13,10 +13,10 @@ export type Translator = ReturnType<typeof createTranslator>;
  * conversation is two things competing for the same rows, and the transcript is
  * the thing a reader scrolls back through.
  */
-export type Screen = 'chat' | 'settings' | 'presence' | 'intentions' | 'actions' | 'thoughts' | 'budget' | 'guardian' | 'channels';
+export type Screen = 'chat' | 'settings' | 'presence' | 'intentions' | 'actions' | 'thoughts' | 'budget' | 'guardian' | 'channels' | 'approvals' | 'history' | 'apex';
 
 /** Every screen that is not the conversation, and so is left by the same key. */
-export const PANEL_SCREENS: readonly Screen[] = ['presence', 'intentions', 'actions', 'thoughts', 'budget', 'guardian', 'channels'];
+export const PANEL_SCREENS: readonly Screen[] = ['presence', 'intentions', 'actions', 'thoughts', 'budget', 'guardian', 'channels', 'approvals', 'history', 'apex'];
 
 export type Overlay = 'none' | 'help';
 
@@ -45,6 +45,8 @@ export interface ComposerState {
   settings: Settings;
   /** Whether the emergency stop is armed and waiting for its confirmation. */
   armed?: boolean;
+  /** The safety level the agent is running at, for the bare `/safety` report. */
+  safetyLevel?: number | null;
 }
 
 /** Everything a keystroke may change. */
@@ -69,6 +71,21 @@ export interface ComposerActions {
   agentControl?: (action: (typeof AGENT_CONTROL_ACTIONS)[number]) => void;
   agentUndo?: (id: string) => void;
   agentCancel?: (id: string) => void;
+  /**
+   * Approves or denies a command the guardian is holding for a person.
+   *
+   * The id may be the short form the approvals panel shows — resolved by
+   * prefix, and only when exactly one pending approval answers, the same rule
+   * `/undo` keeps.
+   */
+  agentApprove?: (id: string) => void;
+  agentDeny?: (id: string) => void;
+  /** Loads the past into the history panel: `/history [n]`, or `/find <text>`. */
+  agentHistory?: (argument: string, mode: 'page' | 'search') => void;
+  /** Reports which providers the agent's process holds an environment key for. */
+  agentKeys?: () => void;
+  /** Edits one door: `/door <n|door> <field> <value>`. */
+  agentDoor?: (argument: string) => void;
   /** Steps through the agent panels and back to the conversation. */
   cyclePanel?: (backwards: boolean) => void;
   /** Repoints the agent address. Validated by the kernel, which owns the rules. */
@@ -149,6 +166,34 @@ export const PREVIEW_WORDS: Record<string, 'preview_on' | 'preview_off'> = {
   off: 'preview_off',
 };
 
+/**
+ * The safety levels, as words rather than as a bare number.
+ *
+ * `/safety 4` is the spelling a reader reaches for; the control verbs the
+ * bridge takes are `safety_level_4` and `safety_level_reset`, so the table is
+ * the one place the two vocabularies meet. An empty argument is a real
+ * question — "which level is standing?" — and it is answered from the agent's
+ * own control state rather than from a guess.
+ */
+export function safetyAction(argument: string): (typeof AGENT_CONTROL_ACTIONS)[number] | null {
+  const word = argument.trim().toLowerCase();
+  if (!word) return null;
+  if (word === 'reset' || word === 'default') return 'safety_level_reset';
+  if (word === '1' || word === '2' || word === '3' || word === '4') {
+    return `safety_level_${word}` as (typeof AGENT_CONTROL_ACTIONS)[number];
+  }
+  return null;
+}
+
+/** How `/density`'s argument is spelled. A bare `/density` toggles instead. */
+export const DENSITY_WORDS: Record<string, 'comfortable' | 'compact'> = {
+  comfortable: 'comfortable',
+  compact: 'compact',
+  normal: 'comfortable',
+  cozy: 'comfortable',
+  tight: 'compact',
+};
+
 export interface DraftEdit {
   input: string;
   cursor: number;
@@ -179,6 +224,14 @@ export function deleteBefore(input: string, cursor: number): DraftEdit | null {
 export function nextAccent(accent: string, argument: string): string {
   if (/^#[0-9a-f]{6}$/i.test(argument)) return argument.toUpperCase();
   return accentStep(accent, 1);
+}
+
+/** The word a toggle command takes, or `null` when the argument is not one. */
+export function toggleWord(argument: string): 'on' | 'off' | null {
+  const word = argument.trim().toLowerCase();
+  if (word === 'on' || word === 'true' || word === '1') return 'on';
+  if (word === 'off' || word === 'false' || word === '0') return 'off';
+  return null;
 }
 
 /**
@@ -245,6 +298,28 @@ export function runCommand(message: string, state: ComposerState, actions: Compo
     case 'accent':
       actions.patchSettings({ accent: nextAccent(state.settings.accent, argument) });
       return true;
+    case 'density': {
+      const word = argument ? DENSITY_WORDS[argument.trim().toLowerCase()] : null;
+      const next = word ?? (state.settings.density === 'comfortable' ? 'compact' : 'comfortable');
+      actions.patchSettings({ density: next });
+      actions.say(actions.t('cliDensityChanged', { density: actions.t(next === 'compact' ? 'densityCompact' : 'densityComfortable') }), 'accent');
+      return true;
+    }
+    case 'timestamps':
+    case 'timestamp': {
+      const word = toggleWord(argument);
+      const next = word ? word === 'on' : !state.settings.showTimestamps;
+      actions.patchSettings({ showTimestamps: next });
+      actions.say(actions.t('cliTimestampsChanged', { state: actions.t(next ? 'on' : 'off') }), 'accent');
+      return true;
+    }
+    case 'sidebar': {
+      const word = toggleWord(argument);
+      const next = word ? word === 'on' : !state.settings.showSidebar;
+      actions.patchSettings({ showSidebar: next });
+      actions.say(actions.t('cliSidebarChanged', { state: actions.t(next ? 'on' : 'off') }), 'accent');
+      return true;
+    }
     case 'send':
       if (argument) actions.submit(argument);
       return true;
@@ -397,6 +472,91 @@ export function runCommand(message: string, state: ComposerState, actions: Compo
       return true;
     }
     if (argument) actions.agentCancel(argument);
+    return true;
+  }
+  if (name === 'approvals' || name === 'pending') {
+    if (!actions.agentApprove) {
+      actions.say(actions.t('interfaceDirectHint'), 'warning');
+      return true;
+    }
+    actions.setScreen('approvals');
+    return true;
+  }
+  if (name === 'approve' || name === 'deny') {
+    if (!actions.agentApprove) {
+      actions.say(actions.t('interfaceDirectHint'), 'warning');
+      return true;
+    }
+    if (!argument) {
+      actions.setScreen('approvals');
+      actions.say(actions.t('cliApprovalHint'), 'accent');
+      return true;
+    }
+    if (name === 'approve') actions.agentApprove(argument);
+    else actions.agentDeny?.(argument);
+    return true;
+  }
+  if (name === 'safety') {
+    if (!actions.agentControl) {
+      actions.say(actions.t('interfaceDirectHint'), 'warning');
+      return true;
+    }
+    if (!argument) {
+      const level = state.safetyLevel;
+      actions.say(level === null || level === undefined
+        ? actions.t('cliSafetyUnset')
+        : actions.t('cliSafetyCurrent', { level: String(level) }), 'accent');
+      return true;
+    }
+    const action = safetyAction(argument);
+    if (!action) {
+      actions.say(actions.t('cliSafetyUsage'), 'warning');
+      return true;
+    }
+    actions.agentControl(action);
+    return true;
+  }
+  if (name === 'history' || name === 'older') {
+    if (!actions.agentHistory) {
+      actions.say(actions.t('interfaceDirectHint'), 'warning');
+      return true;
+    }
+    actions.setScreen('history');
+    void actions.agentHistory(argument, 'page');
+    return true;
+  }
+  if (name === 'find' || name === 'search') {
+    if (!actions.agentHistory) {
+      actions.say(actions.t('interfaceDirectHint'), 'warning');
+      return true;
+    }
+    if (!argument) {
+      actions.say(actions.t('cliFindUsage'), 'warning');
+      return true;
+    }
+    actions.setScreen('history');
+    void actions.agentHistory(argument, 'search');
+    return true;
+  }
+  if (name === 'keys') {
+    if (!actions.agentKeys) {
+      actions.say(actions.t('interfaceDirectHint'), 'warning');
+      return true;
+    }
+    actions.setScreen('approvals');
+    actions.agentKeys();
+    return true;
+  }
+  if (name === 'door' || name === 'channel-set') {
+    if (!actions.agentDoor) {
+      actions.say(actions.t('interfaceDirectHint'), 'warning');
+      return true;
+    }
+    void actions.agentDoor(argument);
+    return true;
+  }
+  if (name === 'apex' || name === 'screen') {
+    actions.setScreen('apex');
     return true;
   }
 

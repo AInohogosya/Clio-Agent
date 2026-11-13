@@ -110,7 +110,9 @@ class ShellRunTool(Tool):
         "Run a shell command and return stdout/stderr. Dangerous commands pass "
         "through the guardian gate (fast-path trash, snapshots, audit). Runs with "
         "the same filesystem permissions as the user who started the agent, and "
-        "relative paths are relative to their home directory."
+        "relative paths are relative to their home directory. Gate chains on "
+        "exit codes with `&&`, never `; echo EXIT:$?` — the echo masks a "
+        "failing command as success (2026-11-08)."
     )
     timeout_s = 300.0
     input_schema = {

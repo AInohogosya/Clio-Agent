@@ -137,6 +137,7 @@ class GuardianGate:
         control: Any = None,
         leases: Any = None,
         tool_manifests: Any = None,
+        approvals: Any = None,
     ):
         self.config = config
         self.registry = registry
@@ -145,11 +146,9 @@ class GuardianGate:
         self.audit = audit
         self.verifier = verifier
         self.control = control
-        # WorkspaceLease registry (ethos.threads.context.WorkspaceLeaseManager)
-        # and the toolshed manifest table. Both are optional so existing
-        # constructions keep working.
         self.leases = leases
         self.tool_manifests = tool_manifests
+        self.approvals = approvals
 
     def _lease_for(self, intention_id: str | None) -> Any | None:
         if self.leases is None or not intention_id:
@@ -273,6 +272,7 @@ class GuardianGate:
         intention_id: str | None = None,
         commissioned_by: str | None = None,
         thread_id: str = "self",
+        inside_subagent: str | None = None,
     ) -> GateDecision:
         """
         There is no `home_dir` here, and its absence is the policy.
@@ -316,6 +316,26 @@ class GuardianGate:
                 "preview mode is on: this agent may only talk, so no tool runs. "
                 "Turn preview mode off in settings to let it act.",
             )
+
+        from ethos.guardian.safety import (
+            DIALOGUE_REJECT,
+            DIALOGUE_REQUIRE_APPROVAL,
+            effective_level,
+            host_allowlisted,
+        )
+        from ethos.guardian.safety import (
+            decide as safety_decide,
+        )
+
+        level = effective_level(self.config, self.control)
+        decision_safety = safety_decide(level, tool, args, inside_subagent=inside_subagent)
+        if decision_safety.action == DIALOGUE_REJECT:
+            await self.audit.append(
+                actor=thread_id, category="guardian",
+                summary=f"action blocked by safety level {level}: {tool}",
+                details={"tool": tool, "reason": decision_safety.reason, "args": _redacted(args)},
+            )
+            return GateDecision(Verdict.REJECT, GatePath.BLOCKED, decision_safety.reason)
 
         effects = classify_tool(tool, args)
         if "blocked" in effects.categories:
@@ -370,6 +390,35 @@ class GuardianGate:
         if lease_decision is not None:
             return lease_decision
 
+        if decision_safety.action == DIALOGUE_REQUIRE_APPROVAL:
+            # The allowlist waiver comes before the wait. Levels 2-3 stop
+            # network commands for a human click, and a step that only reads
+            # a host the owner named in `permissions.network.allowed_hosts`
+            # has already been approved -- once, on purpose, in writing.
+            # Waiting hours for a click on a pre-approved host is how a
+            # research step becomes a parked goal. Shell commands never
+            # qualify: `host_allowlisted` answers only for tools whose URL
+            # the gate can read before execution.
+            allowed_hosts = list(
+                getattr(self.config.permissions, "network", None) and getattr(
+                    self.config.permissions.network, "allowed_hosts", None
+                ) or []
+            )
+            if allowed_hosts and host_allowlisted(tool, args, allowed_hosts):
+                await self.audit.append(
+                    actor=thread_id, category="guardian",
+                    summary=f"allowlisted host, approval waived: {tool}",
+                    details={"tool": tool, "args": _redacted(args)},
+                )
+            else:
+                approval = await self._await_approval(
+                    tool, args, reason=reason, intention_id=intention_id,
+                    thread_id=thread_id, level=level, inside_subagent=inside_subagent,
+                    decision_reason=decision_safety.reason,
+                )
+                if approval is not None:
+                    return approval
+
         if effects.is_destructive():
             return await self._review_destructive(
                 tool, args, effects, reason=reason, intention_id=intention_id,
@@ -387,6 +436,57 @@ class GuardianGate:
                 logger.exception("gate.auto_register_failed")
 
         return GateDecision(Verdict.ALLOW, GatePath.NORMAL, "no guardian concern")
+
+    async def _await_approval(
+        self,
+        tool: str,
+        args: dict[str, Any],
+        *,
+        reason: str,
+        intention_id: str | None,
+        thread_id: str,
+        level: int,
+        inside_subagent: str | None,
+        decision_reason: str,
+    ) -> GateDecision | None:
+        manager = self.approvals
+        if manager is None:
+            await self.audit.append(
+                actor=thread_id, category="guardian",
+                summary=f"action blocked: manual approval required but no approval channel ({tool})",
+                details={"tool": tool, "reason": decision_reason, "args": _redacted(args)},
+            )
+            return GateDecision(
+                Verdict.REJECT, GatePath.BLOCKED,
+                f"{decision_reason}; no approval channel is available, so the command did not run",
+            )
+        timeout_s = float(getattr(self.config.permissions, "approval_timeout_s", 300.0) or 300.0)
+        request = await manager.request_and_wait(
+            tool,
+            _redacted(args),
+            reason=f"{reason} ({decision_reason})",
+            thread_id=thread_id,
+            intention_id=intention_id,
+            safety_level=level,
+            inside_subagent=inside_subagent,
+            timeout_s=timeout_s,
+        )
+        if request.status == "approved":
+            await self.audit.append(
+                actor=thread_id, category="guardian",
+                summary=f"approved manually: {tool}",
+                details={"approval_id": request.id, "decided_by": request.decided_by, "args": _redacted(args)},
+            )
+            return None
+        await self.audit.append(
+            actor=thread_id, category="guardian",
+            summary=f"action blocked: manual approval {request.status} ({tool})",
+            details={"approval_id": request.id, "status": request.status, "args": _redacted(args)},
+        )
+        return GateDecision(
+            Verdict.REJECT, GatePath.BLOCKED,
+            f"manual approval {request.status}: {decision_reason}; the command did not run",
+        )
 
     async def _check_money(
         self, money: float, tool: str, args: dict[str, Any],

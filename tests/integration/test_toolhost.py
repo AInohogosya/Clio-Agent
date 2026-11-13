@@ -29,6 +29,7 @@ async def harness(db, config, tmp_path: Path):
     config = make_config(tmp_path)
     config.paths.ensure()
     config.permissions.network.deny_private_ranges = False
+    config.permissions.safety_level = 4
     memory = MemoryStore(db, HashingEmbedder(1024), config)
     trash = TrashStore(tmp_path / "trash")
     journal = ActionJournal(file_path=tmp_path / "journal.jsonl")

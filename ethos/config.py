@@ -706,6 +706,17 @@ class SocialConfig(BaseModel):
     # Positive numbers restore the old ceilings.
     max_deliberation_attempts: int = 0
     max_transient_attempts: int = 0
+    # Proactive reporting: the agent may open the conversation to share
+    # progress on work somebody commissioned, without being asked.
+    # `proactive_enabled` is the total switch; the per-person verbosity
+    # (quiet / balanced / detailed, persisted in people.preferences) sets
+    # how soon after real progress a check may consider speaking, and how
+    # much the words carry. Freedom is kept: a check that finds nothing
+    # worth saying sends nothing, and the model may always decline to
+    # compose a note. Set false to keep the old shape — only replies and
+    # terminal stage notices.
+    proactive_enabled: bool = True
+    proactive_progress_interval_min: float = 15.0
 
 
 class RetrievalWeights(BaseModel):
@@ -1192,8 +1203,23 @@ class HardLimitsConfig(BaseModel):
     model_config = {"extra": "allow"}
 
     H1_oversight_supremacy: bool = True
-    H2_daily_spend_usd: float = 20.0
-    H2_monthly_spend_usd: float = 400.0
+    # Multi-window spend caps. Each window is individually enableable:
+    #   * `None` (the default) disables that window entirely, and
+    #   * a positive number enables it with that cap.
+    # Windows are: per-minute, per-10-minutes, per-hour, per-5-hours, daily,
+    # and monthly. Sub-daily windows are trailing (sliding) windows; daily and
+    # monthly are calendar windows (UTC, see `ethos.gateway.cost.start_of_day`).
+    # `budget_unit` decides what the numbers mean: `"usd"` for API usage cost
+    # in dollars, or `"tokens"` for token count. Switching the unit switches
+    # every enabled window at once. Legacy files that still set the two daily
+    # USD keys keep working: a set value enables that window.
+    budget_unit: str = "usd"
+    H2_per_minute_limit: float | None = None
+    H2_per_10_minutes_limit: float | None = None
+    H2_per_hour_limit: float | None = None
+    H2_per_5_hours_limit: float | None = None
+    H2_daily_spend_usd: float | None = None
+    H2_monthly_spend_usd: float | None = None
     H2_capital_at_risk_usd: float = 100.0
     money_threshold_usd: float = 5.0
     H3_law_and_non_harm: bool = True
@@ -1207,6 +1233,46 @@ class HardLimitsConfig(BaseModel):
     # `ETHOS_BUDGET_MODE` overrides the file.
     on_exceed: str = "block"
 
+    @field_validator("budget_unit")
+    @classmethod
+    def _budget_unit_known(cls, value: str) -> str:
+        unit = (value or "usd").strip().lower()
+        if unit not in ("usd", "tokens"):
+            raise ValueError("budget_unit must be 'usd' or 'tokens'")
+        return unit
+
+    @field_validator(
+        "H2_per_minute_limit", "H2_per_10_minutes_limit",
+        "H2_per_hour_limit", "H2_per_5_hours_limit",
+        "H2_daily_spend_usd", "H2_monthly_spend_usd",
+    )
+    @classmethod
+    def _cap_must_be_positive(cls, value: float | None) -> float | None:
+        if value is None:
+            return None
+        numeric = float(value)
+        if numeric <= 0:
+            return None
+        return numeric
+
+    def spend_limits(self) -> dict[str, float | None]:
+        """Every window cap, with `None` meaning that window is disabled."""
+        return {
+            "per_minute": self.H2_per_minute_limit,
+            "per_10_minutes": self.H2_per_10_minutes_limit,
+            "per_hour": self.H2_per_hour_limit,
+            "per_5_hours": self.H2_per_5_hours_limit,
+            "daily": self.H2_daily_spend_usd,
+            "monthly": self.H2_monthly_spend_usd,
+        }
+
+    def enabled_limits(self) -> dict[str, float]:
+        """Only the windows that are actually enforcing a cap right now."""
+        return {
+            window: cap for window, cap in self.spend_limits().items()
+            if cap is not None and cap > 0
+        }
+
 
 class PermissionsConfig(BaseModel):
     sudo_allowed: bool = True
@@ -1215,6 +1281,15 @@ class PermissionsConfig(BaseModel):
     interruption: InterruptionConfig = InterruptionConfig()
     guardian: GuardianConfig = GuardianConfig()
     hard_limits: HardLimitsConfig = HardLimitsConfig()
+    safety_level: int = 3
+    approval_timeout_s: float = 300.0
+
+    @field_validator("safety_level")
+    @classmethod
+    def _safety_level_in_range(cls, value: int) -> int:
+        if value not in (1, 2, 3, 4):
+            raise ValueError("safety_level must be 1, 2, 3 or 4")
+        return value
 
 
 class CliChannelConfig(BaseModel):

@@ -327,4 +327,7 @@ class Outcome(BaseModel):
     # what decides what the next cycle works on. A commission that was announced in
     # this cycle's reply and dropped before then is a promise the agent walked away
     # from having made it.
-    commission: dict[str, str] | None = None
+    # Values are `Any`, not `str`, because the commission also carries
+    # `sequenced` (bool): whether the message sequenced this work behind work
+    # in hand. A `str` value coerces that flag to a string or rejects it.
+    commission: dict[str, Any] | None = None

@@ -102,6 +102,8 @@ export interface DuplexController extends AgentLinkController {
    */
   readDoors: () => Promise<AgentChannelSetup | null>;
   saveDoor: (write: AgentDoorWrite) => Promise<AgentChannelSetup>;
+  readAgentConfig: () => Promise<Record<string, string | number | boolean | null> | null>;
+  saveAgentConfig: (values: Record<string, string | number | boolean | null>) => Promise<Record<string, string | number | boolean | null>>;
   /**
    * Whether a launch opens on the provider and LLM settings rather than
    * the chat: the configuration file does not exist yet, or it names no
@@ -434,6 +436,16 @@ export function useDuplex(): DuplexController {
     [agent, agentLink],
   );
 
+  const readAgentConfig = useCallback(
+    () => withAgent(null, (linked) => linked.readAgentConfig()),
+    [withAgent],
+  );
+  const saveAgentConfig = useCallback(
+    (values: Record<string, string | number | boolean | null>) =>
+      writeThrough((linked) => linked.saveAgentConfig(values)),
+    [writeThrough],
+  );
+
   return useMemo(() => ({
     ...agentLink,
     client,
@@ -460,11 +472,13 @@ export function useDuplex(): DuplexController {
     clearIdentity,
     readDoors,
     saveDoor,
+    readAgentConfig,
+    saveAgentConfig,
   }), [
     agentLink, client, snapshot, surface, bridgeStatus, remote, lastSyncedAt,
     sendMessage, interrupt, clearConversation, updateSettings, discoverModels,
     readEnvApiKeys, readBaseModel, saveBaseModel, readIdentity, saveIdentity, clearIdentity,
-    readDoors, saveDoor,
+    readDoors, saveDoor, readAgentConfig, saveAgentConfig,
   ]);
 }
 

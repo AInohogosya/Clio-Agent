@@ -113,6 +113,15 @@ So:
 - Set `deadline_iso` only when a real date was named or implied. Otherwise null.
 - If a question has to be answered before any of the work can start, use `ask_clarification`,
   put the question in `reply_texts`, and leave `creates_intention` false until it is answered.
+- Prefer asking over inventing. If the request names no way to tell "done" from "attempted" --
+  no observable end state, no target, no acceptance the person could check -- and you cannot
+  derive one from the message itself, ask for it with `ask_clarification` instead of
+  commissioning an untestable goal. A commission that arrives with invented criteria is the
+  goal that parks: the solver builds to the criteria it invented, verification honestly fails
+  them, and the person hears "I'll do it" followed by silence. One clarifying turn is cheaper
+  than every one of those parks. This does not undo the rule above it: work the message
+  already makes checkable ("fix the crash when opening X", "make `pytest` pass") is still
+  commissioned this turn, without asking anything.
 - Do not create intentions out of conversation. Thanks, greetings, opinions, speculation and
   small talk are not work, however they are answered.
 - {name} has these tools, and they are real: {tools}
@@ -204,6 +213,11 @@ the parts genuinely stand alone — an answer and a follow-up thought, or a note
 work has started and the answer itself — and keep each one short; lines that belong
 together belong in one entry. Zero messages is fine when the action is silence or a
 question left for later.
+
+Reporting preference for this person:
+{verbosity_note}
+
+You may speak first to report progress or a small achievement, in this person's preferred amount. That is not a duty every cycle — it is a liberty to exercise when something meaningful happened and they have not yet heard it. Never invent progress: a note is only worth sending when the execution state backs it, and staying silent is always available when nothing changed. When in doubt, wait.
 
 How the words themselves are written, and this is the same rule {name} holds
 everywhere: short by default, exactly as long as the work requires. One sentence when
@@ -359,6 +373,55 @@ def stage_notice_messages(
     ]
 
 
+PROGRESS_NOTE_SYSTEM = """You are {name}, about to share a small progress update on work somebody asked for.
+
+{nobody_wrote} They did not ask for this update just now — you are speaking first because something meaningful moved and this person has said they want to hear about that. That is a liberty, not an obligation: if what follows is not worth interrupting them for, return an empty `text`.
+
+{progress_block}
+
+{verbosity_note}
+
+Rules for the message itself, all human ones:
+- Say what moved in plain words: what you did, what it produced, where to find it if there is a file. Do not narrate tools, steps, or checks unless the person asked for detail.
+- A small achievement is allowed to sound like one. A finished build that runs is worth more than "the task has been updated".
+- Keep it short for balanced, one line for quiet, and substantive for detailed (name files, what changed, what you verified, what is next). Never pad.
+- Do not apologise for speaking, do not ask for approval, and do not promise anything the record does not back.
+
+Respond with strict JSON only:
+{{"text": "..." or ""}}"""
+
+
+def progress_note_messages(
+    self_name: str,
+    *,
+    title: str,
+    progress: str,
+    who: str | None,
+    verbosity_note: str = "",
+    preview: bool = False,
+    lineage: str = AGENT_LINEAGE,
+) -> list[dict[str, str]]:
+    progress_block = (
+        f"## What moved\n- Work: {title or '(untitled)'}\n"
+        f"- Progress: {progress or '(nothing recorded)'}\n"
+    )
+    nobody_wrote = (
+        f"You are writing to {who}." if who
+        else "You are writing to the person who asked for this work."
+    )
+    system = PROGRESS_NOTE_SYSTEM.format(
+        name=self_name,
+        nobody_wrote=nobody_wrote,
+        progress_block=progress_block,
+        verbosity_note=verbosity_note or "Share a few sentences in your own words.",
+        cross_talk=cross_talk_note(preview=preview),
+    )
+    return [
+        {"role": "system", "content": system},
+        {"role": "user", "content": "Write the message now. Respond with the JSON object only."},
+    ]
+
+
 IGNORE_STREAK_REVIEW = """{name} has ignored {person} {n} times in a row. Reasons so far: {reasons}.
 The message {name} is about to stay silent on now reads:
 
@@ -448,7 +511,11 @@ def execution_state_block(
         lines.append(
             "- Open work and its last recorded action — this is what says whether "
             "it started. The journal window above is short, so an empty journal "
-            "does not mean the work never started:"
+            "does not mean the work never started. Each line is that "
+            "intention's own journal row: if a line gives a last action, that "
+            "work has started — do not say it has not started, and do not "
+            "infer from the conversation that a follow-up task has not begun "
+            "because an earlier one is unfinished:"
         )
         lines.extend(f"  - {line}" for line in progress)
     else:
@@ -504,11 +571,17 @@ def social_deliberation_messages(
     execution_state: str = "",
     preview: bool = False,
     lineage: str = AGENT_LINEAGE,
+    verbosity_note: str = "",
 ) -> list[dict[str, str]]:
     system = SOCIAL_DELIBERATION_SYSTEM.format(
         name=self_name,
         name_note=DELIBERATION_NAME_NOTE.format(name=self_name, lineage=lineage),
         autonomy_note=DELIBERATION_AUTONOMY_NOTE.format(name=self_name),
+        verbosity_note=verbosity_note or (
+            "This person wants a balanced, human amount of reporting. Share "
+            "proactive progress notes when something meaningful happened, and "
+            "always report when work finishes or stops."
+        ),
         focus=focus or "(none)",
         now=now,
         energy=f"{energy:.2f}",

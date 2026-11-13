@@ -35,6 +35,11 @@ const CONTROL_LABELS: Record<AgentControlAction, Parameters<ReturnType<typeof cr
   // without saying which way it went.
   preview_on: 'controlPreviewOn',
   preview_off: 'controlPreviewOff',
+  safety_level_1: 'controlSafetyLevel1',
+  safety_level_2: 'controlSafetyLevel2',
+  safety_level_3: 'controlSafetyLevel3',
+  safety_level_4: 'controlSafetyLevel4',
+  safety_level_reset: 'controlSafetyLevelReset',
 };
 
 export function controlLabel(action: AgentControlAction, t: ReturnType<typeof createTranslator>): string {

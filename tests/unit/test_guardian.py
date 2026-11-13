@@ -471,6 +471,7 @@ async def test_preview_off_changes_nothing_about_an_ordinary_action(gate: Guardi
 
 def _field_gate(config, tmp_path: Path, **kwargs) -> GuardianGate:
     config.permissions.guardian.mode = "field"
+    config.permissions.safety_level = 4
     kwargs.setdefault("registry", FakeRegistry())
     kwargs.setdefault("trash", TrashStore(tmp_path / "t-field"))
     kwargs.setdefault("snapshots", NoopSnapshots())

@@ -12,6 +12,7 @@ from ethos.gateway.service import format_wait, rate_limit_wait_for_attempt
 from ethos.observability.logger import get_logger
 from ethos.prompts.deliberation import (
     execution_state_block,
+    progress_note_messages,
     social_deliberation_messages,
     stage_notice_messages,
     streak_review_messages,
@@ -26,6 +27,12 @@ from ethos.schemas.messages import (
     sender_label,
 )
 from ethos.schemas.models import ModelMessage, ModelRequest, Role, Tier
+from ethos.social.verbosity import (
+    DEFAULT_VERBOSITY,
+    detect_verbosity_request,
+    normalise_verbosity,
+    verbosity_note,
+)
 
 logger = get_logger("ethos.social")
 
@@ -391,6 +398,71 @@ def claims_work_is_underway(text: str) -> bool:
     return bool(_ONGOING_WORK.search(text or ""))
 
 
+# Sentences that assert work has *not* begun ("I haven't started the Helium
+# review", "not yet started"). The mirror image of the underway guardrail:
+# the overclaiming guard checks a present-tense claim against the journal,
+# and a not-started claim is equally a claim about the journal — and equally
+# capable of being false, as the 2026-11-09 transcript showed: the reply
+# said the Helium review had not started while it was the current focus
+# with 86 journaled actions, because the reply snapshot could not see it.
+_NOT_STARTED_RE = re.compile(
+    r"\b(?:haven't|have\s+not|hasn't|has\s+not|hadn't|had\s+not|never)\s+"
+    r"(?:yet\s+)?(?:started|begun|done\s+anything|touched|looked\s+at)\b"
+    r"|\bnot\s+(?:yet\s+)?(?:started|begun)\b"
+    r"|\bhaven't\s+done\s+anything\b",
+    re.IGNORECASE,
+)
+
+_NOT_STARTED_STOPWORDS = frozenset({
+    "about", "after", "agent", "build", "coding", "desktop", "directly",
+    "folder", "going", "haven", "review", "started", "task", "terminal",
+    "that", "their", "there", "this", "with", "work",
+})
+
+
+def claims_work_not_started(text: str) -> bool:
+    """Whether a reply asserts that some work has not begun."""
+    return bool(_NOT_STARTED_RE.search(text or ""))
+
+
+def _started_progress_titles(progress: list[str]) -> list[str]:
+    """Titles of open work whose own journal row says it has started.
+
+    Progress lines are rendered by `_open_work_progress` as
+    `[status] Title: last action ...`; a line saying "no action recorded"
+    is the never-started case and is not returned.
+    """
+    titles: list[str] = []
+    for line in progress or []:
+        if "last action" not in line or "] " not in line:
+            continue
+        title = line.split("] ", 1)[1].split(":", 1)[0].strip()
+        if title:
+            titles.append(title)
+    return titles
+
+
+def _names_started_work(text: str, progress: list[str]) -> bool:
+    """Whether a reply names open work that its journal row says started.
+
+    Matching is on distinctive title tokens (not stopwords), so "haven't
+    started the Helium review" is checked against a started
+    "Review the Helium folder…" line via `helium`, while a claim about a
+    different, genuinely unstarted task is not withheld on the strength of
+    unrelated started work.
+    """
+    lowered = (text or "").lower()
+    for title in _started_progress_titles(progress):
+        tokens = {
+            token
+            for token in re.findall(r"[a-z0-9]+", title.lower())
+            if len(token) >= 4 and token not in _NOT_STARTED_STOPWORDS
+        }
+        if any(token in lowered for token in tokens):
+            return True
+    return False
+
+
 class SocialCognition:
     """Social deliberation for the Self [Section 12].
 
@@ -484,6 +556,18 @@ class SocialCognition:
         recent = await self._recent_conversation(message)
         commitments = await self._open_commitments()
         state = await self._execution_state(focus_title)
+        # Communication verbosity: a person's own instruction ("report more",
+        # "don't report so much") is a standing preference, persisted
+        # per-person and rendered into the prompt. Freedom is kept — the
+        # note frames a liberty with evidence, not a quota.
+        verbosity_level = await self.get_verbosity(message.person_id)
+        requested = detect_verbosity_request(message.text)
+        if requested is not None and message.person_id:
+            await self.set_verbosity(message.person_id, requested)
+            verbosity_level = requested
+            logger.info(
+                "social.verbosity_set", person=message.person_id, level=requested,
+            )
         prompt_messages = social_deliberation_messages(
             self_name=name,
             message=message,
@@ -497,6 +581,7 @@ class SocialCognition:
                 name, float(self.config.social.execution_state_delegation_window_h),
             ),
             preview=preview,
+            verbosity_note=verbosity_note(verbosity_level),
         )
         data, cut_off, ceiling, failure, user_action = await self._ask(prompt_messages, tier, consequential)
         if failure is not None:
@@ -649,19 +734,35 @@ class SocialCognition:
         delegations, delegation_names = await self._delegation_state(window)
         blocked = await self._blocked_work(focus_title)
         stages = await self._finished_work()
-        progress = await self._open_work_progress()
+        progress = await self._open_work_progress(focus_title)
         return _ExecutionState(
             True, journaled, blocked, window, stages, delegations, delegation_names,
             progress,
         )
 
-    async def _open_work_progress(self) -> list[str]:
+    async def _open_work_progress(self, focus_title: str | None = None) -> list[str]:
         """Open work with its last recorded action, not just the last 15 minutes.
 
         The journal window is deliberately short, and reading its silence as
         "this never started" was the failure: a task whose last action was forty
         minutes ago is stalled, not unborn. This line keeps the distinction the
         reply needs, from the intention and its own journal rows.
+
+        The current focus is listed first, always. It used to be passed only to
+        `_blocked_work`, which returns nothing unless the work is parked or
+        planning-failed — so the one intention the agent was actually working
+        on was the one intention the reply prompt never named, and a reply
+        asked about it had to infer its state from the conversation instead
+        (2026-11-09: "haven't started the Helium review" while Helium review
+        was the focus and had 86 journaled actions). The per-intention
+        subqueries below are also what make "started" answerable for work
+        far outside the journal window: each line is that intention's own
+        last journal row, not a global recency guess.
+
+        GSL child tasks (`proposed` rows with a parent) are excluded: they
+        outranked real commitments on priority (0.6 vs 0.5) and crowded
+        every commitment out of the top-`limit` rows, which is how the
+        focus went missing in the first place.
         """
         if self.db is None:
             return []
@@ -681,6 +782,7 @@ class SocialCognition:
                 " AS last_status "
                 "FROM intentions i WHERE i.status IN "
                 "('proposed','active','in_progress','waiting','awaiting_review') "
+                "AND NOT (i.status = 'proposed' AND i.parent_id IS NOT NULL) "
                 "ORDER BY i.priority DESC NULLS LAST, i.updated_at DESC LIMIT $1",
                 limit,
             )
@@ -689,7 +791,8 @@ class SocialCognition:
             return []
         lines: list[str] = []
         now = datetime.now(UTC)
-        for row in rows:
+        focus_index: int | None = None
+        for row in rows or []:
             title = str(row["title"] or "")[:120]
             status = str(row["status"] or "")
             last_action = row["last_action"]
@@ -698,34 +801,81 @@ class SocialCognition:
                     age = _human_age(now - row["created_at"])
                 except (TypeError, ValueError):
                     age = "unknown"
-                lines.append(
+                line = (
                     f"[{status}] {title}: no action recorded since it was created {age} ago"
                 )
-                continue
-            try:
-                age = _human_age(now - last_action)
-            except (TypeError, ValueError):
-                age = "unknown"
-            line = (
-                f"[{status}] {title}: last action {row['last_tool'] or 'unknown'} "
-                f"({row['last_status'] or 'unknown'}) {age} ago"
-            )
-            resume = row["resume_state"]
-            if isinstance(resume, str):
+            else:
                 try:
-                    resume = json.loads(resume)
-                except ValueError:
-                    resume = {}
-            steps = ((resume or {}).get("plan") or {}).get("steps") or []
-            for step in steps:
-                if not isinstance(step, dict) or step.get("status") == "done":
-                    continue
-                step_id = str(step.get("id") or "")
-                description = " ".join(str(step.get("description") or "").split())[:100]
-                if description:
-                    line += f"; current step {step_id}: {description}"
-                break
+                    age = _human_age(now - last_action)
+                except (TypeError, ValueError):
+                    age = "unknown"
+                line = (
+                    f"[{status}] {title}: last action {row['last_tool'] or 'unknown'} "
+                    f"({row['last_status'] or 'unknown'}) {age} ago"
+                )
+                resume = row["resume_state"]
+                if isinstance(resume, str):
+                    try:
+                        resume = json.loads(resume)
+                    except ValueError:
+                        resume = {}
+                steps = ((resume or {}).get("plan") or {}).get("steps") or []
+                for step in steps:
+                    if not isinstance(step, dict) or step.get("status") == "done":
+                        continue
+                    step_id = str(step.get("id") or "")
+                    description = " ".join(str(step.get("description") or "").split())[:100]
+                    if description:
+                        line += f"; current step {step_id}: {description}"
+                    break
+            if focus_title and title == focus_title:
+                focus_index = len(lines)
+                line += "; this is the current focus"
             lines.append(line)
+        if focus_title and focus_index is None:
+            # The focus fell outside the top-`limit` rows (or was filtered):
+            # fetch it by title so the reply still names what is being worked
+            # on. Best-effort — a failed lookup must not cost the whole list.
+            try:
+                focus_rows = await self.db.fetch(
+                    "SELECT title, status, created_at, resume_state, "
+                    "(SELECT max(j.ts_start) FROM action_journal j "
+                    " WHERE j.intention_id = i.id) AS last_action, "
+                    "(SELECT j.tool FROM action_journal j "
+                    " WHERE j.intention_id = i.id ORDER BY j.ts_start DESC LIMIT 1) "
+                    " AS last_tool, "
+                    "(SELECT j.status FROM action_journal j "
+                    " WHERE j.intention_id = i.id ORDER BY j.ts_start DESC LIMIT 1) "
+                    " AS last_status "
+                    "FROM intentions i WHERE i.title = $1 AND i.status IN "
+                    "('proposed','active','in_progress','waiting','awaiting_review') "
+                    "ORDER BY i.updated_at DESC LIMIT 1",
+                    focus_title,
+                )
+            except Exception:
+                focus_rows = []
+            for row in focus_rows or []:
+                last_action = row["last_action"]
+                if last_action is None:
+                    line = (
+                        f"[{row['status']}] {row['title']}: no action recorded "
+                        f"since it was created; this is the current focus"
+                    )
+                else:
+                    try:
+                        age = _human_age(now - last_action)
+                    except (TypeError, ValueError):
+                        age = "unknown"
+                    line = (
+                        f"[{row['status']}] {row['title']}: last action "
+                        f"{row['last_tool'] or 'unknown'} "
+                        f"({row['last_status'] or 'unknown'}) {age} ago; "
+                        f"this is the current focus"
+                    )
+                lines.insert(0, line)
+                break
+        elif focus_index is not None and focus_index > 0:
+            lines.insert(0, lines.pop(focus_index))
         return lines[:limit]
 
     async def _delegation_state(
@@ -958,7 +1108,10 @@ class SocialCognition:
         """
         if not state.readable:
             return
-        texts = [text for text in decision.reply_texts if claims_work_is_underway(text)]
+        texts = [
+            text for text in decision.reply_texts
+            if claims_work_is_underway(text) or claims_work_not_started(text)
+        ]
         if not texts:
             return
         # A claim that names a sub-agent is checkable in a way a claim about
@@ -976,9 +1129,18 @@ class SocialCognition:
         kept_delays = list(decision.reply_delays_s)
         withheld_named = 0
         withheld_general = 0
+        withheld_not_started = 0
 
         def _unearned(text: str) -> bool:
-            nonlocal withheld_named, withheld_general
+            nonlocal withheld_named, withheld_general, withheld_not_started
+            # A not-started claim about work whose own journal row shows
+            # actions is unearned in the other direction: the per-intention
+            # progress line is the evidence, and it says the work started.
+            if claims_work_not_started(text) and _names_started_work(text, state.progress):
+                withheld_not_started += 1
+                return True
+            if not claims_work_is_underway(text):
+                return False
             named = subagents_named(text)
             if named:
                 if named <= state.delegation_names:
@@ -1000,10 +1162,15 @@ class SocialCognition:
         ]
         kept = [text for text, _ in kept_with_delays]
         kept_delays = [delay for _, delay in kept_with_delays]
-        withheld = withheld_named + withheld_general
+        withheld = withheld_named + withheld_general + withheld_not_started
         if not withheld:
             return
-        if withheld_named:
+        if withheld_not_started:
+            note = (
+                f"{withheld_not_started} reply text(s) claimed work had not "
+                f"started where the per-intention journal shows actions"
+            )
+        elif withheld_named:
             note = (
                 f"{withheld_named} reply text(s) claimed a sub-agent was running with no "
                 f"matching delegation in the journal (checked: {', '.join(sorted(_SUBAGENT_NAMES))})"
@@ -1364,6 +1531,83 @@ class SocialCognition:
             f"(priority={row['priority']}, by={row['commissioned_by'] or 'self'})"
             for row in rows
         )
+
+    # ------------------------------------------------- verbosity
+
+    async def get_verbosity(self, person_id: str | None) -> str:
+        if not person_id or self.relationships is None:
+            return DEFAULT_VERBOSITY
+        try:
+            got = getattr(self.relationships, "get_preference", None)
+            if got is None:
+                return DEFAULT_VERBOSITY
+            raw = await got(person_id, "communication_verbosity", DEFAULT_VERBOSITY)
+        except Exception:
+            return DEFAULT_VERBOSITY
+        return normalise_verbosity(raw if isinstance(raw, str) else str(raw or ""))
+
+    async def set_verbosity(self, person_id: str | None, level: str) -> None:
+        if not person_id or self.relationships is None:
+            return
+        setter = getattr(self.relationships, "set_preference", None)
+        if setter is None:
+            return
+        try:
+            await setter(person_id, "communication_verbosity", normalise_verbosity(level))
+        except Exception:
+            logger.warning("social.verbosity_set_failed", person=person_id)
+
+    async def compose_progress_note(
+        self, *, title: str, progress: str, person_id: str | None = None,
+        preview: bool = False,
+    ) -> str | None:
+        """A proactive mid-task progress note, or nothing worth saying.
+
+        Same shape as `compose_stage_notice`: model-composed, small ceiling,
+        no retry ladder. The caller gates on having real progress since the
+        last word to this person; this only decides whether the words are
+        worth sending.
+        """
+        if self.gateway is None:
+            logger.warning("social.progress_note_no_gateway")
+            return None
+        if not (progress or "").strip():
+            return None
+        name = self.config.self_name
+        if self.self_model is not None:
+            try:
+                name = await self.self_model.get("name", self.config.self_name)
+            except Exception:
+                pass
+        level = await self.get_verbosity(person_id)
+        messages = progress_note_messages(
+            self_name=name, title=title, progress=progress,
+            who=person_id, verbosity_note=verbosity_note(level), preview=preview,
+        )
+        request = ModelRequest(
+            tier=Tier.T2, purpose="social.progress_note",
+            budget_bucket="discretionary", consequence_class="routine",
+            messages=[
+                ModelMessage(role=Role.system, content=messages[0]["content"]),
+                ModelMessage(role=Role.user, content=messages[1]["content"]),
+            ],
+            max_tokens=STAGE_NOTICE_MAX_TOKENS,
+        )
+        try:
+            response = await self.gateway.complete(request)
+        except Exception as exc:
+            logger.warning(
+                "social.progress_note_call_failed",
+                reason=f"{type(exc).__name__}: {exc}"[:200],
+            )
+            return None
+        data = _parse_json(response.text or "")
+        text = data.get("text")
+        if not isinstance(text, str):
+            text = _prose_body(response.text)
+            text = text if isinstance(text, str) else None
+        text = " ".join(text.split()) if text else ""
+        return text or None
 
     # ------------------------------------------------- stage notices
 

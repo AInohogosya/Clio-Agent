@@ -3225,3 +3225,84 @@ def test_a_stop_pauses_the_agent_and_a_resume_starts_it_again(tmp_path: Path) ->
     assert state["cycles"] >= 3, \
         "the resume is the other half of the stop button: the agent is thinking again"
 
+
+
+def _bare_life(tmp: str) -> Life:
+    config = make_config(Path(tmp))
+    config.paths.ensure()
+    return Life(LifeDeps(
+        config=config, control=_Quiet(), bus=None, memory=_Quiet(),
+        self_model=_Quiet(), attention=None, motivation=None, rhythm=_Quiet(),
+        gateway=None, gsl=None, social=None, comms_out=None, toolhost=None,
+        audit=ListAudit(), continuity=_Quiet(), consolidation=None,
+        embedder=None, thread_id="self",
+    ))
+
+
+def test_a_new_commission_does_not_discard_the_suspended_goal() -> None:
+    """A commission taking the pass must not throw the suspended goal away.
+
+    2026-11-08: the CodeForge build was suspended for a status message, the
+    Helium review was commissioned, and `_settled_focus` cleared the one
+    suspended slot — the build stayed `in_progress` forever with no focus
+    and nothing to resume it. The stack keeps it owed the pass back.
+    """
+    life = _bare_life("/tmp/ethos-test-suspended-stack")
+    prior = Focus(
+        intention_id=uuid4(), title="build the coding agent",
+        kind="commitment", why="work asked for in the message just answered",
+    )
+    life._push_suspended(prior)
+
+    new_id = uuid4()
+    settled = life.next_focus(
+        Decision(kind="social", tier="T2", social={"action": "reply_now"}),
+        Outcome(commission={"intention_id": str(new_id), "title": "review Helium"}),
+    )
+
+    assert settled is not None and settled.intention_id == new_id, \
+        "the new promise still takes the pass"
+    assert life._suspended_focus == prior, \
+        "but the suspended goal is preserved, not discarded"
+
+
+def test_suspended_goals_resume_in_lifo_order() -> None:
+    """Each suspended goal is owed the pass back, most recent first."""
+    life = _bare_life("/tmp/ethos-test-suspended-lifo")
+    first = Focus(intention_id=uuid4(), title="first", kind="commitment", why="w")
+    second = Focus(intention_id=uuid4(), title="second", kind="commitment", why="w")
+    life._push_suspended(first)
+    life._push_suspended(second)
+    life._push_suspended(first)  # duplicate push is a no-op
+
+    assert life.next_focus(Decision(kind="none", tier="T0"), Outcome()) == second
+    assert life.next_focus(Decision(kind="none", tier="T0"), Outcome()) == first
+    assert life._suspended_focus is None
+
+
+def test_a_sequenced_commission_keeps_the_prior_goal_in_focus() -> None:
+    """'Once that is finished, review X' queues X behind the prior work.
+
+    The commission is recorded (and edged `depends_on` the prior goal at
+    commission time in `_act_social`); this turn returns the suspended
+    focus so the prior work resumes, and X is picked up by the commission
+    bypass once the prior work settles.
+    """
+    life = _bare_life("/tmp/ethos-test-sequenced-commission")
+    prior = Focus(
+        intention_id=uuid4(), title="build the coding agent",
+        kind="commitment", why="work asked for in the message just answered",
+    )
+    life._push_suspended(prior)
+
+    new_id = uuid4()
+    settled = life.next_focus(
+        Decision(kind="social", tier="T2", social={"action": "reply_now"}),
+        Outcome(commission={
+            "intention_id": str(new_id), "title": "review Helium",
+            "sequenced": True,
+        }),
+    )
+
+    assert settled == prior, "the prior work keeps the pass until it settles"
+    assert life._suspended_focus is None, "and it is spent as the active focus"

@@ -488,8 +488,8 @@ def _artifact_text(artifact: Any) -> str:
     if artifact is None:
         return "(no artifact)"
     if isinstance(artifact, str):
-        return artifact[:8000]
+        return artifact[:16000]
     try:
-        return json.dumps(artifact, default=str)[:8000]
+        return json.dumps(artifact, default=str)[:16000]
     except (TypeError, ValueError):
-        return str(artifact)[:8000]
+        return str(artifact)[:16000]
