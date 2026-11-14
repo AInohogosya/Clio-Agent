@@ -21,10 +21,15 @@ class ContinuityManager:
     the first thought of a new incarnation.
     """
 
-    def __init__(self, config: ClioConfig, db: Database | None = None, bus: EventBus | None = None):
+    def __init__(self, config: ClioConfig, db: Database | None = None, bus: EventBus | None = None,
+                 envelope: Any = None):
         self.config = config
         self.db = db
         self.bus = bus
+        # The checkpoint table carries the full continuity state — what the
+        # agent was doing, on which files, toward which goal — so with an
+        # envelope configured it is sealed at rest like every other payload.
+        self.envelope = envelope
         self.snapshot_path = config.paths.data_dir / "continuity.json"
         config.paths.data_dir.mkdir(parents=True, exist_ok=True)
 
@@ -42,10 +47,19 @@ class ContinuityManager:
         os.replace(tmp, self.snapshot_path)
         if self.db is not None:
             try:
+                snapshot_json: Any = json.dumps(payload["state"], default=str)
+                sealed: Any = None
+                if self.envelope is not None:
+                    snapshot_json = json.dumps(self.envelope.stub())
+                    sealed = await self.envelope.seal(
+                        json.dumps(payload["state"], default=str), "local", aad="checkpoint",
+                    )
                 await self.db.execute(
-                    "INSERT INTO checkpoints (ts, thread_id, snapshot) VALUES (now(), $1, $2::jsonb)",
+                    "INSERT INTO checkpoints (ts, thread_id, snapshot, sealed_payload) "
+                    "VALUES (now(), $1, $2::jsonb, $3)",
                     state.get("thread_id", "self"),
-                    json.dumps(payload["state"], default=str),
+                    snapshot_json,
+                    sealed,
                 )
             except Exception:
                 logger.exception("continuity.checkpoint_write_failed")

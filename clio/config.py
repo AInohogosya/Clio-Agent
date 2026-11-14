@@ -1902,6 +1902,13 @@ class ProjectConfig(BaseModel):
     project_switch_margin: float = 0.20
     # The cooldown between evolution cycles of an evergreen project.
     evolution_interval_s: float = 21600.0
+    # The cooperative fast-lane micro-slot, in seconds. While a locked quantum
+    # is executing, a quick message in a *secondary* conversation is answered
+    # inside a bounded slot at a clean leaf-step boundary — read-only or
+    # conversational tiers only, never a tool write, and never a change of
+    # `active_project_id`. The budget bounds it so the primary project's
+    # sandbox state is untouched and its quantum loses at most this much.
+    fast_lane_budget_s: float = 90.0
 
 
 class ClioConfig(BaseModel):
@@ -2244,6 +2251,11 @@ def _apply_project_env(cfg: ClioConfig) -> None:
     if raw := env("EVOLUTION_INTERVAL_S"):
         try:
             proj.evolution_interval_s = max(0.0, float(raw))
+        except ValueError:
+            pass
+    if raw := env("FAST_LANE_BUDGET_S"):
+        try:
+            proj.fast_lane_budget_s = max(0.0, float(raw))
         except ValueError:
             pass
 

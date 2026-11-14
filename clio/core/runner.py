@@ -43,6 +43,12 @@ BUS_PERCEPT_KINDS = {
     EventKind.GUARDIAN_UNDO, EventKind.CONTROL_UPDATE, EventKind.PERCEPT,
 }
 
+# Out-of-band kinds: handled by a dedicated subscriber at dispatch time and
+# never turned into percepts. The three lanes the architecture names move
+# outside the normal flow — a steering message that sat in the percept queue
+# until the run finished would be guidance arriving after the work it was for.
+OUT_OF_BAND_KINDS = {EventKind.STEERING_INJECT}
+
 
 async def connect_database(config: ClioConfig) -> Database:
     db = await Database.connect(
@@ -126,6 +132,12 @@ class CoreRuntime:
         self.leases = WorkspaceLeaseManager(
             config, snapshots=self.snapshots, trash=self.trash,
         )
+        # Live mid-turn steering (clio/gsl/steering.py): the queue the solver
+        # loop claims at step boundaries, and the out-of-band lane inbound
+        # messages ride when they belong to the active project's conversation.
+        from clio.gsl.steering import SteeringQueue
+
+        self.steering = SteeringQueue(db, bus=self.bus)
         self.guardian = GuardianGate(
             config, registry=self.registry, trash=self.trash, snapshots=self.snapshots,
             audit=self.audit, verifier=self.verifier, control=self.control,
@@ -195,6 +207,8 @@ class CoreRuntime:
             # backoff that stops a frozen goal is decided in the same place as
             # every other decision about when this agent does something.
             rhythm=self.rhythm,
+            # Live mid-turn steering: claimed at every step boundary (below).
+            steering=self.steering,
             # Evergreen milestones commit the project's workspace lease through
             # this manager; without it a milestone would ship without the work.
             leases=self.leases,
@@ -241,7 +255,9 @@ class CoreRuntime:
                 )
             elif event.kind == EventKind.GUARDIAN_UNDO:
                 await self._handle_undo(event.payload)
-            if event.kind in BUS_PERCEPT_KINDS:
+            elif event.kind == EventKind.STEERING_INJECT:
+                await self._handle_steering(event)
+            if event.kind in BUS_PERCEPT_KINDS and event.kind not in OUT_OF_BAND_KINDS:
                 from clio.schemas.events import percept_from_event
 
                 await self.percept_queue.put(percept_from_event(event))
@@ -287,6 +303,35 @@ class CoreRuntime:
                 )
         except Exception:
             logger.exception("core.undo_failed")
+
+    async def _handle_steering(self, event: Any) -> None:
+        """A `steering.inject` event that did not already become a row.
+
+        The queue's own `enqueue` publishes the event *after* inserting the
+        row, so an event whose payload already names its `steering_id` is an
+        echo of work done and needs nothing. An event without one came from a
+        surface that published directly to the bus — the bridge, a channel
+        adapter, the API — and the row it describes does not exist until this
+        writes it. Either way the message reaches the step boundary; only the
+        row's author differs.
+        """
+        from clio.gsl.steering import steering_from_event
+
+        payload = steering_from_event(event)
+        if payload is None or payload.get("steering_id"):
+            return
+        try:
+            await self.steering.enqueue(
+                str(payload["project_id"]),
+                str(payload.get("conversation_key") or "direct"),
+                str(payload.get("person_id") or "unknown"),
+                str(payload["text"]),
+                intention_id=payload.get("intention_id"),
+                thread_id=payload.get("thread_id"),
+                priority=str(payload.get("priority") or "normal"),
+            )
+        except Exception:
+            logger.exception("core.steering_enqueuer_failed")
 
     async def _audit_anchor_loop(self) -> None:
         import json

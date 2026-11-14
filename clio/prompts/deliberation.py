@@ -206,6 +206,7 @@ still missing rather than calling the work finished.
 {execution_state}
 
 {cross_talk}
+{fast_lane_note}
 
 Decide one action and write the reply {name} would naturally send (concise, plain, human).
 The reply is however many messages it takes — one, three, ten, or none: each entry in
@@ -636,6 +637,7 @@ def social_deliberation_messages(
     verbosity_note: str = "",
     project_context: str = "",
     bound_project_title: str = "",
+    fast_lane_note: str = "",
 ) -> list[dict[str, str]]:
     system = SOCIAL_DELIBERATION_SYSTEM.format(
         name=self_name,
@@ -662,6 +664,7 @@ def social_deliberation_messages(
         # shown one message has nothing to leak by accident; what it has is a
         # memory of every other message, which is the whole risk.
         cross_talk=cross_talk_note(preview=preview),
+        fast_lane_note=fast_lane_note,
     )
     incoming = (
         f"From: {message.sender_who()} via {message.channel} at {message.ts.isoformat()}\n"

@@ -17,6 +17,7 @@ from clio.prompts.deliberation import (
     stage_notice_messages,
     streak_review_messages,
 )
+from clio.prompts.identity import FAST_LANE_NOTE
 from clio.schemas.messages import (
     IGNORE_REASONS,
     IgnoreReason,
@@ -535,6 +536,7 @@ class SocialCognition:
         preview: bool = False,
         bound_project: dict[str, Any] | None = None,
         project_ledgers: list[dict[str, Any]] | None = None,
+        fast_lane: bool = False,
     ) -> SocialDecision:
         # No T0 rules sit in front of the model any more. v3.0 declined empty
         # messages and unsolicited link-only mail from strangers by regex, before
@@ -546,6 +548,13 @@ class SocialCognition:
         # deserves.
         consequential = self._is_consequential(message)
         tier = Tier.T3 if consequential else Tier.T2
+        # The cooperative fast-lane micro-slot: a bounded, read-only window
+        # answered while the primary project holds its quantum. It never
+        # escalates past T2 (a quick question does not need the deep tier) and
+        # the prompt says so, because a reply that claims work is being done
+        # would be a claim the slot has no room to verify.
+        if fast_lane:
+            tier = Tier.T2 if tier == Tier.T3 else tier
         if self.gateway is None:
             logger.warning("social.deliberate_no_gateway")
             return _undecided(
@@ -607,6 +616,9 @@ class SocialCognition:
             verbosity_note=verbosity_note(verbosity_level),
             project_context=project_context,
             bound_project_title=str((bound_project or {}).get("title") or ""),
+            fast_lane_note=(
+                FAST_LANE_NOTE if fast_lane else ""
+            ),
         )
         data, cut_off, ceiling, failure, user_action = await self._ask(prompt_messages, tier, consequential)
         if failure is not None:

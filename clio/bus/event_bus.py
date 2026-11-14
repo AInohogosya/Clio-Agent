@@ -16,6 +16,22 @@ logger = logging.getLogger(__name__)
 
 BUS_CHANNEL = "clio_events"
 
+# The out-of-band lanes. Events in a lane are handled by their subscribers at
+# dispatch time — directly, ahead of the percept queue — and carry the lane's
+# name on their row, so an operator can ask the database which events moved
+# outside the normal flow. The three lanes are the ones the architecture names:
+# control verbs, guardian rollbacks, and mid-turn steering.
+LANE_CONTROL = "control"
+LANE_GUARDIAN = "guardian"
+LANE_STEERING = "steering"
+
+#: kind -> lane, applied automatically on publish.
+EVENT_LANES: dict[str, str] = {
+    "control.update": LANE_CONTROL,
+    "guardian.undo": LANE_GUARDIAN,
+    "steering.inject": LANE_STEERING,
+}
+
 COMMISSION_KINDS = frozenset({
     "commission.propose", "commission.accept", "commission.challenge",
     "commission.artifact", "commission.verify",
@@ -102,7 +118,7 @@ class EventBus:
             return
         try:
             row = await self.db.fetchrow(
-                "SELECT id, ts, kind, source, payload, salience, trust, consumed_by FROM events WHERE id = $1",
+                "SELECT id, ts, kind, source, payload, salience, trust, consumed_by, lane FROM events WHERE id = $1",
                 event_id,
             )
         except Exception:
@@ -140,6 +156,7 @@ class EventBus:
             salience=row["salience"],
             trust=row["trust"] or "internal",
             consumed_by=list(row["consumed_by"] or []),
+            lane=row["lane"] if "lane" in row.keys() else None,
         )
 
     async def _dispatch_loop(self) -> None:
@@ -182,15 +199,17 @@ class EventBus:
         salience: float | None = None,
         trust: str = "internal",
         conn: asyncpg.Connection | None = None,
+        lane: str | None = None,
     ) -> int:
         body = json.dumps(payload or {})
+        lane = lane or EVENT_LANES.get(kind)
         notify_body = json.dumps({"id": 0})
 
         async def _do(c: asyncpg.Connection) -> int:
             row = await c.fetchrow(
-                "INSERT INTO events (ts, kind, source, payload, salience, trust) "
-                "VALUES (now(), $1, $2, $3::jsonb, $4, $5) RETURNING id",
-                kind, source or self.source, body, salience, trust,
+                "INSERT INTO events (ts, kind, source, payload, salience, trust, lane) "
+                "VALUES (now(), $1, $2, $3::jsonb, $4, $5, $6) RETURNING id",
+                kind, source or self.source, body, salience, trust, lane,
             )
             event_id = int(row["id"])
             await c.execute("SELECT pg_notify($1, $2)", BUS_CHANNEL, json.dumps({"id": event_id}))
@@ -223,7 +242,7 @@ class EventBus:
         """Claim events not yet consumed by `consumer` (startup gap recovery)."""
         events: list[Event] = []
         rows = await self.db.fetch(
-            "SELECT id, ts, kind, source, payload, salience, trust, consumed_by FROM events "
+            "SELECT id, ts, kind, source, payload, salience, trust, consumed_by, lane FROM events "
             "WHERE NOT ($1::text = ANY(consumed_by)) AND ($2::text[] IS NULL OR kind = ANY($2)) "
             "ORDER BY id LIMIT $3",
             consumer, kinds, limit,

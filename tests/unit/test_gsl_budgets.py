@@ -67,6 +67,7 @@ def _step_loop(toolhost: Any) -> Any:
     solver.context = None
     solver.memory = None
     solver.audit = None
+    solver._steering = None
     return solver, Plan(
         approach_id="a1", approach="do the thing",
         steps=[{

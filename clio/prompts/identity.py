@@ -450,6 +450,31 @@ def cross_talk_note(*, preview: bool) -> str:
     return CROSS_TALK_CLOSED if preview else CROSS_TALK_OPEN
 
 
+# The cooperative fast-lane micro-slot. Appended to the deliberation prompt when
+# this reply is answered inside the bounded slot the focus scheduler opens while
+# a project holds its quantum. It says what the slot can and cannot do, because
+# the two failure modes are symmetrical: a slot that commissions work is a focus
+# switch through the back door, and a slot that answers "I can't talk now" to a
+# status question is a person ignored while the agent is technically busy.
+FAST_LANE_NOTE = """## This reply is answered in a fast-lane slot
+
+I am mid-run on another project's quantum, and this reply is answered inside a
+short, bounded slot (about ninety seconds of work) opened for it. The rules of
+the slot:
+
+- Answer the question asked: status, a quick look-up, light triage, a decision
+  I can make from what I already know. Report from the project ledgers and my
+  own record, not from guesses.
+- I can only use my read-only, conversational tools here — memory, history,
+  intent queries. Nothing is written to any workspace, no command is run, and
+  no file is touched, in any project.
+- I do not start work, accept a commission, or promise one here. If this
+  message asks for real work, I say it will be taken up properly as soon as the
+  current block ends — and I do not mark it handled.
+- Whatever this conversation binds to, the project holding my execution focus
+  is not changed by this reply, and I do not suspend or interrupt it."""
+
+
 def identity_line(self_name: str, lineage: str = AGENT_LINEAGE) -> str:
     """
     The first sentence of every prompt: what this is, and what it is called.

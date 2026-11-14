@@ -72,11 +72,30 @@ class ActionJournal:
     Idempotency keys make retries safe: the same key never executes twice.
     """
 
-    def __init__(self, db: Database | None = None, file_path: Path | None = None):
+    def __init__(self, db: Database | None = None, file_path: Path | None = None,
+                 envelope: Any = None):
         self.db = db
         self.file_path = Path(file_path) if file_path else None
+        # With an envelope configured, the redacted arguments are sealed at
+        # rest — redaction minimizes what is stored, sealing governs who can
+        # read even the minimized form.
+        self.envelope = envelope
         if self.file_path is not None:
             self.file_path.parent.mkdir(parents=True, exist_ok=True)
+
+    async def _unseal(self, record: dict[str, Any]) -> dict[str, Any]:
+        """Return the record with its real arguments, sealed or not."""
+        args = record.get("args_redacted")
+        is_stub = isinstance(args, str) and '"sealed": true' in args
+        if not (is_stub and record.get("sealed_payload") and self.envelope is not None):
+            return record
+        try:
+            raw = await self.envelope.open(record["sealed_payload"], "local",
+                                           aad=f"journal:{record.get('id')}")
+            record["args_redacted"] = json.loads(raw)
+        except Exception:
+            logger.exception("journal.unseal_failed id=%s", record.get("id"))
+        return record
 
     async def _file_all(self) -> list[dict[str, Any]]:
         if self.file_path is None or not self.file_path.exists():
@@ -182,15 +201,21 @@ class ActionJournal:
                     # so it can report an unknown outcome instead of a success.
                     raise DuplicateAction(prior)
         if self.db is not None:
+            args_json: Any = json.dumps(args_redacted, default=str)
+            sealed: Any = None
+            if self.envelope is not None:
+                args_json = json.dumps(self.envelope.stub())
+                sealed = await self.envelope.seal(args_json, "local", aad=f"journal:{action_id}")
             await self.db.execute(
                 "INSERT INTO action_journal (id, ts_start, thread_id, intention_id, tool, "
-                "args_redacted, reason, idempotency_key, side_effects, status, project_id, root_intention_id) "
+                "args_redacted, reason, idempotency_key, side_effects, status, project_id, "
+                "root_intention_id, sealed_payload) "
                 "VALUES ($1, now(), $2, $3, $4, $5::jsonb, $6, $7, $8, 'running', "
                 "COALESCE($9::uuid, (SELECT project_id FROM intentions WHERE id = $3)), "
-                "COALESCE($10::uuid, (SELECT root_intention_id FROM intentions WHERE id = $3)))",
+                "COALESCE($10::uuid, (SELECT root_intention_id FROM intentions WHERE id = $3)), $11)",
                 action_id, thread_id, intention_id, tool,
-                json.dumps(args_redacted, default=str), reason, idempotency_key, side_effects,
-                project_id, root_intention_id,
+                args_json, reason, idempotency_key, side_effects,
+                project_id, root_intention_id, sealed,
             )
         else:
             await self._file_append({
@@ -239,7 +264,7 @@ class ActionJournal:
             row = await self.db.fetchrow(
                 "SELECT * FROM action_journal WHERE id = $1", action_id,
             )
-            return dict(row) if row is not None else None
+            return await self._unseal(dict(row)) if row is not None else None
         for record in await self._file_all():
             if record.get("id") == action_id:
                 return record
@@ -256,7 +281,7 @@ class ActionJournal:
                 rows = await self.db.fetch(
                     "SELECT * FROM action_journal ORDER BY ts_start DESC LIMIT $1", limit,
                 )
-            return [dict(r) for r in rows]
+            return [await self._unseal(dict(r)) for r in rows]
         records = await self._file_all()
         if status:
             records = [r for r in records if r.get("status") == status]

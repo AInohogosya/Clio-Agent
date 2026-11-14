@@ -144,6 +144,7 @@ class LifeDeps:
         reverie: Any = None,
         thread_id: str = "self",
         leases: Any = None,
+        steering: Any = None,
     ):
         self.config = config
         self.control = control
@@ -169,6 +170,11 @@ class LifeDeps:
         # containers take their isolation from it and their evergreen
         # milestones commit through it.
         self.leases = leases
+        # Live mid-turn steering (clio/gsl/steering.py), when the runtime built
+        # one: messages bound to the active project's conversation, arriving
+        # while that project's run is under way, are drained into it and
+        # claimed at the next step boundary rather than queued for a turn.
+        self.steering = steering
 
 
 class Life:
@@ -1482,6 +1488,142 @@ class Life:
         suspends it beforehand and `next_focus` restores it afterwards.
         """
         return await self.deps.social.pending_inbound(limit=3)
+
+    # ---------------------------------------------------------- live steering
+
+    async def _drain_steering(self) -> int:
+        """Move the active project's fresh messages into the steering queue.
+
+        One message shape gets this treatment: one bound (by
+        `conversation_project_bindings`) to the project that currently holds
+        the execution focus, while that project has a run under way. A quick
+        status question typed during a long step is exactly the case: it is
+        guidance for work in progress, so it goes to the solver loop's next
+        step boundary and is acknowledged there, instead of taking a full
+        deliberation turn that would also suspend the goal it is asking about.
+
+        Everything else — a different conversation, a message with no bound
+        project, a project not under way — stays an ordinary message. This
+        never silently swallows mail; it re-routes mail that names work the
+        loop is holding right now.
+        """
+        if self.deps.steering is None or self.active_project_id is None:
+            return 0
+        if not self._goal_is_owed():
+            return 0
+        # Which conversations belong to this project: read the bindings, then
+        # keep the ones bound to the active project.
+        try:
+            keys = await self._conversation_keys_for_project(str(self.active_project_id))
+        except Exception:
+            logger.exception("life.steering_bindings_failed")
+            return 0
+        if not keys:
+            return 0
+        focus_intention = str(self.focus.intention_id) if (self.focus and self.focus.intention_id) else None
+        try:
+            drained = await self.deps.steering.drain_conversation_inbound(
+                self.deps.social, str(self.active_project_id), keys,
+                intention_id=focus_intention,
+            )
+        except Exception:
+            logger.exception("life.steering_drain_failed")
+            return 0
+        if drained:
+            logger.info("life.steering_drained", count=len(drained),
+                        project_id=str(self.active_project_id))
+        return len(drained)
+
+    async def _conversation_keys_for_project(self, project_id: str) -> set[str]:
+        """The conversation keys bound to a project, from the bindings table."""
+        rows = await self.memory.db.fetch(
+            "SELECT conversation_key FROM conversation_project_bindings "
+            "WHERE active_project_id = $1::uuid",
+            project_id,
+        )
+        return {str(r["conversation_key"]) for r in rows}
+
+    async def _maybe_fast_lane(self) -> bool:
+        """One cooperative fast-lane micro-slot, bounded by `fast_lane_budget_s`.
+
+        At a clean boundary during a locked quantum, a quick message in a
+        secondary conversation is answered here — read-only or conversational,
+        tier capped at T2, `active_project_id` untouched, the primary
+        project's sandbox state undisturbed. The budget bounds the slot, not a
+        single model call: when the reply cost the slot its ninety seconds the
+        loop closes the slot and goes back to work. A message that turns out
+        to ask for real work is left exactly where it was — unhandled, at the
+        head of the queue — so the ordinary social turn takes it with the
+        focus suspension and commissioning machinery the fast lane deliberately
+        does not run.
+        """
+        budget = float(self.config.projects.fast_lane_budget_s)
+        if budget <= 0.0:
+            return False
+        if not await self._project_lock_active():
+            return False
+        if self.focus is None or self.focus.kind == "social":
+            return False
+        pending = await self.deps.social.pending_inbound(limit=1)
+        if not pending:
+            return False
+        message = pending[0]
+        keys = await self._conversation_keys_for_project(str(self.active_project_id or ""))
+        if str(getattr(message, "conversation_key", "") or "") in keys:
+            # The active project's own conversation: that is steering's
+            # territory (drained above), not a fast-lane turn.
+            return False
+        started = time.monotonic()
+        bound_project, ledgers = await self._deliberation_project_context(message)
+        social_decision = await self.deps.social.deliberate(
+            message=message,
+            energy=self.deps.rhythm.energy(self.spent_discretionary_session),
+            focus_title=self.focus.title,
+            tools=self._dialogue_tool_names(),
+            preview=self._preview(),
+            bound_project=bound_project,
+            project_ledgers=ledgers,
+            fast_lane=True,
+        )
+        if social_decision.creates_intention:
+            logger.info(
+                "life.fast_lane_deferred_to_full_turn", person_id=str(message.person_id),
+            )
+            return False
+        # The reply goes out through the ordinary turn machinery — the same
+        # delivery, the same record of the decision — with commissioning
+        # impossible by construction: the decision above was cleared of it.
+        from clio.schemas.messages import SocialDecision
+
+        decision = SocialDecision.model_validate(social_decision.model_dump(mode="json"))
+        decided = decision.model_copy(
+            update={"creates_intention": False, "intention_spec": None},
+        )
+        await self._act_social(decided.model_dump(mode="json"))
+        elapsed = time.monotonic() - started
+        self._fast_lane_spent_s = float(getattr(self, "_fast_lane_spent_s", 0.0)) + elapsed
+        logger.info(
+            "life.fast_lane_answered", person_id=str(message.person_id),
+            elapsed_s=round(elapsed, 1), budget_s=budget,
+        )
+        return True
+
+    def _dialogue_tool_names(self) -> list[dict[str, Any]]:
+        """The catalog narrowed to the dialogue-only (read-only) set.
+
+        The fast lane hands the deliberation this list instead of the full
+        registry, so the tools the reply can even *name* are the ones its
+        budget can afford. The gate still judges every call; this narrows the
+        offer, which is what makes the slot read-only by construction rather
+        than by promise.
+        """
+        from clio.guardian.safety import usable_tool_names
+
+        names = [str(entry.get("name") if isinstance(entry, dict) else getattr(entry, "name", ""))
+                 for entry in self._tool_names()]
+        kept = set(usable_tool_names([n for n in names if n], 1))
+        return [entry for entry in self._tool_names()
+                if str(entry.get("name") if isinstance(entry, dict) else getattr(entry, "name", "")) in kept]
 
     # --------------------------------------------------------------- act
 
@@ -3399,6 +3541,11 @@ class Life:
         of that was a night of no cycles at all.
         """
         await self._pace()
+        await self._drain_steering()
+        try:
+            await self._maybe_fast_lane()
+        except Exception:
+            logger.exception("life.fast_lane_failed")
         await self._maybe_reopen_parked()
         await self._maybe_park_zombies()
         percepts = await self.perceive()

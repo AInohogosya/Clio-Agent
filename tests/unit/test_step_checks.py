@@ -78,6 +78,7 @@ def _solver(tmp_path: Path) -> Any:
     solver.context = None
     solver.memory = None
     solver.audit = None
+    solver._steering = None
 
     async def _recall(*_a: Any, **_k: Any) -> list[Any]:
         return []

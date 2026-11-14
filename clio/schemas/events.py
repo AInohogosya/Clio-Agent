@@ -16,6 +16,9 @@ class EventKind:
     THREAD_RESULT = "thread.result"
     CONTROL_UPDATE = "control.update"
     GUARDIAN_UNDO = "guardian.undo"
+    # Live mid-turn steering: the person's word reaches the step in progress
+    # (clio/gsl/steering.py). An out-of-band lane, never a percept.
+    STEERING_INJECT = "steering.inject"
     THOUGHT_NEW = "thought.new"
     INTENTION_UPDATE = "intention.update"
     PRESENCE_UPDATE = "presence.update"
@@ -52,6 +55,9 @@ class Event(BaseModel):
     salience: float | None = None
     trust: str = Trust.internal.value
     consumed_by: list[str] = Field(default_factory=list)
+    # The out-of-band lane the event moved in, when it moved in one
+    # (`control`, `guardian`, `steering`). `None` is the normal flow.
+    lane: str | None = None
 
 
 class Percept(BaseModel):

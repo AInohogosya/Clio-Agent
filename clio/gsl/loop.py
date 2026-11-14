@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import re
 import time
 from collections import deque
@@ -28,6 +29,7 @@ from clio.gsl.planner import (
     pick_approach,
     understand,
 )
+from clio.gsl.steering import SteeringBatch
 from clio.gsl.verification import VerificationLadder, gate_blocks_completion, gate_children
 from clio.observability.logger import get_logger
 from clio.paths import user_home
@@ -394,6 +396,7 @@ class GeneralSolverLoop:
         thread_id: str = "self",
         rhythm: Any = None,
         leases: Any = None,
+        steering: Any = None,
     ):
         self.config = config
         self.memory = memory
@@ -424,6 +427,10 @@ class GeneralSolverLoop:
         # commits integrate the project's worktree through it. Optional: a loop
         # without one records the milestone without the commit.
         self._leases = leases
+        # Live mid-turn steering (clio/gsl/steering.py), claimed at every step
+        # boundary by `prepare_next_step`. Optional: a loop without a queue
+        # runs exactly as before.
+        self._steering = steering
 
     # ------------------------------------------------------------ governance
 
@@ -1224,10 +1231,80 @@ class GeneralSolverLoop:
             raise
         return plan, spy.cost_usd
 
+    # ------------------------------------------------------------ mid-turn steering
+
+    async def prepare_next_step(self, intention: IntentionRecord, plan: Plan, step: Any) -> SteeringBatch:
+        """Claim and inject the steering messages pending for this step.
+
+        Called before every tool dispatch and step transition — the top of
+        `_execute_step`, and the step transition inside `advance` — so a
+        message the person typed mid-run is read by the very next decision
+        rather than by the next run. Claimed rows are rendered into the step
+        context at high priority, plan constraints named in them are merged
+        into the intention, and the rows are marked applied: the claim, the
+        injection and the acknowledgment are one boundary.
+        """
+        if self._steering is None or intention.project_id is None:
+            return SteeringBatch([], "")
+        try:
+            await self._steering.expire_stale()
+            claimed = await self._steering.claim(
+                str(intention.project_id),
+                intention_id=str(intention.id),
+                step_id=str(step.id),
+            )
+        except Exception:
+            logger.exception("gsl.steering_claim_failed")
+            return SteeringBatch([], "")
+        if not claimed:
+            return SteeringBatch([], "")
+        await self._apply_steering_constraints(intention, claimed)
+        rendered = self._steering.render_for_step(claimed)
+        await self._steering.mark_applied([str(item["id"]) for item in claimed])
+        if self.audit is not None:
+            with contextlib.suppress(Exception):
+                await self.audit.append(
+                    actor=self.config.self_name, category="gsl",
+                    summary=f"steering applied at step {step.id}",
+                    details={"intention_id": str(intention.id), "messages": len(claimed)},
+                )
+        return SteeringBatch(claimed, rendered)
+
+    async def _apply_steering_constraints(self, intention: IntentionRecord, claimed: list[dict[str, Any]]) -> None:
+        """Merge `constraint: …` lines from steering into the plan's constraints.
+
+        A person steering a run mid-flight often states a boundary — "use the
+        staging database", "no deploys before Thursday". A line that begins
+        with `constraint:` is exactly that, and it outlives the step: it is
+        written onto the intention so the replan, the resume and any worker
+        that picks a child node up all read the same boundary.
+        """
+        additions = [
+            str(item.get("text") or "").split("constraint:", 1)[1].strip()
+            for item in claimed
+            if "constraint:" in str(item.get("text") or "")
+        ]
+        additions = [a for a in additions if a]
+        if not additions:
+            return
+        constraints = dict(getattr(intention, "constraints", None) or {})
+        steering_rules = list(constraints.get("steering") or [])
+        steering_rules.extend(additions)
+        constraints["steering"] = steering_rules[-20:]
+        try:
+            await self.memory.update_intention(intention.id, constraints=constraints)
+        except Exception:
+            logger.exception("gsl.steering_constraint_write_failed")
+
     async def _execute_step(self, intention: IntentionRecord, resume: dict[str, Any],
                            plan: Plan, step: Any, ws: Any) -> SolverResult:
         cost = 0.0
         attempt_index = int((resume.get("step_attempts") or {}).get(step.id, 0))
+        # Mid-turn steering, claimed at this step boundary. Whatever the person
+        # typed while the run was under way is read here, before the next
+        # action is chosen — and the acknowledgment rides in the step's own
+        # reply rather than costing a separate turn.
+        steering_batch = await self.prepare_next_step(intention, plan, step)
         # Situation and carried context are what make a step the *next* step
         # rather than the first. They were assembled every cycle by
         # `Life._assemble_workspace` and then dropped here, so a step could only
@@ -1235,6 +1312,8 @@ class GeneralSolverLoop:
         # never the plan it is in, the failure it is retrying after, or the
         # message it is answering.
         situation = ws.volatile_text() if ws is not None else ""
+        if steering_batch:
+            situation = f"{steering_batch.rendered}\n\n{situation}"
         memories = await self._recall(f"{intention.title} {step.description}", k=6)
         plan_state = [
             {"id": s.id, "description": s.description, "status": s.status}

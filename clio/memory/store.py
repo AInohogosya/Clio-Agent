@@ -207,12 +207,43 @@ class MemoryStore:
         embedder: EmbeddingProvider,
         config: ClioConfig,
         bus: EventBus | None = None,
+        envelope: Any = None,
     ):
         self.db = db
         self.embedder = embedder
         self.config = config
         self.bus = bus
+        # The envelope, when the deployment configured a master key, seals the
+        # sensitive payloads of memory at rest (episode bodies, fact
+        # provenance). `None` is the plaintext mode everything ran in before.
+        self.envelope = envelope
         self.retriever = HybridRetriever(db, embedder, config.memory)
+
+    # ---- envelope sealing ---------------------------------------------------
+
+    async def _seal(self, payload: dict[str, Any], space_id: str) -> tuple[dict[str, Any], Any]:
+        """Seal a payload when an envelope is configured; else pass it through."""
+        if self.envelope is None:
+            return payload, None
+        sealed = await self.envelope.seal(json.dumps(payload, default=str), space_id)
+        return dict(self.envelope.stub()), sealed
+
+    async def _unseal_row(self, row: Any) -> dict[str, Any]:
+        """Give the caller the real payload of a row, sealed or not."""
+        data = dict(row)
+        body = data.get("body")
+        is_stub = isinstance(body, (dict, str)) and (
+            (isinstance(body, str) and '"sealed": true' in body) or (isinstance(body, dict) and body.get("sealed"))
+        )
+        if not (is_stub and data.get("sealed_payload") and self.envelope is not None):
+            return data
+        space_id = str(data.get("space_id") or "local")
+        try:
+            raw = await self.envelope.open(data["sealed_payload"], space_id)
+            data["body"] = json.loads(raw)
+        except Exception:
+            logger.exception("memory.unseal_failed id=%s", data.get("id"))
+        return data
 
     # ------------------------------------------------------------ episodes
 
@@ -237,12 +268,14 @@ class MemoryStore:
         half_life_h = self.config.memory.episode.default_half_life_h if half_life_h is None else half_life_h
         vec = self.embedder.embed([summary])[0]
         ep_id = _new_id()
+        body_json, sealed = await self._seal(dict(body or {}), "local")
         await self.db.execute(
             "INSERT INTO episodes (id, ts, thread_id, kind, summary, body, intention_id, importance, "
-            "strength, half_life_h, last_access, access_count, status, embedding, scope, namespace_id) "
-            "VALUES ($1, now(), $2, $3, $4, $5::jsonb, $6, $7, 0.5, $8, now(), 0, 'active', $9::vector, $10, $11)",
-            ep_id, thread_id, kind, summary, json.dumps(body or {}), intention_id,
-            float(importance), float(half_life_h), to_pgvector(vec), scope, namespace_id,
+            "strength, half_life_h, last_access, access_count, status, embedding, scope, namespace_id, "
+            "sealed_payload) "
+            "VALUES ($1, now(), $2, $3, $4, $5::jsonb, $6, $7, 0.5, $8, now(), 0, 'active', $9::vector, $10, $11, $12)",
+            ep_id, thread_id, kind, summary, json.dumps(body_json), intention_id,
+            float(importance), float(half_life_h), to_pgvector(vec), scope, namespace_id, sealed,
         )
         if publish and self.bus is not None:
             await self.bus.publish(
@@ -255,7 +288,7 @@ class MemoryStore:
         row = await self.db.fetchrow("SELECT * FROM episodes WHERE id = $1", episode_id)
         if row is None:
             return None
-        return dict(row)
+        return await self._unseal_row(row)
 
     async def search(self, query: str, k: int | None = None, kinds: set[str] | None = None) -> list[MemoryHit]:
         hits = await self.retriever.retrieve(query, k=k, kinds=kinds)
@@ -288,18 +321,22 @@ class MemoryStore:
     async def episodes_since(self, since: datetime, limit: int = 400) -> list[dict[str, Any]]:
         rows = await self.db.fetch(
             "SELECT id, ts, kind, summary, body::text AS body, importance, strength, "
-            "embedding::text AS emb FROM episodes WHERE ts >= $1 AND status = 'active' "
+            "embedding::text AS emb, sealed_payload FROM episodes WHERE ts >= $1 AND status = 'active' "
             "ORDER BY ts ASC LIMIT $2", since, limit,
         )
-        return [
-            {
-                "id": r["id"], "ts": r["ts"], "kind": r["kind"], "summary": r["summary"],
-                "body": json.loads(r["body"]) if r["body"] else {},
-                "importance": float(r["importance"] or 0), "strength": float(r["strength"] or 0),
-                "embedding": parse_pgvector(r["emb"]),
-            }
-            for r in rows
-        ]
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            unsealed = await self._unseal_row(r)
+            body = unsealed.get("body")
+            out.append(
+                {
+                    "id": r["id"], "ts": r["ts"], "kind": r["kind"], "summary": r["summary"],
+                    "body": json.loads(body) if isinstance(body, str) and body else (body or {}),
+                    "importance": float(r["importance"] or 0), "strength": float(r["strength"] or 0),
+                    "embedding": parse_pgvector(r["emb"]),
+                }
+            )
+        return out
 
     async def last_consolidation_at(self) -> datetime | None:
         """When the nightly pass last finished, so a restart does not repeat it.
@@ -340,12 +377,13 @@ class MemoryStore:
             )
         async with self.db.acquire() as conn:
             async with conn.transaction():
+                prov_json, sealed = await self._seal(dict(provenance), "local")
                 await conn.execute(
                     "INSERT INTO facts (id, subject, statement, confidence, provenance, field, "
-                    "valid_from, strength, embedding, updated_at, scope, namespace_id) "
-                    "VALUES ($1, $2, $3, $4, $5::jsonb, $6, now(), 0.5, $7::vector, now(), $8, $9)",
+                    "valid_from, strength, embedding, updated_at, scope, namespace_id, sealed_payload) "
+                    "VALUES ($1, $2, $3, $4, $5::jsonb, $6, now(), 0.5, $7::vector, now(), $8, $9, $10)",
                     fact_id, subject, statement, float(confidence),
-                    json.dumps(provenance), field, to_pgvector(vec), scope, namespace_id,
+                    json.dumps(prov_json), field, to_pgvector(vec), scope, namespace_id, sealed,
                 )
                 if similar:
                     for row in similar:
@@ -359,11 +397,11 @@ class MemoryStore:
     async def facts_about(self, subject: str, limit: int = 20) -> list[dict[str, Any]]:
         rows = await self.db.fetch(
             "SELECT id::text, subject, statement, confidence, provenance::text, field, "
-            "valid_from, valid_to, superseded_by, strength FROM facts "
+            "valid_from, valid_to, superseded_by, strength, sealed_payload FROM facts "
             "WHERE subject = $1 AND superseded_by IS NULL ORDER BY updated_at DESC LIMIT $2",
             subject, limit,
         )
-        return [dict(r) for r in rows]
+        return [await self._unseal_row(r) for r in rows]
 
     # ------------------------------------------------------------ knowhow
 
