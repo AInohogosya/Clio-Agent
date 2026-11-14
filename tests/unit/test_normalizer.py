@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import json
 
-from ethos.config import QuirksConfig
-from ethos.gateway.normalizer import (
+from clio.config import QuirksConfig
+from clio.gateway.normalizer import (
     build_name_map,
     estimate_tokens,
     messages_to_anthropic,
@@ -17,12 +17,12 @@ from ethos.gateway.normalizer import (
     sanitize_declarations_for_google,
     sanitize_tool_name,
 )
-from ethos.schemas.models import (
+from clio.schemas.models import (
     ModelMessage,
     Role,
     ThinkingBlock,
 )
-from ethos.schemas.tools import ToolCall
+from clio.schemas.tools import ToolCall
 from tests.conftest import simple_request, tool_specs
 
 QUIRKS = QuirksConfig()
@@ -164,7 +164,7 @@ def test_openai_responses_payload():
 
 
 def test_openai_reasoning_effort_mapping():
-    from ethos.gateway.normalizer import _effort_for_budget
+    from clio.gateway.normalizer import _effort_for_budget
 
     assert _effort_for_budget(100) == "low"
     assert _effort_for_budget(4000) == "medium"
@@ -198,7 +198,7 @@ def test_openai_responses_response_normalization():
 
 
 def test_google_sanitizes_declarations():
-    from ethos.config import load_config
+    from clio.config import load_config
 
     quirks = load_config("config").quirks.google
     tools = tool_specs()

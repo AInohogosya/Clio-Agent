@@ -26,22 +26,22 @@ from types import SimpleNamespace
 from typing import Any
 from uuid import uuid4
 
-from ethos.engine.life import Life, LifeDeps
-from ethos.engine.states import State
-from ethos.prompts.deliberation import (
+from clio.engine.life import Life, LifeDeps
+from clio.engine.states import State
+from clio.prompts.deliberation import (
     execution_state_block,
     social_deliberation_messages,
     stage_notice_messages,
 )
-from ethos.schemas.gsl import STAGE_NOTIFIABLE, IntentionRecord, StageNotice
-from ethos.schemas.messages import Message
-from ethos.social.deliberation import SocialCognition
-from ethos.social.etiquette import OutboundPipeline
+from clio.schemas.gsl import STAGE_NOTIFIABLE, IntentionRecord, StageNotice
+from clio.schemas.messages import Message
+from clio.social.deliberation import SocialCognition
+from clio.social.etiquette import OutboundPipeline
 from tests.conftest import ScriptedGateway, make_config
 
 
 def _config(name: str):
-    config = make_config(Path(f"/tmp/ethos-test-{name}"))
+    config = make_config(Path(f"/tmp/clio-test-{name}"))
     config.paths.ensure()
     # Quiet hours that are definitely not now, so a failure is about a gate and
     # not about the clock crossing 22:00.
@@ -706,7 +706,7 @@ def test_a_braced_work_title_does_not_break_the_notice_prompt() -> None:
 
     The value is interpolated into the prompt rather than formatted through it, so
     a title like `fix the {parser}` renders as itself. This is the same reason
-    `ethos/prompts/identity.py` uses f-strings throughout.
+    `clio/prompts/identity.py` uses f-strings throughout.
     """
     messages = stage_notice_messages(
         "Clio", stage="done", title="rename {legacy} to {new}", detail="", who="mira",
@@ -803,7 +803,7 @@ def test_a_notice_carries_the_address_it_was_written_with() -> None:
         async def fetch(self, query: str, *args: Any) -> list[Any]:
             return []
 
-    from ethos.memory.store import MemoryStore
+    from clio.memory.store import MemoryStore
 
     store = MemoryStore.__new__(MemoryStore)
     store.db = _Db()
@@ -828,7 +828,7 @@ def test_work_nobody_asked_for_is_not_a_debt() -> None:
     A notice with no address would be a debt the loop keeps paying into a void,
     spending a pass and a model call on every idle cycle to tell nobody.
     """
-    from ethos.memory.store import MemoryStore
+    from clio.memory.store import MemoryStore
 
     store = MemoryStore.__new__(MemoryStore)
     store.db = None

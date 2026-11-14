@@ -28,9 +28,9 @@ from typing import Any
 
 import pytest
 
-from ethos.config import PathsConfig
-from ethos.toolhost.server import ToolContext
-from ethos.toolhost.tools.fs import FsWriteTool
+from clio.config import PathsConfig
+from clio.toolhost.server import ToolContext
+from clio.toolhost.tools.fs import FsWriteTool
 
 CTX = ToolContext(thread_id="fs-write")
 

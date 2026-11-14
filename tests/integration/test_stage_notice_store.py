@@ -17,10 +17,10 @@ from uuid import uuid4
 
 import pytest
 
-from ethos.gateway.embeddings import HashingEmbedder
-from ethos.memory.store import MemoryStore
-from ethos.schemas.gsl import IntentionRecord, IntentionStatus
-from ethos.social.deliberation import SocialCognition
+from clio.gateway.embeddings import HashingEmbedder
+from clio.memory.store import MemoryStore
+from clio.schemas.gsl import IntentionRecord, IntentionStatus
+from clio.social.deliberation import SocialCognition
 from tests.conftest import make_config
 
 pytestmark = pytest.mark.integration

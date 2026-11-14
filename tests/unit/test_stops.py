@@ -19,17 +19,17 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from pathlib import Path
 
-from ethos.engine.stops import (
+from clio.engine.stops import (
     LEDGER_SIZE,
     StopKind,
     StopsLedger,
     disposition_from_exception,
 )
-from ethos.engine.workspace import WorkspaceAssembler
-from ethos.gateway.cost import BudgetExceededError
-from ethos.gateway.providers.base import ProviderError
-from ethos.gateway.router import NoModelAvailable
-from ethos.prompts.identity import (
+from clio.engine.workspace import WorkspaceAssembler
+from clio.gateway.cost import BudgetExceededError
+from clio.gateway.providers.base import ProviderError
+from clio.gateway.router import NoModelAvailable
+from clio.prompts.identity import (
     GOLDEN_RULE_NOTE,
     HUMAN_LIKENESS_NOTE,
     STOP_DISPOSITION_NOTE,
@@ -127,7 +127,7 @@ def test_a_plain_provider_failure_is_an_error():
 def _assemble(**overrides):
     from tests.conftest import make_config as _cfg
 
-    config = _cfg(Path("/tmp/ethos-test-stops-ws"))
+    config = _cfg(Path("/tmp/clio-test-stops-ws"))
     kwargs = {
         "identity_doc": build_identity_kernel("Aria"),
         "tools": [],

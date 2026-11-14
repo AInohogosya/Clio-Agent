@@ -30,10 +30,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from ethos.prompts.deliberation import execution_state_block
-from ethos.prompts.gsl import PLAN_PROMPT, delegation_note
-from ethos.schemas.messages import SocialAction, SocialDecision
-from ethos.social.deliberation import (
+from clio.prompts.deliberation import execution_state_block
+from clio.prompts.gsl import PLAN_PROMPT, delegation_note
+from clio.schemas.messages import SocialAction, SocialDecision
+from clio.social.deliberation import (
     SocialCognition,
     _ExecutionState,
     claims_work_is_underway,
@@ -43,7 +43,7 @@ from tests.conftest import make_config
 
 
 def _config(name: str):
-    config = make_config(Path(f"/tmp/ethos-test-{name}"))
+    config = make_config(Path(f"/tmp/clio-test-{name}"))
     config.paths.ensure()
     return config
 
@@ -445,7 +445,7 @@ def test_apex_health_probes_the_real_import_chain(monkeypatch) -> None:
     real run takes, so a deployment whose desktop half is broken reads as
     unavailable before the agent plans a delegation on it.
     """
-    from ethos.subagents.apex import ApexSubAgent
+    from clio.subagents.apex import ApexSubAgent
 
     def _fake_import_plane(self):
         class _Mode:
@@ -474,7 +474,7 @@ def test_apex_health_probes_the_real_import_chain(monkeypatch) -> None:
 
 def test_apex_health_reports_available_when_the_whole_chain_imports(monkeypatch) -> None:
     """A health that can say yes is as necessary as one that says no."""
-    from ethos.subagents.apex import ApexSubAgent
+    from clio.subagents.apex import ApexSubAgent
 
     class _Mode:
         HIDDEN = "hidden"
@@ -506,7 +506,7 @@ def test_a_not_started_claim_about_started_work_is_withheld() -> None:
     conversation instead. The per-intention progress line is the evidence,
     and a claim that names that work as unstarted is withheld against it.
     """
-    from ethos.social.deliberation import claims_work_not_started
+    from clio.social.deliberation import claims_work_not_started
 
     assert claims_work_not_started("I haven't started the Helium review.")
     assert claims_work_not_started("Still checking — I have not yet started it.")

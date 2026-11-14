@@ -5,10 +5,10 @@ from pathlib import Path
 
 import pytest
 
-from ethos.core import bootstrap
+from clio.core import bootstrap
 
 """
-What `ethos up` reports about the interface, which is what it tells a person to open.
+What `clio up` reports about the interface, which is what it tells a person to open.
 
 `_prepare_interface` answers one question — will there be a page when the agent is
 up — and its answer is used twice: to decide whether the start-up says "open
@@ -19,12 +19,12 @@ answer that nobody checked.
 The first way was a rename nobody followed. The interface moved from `Phone/` to
 `interface/`, and this function kept looking for `Phone/`: `if phone.is_dir()` was
 false on every checkout in the repository, so the interface was never installed and
-never built by `ethos up`, and no error was raised — a directory that is not there
+never built by `clio up`, and no error was raised — a directory that is not there
 skips quietly. Every other step of the start-up carried on and reported success.
 
 The second was the return value, which was `True` on any path that did not raise:
 a checkout with no `interface/` in it, and a build that failed to produce an
-`index.html`, both came back `True`, so `ethos up` opened a browser onto whatever
+`index.html`, both came back `True`, so `clio up` opened a browser onto whatever
 the bridge had — which is a 503 that says the interface is not built, or a 404.
 
 So the answer is asked of the build rather than inferred from having tried.
@@ -50,7 +50,7 @@ def never_run_npm(monkeypatch: pytest.MonkeyPatch):
     pass by actually building something. Every subprocess in the module is replaced
     by one that records the call and reports failure.
 
-    `ETHOS_NODE` is cleared as well, and deliberately through `monkeypatch`. This
+    `CLIO_NODE` is cleared as well, and deliberately through `monkeypatch`. This
     function's real side effect is to put the Node it found in the environment for
     the supervisor to inherit, so a fake one installed here outlives the test and
     is read by the supervisor's own tests — as the command it starts the bridge
@@ -65,7 +65,7 @@ def never_run_npm(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(bootstrap, "_npm_install", lambda *a, **k: 1)
     monkeypatch.setattr(bootstrap.subprocess, "run", refuse)
     monkeypatch.setattr(bootstrap, "node_tool", lambda name, home=None: f"/nonexistent/{name}")
-    monkeypatch.delenv("ETHOS_NODE", raising=False)
+    monkeypatch.delenv("CLIO_NODE", raising=False)
     return attempted
 
 

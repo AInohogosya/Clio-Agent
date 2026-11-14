@@ -37,7 +37,7 @@ pnpm-debug.log*
 # Local state
 #
 # Everything the agent writes about itself lives under the configured home
-# (`paths.home`, `~/.ethos` by default, with `ETHOS_HOME` or `--home` on top).
+# (`paths.home`, `~/.ethos` by default, with `CLIO_HOME` or `--home` on top).
 # That is where the message exchange logs, the Postgres cluster, the
 # age-encrypted secret vault and its key, the agent's own memory and its sockets
 # end up. None of it is source, and the vault is the one thing here that must
@@ -68,7 +68,7 @@ data/
 !.env.example
 # The two credential files the systemd units name as `EnvironmentFile`
 # (`channel-keys.env`, `api-keys.env`), for a checkout that put them beside the
-# units rather than in `/home/ethos/.config/ethos/` where they belong.
+# units rather than in `/home/clio/.config/clio/` where they belong.
 *.env
 
 # Credentials in file form, for the deployment that keeps one on disk instead of
@@ -113,7 +113,7 @@ config/*
 *credential*.yml
 
 # The agent's home, for a checkout whose `paths.home` was pointed at the
-# checkout itself rather than at `~/.ethos` — `ETHOS_HOME=. ./start.sh` does
+# checkout itself rather than at `~/.ethos` — `CLIO_HOME=. ./start.sh` does
 # that, and it puts the vault key, the message logs and the memory database in
 # the tree. Ignored by name so that mistake cannot be published.
 .ethos/

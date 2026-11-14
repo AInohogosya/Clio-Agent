@@ -5,7 +5,7 @@ from typing import Any
 
 import pytest
 
-from ethos.gsl.loop import was_truncated
+from clio.gsl.loop import was_truncated
 from tests.conftest import make_config
 
 
@@ -48,7 +48,7 @@ class _SilentToolhost:
         self.calls: list[tuple[str, dict]] = []
 
     async def execute(self, name: str, args: dict, ctx) -> Any:
-        from ethos.toolhost.server import ToolResult
+        from clio.toolhost.server import ToolResult
 
         self.calls.append((name, args))
         return ToolResult(ok=True, content={"wrote": args.get("path", "")})
@@ -56,11 +56,11 @@ class _SilentToolhost:
 
 def _step_loop(toolhost: Any) -> Any:
     """A goal loop with one step left, driving the real `_execute_step`."""
-    from ethos.gsl.loop import GeneralSolverLoop
-    from ethos.schemas.gsl import Plan
+    from clio.gsl.loop import GeneralSolverLoop
+    from clio.schemas.gsl import Plan
 
     solver = GeneralSolverLoop.__new__(GeneralSolverLoop)
-    solver.config = make_config(Path("/tmp/ethos-test-tool-raises"))
+    solver.config = make_config(Path("/tmp/clio-test-tool-raises"))
     solver.gateway = None
     solver.toolhost = toolhost
     solver.thread_id = "self"
@@ -215,7 +215,7 @@ def test_the_prompts_that_do_the_work_say_it_was_asked_for() -> None:
     asserted on all three, because the gap was that each one was written
     separately and only one of them was told.
     """
-    from ethos.prompts.gsl import COMMISSIONED_ALREADY, PLAN_PROMPT, STEP_PROMPT
+    from clio.prompts.gsl import COMMISSIONED_ALREADY, PLAN_PROMPT, STEP_PROMPT
 
     for prompt in (PLAN_PROMPT, STEP_PROMPT):
         assert "{commissioned}" in prompt, (
@@ -247,7 +247,7 @@ def test_both_prompts_render_with_the_statement(template: str, fields: dict) -> 
     Which is the worst time to find out: it is inside the plan call, it is caught
     as `PlanUnavailable`, and the goal gets no plan at all.
     """
-    from ethos.prompts.gsl import PLAN_PROMPT, STEP_PROMPT
+    from clio.prompts.gsl import PLAN_PROMPT, STEP_PROMPT
 
     prompt = PLAN_PROMPT if template == "plan" else STEP_PROMPT
     body = prompt.format(**fields)
@@ -278,7 +278,7 @@ def test_the_step_prompt_says_to_edit_rather_than_rewrite() -> None:
     rewrite is one guess about every character, and one wrong character destroys
     everything that was right with nothing left to compare against.
     """
-    from ethos.prompts.gsl import EDIT_EXISTING_FILES, STEP_PROMPT
+    from clio.prompts.gsl import EDIT_EXISTING_FILES, STEP_PROMPT
 
     assert "{editing}" in STEP_PROMPT, "the prompt has no place to put the guidance"
     assert "`fs.edit`" in EDIT_EXISTING_FILES, "and it names the tool to use"
@@ -325,9 +325,9 @@ async def test_devise_drops_to_t2_after_repeated_planning_failures(tmp_path, mon
     the commissioned build never reached the T2 models that were answering, and
     the loop waited out the five-hour rung instead.
     """
-    from ethos.gsl import loop as loop_module
-    from ethos.gsl.loop import GeneralSolverLoop
-    from ethos.schemas.models import Tier
+    from clio.gsl import loop as loop_module
+    from clio.gsl.loop import GeneralSolverLoop
+    from clio.schemas.models import Tier
 
     solver = GeneralSolverLoop.__new__(GeneralSolverLoop)
     solver.config = make_config(tmp_path)
@@ -367,7 +367,7 @@ def test_the_shipped_plan_floor_does_not_reject_a_one_step_plan() -> None:
 
 
 def test_the_plan_prompt_does_not_promise_a_fixed_minimum() -> None:
-    from ethos.prompts.gsl import PLAN_PROMPT
+    from clio.prompts.gsl import PLAN_PROMPT
 
     assert "3 to 7 steps" not in PLAN_PROMPT
     assert "as many steps as the work needs" in PLAN_PROMPT
@@ -381,7 +381,7 @@ def test_a_failed_plan_is_revised_rather_than_abandoned() -> None:
     told the work had stopped. A plan is a hypothesis: the prompt now says what a
     failure means, what a revision changes, and that an empty plan is giving up.
     """
-    from ethos.prompts.gsl import DEGRADED_PLAN, DEVISE_PROMPT, PLAN_PROMPT
+    from clio.prompts.gsl import DEGRADED_PLAN, DEVISE_PROMPT, PLAN_PROMPT
 
     plan = " ".join(PLAN_PROMPT.split()).lower()
     assert "when a plan fails" in plan
@@ -402,7 +402,7 @@ def test_a_failed_plan_is_revised_rather_than_abandoned() -> None:
 
 
 def test_the_step_prompt_has_a_folder_action_that_is_not_fs_write() -> None:
-    from ethos.prompts.gsl import STEP_PROMPT
+    from clio.prompts.gsl import STEP_PROMPT
 
     flat = " ".join(STEP_PROMPT.split())
     assert "fs.mkdir" in flat
@@ -417,7 +417,7 @@ def test_a_desktop_deliverable_uses_a_visible_launcher_not_just_files() -> None:
     the step now carry the delivery rule, and the verifier is told to judge the
     thing where the person will meet it.
     """
-    from ethos.prompts.gsl import (
+    from clio.prompts.gsl import (
         PLAN_PROMPT,
         STEP_PROMPT,
         VERIFIER_PROMPT,
@@ -443,7 +443,7 @@ def test_a_desktop_deliverable_uses_a_visible_launcher_not_just_files() -> None:
 
 def test_the_report_names_the_files_the_work_wrote() -> None:
     """`done` is not an address; the path is what the person can act on."""
-    from ethos.gsl.loop import _delivered_note, _delivered_paths
+    from clio.gsl.loop import _delivered_note, _delivered_paths
 
     resume = {"artifacts": [
         {"tool": "fs.mkdir", "ok": True, "args": {"path": "/Users/me/Desktop/agent"}},
@@ -474,7 +474,7 @@ class _MemorySaved:
 
 
 def _bare_loop(config, memory: Any) -> Any:
-    from ethos.gsl.loop import GeneralSolverLoop
+    from clio.gsl.loop import GeneralSolverLoop
 
     return GeneralSolverLoop(config, memory, gateway=None, toolhost=None, verification=None)
 
@@ -492,7 +492,7 @@ def test_an_unbounded_strategy_switch_schedules_its_own_pacing(tmp_path: Path) -
     import asyncio
     from datetime import UTC, datetime
 
-    from ethos.gsl.loop import PLAN_RETRY_AFTER
+    from clio.gsl.loop import PLAN_RETRY_AFTER
 
     config = make_config(tmp_path)
     memory = _MemorySaved()

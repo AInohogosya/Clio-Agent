@@ -1,12 +1,12 @@
 # GSL: the General Solution Loop
 
 The General Solution Loop (GSL) is the one framework the agent uses to pursue any
-goal in any field. Sources: `ethos/gsl/loop.py`, `planner.py`, `evaluator.py`,
+goal in any field. Sources: `clio/gsl/loop.py`, `planner.py`, `evaluator.py`,
 `acceptance.py`, `verification.py`, `config.py:436-496`.
 
 ## 1. The cycle
 
-`GeneralSolverLoop.advance()` (`ethos/gsl/loop.py:166-1016`):
+`GeneralSolverLoop.advance()` (`clio/gsl/loop.py:166-1016`):
 
 ```
 understand → devise (3 candidates) → plan (≤7 steps)
@@ -86,7 +86,7 @@ the project, not from the model's confidence.
 
 ## 5. The verification ladder
 
-`VerificationLadder` (`ethos/gsl/verification.py:83-437`), three rungs in order:
+`VerificationLadder` (`clio/gsl/verification.py:83-437`), three rungs in order:
 
 1. **Objective checks** — the §4 commands and assertions.
 2. **Independent verifier** — a thread running a **different `diversity_family`**
@@ -106,7 +106,7 @@ Token budget for the model verifier: 1200 (`run_model_verifier`,
 
 `_notice_stage` (`loop.py:2022`) publishes a notice when an intention reaches
 `done / parked / awaiting_review`. Notices are **idempotent per `(intention_id,
-stage)`** (`ethos/memory/store.py:563-711`), addressed to the latest inbound sender,
+stage)`** (`clio/memory/store.py:563-711`), addressed to the latest inbound sender,
 decided via a small dedicated prompt (`STAGE_NOTICE_MAX_TOKENS = 900`), and run
 through the outbound pipeline's mid-task immediate rule
 ([05-social.md](05-social.md) §1).
@@ -118,7 +118,7 @@ work, and its budget accounting; the reopen sweep (`_maybe_reopen_parked`,
 `life.py` / `park_reopen_backoff`) retries it later. The worker process parks (not
 closes) on any failed thread result — the plain reading of a returned value, "the
 work is done," closed intentions as `done` over pursuits that had failed
-(`ethos/__main__.py:468-476`). Parked-vs-done is the ledger's honesty mechanism:
+(`clio/__main__.py:468-476`). Parked-vs-done is the ledger's honesty mechanism:
 **an intention is closed `done` only when the verification ladder says so.**
 
 ## 8. Token budgets (summary)
@@ -145,12 +145,12 @@ need new checks, not new code paths.
 ## Part II — Delegation: threads, workers, and the subagents
 
 The agent pursues multiple goals in parallel by delegating bounded slices of itself.
-Sources: `ethos/threads/manager.py`, `worker.py`, `context.py`,
-`ethos/subagents/`, `config.py:239-242`.
+Sources: `clio/threads/manager.py`, `worker.py`, `context.py`,
+`clio/subagents/`, `config.py:239-242`.
 
 ## 1. Threads: bounded parallel selves
 
-`ThreadManager` (`ethos/threads/manager.py:107-377`):
+`ThreadManager` (`clio/threads/manager.py:107-377`):
 
 - **Limits**: `max_concurrent = 4`, `max_depth = 2`, `mode = inprocess`
   (`config.py:239-242`) — depth 2 means a thread may spawn a thread, but not
@@ -168,14 +168,14 @@ Sources: `ethos/threads/manager.py`, `worker.py`, `context.py`,
   `_FAILED_RESULT_STATUSES {failed, unavailable, blocked, timeout, no-gateway,
   missing-intention}` **parks** the intention (`IntentionStatus.parked`) — the plain
   reading of a returned value, "the work is done," once closed failed pursuits as
-  `done` (`ethos/__main__.py:468-476`).
+  `done` (`clio/__main__.py:468-476`).
 - **Orphan reaper**: threads older than `stale_after_s` (default 7200 s) are reaped
   and their intentions parked (`manager.py:176-243`) — a lost thread becomes a
   recoverable parked goal, not a silent leak.
 
 ## 2. The worker process
 
-`run_thread` (`ethos/threads/worker.py:153-482`) dispatches on role:
+`run_thread` (`clio/threads/worker.py:153-482`) dispatches on role:
 
 1. **`verifier`** → `_run_verifier` (§5 below).
 2. **Subagent roles** `("foundry", "apex", "axiom")` (`worker.py:36`) → `_run_subagent`
@@ -194,7 +194,7 @@ cap 0 = unbounded retries (`worker.py:43-49`); a `ThreadAnswerUnusable` result
 
 ## 3. Workspaces: worktrees and leases
 
-`ethos/threads/context.py:12-35`:
+`clio/threads/context.py:12-35`:
 
 - **Git repositories** get a **git worktree**; everything else gets
   `~/work/.threads/<id>/` [D-29]. Delegated work never tramples the parent's
@@ -206,9 +206,9 @@ cap 0 = unbounded retries (`worker.py:43-49`); a `ThreadAnswerUnusable` result
   - `commit_lease` is per-target-locked (two threads committing to the same target
     serialize).
   - `rollback_lease` restores via trash (`lease_rollback`) and snapshot `restore()`
-    (`ethos/guardian/snapshots.py`).
+    (`clio/guardian/snapshots.py`).
   - `GuardianGate.review()` enforces `allowed_paths` and `budget_limit_usd` on calls
-    made under a lease (`ethos/guardian/gate.py:_review_lease`) — a leased thread
+    made under a lease (`clio/guardian/gate.py:_review_lease`) — a leased thread
     physically cannot write outside its fence or overspend.
 - Leases persist in the `workspace_leases` table
   (`migrations/versions/0006_clio_3_2.py`).
@@ -217,26 +217,26 @@ cap 0 = unbounded retries (`worker.py:43-49`); a `ThreadAnswerUnusable` result
 
 Three sibling codebases (directories `Foundry/`, `APEX/`, `AXIOM/`) are reachable as
 delegation targets via tools `subagent.status / subagent.foundry / subagent.apex /
-subagent.axiom` (`ethos/subagents/tools.py`, each timeout `86400 s` — the subagent
+subagent.axiom` (`clio/subagents/tools.py`, each timeout `86400 s` — the subagent
 reports its own verdict rather than the tool call timing it out).
 
 ### 4.1 The result contract
 
-`SubAgentResult` (`ethos/subagents/base.py:35-219`), statuses
+`SubAgentResult` (`clio/subagents/base.py:35-219`), statuses
 `done / blocked / unknown / failed / timeout / unavailable`. The conversion rule in
 `tools.py:38`: **only `done` is success.** Everything else is reported as what it is,
 and only `done` closes work.
 
 ### 4.2 Foundry — the software factory
 
-`ethos/subagents/foundry.py:274`: gate-verified software factory. Runs in-process
+`clio/subagents/foundry.py:274`: gate-verified software factory. Runs in-process
 (an `Orchestrator` + a `FoundryGatewayProvider` hopping to the gateway) or as
 `python -m foundry`. `_ensure_git_baseline` (`foundry.py:211`) initializes a
 `main` branch + `.gitignore` when absent (G000).
 
 ### 4.3 APEX — the desktop controller
 
-`ethos/subagents/apex.py:361`: desktop automation via the sibling APEX engine.
+`clio/subagents/apex.py:361`: desktop automation via the sibling APEX engine.
 Exit codes `0=done, 1=crash, 2=unknown, 3=blocked, 130=failed` → mapped to the
 contract (`apex.py:56-64`) — **exit 1 is a crash**, not "unknown", and it is honest
 about that. Default `hidden` mode: the controller runs in a hidden session observed
@@ -247,7 +247,7 @@ the controller being able to touch the observer.
 
 ### 4.4 AXIOM — the single-turn coding agent
 
-`ethos/subagents/axiom.py:431`: a coding agent driven one turn at a time through
+`clio/subagents/axiom.py:431`: a coding agent driven one turn at a time through
 `/api/snapshot`, `/api/model`, `/api/message` on a throwaway home dir and a free
 port (`axiom.py:255-287`). It **refuses mock runs** in both in-process and
 subprocess modes (`axiom.py:146,308`) — a coding agent that has never run its code
@@ -255,9 +255,9 @@ is not permitted to report success.
 
 ### 4.5 The bridge
 
-`ethos/subagents/bridge.py:181`: subagents speak to the gateway through its
+`clio/subagents/bridge.py:181`: subagents speak to the gateway through its
 OpenAI-compatible shim (`/v1/chat/completions`), `_MAX_TOKENS_CEILING = 32768`
-(`bridge.py:36`, duplicated in `ethos/gateway/compat.py:30`). The placeholder key
+(`bridge.py:36`, duplicated in `clio/gateway/compat.py:30`). The placeholder key
 `"clio-gateway"` marks requests that came from a sibling engine.
 
 ## 5. Verifier threads

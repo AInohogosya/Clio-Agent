@@ -30,7 +30,7 @@ let port = 0;
 
 /** A directory holding one real index.html, so the page check has a real answer. */
 function makeBuild() {
-  const dir = mkdtempSync(join(tmpdir(), 'ethos-dist-'));
+  const dir = mkdtempSync(join(tmpdir(), 'clio-dist-'));
   writeFileSync(join(dir, 'index.html'), '<!doctype html><title>Clio Agent</title>');
   return dir;
 }
@@ -39,10 +39,10 @@ function startBridge(overrides = {}) {
   return spawn(process.execPath, [SERVER], {
     env: {
       ...process.env,
-      ETHOS_HOME: home,
-      ETHOS_CONFIG_DIR: CONFIG_DIR,
-      ETHOS_WEB_PORT: String(port),
-      ETHOS_PHONE_DIST: builtPage,
+      CLIO_HOME: home,
+      CLIO_CONFIG_DIR: CONFIG_DIR,
+      CLIO_WEB_PORT: String(port),
+      CLIO_PHONE_DIST: builtPage,
       ...overrides,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -61,7 +61,7 @@ async function freePort() {
 }
 
 before(async () => {
-  home = mkdtempSync(join(tmpdir(), 'ethos-persisted-'));
+  home = mkdtempSync(join(tmpdir(), 'clio-persisted-'));
   configFile = join(home, 'phone-config.json');
   builtPage = makeBuild();
   port = await freePort();

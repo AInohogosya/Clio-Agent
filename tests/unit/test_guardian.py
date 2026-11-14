@@ -6,11 +6,11 @@ from pathlib import Path
 
 import pytest
 
-from ethos.guardian.classifier import classify_shell, classify_tool, extract_paths
-from ethos.guardian.gate import GatePath, GuardianGate, Verdict
-from ethos.guardian.journal import ActionJournal, DuplicateAction
-from ethos.guardian.trash import TrashStore
-from ethos.observability.audit import GENESIS_HASH, FileAuditSink, canonical_record, compute_hash
+from clio.guardian.classifier import classify_shell, classify_tool, extract_paths
+from clio.guardian.gate import GatePath, GuardianGate, Verdict
+from clio.guardian.journal import ActionJournal, DuplicateAction
+from clio.guardian.trash import TrashStore
+from clio.observability.audit import GENESIS_HASH, FileAuditSink, canonical_record, compute_hash
 from tests.conftest import FakeRegistry, FakeVerifier, ListAudit, NoopControl, NoopSnapshots
 
 
@@ -543,7 +543,7 @@ def test_hash_chain_math():
 
 async def test_file_audit_chain_verifies_and_detects_tampering(tmp_path: Path):
     sink = FileAuditSink(tmp_path / "audit.jsonl")
-    from ethos.observability.audit import AuditLog
+    from clio.observability.audit import AuditLog
 
     audit = AuditLog(sink)
     await audit.append(actor="self", category="test", summary="first", details={})

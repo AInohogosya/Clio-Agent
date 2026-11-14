@@ -1,5 +1,5 @@
 {
-  "name": "ethos-web",
+  "name": "clio-web",
   "version": "1.0.0",
   "private": true,
   "description": "The Clio Agent 3.1 interface bridge: serves the interface and speaks its agent protocol",

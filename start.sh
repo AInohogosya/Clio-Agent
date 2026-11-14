@@ -1,30 +1,30 @@
 #!/usr/bin/env bash
 #
 # Deprecated. Kept so an existing muscle memory, an existing README link and an
-# existing script keep working; the startup itself is now `ethos up`.
+# existing script keep working; the startup itself is now `clio up`.
 #
 #   pip install -e .        once
-#   ethos up               from anywhere, in any directory
+#   clio up               from anywhere, in any directory
 #
 # This file used to hold the whole start-up: 330 lines that created the
 # virtualenv, installed the dependencies, brought up Postgres, migrated, seeded,
 # found Node, installed and built the interface, ran a health check, started the
 # agent detached, waited for it to answer and opened the page. That sequence now
-# lives in `ethos/core/bootstrap.py`, next to the commands it runs, and there is
+# lives in `clio/core/bootstrap.py`, next to the commands it runs, and there is
 # one implementation of it rather than one in bash and a smaller one in the
 # package the console script starts.
 #
 # What is left here is the one part that cannot move: building a virtualenv needs
 # `uv` installed, and `uv` is what is being used to install this project, so there
 # is no interpreter yet to ask to do it. Everything after that is delegated to
-# `ethos up` — including the flags, which are translated rather than re-parsed
+# `clio up` — including the flags, which are translated rather than re-parsed
 # twice.
 #
 # Usage (all still work, all deprecated):
-#   ./start.sh [up] [--no-open] [--wait N]  the same as `ethos up`
-#   ./start.sh status                      the same as `ethos status`
-#   ./start.sh stop                        the same as `ethos stop`
-#   ./start.sh logs                        the same as `ethos logs`
+#   ./start.sh [up] [--no-open] [--wait N]  the same as `clio up`
+#   ./start.sh status                      the same as `clio status`
+#   ./start.sh stop                        the same as `clio stop`
+#   ./start.sh logs                        the same as `clio logs`
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
@@ -38,7 +38,7 @@ else
 fi
 
 OPEN_BROWSER=1
-WAIT_S="${ETHOS_AGENT_WAIT_S:-180}"
+WAIT_S="${CLIO_AGENT_WAIT_S:-180}"
 COMMAND="up"
 
 while [ $# -gt 0 ]; do
@@ -52,12 +52,12 @@ while [ $# -gt 0 ]; do
     -h|--help)
       cat >&2 <<'USAGE'
 Usage:
-  ./start.sh [up] [--no-open] [--wait N]  the same as `ethos up`
-  ./start.sh status                      the same as `ethos status`
-  ./start.sh stop                        the same as `ethos stop`
-  ./start.sh logs                        the same as `ethos logs`
+  ./start.sh [up] [--no-open] [--wait N]  the same as `clio up`
+  ./start.sh status                      the same as `clio status`
+  ./start.sh stop                        the same as `clio stop`
+  ./start.sh logs                        the same as `clio logs`
 
-Deprecated: use `ethos up` (after `pip install -e .`), which works from any
+Deprecated: use `clio up` (after `pip install -e .`), which works from any
 directory and is what the README documents.
 USAGE
       exit 0
@@ -70,8 +70,8 @@ done
 # about is a deprecation that only bites when it is removed. On stderr because
 # this script's stdout is the agent's report, and a line of the agent's report
 # should be the agent's report.
-echo "-- ./start.sh is deprecated; this runs \`ethos ${COMMAND}\` for you." >&2
-echo "-- install it once with \`pip install -e .\` and type \`ethos up\` instead." >&2
+echo "-- ./start.sh is deprecated; this runs \`clio ${COMMAND}\` for you." >&2
+echo "-- install it once with \`pip install -e .\` and type \`clio up\` instead." >&2
 
 # PATH, widened once, before anything is looked for.
 #
@@ -81,7 +81,7 @@ echo "-- install it once with \`pip install -e .\` and type \`ethos up\` instead
 # `subprocess`. On a machine that has both tools installed, `./start.sh` from one
 # of those said `uv is required` — advice about a dependency the machine does not
 # lack, which is the same class of wrong answer as "the agent is not running".
-# `ethos up` looks for Node itself (`ethos.core.supervisor.node_tool`), so this is
+# `clio up` looks for Node itself (`clio.core.supervisor.node_tool`), so this is
 # only about the one tool that has to exist before there is an interpreter.
 for dir in /opt/homebrew/bin /usr/local/bin "$HOME/.local/bin" "$HOME/.cargo/bin"; do
   if [ -d "$dir" ]; then
@@ -106,12 +106,12 @@ if [ "$COMMAND" != "up" ]; then
       *) echo "no virtualenv in $ROOT yet — run ./start.sh (or: pip install -e .)" >&2; exit 1 ;;
     esac
   fi
-  exec "$PY" -m ethos "$COMMAND"
+  exec "$PY" -m clio "$COMMAND"
 fi
 
 # -------------------------------------------------------------------- the venv
 #
-# `ethos up` needs its dependencies installed before it can be asked to do
+# `clio up` needs its dependencies installed before it can be asked to do
 # anything, and installing them is what this file is still for.
 
 if ! command -v uv >/dev/null 2>&1; then
@@ -142,4 +142,4 @@ set -- up --wait "$WAIT_S"
 if [ "$OPEN_BROWSER" -eq 0 ]; then
   set -- "$@" --no-open
 fi
-exec "$PY" -m ethos "$@"
+exec "$PY" -m clio "$@"

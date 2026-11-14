@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import asyncio
 
-from ethos.guardian.approval import ApprovalManager
-from ethos.guardian.gate import GatePath, GuardianGate, Verdict
-from ethos.guardian.safety import (
+from clio.guardian.approval import ApprovalManager
+from clio.guardian.gate import GatePath, GuardianGate, Verdict
+from clio.guardian.safety import (
     decide,
     describe_level,
     effective_level,
@@ -14,7 +14,7 @@ from ethos.guardian.safety import (
     request_host,
     usable_tool_names,
 )
-from ethos.guardian.trash import TrashStore
+from clio.guardian.trash import TrashStore
 from tests.conftest import FakeRegistry, FakeVerifier, ListAudit, NoopControl, NoopSnapshots
 
 
@@ -24,14 +24,14 @@ def test_default_level_is_3(config):
 
 
 def test_parse_and_env_override(config, monkeypatch):
-    monkeypatch.setenv("ETHOS_SAFETY_LEVEL", "1")
+    monkeypatch.setenv("CLIO_SAFETY_LEVEL", "1")
     assert effective_level(config, None) == 1
-    monkeypatch.setenv("ETHOS_SAFETY_LEVEL", "99")
+    monkeypatch.setenv("CLIO_SAFETY_LEVEL", "99")
     assert effective_level(config, None) == 3
 
 
 def test_control_overrides_env(config, monkeypatch):
-    monkeypatch.setenv("ETHOS_SAFETY_LEVEL", "1")
+    monkeypatch.setenv("CLIO_SAFETY_LEVEL", "1")
     control = NoopControl()
     control.safety_level = 4
     assert effective_level(config, control) == 4
@@ -245,8 +245,8 @@ async def test_gate_level2_still_waives_allowlisted_hosts(config, tmp_path):
 
 
 async def test_catalog_filters_at_level1(config, tmp_path):
-    from ethos.guardian.journal import ActionJournal
-    from ethos.toolhost.server import Toolhost
+    from clio.guardian.journal import ActionJournal
+    from clio.toolhost.server import Toolhost
 
     gate = _gate(config, tmp_path, 1)
     host = Toolhost(config, gate=gate, journal=ActionJournal(file_path=tmp_path / "j.jsonl"))

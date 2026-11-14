@@ -9,26 +9,26 @@
  * processes, so whether a page existed depended on which finished first — and the
  * bridge decided that once, at startup, so a bridge which lost the race could never
  * serve a page for the rest of its life. Every status signal then came from
- * `/api/health`, which such a bridge answers perfectly: `ethos status` reported
- * `interface: up` over a 404, and re-running `ethos up` reported "already running"
+ * `/api/health`, which such a bridge answers perfectly: `clio status` reported
+ * `interface: up` over a 404, and re-running `clio up` reported "already running"
  * and changed nothing. The documented remedy was the one thing guaranteed not to help.
  *
  * So this file owns the order, checks the answers, and puts right what it finds:
  *
  *   1. the Node side:  the bridge's dependencies, and the interface's build
- *   2. the virtualenv: created, and the agent installed, so `ethos` exists at all
+ *   2. the virtualenv: created, and the agent installed, so `clio` exists at all
  *   3. the last run:   every session already in existence is ended — the supervisor,
  *                      then anything of this checkout still listening on any port,
  *                      then whatever holds the port — so that what follows is a
  *                      new session and not an old one reported as a new one
- *   4. the agent:      `ethos up` — Postgres, migrations, seeds, supervisor, wait
+ *   4. the agent:      `clio up` — Postgres, migrations, seeds, supervisor, wait
  *   5. the page:       asked for, and served here if nobody else is serving it
  *
- * Step 2 is the only part that could not live inside `ethos up`: building a
+ * Step 2 is the only part that could not live inside `clio up`: building a
  * virtualenv needs `uv`, and `uv` is what installs this project, so there is no
  * interpreter yet to ask. Everything after it is delegated rather than restated.
  *
- * Nothing here needs a virtualenv to be active, or `ethos` on `PATH` — the venv's
+ * Nothing here needs a virtualenv to be active, or `clio` on `PATH` — the venv's
  * interpreter is called by absolute path, and `npm start` is reached over Node. That
  * is deliberate: the people who need this command most are the ones whose shell has
  * neither, and a start-up that assumes an activated virtualenv is a start-up that
@@ -70,7 +70,7 @@ const WINDOWS = process.platform === "win32";
 const VENV = join(ROOT, ".venv");
 const VENV_BIN = join(VENV, WINDOWS ? "Scripts" : "bin");
 const PYTHON = join(VENV_BIN, WINDOWS ? "python.exe" : "python");
-const ETHOS = join(VENV_BIN, WINDOWS ? "ethos.exe" : "ethos");
+const ETHOS = join(VENV_BIN, WINDOWS ? "clio.exe" : "clio");
 const INDEX_HTML = join(INTERFACE, "packages", "web", "dist", "index.html");
 const BRIDGE_ENTRY = join(WEB, "server", "index.mjs");
 
@@ -202,12 +202,12 @@ function preparePython() {
   } else if (!existsSync(ETHOS)) {
     step("installing the agent", [PYTHON, "-m", "pip", "install", "-e", ".[dev]"]);
   }
-  // The console script is what `ethos stop` and `make` reach for, and this function's
+  // The console script is what `clio stop` and `make` reach for, and this function's
   // whole purpose is that a person never has to activate anything to get one. An
   // install that "succeeded" without producing it has not finished.
   if (!existsSync(ETHOS)) {
     die(
-      "the agent is installed in .venv but there is no `ethos` command in it.",
+      "the agent is installed in .venv but there is no `clio` command in it.",
       `   Look in ${VENV_BIN}. If the project was installed somewhere else, remove .venv and run this again.`,
     );
   }
@@ -217,7 +217,7 @@ function preparePython() {
 
 /**
  * The port the bridge will bind, resolved the way the bridge resolves it:
- * `ETHOS_WEB_PORT`, then `web.http_port` from the shipped config with the agent's
+ * `CLIO_WEB_PORT`, then `web.http_port` from the shipped config with the agent's
  * own home merged over it, then 8720.
  *
  * Read through `web/node_modules` — which step 1 has already installed — rather than
@@ -226,13 +226,13 @@ function preparePython() {
  * so there is one rule here instead of two that agree until an edit.
  */
 function resolvePort() {
-  const fromEnv = Number(process.env.ETHOS_WEB_PORT);
+  const fromEnv = Number(process.env.CLIO_WEB_PORT);
   if (Number.isInteger(fromEnv) && fromEnv > 0) return fromEnv;
   try {
     const require = createRequire(BRIDGE_ENTRY);
     const { load } = require("js-yaml");
-    const configDir = process.env.ETHOS_CONFIG_DIR
-      ? resolve(process.env.ETHOS_CONFIG_DIR)
+    const configDir = process.env.CLIO_CONFIG_DIR
+      ? resolve(process.env.CLIO_CONFIG_DIR)
       : join(ROOT, "config");
     const readYaml = (file) => {
       try {
@@ -242,10 +242,10 @@ function resolvePort() {
       }
     };
     // `os.homedir()` rather than `$HOME`: Windows sets `USERPROFILE`, so reading
-    // `HOME` there yields "" and the agent's home becomes `/.ethos` — a path that
+    // `HOME` there yields "" and the agent's home becomes `/.clio` — a path that
     // never exists, which reads as "no override on file" and so silently resolves
     // the port from the shipped config instead of the deployment's own.
-    const home = process.env.ETHOS_HOME || join(os.homedir(), ".ethos");
+    const home = process.env.CLIO_HOME || join(os.homedir(), ".clio");
     const merged = { ...readYaml(join(configDir, "channels.yaml")), ...readYaml(join(home, "channels.yaml")) };
     const port = merged?.web?.http_port;
     if (Number.isInteger(port) && port > 0) return port;
@@ -368,11 +368,11 @@ function describePid(pid) {
  * — `node web/server/index.mjs`, which is what the README, the Makefile and this
  * file all use — starts it with a relative one.
  *
- * The agent is matched on how it is invoked rather than on the word "ethos"
+ * The agent is matched on how it is invoked rather than on the word "clio"
  * appearing anywhere: a substring test also answers yes to a text editor with
  * this checkout's README open, and ending somebody's session by pid because of
- * what they had open is not a start command's decision to make. `python -m ethos
- * …` is how the supervisor and all seven of its children run, and `…/bin/ethos` is
+ * what they had open is not a start command's decision to make. `python -m clio
+ * …` is how the supervisor and all seven of its children run, and `…/bin/clio` is
  * the console script, so those two are the whole of it.
  */
 function isBridgeCommand(command) {
@@ -386,7 +386,7 @@ function isBridgeCommand(command) {
 
 function isAgentCommand(command) {
   const normalised = command.replace(/\\/g, "/");
-  return /(?:-m\s+ethos\b|\/ethos\b|^ethos\b)/.test(normalised);
+  return /(?:-m\s+clio\b|\/clio\b|^clio\b)/.test(normalised);
 }
 
 /** Whether a pid belongs to a session this script is entitled to end. */
@@ -411,14 +411,14 @@ async function waitForPage(port, budgetMs) {
 /**
  * The supervisor's pid, if an earlier session's agent is still up.
  *
- * `ethos status --pid` rather than the pid file: a file left behind by a `kill -9`
+ * `clio status --pid` rather than the pid file: a file left behind by a `kill -9`
  * names a supervisor that is not there, and a start-up that believed it would stop
  * nothing, hand the port to a second supervisor, and then report two agents. The
  * command exits non-zero when there is no live process, which is the answer wanted
  * here and needs no parsing of prose to get.
  */
 function supervisorPid() {
-  const asked = spawnSync(PYTHON, ["-m", "ethos", "status", "--pid"], { cwd: ROOT, encoding: "utf8" });
+  const asked = spawnSync(PYTHON, ["-m", "clio", "status", "--pid"], { cwd: ROOT, encoding: "utf8" });
   if (asked.error || asked.status !== 0) return null;
   const pid = Number((asked.stdout ?? "").trim());
   return Number.isInteger(pid) && pid > 1 ? pid : null;
@@ -427,13 +427,13 @@ function supervisorPid() {
 /**
  * The agent of the session being replaced, ended before a new one is started.
  *
- * `ethos stop` rather than a signal of our own, because the supervisor is what
+ * `clio stop` rather than a signal of our own, because the supervisor is what
  * knows its children: it is asked once, it closes each of them, it removes its own
  * pid file, and the command does not return until that has happened — so by the
  * time this function is done, nothing of the old session is left to hold a port.
  *
  * The refusal to continue is deliberate. A supervisor that will not stop is not a
- * problem this start-up can route around: `ethos up` finds its pid, reports the
+ * problem this start-up can route around: `clio up` finds its pid, reports the
  * agent as already running, and changes nothing, which is the one outcome this
  * step exists to make impossible. Better to stop here with the pid in the message
  * than to start a second seven-process agent beside the first one.
@@ -442,7 +442,7 @@ function stopRunningAgent() {
   const pid = supervisorPid();
   if (pid === null) return;
   say(`-- ending the session already running: stopping the agent (supervisor pid ${pid})`);
-  if (run([PYTHON, "-m", "ethos", "stop"], { optional: true }) === 0) return;
+  if (run([PYTHON, "-m", "clio", "stop"], { optional: true }) === 0) return;
 
   // A non-zero exit is not one thing. On Windows it can mean the supervisor is
   // gone and only its children were hard-stopped, which the port check below
@@ -456,7 +456,7 @@ function stopRunningAgent() {
   const endIt = WINDOWS ? `taskkill /PID ${pid} /T /F` : `kill ${pid}`;
   die(
     `the agent already running (supervisor pid ${pid}) would not stop, and a new one would fight it for every port.`,
-    `   End it yourself with \`${endIt}\`, or read what it is saying first: \`ethos logs\`.`,
+    `   End it yourself with \`${endIt}\`, or read what it is saying first: \`clio logs\`.`,
   );
 }
 
@@ -493,7 +493,7 @@ async function freePort(port, { keepServedPage = false } = {}) {
   if (!ours && held.servesPage) {
     die(
       `something that is not part of this checkout is serving ${port}, so this session cannot have it.`,
-      `   It is ${pid ? describePid(pid) : "a process this script cannot identify"}. Stop it, or start beside it: ETHOS_WEB_PORT=8721 npm start`,
+      `   It is ${pid ? describePid(pid) : "a process this script cannot identify"}. Stop it, or start beside it: CLIO_WEB_PORT=8721 npm start`,
     );
   }
 
@@ -523,7 +523,7 @@ async function freePort(port, { keepServedPage = false } = {}) {
     const findIt = WINDOWS ? `netstat -ano | findstr :${port}` : `lsof -iTCP:${port} -sTCP:LISTEN`;
     die(
       `something is still holding ${port} and will not let go of it.`,
-      `   Find it with \`${findIt}\`, or start on another port: ETHOS_WEB_PORT=8721 npm start`,
+      `   Find it with \`${findIt}\`, or start on another port: CLIO_WEB_PORT=8721 npm start`,
     );
   }
 }
@@ -589,7 +589,7 @@ async function endPid(pid, why) {
  * Every process of this checkout still listening on any loopback port, or nothing.
  *
  * The port the bridge binds is one thing, but a session is more than it: a bridge
- * left on another port by an earlier `ETHOS_WEB_PORT=8721 npm start`, or an agent
+ * left on another port by an earlier `CLIO_WEB_PORT=8721 npm start`, or an agent
  * started by hand, answers on a port this file never resolves and so would survive
  * the port check untouched — two sessions where the person who typed `npm start`
  * asked for one. Every listening pid is asked what it is, and the ones that are
@@ -681,14 +681,14 @@ if (interfaceOnly) {
   }
   await serveInForeground();
 } else {
-  // Step 4. `ethos up` brings up Postgres, migrates, seeds, starts the supervisor and
+  // Step 4. `clio up` brings up Postgres, migrates, seeds, starts the supervisor and
   // waits for a sign of life. It is a no-op on an agent that is already running,
   // which is why step 3 ends one rather than relying on this to notice: a start-up
   // that starts nothing and reports the old session as a new one is worse than one
   // that says nothing happened.
-  const status = run([PYTHON, "-m", "ethos", "up", ...(noOpen ? ["--no-open"] : [])]);
+  const status = run([PYTHON, "-m", "clio", "up", ...(noOpen ? ["--no-open"] : [])]);
   if (status !== 0) {
-    die("the agent did not come up.", "   `ethos logs` says why; the log paths are in the output above.");
+    die("the agent did not come up.", "   `clio logs` says why; the log paths are in the output above.");
   }
 
   // Step 5. The supervisor starts the bridge as an *optional* child, and optional

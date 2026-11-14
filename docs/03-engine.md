@@ -2,12 +2,12 @@
 
 The core of Clio Agent is a tick-based loop that runs on its own clock. This document
 specifies its phases, its state machine, its rhythm and energy model, and its failure
-semantics. Primary sources: `ethos/engine/life.py`, `ethos/engine/states.py`,
-`ethos/engine/rhythm.py`, `ethos/core/runner.py`.
+semantics. Primary sources: `clio/engine/life.py`, `clio/engine/states.py`,
+`clio/engine/rhythm.py`, `clio/core/runner.py`.
 
 ## 1. `life()` — the outer loop
 
-`Life.life()` (`ethos/engine/life.py:2008-2122`):
+`Life.life()` (`clio/engine/life.py:2008-2122`):
 
 1. **`wake_up()` is retried forever** (60 s sleep between attempts) until it succeeds
    or `control.ending` is signalled (`life.py:2015-2031`). Startup failure is a wait,
@@ -28,7 +28,7 @@ semantics. Primary sources: `ethos/engine/life.py`, `ethos/engine/states.py`,
 
 ## 2. `_cycle()` — one pass
 
-Order (`ethos/engine/life.py:2124-2187`):
+Order (`clio/engine/life.py:2124-2187`):
 
 ```
 _pace() → _maybe_reopen_parked() → perceive() → attention.appraise(...)
@@ -59,7 +59,7 @@ _pace() → _maybe_reopen_parked() → perceive() → attention.appraise(...)
 
 ## 3. The state machine
 
-Eight states (`ethos/engine/states.py:10-18`):
+Eight states (`clio/engine/states.py:10-18`):
 
 ```
 THINKING_FOCUSED, THINKING_REFLECTING, ACTING, WAITING, NOTIFYING,
@@ -84,7 +84,7 @@ RESTING, PAUSED, RESUMING
 | `RESTING` | 0.50 |
 
 The threshold is the **only** interrupt gate — there is no kind whitelist
-(`ethos/engine/attention.py`). A salient-enough timer interrupts deep focus; an
+(`clio/engine/attention.py`). A salient-enough timer interrupts deep focus; an
 unsalient message does not interrupt `THINKING_REFLECTING`.
 
 ## 4. Rhythm and energy
@@ -105,13 +105,13 @@ Tick seconds per state (`config.py:583-587`):
 | `PAUSED` | 5.0 |
 
 Each tick is jittered ±15% (uniform) with a floor of 0.2 s
-(`ethos/engine/rhythm.py:184-190`). `_wait_until_next()` races the tick sleep against
+(`clio/engine/rhythm.py:184-190`). `_wait_until_next()` races the tick sleep against
 percept arrival, so a message never waits for the tick to elapse
 (`life.py:330-371`).
 
 ### 4.2 Energy
 
-`ethos/engine/rhythm.py:92-122`, configured at `config.py:337-354`:
+`clio/engine/rhythm.py:92-122`, configured at `config.py:337-354`:
 
 ```
 energy = min(1 − spent/B, circadian) + 0.1 × rest_blocks(30 min), clipped to [0, 1]
@@ -139,7 +139,7 @@ delay = min(base · 2^attempt · (1 + U · jitter), max)
 
 ## 5. `decide()` — the priority ladder
 
-First match wins (`ethos/engine/life.py:589-741`):
+First match wins (`clio/engine/life.py:589-741`):
 
 1. **Pending inbound** (limit 3 per pass, `life.py:800-807`) — unless a goal is owed
    and deferrals exceed `rhythm.focus.inbound_defers_goal_max = 2` (`config.py:378`).
@@ -173,7 +173,7 @@ First match wins (`ethos/engine/life.py:589-741`):
 - A cycle that raises is **recorded** (stops ledger), published, and retried next
   tick. Rate limits and outages are bad minutes.
 - Deliberation rate-limit escalation ladder: 5 m → 1 h → 5 h → 1 d
-  (`ethos/social/deliberation.py:138-147`), shared with the gateway's
+  (`clio/social/deliberation.py:138-147`), shared with the gateway's
   `WAIT_SCHEDULE (300, 3600, 18000, 86400)`.
 - The supervisor restarts required children forever with backoff
   (`supervisor.py:144-145`), and the wedged-core heartbeat check catches a core that
@@ -181,7 +181,7 @@ First match wins (`ethos/engine/life.py:589-741`):
   stability.
 - On a clean stop, `bookmark(focus)` is saved so the next wake resumes the suspended
   work — the agent keeps its place in its own thoughts across restarts
-  (`ethos/memory/continuity.py`).
+  (`clio/memory/continuity.py`).
 
 ## 8. Theory: why a clock of its own
 
@@ -202,12 +202,12 @@ between messages?* The answer implemented here:
 
 Attention is the mechanism that decides what the agent thinks about next, how deeply
 an incoming stimulus is assessed, and what ends up in front of the model. Sources:
-`ethos/engine/attention.py`, `ethos/engine/workspace.py`, `ethos/schemas/models.py`,
+`clio/engine/attention.py`, `clio/engine/workspace.py`, `clio/schemas/models.py`,
 `config.py:295-319,1038-1042`.
 
 ## 1. The tier system (T0–T3)
 
-Every act of cognition has a tier (`ethos/schemas/models.py:11-15`), which selects the
+Every act of cognition has a tier (`clio/schemas/models.py:11-15`), which selects the
 minimum model quality the gateway may route to (`config.py:1038-1042`):
 
 | Tier | Floor | Role |
@@ -220,11 +220,11 @@ minimum model quality the gateway may route to (`config.py:1038-1042`):
 The tier is both a **cost** control (a wander decision never burns a frontier model)
 and an **accuracy** floor (a consequential commitment never routes to a weak model).
 If no available model clears the floor, the pinned base model is returned as an
-exemption rather than failing (`ethos/gateway/router.py:310-318`).
+exemption rather than failing (`clio/gateway/router.py:310-318`).
 
 ## 2. Salience scoring (T0 math)
 
-Rule-based salience (`ethos/engine/attention.py:31-61`):
+Rule-based salience (`clio/engine/attention.py:31-61`):
 
 ```
 sal = clip(ws·src + wu·urg + wr·rel + wn·nov)
@@ -245,7 +245,7 @@ not outrank the agent's own open work at equal urgency.
 
 ## 3. `appraise()` — the attention pass
 
-`appraise()` (`ethos/engine/attention.py:163-289`) each cycle:
+`appraise()` (`clio/engine/attention.py:163-289`) each cycle:
 
 1. **Dedupe** percepts on `(kind, source)` within a 10-second window.
 2. **Score and sort** all candidates by rule salience.
@@ -267,18 +267,18 @@ The interrupt model encodes a position about attention:
 - **Deep work is protected.** While `THINKING_FOCUSED`, only salience ≥ 0.65 breaks
   through. The agent's own commitments are not hostage to whoever typed last —
   the philosophical commitment ("the newest voice does not win by being newest",
-  `ethos/prompts/identity.py:217-219`) is literally a threshold.
+  `clio/prompts/identity.py:217-219`) is literally a threshold.
 - **Reflection is interruptible.** `THINKING_REFLECTING` yields at 0.40.
 - **Rest is interruptible at 0.50** — higher than reflection, because a resting agent
   should only wake for something genuinely worth waking for.
 - **Everything competes, nothing is exempt.** Messages, timers, thread results,
   guardian undos, control updates and raw percepts all enter the same scoring funnel
-  (`ethos/core/runner.py:41-44`).
+  (`clio/core/runner.py:41-44`).
 
 ## 5. The workspace: what one prompt is made of
 
 `_assemble_workspace()` builds the model-facing prompt. Its block order is fixed
-(`ethos/engine/workspace.py:13-27`):
+(`clio/engine/workspace.py:13-27`):
 
 ```
 identity, tools, limits, situation, commitments, conversations,
@@ -291,13 +291,13 @@ focus, thread, recent, memories, thoughts, stops, percepts
 prompt and are stable across cycles, so the provider-side prompt cache is read on
 every subsequent turn:
 
-- **identity** — the identity kernel (`ethos/prompts/identity.py:489-549`),
+- **identity** — the identity kernel (`clio/prompts/identity.py:489-549`),
   documented in [04-memory-and-self-model.md](04-memory-and-self-model.md).
 - **tools** — the full tool catalog, rendered with complete nested type signatures,
   roughly 3k tokens, deliberately paid in the cached prefix so "every call is well
-  formed on the first attempt" (`ethos/prompts/identity.py:611-650`).
+  formed on the first attempt" (`clio/prompts/identity.py:611-650`).
 - **limits** — the hard limits H1–H6 and the guardian refusal contract
-  (`ethos/prompts/identity.py:663-699`).
+  (`clio/prompts/identity.py:663-699`).
 
 The digest of the workspace is `sha256[:32]` (`workspace.py:57-81`) and is recorded
 with each cycle row.
@@ -312,7 +312,7 @@ with each cycle row.
 - **memories** — retrieval results, `k = 12`.
 - **thoughts** — last 10 thoughts (`RECENT_THOUGHTS = 10`).
 - **stops** — the stopping ledger: 24-entry ledger, last 6 rendered
-  (`ethos/engine/stops.py`, `LEDGER_SIZE 24`, `RENDER_LIMIT 6`). This is what makes
+  (`clio/engine/stops.py`, `LEDGER_SIZE 24`, `RENDER_LIMIT 6`). This is what makes
   honest end-of-work reporting possible: the facts of *what stopped* are in front of
   the model, and the sentences are composed from them.
 - **percepts** — capped at 20, each wrapped in `<untrusted>` tags; page content,
@@ -330,16 +330,16 @@ The attention subsystem implements a consistent economics of cognition:
    interruption: cheap in reflection, expensive in focus.
 4. **Provenance-aware.** Untrusted content is tagged; context blocks outrank
    retrievals; the workspace states its own epistemics to the reader
-   (`ethos/prompts/identity.py:136-149`): a missing thing is not an absent thing.
+   (`clio/prompts/identity.py:136-149`): a missing thing is not an absent thing.
 ## Part III — Drives: motivation, impulses, and unowned time
 
 The agent is not only reactive: it has an internal motivational system that generates
-work nobody asked for. Sources: `ethos/engine/drives.py`, `ethos/engine/reverie.py`,
-`ethos/schemas/models.py`.
+work nobody asked for. Sources: `clio/engine/drives.py`, `clio/engine/reverie.py`,
+`clio/schemas/models.py`.
 
 ## 1. The seven drives
 
-`ethos/engine/drives.py:19` — seven intrinsic drives, each a scalar pressure:
+`clio/engine/drives.py:19` — seven intrinsic drives, each a scalar pressure:
 
 | Drive | What it measures |
 |---|---|
@@ -412,13 +412,13 @@ Arbitration (`drives.py:388-523`):
 `IMPULSE_TARGETS` (`drives.py:360-385,490-507`). If no venture exists, the drive
 honestly declines — it never mints a placeholder task to look busy. This is the
 mechanical enforcement of "invented work is worse than an idle hour"
-(`ethos/prompts/identity.py:296-299`). It is also why `kind='venture'` is
-load-bearing in `ethos venture add` (`ethos/__main__.py:763-844`): "a task titled the
+(`clio/prompts/identity.py:296-299`). It is also why `kind='venture'` is
+load-bearing in `clio venture add` (`clio/__main__.py:763-844`): "a task titled the
 same way is invisible to the drive."
 
 ## 4. Reverie: the daydream loop
 
-`Reverie.muse()` (`ethos/engine/reverie.py:50-124`) is the agent's unowned thinking
+`Reverie.muse()` (`clio/engine/reverie.py:50-124`) is the agent's unowned thinking
 time:
 
 - **Sampling**: 4 memories + 3 open questions + recent thoughts (window 8).
@@ -450,7 +450,7 @@ The design separates three things conventional agents conflate:
 3. **Maintenance** (order, homeostasis) — the cost of existing, budgeted like work.
 
 Once taken on, (1) and (2) are the same kind of thing — "work is work, whoever
-thought of it" (`ethos/prompts/identity.py:262-268`) — one list, weighed by urgency
+thought of it" (`clio/prompts/identity.py:262-268`) — one list, weighed by urgency
 and deadline, neither outranked by who asked. But their *origins* differ, and the
 origin is recorded on the intention (`origin="reverie"`, `kind="venture"`), which is
 what allows the drives to see their own products and the autobiography

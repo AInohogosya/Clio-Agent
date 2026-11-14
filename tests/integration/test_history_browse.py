@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from ethos.toolhost.server import ToolContext
+from clio.toolhost.server import ToolContext
 from tests.unit.test_history_tool import FakeHost
 
 pytestmark = pytest.mark.integration
@@ -37,7 +37,7 @@ async def _seed(db, *, minutes_ago: int, text: str, direction: str = "inbound",
 async def test_history_browse_reads_the_transcript(db, tmp_path: Path):
     """The tool the agent reaches for when its own context no longer holds what
     was said, against the real table the interface scrolls back through."""
-    from ethos.toolhost.tools.history import HistoryBrowseTool
+    from clio.toolhost.tools.history import HistoryBrowseTool
 
     await _seed(db, minutes_ago=10, text="did the deploy finish?", person="hist-alpha")
     await _seed(db, minutes_ago=5, text="yes — it finished at noon",
@@ -56,7 +56,7 @@ async def test_history_browse_reads_the_transcript(db, tmp_path: Path):
 
 
 async def test_history_browse_reports_more_beyond_the_limit(db, tmp_path: Path):
-    from ethos.toolhost.tools.history import HistoryBrowseTool
+    from clio.toolhost.tools.history import HistoryBrowseTool
 
     for i in range(5):
         await _seed(db, minutes_ago=10 - i, text=f"beta message {i}", person="hist-beta")
@@ -78,7 +78,7 @@ async def test_history_browse_reports_more_beyond_the_limit(db, tmp_path: Path):
 
 
 async def test_history_browse_filters_by_person(db, tmp_path: Path):
-    from ethos.toolhost.tools.history import HistoryBrowseTool
+    from clio.toolhost.tools.history import HistoryBrowseTool
 
     await _seed(db, minutes_ago=10, text="for gamma owner", person="hist-gamma")
     await _seed(db, minutes_ago=9, text="for ada", person="tg:819012")

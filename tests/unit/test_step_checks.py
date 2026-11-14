@@ -40,7 +40,7 @@ class _SilentToolhost:
     async def execute(self, name: str, args: dict, ctx) -> Any:
         from pathlib import Path as _Path
 
-        from ethos.toolhost.server import ToolResult
+        from clio.toolhost.server import ToolResult
 
         self.calls.append((name, args))
         if args.get("path") and args.get("content") is not None:
@@ -67,7 +67,7 @@ class _WS:
 
 
 def _solver(tmp_path: Path) -> Any:
-    from ethos.gsl.loop import GeneralSolverLoop
+    from clio.gsl.loop import GeneralSolverLoop
 
     solver = GeneralSolverLoop.__new__(GeneralSolverLoop)
     solver.config = make_config(tmp_path)
@@ -99,8 +99,8 @@ def _solver(tmp_path: Path) -> Any:
 
 
 async def _run(tmp_path: Path, success_check: dict[str, Any]) -> Any:
-    from ethos.gsl.loop import GeneralSolverLoop  # noqa: F401
-    from ethos.schemas.gsl import Plan, PlanStep
+    from clio.gsl.loop import GeneralSolverLoop  # noqa: F401
+    from clio.schemas.gsl import Plan, PlanStep
 
     solver = _solver(tmp_path)
     plan = Plan(approach_id="a1", approach="do it", strategy_number="1",
@@ -191,7 +191,7 @@ async def test_the_step_check_can_be_turned_off_by_configuration(tmp_path: Path)
     """An operator whose plans carry checks that cannot pass needs a way out."""
     solver = _solver(tmp_path)
     solver.config.gsl.verify_step_checks = False
-    from ethos.schemas.gsl import Plan, PlanStep
+    from clio.schemas.gsl import Plan, PlanStep
 
     plan = Plan(approach_id="a1", approach="", strategy_number="1",
                 steps=[PlanStep(id="s1", description="x")])

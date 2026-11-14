@@ -30,9 +30,9 @@ from typing import Any
 
 import pytest
 
-from ethos.config import PathsConfig
-from ethos.toolhost.server import ToolContext
-from ethos.toolhost.tools.fs import FsEditTool, apply_search_replace
+from clio.config import PathsConfig
+from clio.toolhost.server import ToolContext
+from clio.toolhost.tools.fs import FsEditTool, apply_search_replace
 
 CTX = ToolContext(thread_id="fs-edit")
 
@@ -246,7 +246,7 @@ def test_the_two_file_tools_describe_themselves_as_alternatives() -> None:
     The contrast now exists in both descriptions, which is where a model chooses
     between them before it has read anything else.
     """
-    from ethos.toolhost.tools.fs import FsWriteTool
+    from clio.toolhost.tools.fs import FsWriteTool
 
     assert "replaces" in FsWriteTool.description, \
         "fs.write says outright that it replaces what is there"
@@ -270,7 +270,7 @@ def test_the_step_prompt_demonstrates_the_edit_and_the_shell_and_not_only_one() 
     """
     import re
 
-    from ethos.prompts.gsl import STEP_PROMPT
+    from clio.prompts.gsl import STEP_PROMPT
 
     named = re.findall(r'"tool": "([^"<]+)"', STEP_PROMPT)
     assert "fs.edit" in named, "the edit shape is demonstrated, not just described"

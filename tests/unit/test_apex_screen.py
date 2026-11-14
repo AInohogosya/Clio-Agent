@@ -17,7 +17,7 @@ import urllib.request
 from types import SimpleNamespace
 from typing import Any
 
-from ethos.subagents.apex_screen import ApexScreenRelay
+from clio.subagents.apex_screen import ApexScreenRelay
 
 
 class _SemanticAdapter:

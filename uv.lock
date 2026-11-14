@@ -395,6 +395,90 @@ wheels = [
 ]
 
 [[package]]
+name = "clio"
+version = "3.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "aioimaplib" },
+    { name = "aiosmtplib" },
+    { name = "alembic" },
+    { name = "anthropic" },
+    { name = "asyncpg" },
+    { name = "bashlex" },
+    { name = "cryptography" },
+    { name = "fastapi" },
+    { name = "fastembed" },
+    { name = "google-genai" },
+    { name = "httpx" },
+    { name = "networkx" },
+    { name = "numpy" },
+    { name = "openai" },
+    { name = "opentelemetry-api" },
+    { name = "opentelemetry-sdk" },
+    { name = "playwright" },
+    { name = "prometheus-client" },
+    { name = "pyarrow" },
+    { name = "pydantic" },
+    { name = "pydantic-settings" },
+    { name = "pyrage" },
+    { name = "python-telegram-bot" },
+    { name = "pyyaml" },
+    { name = "sqlalchemy", extra = ["asyncio"] },
+    { name = "structlog" },
+    { name = "typer" },
+    { name = "uvicorn", extra = ["standard"] },
+    { name = "uvloop", marker = "sys_platform != 'win32'" },
+    { name = "websockets" },
+]
+
+[package.optional-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "pytest-timeout" },
+    { name = "ruff" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "aioimaplib", specifier = ">=1.0" },
+    { name = "aiosmtplib", specifier = ">=3.0" },
+    { name = "alembic", specifier = ">=1.13" },
+    { name = "anthropic", specifier = ">=0.34" },
+    { name = "asyncpg", specifier = ">=0.29" },
+    { name = "bashlex", specifier = ">=0.18" },
+    { name = "cryptography", specifier = ">=42" },
+    { name = "fastapi", specifier = ">=0.111" },
+    { name = "fastembed", specifier = ">=0.3" },
+    { name = "google-genai", specifier = ">=0.3" },
+    { name = "httpx", specifier = ">=0.27" },
+    { name = "networkx", specifier = ">=3.0" },
+    { name = "numpy", specifier = ">=1.26" },
+    { name = "openai", specifier = ">=1.35" },
+    { name = "opentelemetry-api", specifier = ">=1.25" },
+    { name = "opentelemetry-sdk", specifier = ">=1.25" },
+    { name = "playwright", specifier = ">=1.44" },
+    { name = "prometheus-client", specifier = ">=0.20" },
+    { name = "pyarrow", specifier = ">=16.0" },
+    { name = "pydantic", specifier = ">=2.7" },
+    { name = "pydantic-settings", specifier = ">=2.3" },
+    { name = "pyrage", specifier = ">=1.1" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.2" },
+    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23" },
+    { name = "pytest-timeout", marker = "extra == 'dev'", specifier = ">=2.3" },
+    { name = "python-telegram-bot", specifier = ">=21.1" },
+    { name = "pyyaml", specifier = ">=6.0" },
+    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.4" },
+    { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.30" },
+    { name = "structlog", specifier = ">=24.1" },
+    { name = "typer", specifier = ">=0.12" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.30" },
+    { name = "uvloop", marker = "sys_platform != 'win32'", specifier = ">=0.19" },
+    { name = "websockets", specifier = ">=12.0" },
+]
+provides-extras = ["dev"]
+
+[[package]]
 name = "colorama"
 version = "0.4.6"
 source = { registry = "https://pypi.org/simple" }
@@ -483,90 +567,6 @@ sdist = { url = "https://files.pythonhosted.org/packages/e0/4d/f332313098c1de1b2
 wheels = [
     { url = "https://files.pythonhosted.org/packages/a7/5f/ed01f9a3cdffbd5a008556fc7b2a08ddb1cc6ace7effa7340604b1d16699/docstring_parser-0.18.0-py3-none-any.whl", hash = "sha256:b3fcbed555c47d8479be0796ef7e19c2670d428d72e96da63f3a40122860374b", size = 22484, upload-time = "2026-04-14T04:09:18.638Z" },
 ]
-
-[[package]]
-name = "ethos"
-version = "3.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "aioimaplib" },
-    { name = "aiosmtplib" },
-    { name = "alembic" },
-    { name = "anthropic" },
-    { name = "asyncpg" },
-    { name = "bashlex" },
-    { name = "cryptography" },
-    { name = "fastapi" },
-    { name = "fastembed" },
-    { name = "google-genai" },
-    { name = "httpx" },
-    { name = "networkx" },
-    { name = "numpy" },
-    { name = "openai" },
-    { name = "opentelemetry-api" },
-    { name = "opentelemetry-sdk" },
-    { name = "playwright" },
-    { name = "prometheus-client" },
-    { name = "pyarrow" },
-    { name = "pydantic" },
-    { name = "pydantic-settings" },
-    { name = "pyrage" },
-    { name = "python-telegram-bot" },
-    { name = "pyyaml" },
-    { name = "sqlalchemy", extra = ["asyncio"] },
-    { name = "structlog" },
-    { name = "typer" },
-    { name = "uvicorn", extra = ["standard"] },
-    { name = "uvloop", marker = "sys_platform != 'win32'" },
-    { name = "websockets" },
-]
-
-[package.optional-dependencies]
-dev = [
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-    { name = "pytest-timeout" },
-    { name = "ruff" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "aioimaplib", specifier = ">=1.0" },
-    { name = "aiosmtplib", specifier = ">=3.0" },
-    { name = "alembic", specifier = ">=1.13" },
-    { name = "anthropic", specifier = ">=0.34" },
-    { name = "asyncpg", specifier = ">=0.29" },
-    { name = "bashlex", specifier = ">=0.18" },
-    { name = "cryptography", specifier = ">=42" },
-    { name = "fastapi", specifier = ">=0.111" },
-    { name = "fastembed", specifier = ">=0.3" },
-    { name = "google-genai", specifier = ">=0.3" },
-    { name = "httpx", specifier = ">=0.27" },
-    { name = "networkx", specifier = ">=3.0" },
-    { name = "numpy", specifier = ">=1.26" },
-    { name = "openai", specifier = ">=1.35" },
-    { name = "opentelemetry-api", specifier = ">=1.25" },
-    { name = "opentelemetry-sdk", specifier = ">=1.25" },
-    { name = "playwright", specifier = ">=1.44" },
-    { name = "prometheus-client", specifier = ">=0.20" },
-    { name = "pyarrow", specifier = ">=16.0" },
-    { name = "pydantic", specifier = ">=2.7" },
-    { name = "pydantic-settings", specifier = ">=2.3" },
-    { name = "pyrage", specifier = ">=1.1" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.2" },
-    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23" },
-    { name = "pytest-timeout", marker = "extra == 'dev'", specifier = ">=2.3" },
-    { name = "python-telegram-bot", specifier = ">=21.1" },
-    { name = "pyyaml", specifier = ">=6.0" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.4" },
-    { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.30" },
-    { name = "structlog", specifier = ">=24.1" },
-    { name = "typer", specifier = ">=0.12" },
-    { name = "uvicorn", extras = ["standard"], specifier = ">=0.30" },
-    { name = "uvloop", marker = "sys_platform != 'win32'", specifier = ">=0.19" },
-    { name = "websockets", specifier = ">=12.0" },
-]
-provides-extras = ["dev"]
 
 [[package]]
 name = "fastapi"

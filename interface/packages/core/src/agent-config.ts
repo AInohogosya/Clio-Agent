@@ -145,8 +145,8 @@ const FIELD_LABEL_JA: Record<string, string> = {
   'permissions.network.max_response_bytes': 'ネットワーク: 最大応答バイト',
   'permissions.interruption.daily_budgets.owner': '割り込み予算: 所有者/日',
   'permissions.interruption.digest_window_min': 'ダイジェスト枠 (分)',
-  'ethos.subagents.tier': 'サブエージェントの階層',
-  'ethos.subagents.model_name': 'サブエージェントのモデル名',
+  'clio.subagents.tier': 'サブエージェントの階層',
+  'clio.subagents.model_name': 'サブエージェントのモデル名',
 };
 
 const FIELD_LABEL_ZH: Record<string, string> = {
@@ -226,8 +226,8 @@ const FIELD_LABEL_ZH: Record<string, string> = {
   'permissions.network.max_response_bytes': '网络：最大响应字节',
   'permissions.interruption.daily_budgets.owner': '打断预算：所有者/天',
   'permissions.interruption.digest_window_min': '摘要窗口 (分钟)',
-  'ethos.subagents.tier': '子智能体等级',
-  'ethos.subagents.model_name': '子智能体模型名',
+  'clio.subagents.tier': '子智能体等级',
+  'clio.subagents.model_name': '子智能体模型名',
 };
 
 const FIELD_HINT_JA: Record<string, string> = {
@@ -282,17 +282,17 @@ export function fieldPlaceholder(field: AgentConfigField, language: string): str
 
 export const AGENT_CONFIG_FIELDS: AgentConfigField[] = [
   // General / Hero
-  { id: 'general.self_name', category: 'general', file: 'ethos.yaml', path: 'self_name', label: 'Agent name', type: 'text', placeholder: 'Clio Agent 3.1' },
-  { id: 'general.timezone', category: 'general', file: 'ethos.yaml', path: 'timezone', label: 'Timezone', type: 'select', options: ['local', 'UTC', 'Asia/Tokyo', 'America/Los_Angeles', 'Europe/London'] },
+  { id: 'general.self_name', category: 'general', file: 'clio.yaml', path: 'self_name', label: 'Agent name', type: 'text', placeholder: 'Clio Agent 3.1' },
+  { id: 'general.timezone', category: 'general', file: 'clio.yaml', path: 'timezone', label: 'Timezone', type: 'select', options: ['local', 'UTC', 'Asia/Tokyo', 'America/Los_Angeles', 'Europe/London'] },
 
   // Daemon / workers+threads+gateway (under Connection? keep as Connection for simplicity, but also general)
-  { id: 'gateway.host', category: 'connection', file: 'ethos.yaml', path: 'gateway.host', label: 'Gateway host', type: 'text' },
-  { id: 'gateway.port', category: 'connection', file: 'ethos.yaml', path: 'gateway.port', label: 'Gateway port', type: 'number', min: 1, max: 65535 },
-  { id: 'gateway.toolhost_port', category: 'connection', file: 'ethos.yaml', path: 'gateway.toolhost_port', label: 'Toolhost port', type: 'number', min: 1, max: 65535 },
-  { id: 'workers.count', category: 'connection', file: 'ethos.yaml', path: 'workers.count', label: 'Worker count', type: 'number', min: 1, max: 32 },
-  { id: 'threads.max_concurrent', category: 'connection', file: 'ethos.yaml', path: 'threads.max_concurrent', label: 'Threads: max concurrent', type: 'number', min: 1, max: 64 },
-  { id: 'threads.max_depth', category: 'connection', file: 'ethos.yaml', path: 'threads.max_depth', label: 'Threads: max depth', type: 'number', min: 1, max: 16 },
-  { id: 'threads.mode', category: 'connection', file: 'ethos.yaml', path: 'threads.mode', label: 'Threads mode', type: 'select', options: ['inprocess', 'subprocess'] },
+  { id: 'gateway.host', category: 'connection', file: 'clio.yaml', path: 'gateway.host', label: 'Gateway host', type: 'text' },
+  { id: 'gateway.port', category: 'connection', file: 'clio.yaml', path: 'gateway.port', label: 'Gateway port', type: 'number', min: 1, max: 65535 },
+  { id: 'gateway.toolhost_port', category: 'connection', file: 'clio.yaml', path: 'gateway.toolhost_port', label: 'Toolhost port', type: 'number', min: 1, max: 65535 },
+  { id: 'workers.count', category: 'connection', file: 'clio.yaml', path: 'workers.count', label: 'Worker count', type: 'number', min: 1, max: 32 },
+  { id: 'threads.max_concurrent', category: 'connection', file: 'clio.yaml', path: 'threads.max_concurrent', label: 'Threads: max concurrent', type: 'number', min: 1, max: 64 },
+  { id: 'threads.max_depth', category: 'connection', file: 'clio.yaml', path: 'threads.max_depth', label: 'Threads: max depth', type: 'number', min: 1, max: 16 },
+  { id: 'threads.mode', category: 'connection', file: 'clio.yaml', path: 'threads.mode', label: 'Threads mode', type: 'select', options: ['inprocess', 'subprocess'] },
 
   // Token Budget & Spend — the headline ask
   { id: 'hard_limits.budget_unit', category: 'budget', file: 'permissions.yaml', path: 'hard_limits.budget_unit', label: 'Budget unit', type: 'select', options: ['usd', 'tokens'], hint: 'usd = dollars, tokens = token count' },
@@ -305,14 +305,14 @@ export const AGENT_CONFIG_FIELDS: AgentConfigField[] = [
   { id: 'hard_limits.on_exceed', category: 'budget', file: 'permissions.yaml', path: 'hard_limits.on_exceed', label: 'On budget exceed', type: 'select', options: ['warn', 'block'], hint: 'warn = log only, block = refuse calls' },
   { id: 'hard_limits.H2_capital_at_risk_usd', category: 'budget', file: 'permissions.yaml', path: 'hard_limits.H2_capital_at_risk_usd', label: 'Capital at risk (USD)', type: 'number', min: 0 },
   { id: 'hard_limits.money_threshold_usd', category: 'budget', file: 'permissions.yaml', path: 'hard_limits.money_threshold_usd', label: 'Money threshold (USD)', type: 'number', min: 0 },
-  { id: 'gateway.routing.mu', category: 'budget', file: 'ethos.yaml', path: 'gateway.routing.mu', label: 'Routing mu', type: 'number', min: 0 },
-  { id: 'gateway.routing.nu', category: 'budget', file: 'ethos.yaml', path: 'gateway.routing.nu', label: 'Routing nu', type: 'number', min: 0 },
-  { id: 'gateway.circuit_breaker.max_failures', category: 'budget', file: 'ethos.yaml', path: 'gateway.circuit_breaker.max_failures', label: 'Circuit breaker: max failures', type: 'number', min: 1 },
-  { id: 'gateway.circuit_breaker.cooldown_s', category: 'budget', file: 'ethos.yaml', path: 'gateway.circuit_breaker.cooldown_s', label: 'Circuit breaker: cooldown (s)', type: 'number', min: 0 },
-  { id: 'gateway.retry.max_retries', category: 'budget', file: 'ethos.yaml', path: 'gateway.retry.max_retries', label: 'Retry: max retries', type: 'number', min: 0, max: 50 },
-  { id: 'gateway.retry.backoff_s', category: 'budget', file: 'ethos.yaml', path: 'gateway.retry.backoff_s', label: 'Retry: backoff (s)', type: 'number', min: 0 },
-  { id: 'gateway.retry.max_backoff_s', category: 'budget', file: 'ethos.yaml', path: 'gateway.retry.max_backoff_s', label: 'Retry: max backoff (s)', type: 'number', min: 0 },
-  { id: 'gateway.retry.fail_over', category: 'budget', file: 'ethos.yaml', path: 'gateway.retry.fail_over', label: 'Retry: fail over to another model', type: 'boolean' },
+  { id: 'gateway.routing.mu', category: 'budget', file: 'clio.yaml', path: 'gateway.routing.mu', label: 'Routing mu', type: 'number', min: 0 },
+  { id: 'gateway.routing.nu', category: 'budget', file: 'clio.yaml', path: 'gateway.routing.nu', label: 'Routing nu', type: 'number', min: 0 },
+  { id: 'gateway.circuit_breaker.max_failures', category: 'budget', file: 'clio.yaml', path: 'gateway.circuit_breaker.max_failures', label: 'Circuit breaker: max failures', type: 'number', min: 1 },
+  { id: 'gateway.circuit_breaker.cooldown_s', category: 'budget', file: 'clio.yaml', path: 'gateway.circuit_breaker.cooldown_s', label: 'Circuit breaker: cooldown (s)', type: 'number', min: 0 },
+  { id: 'gateway.retry.max_retries', category: 'budget', file: 'clio.yaml', path: 'gateway.retry.max_retries', label: 'Retry: max retries', type: 'number', min: 0, max: 50 },
+  { id: 'gateway.retry.backoff_s', category: 'budget', file: 'clio.yaml', path: 'gateway.retry.backoff_s', label: 'Retry: backoff (s)', type: 'number', min: 0 },
+  { id: 'gateway.retry.max_backoff_s', category: 'budget', file: 'clio.yaml', path: 'gateway.retry.max_backoff_s', label: 'Retry: max backoff (s)', type: 'number', min: 0 },
+  { id: 'gateway.retry.fail_over', category: 'budget', file: 'clio.yaml', path: 'gateway.retry.fail_over', label: 'Retry: fail over to another model', type: 'boolean' },
 
   // Deliberation (social) — social.yaml holds SocialConfig top-level
   { id: 'social.deliberation_max_tokens', category: 'deliberation', file: 'social.yaml', path: 'deliberation_max_tokens', label: 'Deliberation max tokens', type: 'number', min: 500, max: 200000 },
@@ -372,8 +372,8 @@ export const AGENT_CONFIG_FIELDS: AgentConfigField[] = [
   { id: 'permissions.network.max_response_bytes', category: 'permissions', file: 'permissions.yaml', path: 'network.max_response_bytes', label: 'Network: max response bytes', type: 'number', min: 0 },
   { id: 'permissions.interruption.daily_budgets.owner', category: 'permissions', file: 'permissions.yaml', path: 'interruption.daily_budgets.owner', label: 'Interruption budget: owner/day', type: 'number', min: 0 },
   { id: 'permissions.interruption.digest_window_min', category: 'permissions', file: 'permissions.yaml', path: 'interruption.digest_window_min', label: 'Digest window (min)', type: 'number', min: 0 },
-  { id: 'ethos.subagents.tier', category: 'permissions', file: 'ethos.yaml', path: 'subagents.tier', label: 'Subagent tier', type: 'select', options: ['T1', 'T2', 'T3'] },
-  { id: 'ethos.subagents.model_name', category: 'permissions', file: 'ethos.yaml', path: 'subagents.model_name', label: 'Subagent model name', type: 'text' },
+  { id: 'clio.subagents.tier', category: 'permissions', file: 'clio.yaml', path: 'subagents.tier', label: 'Subagent tier', type: 'select', options: ['T1', 'T2', 'T3'] },
+  { id: 'clio.subagents.model_name', category: 'permissions', file: 'clio.yaml', path: 'subagents.model_name', label: 'Subagent model name', type: 'text' },
 ];
 
 const FIELD_MAP = new Map(AGENT_CONFIG_FIELDS.map((f) => [f.id, f]));

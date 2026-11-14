@@ -4,8 +4,8 @@ import asyncio
 
 import pytest
 
-from ethos.bus import EventBus
-from ethos.schemas.events import Event
+from clio.bus import EventBus
+from clio.schemas.events import Event
 
 pytestmark = pytest.mark.integration
 

@@ -5,24 +5,24 @@ import json
 from pathlib import Path
 from typing import Any
 
-from ethos.config import (
-    EthosConfig,
+from clio.config import (
+    ClioConfig,
     SubagentConfig,
     SubagentsConfig,
     load_shipped_base_model,
 )
-from ethos.gateway import compat
-from ethos.schemas.models import NormalizedResponse, Tier, Usage
-from ethos.subagents import SubagentRegistry
-from ethos.subagents.apex import ApexSubAgent
-from ethos.subagents.base import (
+from clio.gateway import compat
+from clio.schemas.models import NormalizedResponse, Tier, Usage
+from clio.subagents import SubagentRegistry
+from clio.subagents.apex import ApexSubAgent
+from clio.subagents.base import (
     STATUS_BLOCKED,
     STATUS_DONE,
     STATUS_FAILED,
     STATUS_OUTCOME_UNKNOWN,
     SubAgentResult,
 )
-from ethos.subagents.foundry import FoundrySubAgent
+from clio.subagents.foundry import FoundrySubAgent
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -43,7 +43,7 @@ def test_the_shipped_base_model_parses():
 def test_the_base_model_wins_the_catalogue():
     base = load_shipped_base_model(REPO_ROOT / "config")
     assert base is not None
-    cfg = EthosConfig(models={"base": base.model_dump()})
+    cfg = ClioConfig(models={"base": base.model_dump()})
     assert cfg.models.resolved()[0].pinned is True
 
 
@@ -172,7 +172,7 @@ def test_a_normalized_response_round_trips_to_chat_shape():
 def test_tool_calls_round_trip_through_the_streaming_shape():
     """Foundry streams first, and reconstructs tool calls from accumulated
     deltas — the SSE shape must carry them or a delegation loses its tools."""
-    from ethos.schemas.models import ToolCall
+    from clio.schemas.models import ToolCall
 
     resp = NormalizedResponse(
         text=None,
@@ -190,8 +190,8 @@ def test_tool_calls_round_trip_through_the_streaming_shape():
 
 # ---- config & registry ------------------------------------------------------
 
-def _config_with(mode: str = "auto", **agent_overrides: Any) -> EthosConfig:
-    cfg = EthosConfig()
+def _config_with(mode: str = "auto", **agent_overrides: Any) -> ClioConfig:
+    cfg = ClioConfig()
     cfg.subagents = SubagentsConfig(agents=[
         SubagentConfig(name="foundry", mode=mode, **agent_overrides),
         SubagentConfig(name="apex", mode=mode),
@@ -303,11 +303,11 @@ def test_apex_subprocess_env_names_the_ethos_provider():
     cfg.gateway.port = 8700
     agent = ApexSubAgent(cfg, SubagentConfig(name="apex"), gateway=None)
     env = agent.child_env({
-        "LLM_PROVIDER": "ethos",
-        "ETHOS_GATEWAY_URL": agent.gateway_url(),
+        "LLM_PROVIDER": "clio",
+        "CLIO_GATEWAY_URL": agent.gateway_url(),
     })
-    assert env["LLM_PROVIDER"] == "ethos"
-    assert env["ETHOS_GATEWAY_URL"] == "http://127.0.0.1:8700"
+    assert env["LLM_PROVIDER"] == "clio"
+    assert env["CLIO_GATEWAY_URL"] == "http://127.0.0.1:8700"
 
 
 def test_apex_subprocess_exit_codes_map_to_the_status_vocabulary(monkeypatch):
@@ -315,7 +315,7 @@ def test_apex_subprocess_exit_codes_map_to_the_status_vocabulary(monkeypatch):
     task reached a terminal state — an environment failure, not a verdict on
     the desktop task. Reading it as "failed" is how a missing dependency once
     became a report that a desktop change had been attempted and had failed."""
-    from ethos.subagents.base import STATUS_UNAVAILABLE
+    from clio.subagents.base import STATUS_UNAVAILABLE
 
     agent = ApexSubAgent(_config_with(), SubagentConfig(name="apex"), gateway=None)
 
@@ -416,10 +416,10 @@ class _StubService:
 def test_the_served_shim_answers_the_openai_wire():
     from fastapi.testclient import TestClient
 
-    from ethos.config import ModelsConfig
-    from ethos.gateway.service import create_gateway_app
+    from clio.config import ModelsConfig
+    from clio.gateway.service import create_gateway_app
 
-    cfg = EthosConfig()
+    cfg = ClioConfig()
     cfg.models = ModelsConfig()  # catalogue empty; every model name routes
     resp = NormalizedResponse(
         text="hello from the catalogue",
@@ -466,7 +466,7 @@ def test_the_foundry_bridge_routes_through_the_gateway():
         sys.path.insert(0, str(src))
     from foundry.llm.base import LLMRequest
 
-    from ethos.subagents.bridge import FoundryGatewayProvider
+    from clio.subagents.bridge import FoundryGatewayProvider
 
     gateway = ScriptedGateway(['{"answer": 1}'])
     loop = asyncio.new_event_loop()
@@ -547,10 +547,10 @@ def test_a_subagent_thread_role_dispatches_and_records(monkeypatch):
     in the same episode memory a native thread uses."""
     import asyncio
 
-    from ethos.threads import worker as thread_worker
+    from clio.threads import worker as thread_worker
 
     fake_agent = _FakeAgent()
-    monkeypatch.setattr("ethos.subagents.SubagentRegistry", lambda *a, **k: _FakeRegistry(fake_agent))
+    monkeypatch.setattr("clio.subagents.SubagentRegistry", lambda *a, **k: _FakeRegistry(fake_agent))
     memory = _FakeMemory()
     spec = {
         "id": "thread-abc",
@@ -559,7 +559,7 @@ def test_a_subagent_thread_role_dispatches_and_records(monkeypatch):
         "intention_id": "12345678-1234-1234-1234-123456789012",
     }
     result = asyncio.run(thread_worker._run_subagent(
-        "apex", spec, EthosConfig(), memory, gateway=None, workdir="/tmp/w",
+        "apex", spec, ClioConfig(), memory, gateway=None, workdir="/tmp/w",
     ))
     assert result["status"] == STATUS_DONE
     assert result["goal"].startswith("open TextEdit")
@@ -571,13 +571,13 @@ def test_a_subagent_thread_role_dispatches_and_records(monkeypatch):
 def test_a_missing_subagent_role_reports_rather_than_crashes(monkeypatch):
     import asyncio
 
-    from ethos.threads import worker as thread_worker
+    from clio.threads import worker as thread_worker
 
-    monkeypatch.setattr("ethos.subagents.SubagentRegistry", lambda *a, **k: _FakeRegistry(_FakeAgent()))
+    monkeypatch.setattr("clio.subagents.SubagentRegistry", lambda *a, **k: _FakeRegistry(_FakeAgent()))
     memory = _FakeMemory()
     spec = {"id": "thread-abc", "goal": "x", "role": "apex"}
     result = asyncio.run(thread_worker._run_subagent(
-        "foundry", spec, EthosConfig(), memory, gateway=None, workdir="/tmp/w",
+        "foundry", spec, ClioConfig(), memory, gateway=None, workdir="/tmp/w",
     ))
     assert result["status"] == "unavailable"
     assert "foundry" in result["error"]

@@ -3,8 +3,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from ethos.core.control import ControlPlane
-from ethos.core.runner import CoreRuntime
+from clio.core.control import ControlPlane
+from clio.core.runner import CoreRuntime
 from tests.conftest import make_config
 
 
@@ -351,7 +351,7 @@ def test_a_verb_a_surface_sends_reaches_the_control_plane(tmp_path: Any) -> None
     """
     import asyncio
 
-    from ethos.schemas.events import Event
+    from clio.schemas.events import Event
 
     _, control, _, handler = _runtime_stub()
     asyncio.run(handler(Event(kind="control.update", payload={"action": "pause_all", "by": "phone"})))
@@ -368,7 +368,7 @@ def test_a_verb_is_still_something_the_agent_notices(tmp_path: Any) -> None:
     """
     import asyncio
 
-    from ethos.schemas.events import Event
+    from clio.schemas.events import Event
 
     runtime, _, _, handler = _runtime_stub()
     asyncio.run(handler(Event(kind="control.update", payload={"action": "stop", "by": "phone"})))
@@ -387,7 +387,7 @@ def test_an_undo_asked_for_on_a_surface_is_carried_out(tmp_path: Any) -> None:
     """
     import asyncio
 
-    from ethos.schemas.events import Event
+    from clio.schemas.events import Event
 
     _, _, undone, handler = _runtime_stub()
     asyncio.run(handler(Event(kind="guardian.undo", payload={"action_id": "a-1"})))
@@ -498,7 +498,7 @@ def test_the_row_re_reach_the_loop_when_the_bus_cannot(tmp_path: Any, monkeypatc
         await plane.load()
         assert not plane.paused
 
-        monkeypatch.setattr("ethos.core.control.ROW_RECHECK_S", 0.0)
+        monkeypatch.setattr("clio.core.control.ROW_RECHECK_S", 0.0)
 
         # What a surface's bridge writes when the notify is lost: the row,
         # and nothing else. The re-read has to be enough.
@@ -524,7 +524,7 @@ def test_a_stop_file_outranks_the_row_even_in_the_re_read(tmp_path: Any, monkeyp
 
     async def scenario() -> None:
         await plane.load()
-        monkeypatch.setattr("ethos.core.control.ROW_RECHECK_S", 0.0)
+        monkeypatch.setattr("clio.core.control.ROW_RECHECK_S", 0.0)
         with open(plane.stop_file, "w", encoding="utf-8"):
             pass
         # A row that says the opposite of the file.

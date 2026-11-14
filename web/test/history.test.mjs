@@ -41,16 +41,16 @@ async function freePort() {
 }
 
 before(async () => {
-  home = mkdtempSync(join(tmpdir(), 'ethos-history-'));
+  home = mkdtempSync(join(tmpdir(), 'clio-history-'));
   const port = await freePort();
   base = `http://127.0.0.1:${port}`;
   child = spawn(process.execPath, [SERVER], {
     env: {
       ...process.env,
-      ETHOS_HOME: home,
-      ETHOS_CONFIG_DIR: CONFIG_DIR,
-      ETHOS_WEB_PORT: String(port),
-      ETHOS_DSN: 'postgresql://ethos:ethos@127.0.0.1:1/ethos',
+      CLIO_HOME: home,
+      CLIO_CONFIG_DIR: CONFIG_DIR,
+      CLIO_WEB_PORT: String(port),
+      CLIO_DSN: "postgresql://ethos:ethos@127.0.0.1:1/ethos",
     },
     stdio: 'ignore',
   });

@@ -4,7 +4,7 @@ Revision ID: 0007
 Revises: 0006
 Create Date: 2026-11-13
 
-Adds the schema behind project leadership (`ethos`): a `projects` container with
+Adds the schema behind project leadership (`clio`): a `projects` container with
 its own lifecycle, per-conversation project bindings, shipped milestones, and
 project attribution columns on `intentions`, `action_journal`, `artifacts` and
 `cycles`. All changes are additive and reversible: downgrade() drops exactly

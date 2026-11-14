@@ -6,15 +6,14 @@ PASS/FAIL per assertion. Repeat runs (>=3) are handled by --repeat.
 """
 from __future__ import annotations
 
-import asyncio, hashlib, json, time
-from datetime import datetime, UTC
+import hashlib
+import json
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from ethos.config import EthosConfig
-from ethos.memory.context import ContextLayer
-from ethos.schemas.context import TurnKind
-from ethos.schemas.models import NormalizedResponse, Usage
+from clio.schemas.models import NormalizedResponse, Usage
+
 
 class MechanicalGateway:
     """Deterministic narrator: mechanical line, no extraction.

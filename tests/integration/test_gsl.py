@@ -7,13 +7,13 @@ from uuid import UUID
 
 import pytest
 
-from ethos.config import EthosConfig
-from ethos.gateway.embeddings import HashingEmbedder
-from ethos.gsl.acceptance import changed_paths
-from ethos.gsl.loop import GeneralSolverLoop
-from ethos.gsl.verification import VerificationLadder
-from ethos.memory.store import MemoryStore
-from ethos.schemas.models import NormalizedResponse, Usage
+from clio.config import ClioConfig
+from clio.gateway.embeddings import HashingEmbedder
+from clio.gsl.acceptance import changed_paths
+from clio.gsl.loop import GeneralSolverLoop
+from clio.gsl.verification import VerificationLadder
+from clio.memory.store import MemoryStore
+from clio.schemas.models import NormalizedResponse, Usage
 from tests.conftest import (
     FakeRegistry,
     FakeVerifier,
@@ -31,7 +31,7 @@ def _json(obj) -> str:
     return json.dumps(obj)
 
 
-async def make_memory(db, config: EthosConfig) -> MemoryStore:
+async def make_memory(db, config: ClioConfig) -> MemoryStore:
     return MemoryStore(db, HashingEmbedder(1024), config)
 
 
@@ -104,10 +104,10 @@ async def test_gsl_completes_commissioned_goal(db, config, tmp_path):
             "done": True,
         }),
     ])
-    from ethos.guardian.gate import GuardianGate
-    from ethos.guardian.journal import ActionJournal
-    from ethos.guardian.trash import TrashStore
-    from ethos.toolhost.server import Toolhost
+    from clio.guardian.gate import GuardianGate
+    from clio.guardian.journal import ActionJournal
+    from clio.guardian.trash import TrashStore
+    from clio.toolhost.server import Toolhost
 
     trash = TrashStore(tmp_path / "trash")
     gate = GuardianGate(
@@ -193,10 +193,10 @@ async def test_gsl_parks_on_exhausted_budget(db, config, tmp_path):
         _json({"understanding": "endless task", "unknowns": [], "difficulty": 0.9,
                "consequential": False, "questions": []}),
     ])
-    from ethos.guardian.gate import GuardianGate
-    from ethos.guardian.journal import ActionJournal
-    from ethos.guardian.trash import TrashStore
-    from ethos.toolhost.server import Toolhost
+    from clio.guardian.gate import GuardianGate
+    from clio.guardian.journal import ActionJournal
+    from clio.guardian.trash import TrashStore
+    from clio.toolhost.server import Toolhost
 
     gate = GuardianGate(config, registry=FakeRegistry(),
                         trash=TrashStore(tmp_path / "trash"), snapshots=NoopSnapshots(),
@@ -301,10 +301,10 @@ async def test_memory_store_full_cycle(db, config):
 async def test_self_model_versioning(db, config):
     from uuid import uuid4
 
-    from ethos.memory.self_model import SelfModel
+    from clio.memory.self_model import SelfModel
 
     model = SelfModel(db)
-    await model.seed_defaults("Ethos")
+    await model.seed_defaults("Clio")
     candidate = f"Test-{uuid4().hex[:8]}"
     version = await model.rename_self(candidate, "the agent chose a new name")
     assert version >= 2
@@ -329,18 +329,20 @@ async def test_a_name_a_person_chose_replaces_the_seeded_one(db, config, unnamed
     """
     from uuid import uuid4
 
-    from ethos.memory.self_model import SelfModel
+    from clio.memory.self_model import SelfModel
 
     candidate = f"Aria-{uuid4().hex[:8]}"
     model = SelfModel(db)
-    await model.seed_defaults("Ethos")
+    await model.seed_defaults("Clio")
     # The seed's name is a default, so a person naming the agent is the whole point.
     await model.seed_defaults(candidate)
 
     assert await model.get("name") == candidate
     doc = await model.identity_document(hard_limits=["H1 test"])
     assert f"I am {candidate}," in doc
-    assert "Ethos" not in doc.split("## Values")[0]
+    # The lineage ("based on Clio Agent 3.1") legitimately stays; the seeded
+    # default must not be the name the agent presents.
+    assert "I am Clio," not in doc
     # Attributable like every other change, because "who decided this" is the only
     # thing that tells a later run whether it may overwrite it.
     history = await model.history("name", limit=1)
@@ -357,12 +359,12 @@ async def test_a_person_cannot_rename_an_agent_that_named_itself(db, config, unn
     """
     from uuid import uuid4
 
-    from ethos.memory.self_model import SelfModel
+    from clio.memory.self_model import SelfModel
 
     chosen = f"chosen-{uuid4().hex[:8]}"
     wanted = f"wanted-{uuid4().hex[:8]}"
     model = SelfModel(db)
-    await model.seed_defaults("Ethos")
+    await model.seed_defaults("Clio")
     await model.rename_self(chosen, "the agent chose a new name")
     await model.seed_defaults(wanted)
 
@@ -373,14 +375,14 @@ async def test_a_name_that_is_not_one_never_reaches_the_store(db, config, unname
     """
     The store is not where a bad name is caught.
 
-    `config/ethos.yaml` is plain text a person can edit and its `self_name` is not
+    `config/clio.yaml` is plain text a person can edit and its `self_name` is not
     validated the way a written one is, so the last check before the prompt is here —
     and a refusal leaves the agent with the name it already had rather than with half
     a name and a broken store.
     """
     from uuid import uuid4
 
-    from ethos.memory.self_model import SelfModel
+    from clio.memory.self_model import SelfModel
 
     candidate = f"Kept-{uuid4().hex[:8]}"
     model = SelfModel(db)
@@ -391,8 +393,8 @@ async def test_a_name_that_is_not_one_never_reaches_the_store(db, config, unname
 
 
 async def test_scheduler_fires_events(db, config):
-    from ethos.bus import EventBus
-    from ethos.core.scheduler import Scheduler
+    from clio.bus import EventBus
+    from clio.core.scheduler import Scheduler
 
     bus = EventBus(db, source="test-scheduler")
     received: list = []
@@ -469,10 +471,10 @@ async def test_a_commission_is_still_delivered_when_memory_lookup_fails(db, conf
     A step taken without its memories is a step taken blind. A step never taken
     is nothing at all, and the blindness is at least visible.
     """
-    from ethos.guardian.gate import GuardianGate
-    from ethos.guardian.journal import ActionJournal
-    from ethos.guardian.trash import TrashStore
-    from ethos.toolhost.server import Toolhost
+    from clio.guardian.gate import GuardianGate
+    from clio.guardian.journal import ActionJournal
+    from clio.guardian.trash import TrashStore
+    from clio.toolhost.server import Toolhost
 
     memory = await make_memory(db, config)
 
@@ -606,10 +608,10 @@ async def test_a_deadline_can_never_be_ranked_out_of_the_drives_sight(db, config
 
 
 def _solver(db, config, tmp_path, gateway, memory):
-    from ethos.guardian.gate import GuardianGate
-    from ethos.guardian.journal import ActionJournal
-    from ethos.guardian.trash import TrashStore
-    from ethos.toolhost.server import Toolhost
+    from clio.guardian.gate import GuardianGate
+    from clio.guardian.journal import ActionJournal
+    from clio.guardian.trash import TrashStore
+    from clio.toolhost.server import Toolhost
 
     trash = TrashStore(tmp_path / "trash")
     gate = GuardianGate(config, registry=FakeRegistry(), trash=trash,
@@ -1136,7 +1138,7 @@ async def test_the_backoff_between_attempts_grows_and_is_capped():
     stops every goal that failed to plan in the same minute from coming back in
     the same minute, which is a synchronised second outage rather than a retry.
     """
-    from ethos.engine.rhythm import backoff_seconds
+    from clio.engine.rhythm import backoff_seconds
 
     assert backoff_seconds(0, base_s=10.0, max_s=100.0, jitter=0.0) == 10.0
     assert backoff_seconds(1, base_s=10.0, max_s=100.0, jitter=0.0) == 20.0
@@ -1167,7 +1169,7 @@ async def test_an_empty_step_list_is_never_turned_into_a_plan(label, text, finis
     to what is asked for and not to what counts as an answer. Cheaper to ask
     cannot mean "an empty reply will do".
     """
-    from ethos.gsl.planner import PlanUnavailable, make_plan
+    from clio.gsl.planner import PlanUnavailable, make_plan
 
     class _Intention:
         title = "write the file"
@@ -1197,8 +1199,8 @@ async def test_a_plan_the_model_returned_is_still_a_plan(tmp_path):
     parsing them and started failing everything would be caught here rather than
     in production.
     """
-    from ethos.gsl.planner import make_plan
-    from ethos.schemas.gsl import Plan
+    from clio.gsl.planner import make_plan
+    from clio.schemas.gsl import Plan
 
     class _Intention:
         title = "write the file"
@@ -1446,7 +1448,7 @@ async def test_a_failed_step_model_call_is_a_failed_step_not_a_dead_cycle(
     looping on the identical failing call.
     """
     config.gsl.plan_attempts_before_park = 6  # the cap under test, restored here
-    from ethos.gateway.providers.base import ProviderError
+    from clio.gateway.providers.base import ProviderError
 
     marker = "zz-stepcallfail"
     memory = await make_memory(db, config)
@@ -1516,7 +1518,7 @@ async def test_a_failed_understanding_call_backs_off_instead_of_killing_the_cycl
     it), and the walk ends parked with a reason naming the stage.
     """
     config.gsl.plan_attempts_before_park = 6  # the cap under test, restored here
-    from ethos.gateway.providers.base import ProviderError
+    from clio.gateway.providers.base import ProviderError
 
     marker = "zz-understandfail"
     memory = await make_memory(db, config)
@@ -1610,7 +1612,7 @@ async def test_a_bookmark_does_not_erase_the_plan_it_was_taken_during(
                                           "strategy_number": 2,
                                           "artifacts": [{"tool": "fs.write", "args": {"path": "a"}}],
                                       })
-        from ethos.schemas.gsl import Bookmark
+        from clio.schemas.gsl import Bookmark
 
         await memory.set_bookmark(intention_id, Bookmark(
             next_planned_step="write the deliverable file",
@@ -1671,7 +1673,7 @@ async def test_an_interrupted_goal_resumes_its_plan_instead_of_restarting(
         assert installed.status == "in_progress", installed.status
         assert (installed.resume_state or {}).get("plan"), installed.resume_state
 
-        from ethos.schemas.gsl import Bookmark
+        from clio.schemas.gsl import Bookmark
 
         await memory.set_bookmark(intention_id, Bookmark(
             next_planned_step="write the deliverable file",
@@ -1788,7 +1790,7 @@ async def test_a_devise_call_that_raises_is_a_failure_and_not_a_silent_fallback(
     opinions were all the same event to the loop, and all of them were free.
     """
     config.gsl.plan_attempts_before_park = 6  # the cap under test, restored here
-    from ethos.gateway.providers.base import ProviderError
+    from clio.gateway.providers.base import ProviderError
 
     marker = "zz-deviseraise"
     memory = await make_memory(db, config)

@@ -6,26 +6,26 @@ from pathlib import Path
 
 import pytest
 
-from ethos.bus import EventBus
-from ethos.core.control import ControlPlane
-from ethos.engine.attention import Attention
-from ethos.engine.drives import Motivation
-from ethos.engine.life import Life, LifeDeps
-from ethos.engine.rhythm import RhythmController
-from ethos.gateway.embeddings import HashingEmbedder
-from ethos.guardian.gate import GuardianGate
-from ethos.guardian.journal import ActionJournal
-from ethos.guardian.trash import TrashStore
-from ethos.memory.continuity import ContinuityManager
-from ethos.memory.self_model import SelfModel
-from ethos.memory.store import MemoryStore
-from ethos.observability.audit import AuditLog, DbAuditSink
-from ethos.schemas.events import EventKind
-from ethos.schemas.gsl import Focus, SolverOutcome, SolverResult
-from ethos.social.deliberation import SocialCognition
-from ethos.social.etiquette import OutboundPipeline
-from ethos.social.relationships import RelationshipStore
-from ethos.toolhost.server import Toolhost
+from clio.bus import EventBus
+from clio.core.control import ControlPlane
+from clio.engine.attention import Attention
+from clio.engine.drives import Motivation
+from clio.engine.life import Life, LifeDeps
+from clio.engine.rhythm import RhythmController
+from clio.gateway.embeddings import HashingEmbedder
+from clio.guardian.gate import GuardianGate
+from clio.guardian.journal import ActionJournal
+from clio.guardian.trash import TrashStore
+from clio.memory.continuity import ContinuityManager
+from clio.memory.self_model import SelfModel
+from clio.memory.store import MemoryStore
+from clio.observability.audit import AuditLog, DbAuditSink
+from clio.schemas.events import EventKind
+from clio.schemas.gsl import Focus, SolverOutcome, SolverResult
+from clio.social.deliberation import SocialCognition
+from clio.social.etiquette import OutboundPipeline
+from clio.social.relationships import RelationshipStore
+from clio.toolhost.server import Toolhost
 from tests.conftest import FakeRegistry, FakeVerifier, ListAudit, NoopSnapshots, ScriptedGateway, make_config
 
 pytestmark = pytest.mark.scenario
@@ -61,7 +61,7 @@ async def build_life(db, tmp_path: Path, tag: str):
     embedder = HashingEmbedder(1024)
     memory = MemoryStore(db, embedder, config, bus=bus)
     self_model = SelfModel(db, bus=bus)
-    await self_model.seed_defaults("Ethos")
+    await self_model.seed_defaults("Clio")
     gateway = ScriptedGateway([])
     audit = AuditLog(DbAuditSink(db))
     relationships = RelationshipStore(config, db=db)

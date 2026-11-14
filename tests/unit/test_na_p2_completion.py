@@ -20,11 +20,11 @@ from types import SimpleNamespace
 from typing import Any
 from uuid import uuid4
 
-from ethos.engine.life import Life, LifeDeps
-from ethos.gsl.loop import PLAN_ATTEMPTS, GeneralSolverLoop
-from ethos.gsl.planner import PlanUnavailable
-from ethos.gsl.verification import VerificationLadder
-from ethos.schemas.gsl import Bookmark, Focus
+from clio.engine.life import Life, LifeDeps
+from clio.gsl.loop import PLAN_ATTEMPTS, GeneralSolverLoop
+from clio.gsl.planner import PlanUnavailable
+from clio.gsl.verification import VerificationLadder
+from clio.schemas.gsl import Bookmark, Focus
 from tests.conftest import ListAudit, ScriptedGateway, make_config
 
 # ------------------------------------------------------------------ NA-P2.2
@@ -61,7 +61,7 @@ def test_stated_requirements_nobody_checked_block_a_done():
     close the goal (NA-P2.2): a verdict over requirements nobody checked is
     the exact shape of "finished" that NA-P2 forbids.
     """
-    ladder = _ladder("/tmp/ethos-test-na-p2-verified", '{"verdict": "pass", "issues": []}')
+    ladder = _ladder("/tmp/clio-test-na-p2-verified", '{"verdict": "pass", "issues": []}')
     result = asyncio.run(ladder.verify(
         intention=_intention(),
         criteria=[{"type": "manifest_present", "label": "the stated requirement"}],
@@ -79,7 +79,7 @@ def test_requirements_nobody_stated_are_not_blocked_by_the_same_rule():
     rung-1 ladder was asked to look at; the judge's pass is then the only
     verdict available, and refusing it would park every such goal forever.
     """
-    ladder = _ladder("/tmp/ethos-test-na-p2-unstated", '{"verdict": "pass", "issues": []}')
+    ladder = _ladder("/tmp/clio-test-na-p2-unstated", '{"verdict": "pass", "issues": []}')
     result = asyncio.run(ladder.verify(
         intention=_intention(),
         criteria=[],
@@ -90,7 +90,7 @@ def test_requirements_nobody_stated_are_not_blocked_by_the_same_rule():
 
 
 def test_the_block_holds_even_when_the_judge_passes_over_a_failing_check():
-    ladder = _ladder("/tmp/ethos-test-na-p2-contradiction", '{"verdict": "pass", "issues": []}')
+    ladder = _ladder("/tmp/clio-test-na-p2-contradiction", '{"verdict": "pass", "issues": []}')
     missing = "/definitely/not/a/real/path/xyz"
     result = asyncio.run(ladder.verify(
         intention=_intention(),
@@ -153,7 +153,7 @@ def test_a_provider_outage_never_parks_a_task():
     arrive.
     """
     memory = _RecordingMemory()
-    loop = _loop("/tmp/ethos-test-na-p2-nopark", memory)
+    loop = _loop("/tmp/clio-test-na-p2-nopark", memory)
     intention = _intention_record()
     resume: dict[str, Any] = {}
     for _ in range(12):
@@ -169,7 +169,7 @@ def test_a_provider_outage_never_parks_a_task():
 
 def test_a_rate_limited_goal_also_stays_open():
     memory = _RecordingMemory()
-    loop = _loop("/tmp/ethos-test-na-p2-ratelimit", memory)
+    loop = _loop("/tmp/clio-test-na-p2-ratelimit", memory)
     intention = _intention_record()
     resume: dict[str, Any] = {}
     for _ in range(12):
@@ -193,7 +193,7 @@ def test_a_genuinely_unusable_request_still_parks_at_the_threshold():
     park -- so this test restores the ceiling it is about.
     """
     memory = _RecordingMemory()
-    loop = _loop("/tmp/ethos-test-na-p2-park", memory)
+    loop = _loop("/tmp/clio-test-na-p2-park", memory)
     loop.config.gsl.plan_attempts_before_park = 6
     intention = _intention_record()
     resume: dict[str, Any] = {}
@@ -260,7 +260,7 @@ class _RecordingTurns:
 def test_a_bookmark_carries_the_original_goal():
     """NA-P2.3: the interruption loses the moment, never the aim."""
     memory = _MemoryWithBookmarks()
-    config = make_config(Path("/tmp/ethos-test-na-p2-bookmark"))
+    config = make_config(Path("/tmp/clio-test-na-p2-bookmark"))
     life = Life(LifeDeps(
         config=config, control=_Quiet(), bus=None, memory=memory, self_model=_Quiet(),
         attention=None, motivation=None, rhythm=_Quiet(), gateway=None, gsl=None,
@@ -289,7 +289,7 @@ def test_resuming_an_interrupted_task_is_said_in_the_agent_s_own_thread():
     """
     memory = _MemoryWithBookmarks()
     context = _RecordingTurns()
-    config = make_config(Path("/tmp/ethos-test-na-p2-resume"))
+    config = make_config(Path("/tmp/clio-test-na-p2-resume"))
     life = Life(LifeDeps(
         config=config, control=_Quiet(), bus=None, memory=memory, self_model=_Quiet(),
         attention=None, motivation=None, rhythm=_Quiet(), gateway=None, gsl=None,
@@ -317,7 +317,7 @@ def test_a_focus_pointing_at_gone_work_is_recorded_not_dropped():
     memory = _MemoryWithBookmarks()
     memory.intention = None  # the work no longer exists
     context = _RecordingTurns()
-    config = make_config(Path("/tmp/ethos-test-na-p2-gone"))
+    config = make_config(Path("/tmp/clio-test-na-p2-gone"))
     life = Life(LifeDeps(
         config=config, control=_Quiet(), bus=None, memory=memory, self_model=_Quiet(),
         attention=None, motivation=None, rhythm=_Quiet(), gateway=None, gsl=None,

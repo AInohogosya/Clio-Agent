@@ -4,15 +4,15 @@ from pathlib import Path
 
 import pytest
 
-from ethos.core.control import ControlPlane
-from ethos.gateway.embeddings import HashingEmbedder
-from ethos.guardian.gate import GuardianGate
-from ethos.guardian.journal import ActionJournal
-from ethos.guardian.registry import ArtifactRegistry
-from ethos.guardian.trash import TrashStore
-from ethos.memory.store import MemoryStore
-from ethos.observability.audit import AuditLog, DbAuditSink
-from ethos.toolhost.server import ToolContext, Toolhost
+from clio.core.control import ControlPlane
+from clio.gateway.embeddings import HashingEmbedder
+from clio.guardian.gate import GuardianGate
+from clio.guardian.journal import ActionJournal
+from clio.guardian.registry import ArtifactRegistry
+from clio.guardian.trash import TrashStore
+from clio.memory.store import MemoryStore
+from clio.observability.audit import AuditLog, DbAuditSink
+from clio.toolhost.server import ToolContext, Toolhost
 from tests.conftest import FakeVerifier, NoopSnapshots, make_config
 
 pytestmark = pytest.mark.scenario

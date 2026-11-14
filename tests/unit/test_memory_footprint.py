@@ -9,20 +9,20 @@ from uuid import uuid4
 import numpy as np
 import pytest
 
-from ethos.bus.event_bus import SEEN_ID_WINDOW, EventBus
-from ethos.comms.adapters.email import SEEN_UID_LIMIT, EmailAdapter
-from ethos.config import load_config
-from ethos.engine.life import THOUGHT_BUFFER, Life, LifeDeps, _tail
-from ethos.gateway.embeddings import (
+from clio.bus.event_bus import SEEN_ID_WINDOW, EventBus
+from clio.comms.adapters.email import SEEN_UID_LIMIT, EmailAdapter
+from clio.config import load_config
+from clio.engine.life import THOUGHT_BUFFER, Life, LifeDeps, _tail
+from clio.gateway.embeddings import (
     HashingEmbedder,
     RemoteEmbedder,
     assert_model_dim,
     build_role_embedder,
 )
-from ethos.memory.retrieval import HybridRetriever, cosine, mmr_select
-from ethos.schemas.memory import MemoryHit
-from ethos.threads.manager import ThreadManager
-from ethos.toolhost.browser import IDLE_TTL_S, MAX_SESSIONS, BrowserError, BrowserPool
+from clio.memory.retrieval import HybridRetriever, cosine, mmr_select
+from clio.schemas.memory import MemoryHit
+from clio.threads.manager import ThreadManager
+from clio.toolhost.browser import IDLE_TTL_S, MAX_SESSIONS, BrowserError, BrowserPool
 from tests.conftest import make_config
 
 """
@@ -42,7 +42,7 @@ that has to survive the next person who finds a use for adding to one of them.
 
 
 def _config() -> Any:
-    config = make_config(Path("/tmp/ethos-test-memory-footprint"))
+    config = make_config(Path("/tmp/clio-test-memory-footprint"))
     config.paths.ensure()
     return config
 
@@ -56,14 +56,14 @@ def _production_config() -> Any:
 
     Two things are undone here, both on purpose. The `config` fixture sets
     `provider="hashing"` so no test in this suite downloads a model, and
-    `tests/conftest.py` exports `ETHOS_EMBEDDING=hashing` for the same reason —
+    `tests/conftest.py` exports `CLIO_EMBEDDING=hashing` for the same reason —
     together they make `load_config` answer "hashing" even when the shipped YAML
     says otherwise. Which process loads a model is a question about the shipped
     deployment, so this asks about the shipped deployment.
     """
     config = load_config("config")
     assert config.gateway.embedding.provider == "hashing", \
-        "the suite's ETHOS_EMBEDDING=hashing override is what this undoes"
+        "the suite's CLIO_EMBEDDING=hashing override is what this undoes"
     config.gateway.embedding.provider = "fastembed"
     return config
 
@@ -99,7 +99,7 @@ def test_the_processes_that_actually_embed_keep_their_own_model(monkeypatch):
     config = _production_config()
     asked: list[tuple[str, str, str]] = []
     monkeypatch.setattr(
-        "ethos.gateway.embeddings.build_embedder",
+        "clio.gateway.embeddings.build_embedder",
         lambda provider, model, dim, **kw: asked.append((provider, model, dim))
         or HashingEmbedder(dim),
     )
@@ -118,7 +118,7 @@ def test_the_processes_that_actually_embed_keep_their_own_model(monkeypatch):
 def test_hashing_needs_no_gateway_hop(config):
     """A zero-footprint mode must not acquire a runtime dependency.
 
-    `ETHOS_EMBEDDING=hashing` exists to be run on a machine that cannot spare a
+    `CLIO_EMBEDDING=hashing` exists to be run on a machine that cannot spare a
     model at all. Making the toolhost wait on a loopback request to be told how to
     hash a word would be a way to make the cheapest mode the least available one.
     """
@@ -151,16 +151,16 @@ def test_a_model_fastembed_cannot_describe_is_not_a_dimension_error():
 
 def test_the_embedding_env_knobs_are_read(monkeypatch):
     """The four things an operator reaches for when the agent will not fit."""
-    monkeypatch.setenv("ETHOS_EMBEDDING_THREADS", "2")
-    monkeypatch.setenv("ETHOS_EMBEDDING_MODEL", "BAAI/bge-base-en-v1.5")
-    monkeypatch.setenv("ETHOS_EMBEDDING_DIM", "768")
-    monkeypatch.setenv("ETHOS_EMBEDDING_CACHE", "/var/cache/ethos/onnx")
+    monkeypatch.setenv("CLIO_EMBEDDING_THREADS", "2")
+    monkeypatch.setenv("CLIO_EMBEDDING_MODEL", "BAAI/bge-base-en-v1.5")
+    monkeypatch.setenv("CLIO_EMBEDDING_DIM", "768")
+    monkeypatch.setenv("CLIO_EMBEDDING_CACHE", "/var/cache/clio/onnx")
     cfg = load_config("config")
     assert cfg.gateway.embedding.threads == 2
     assert cfg.gateway.embedding.model == "BAAI/bge-base-en-v1.5"
     assert cfg.gateway.embedding.dim == 768
-    assert cfg.gateway.embedding.cache_dir == "/var/cache/ethos/onnx"
-    assert cfg.gateway.embedding.resolve_cache_dir(cfg) == "/var/cache/ethos/onnx"
+    assert cfg.gateway.embedding.cache_dir == "/var/cache/clio/onnx"
+    assert cfg.gateway.embedding.resolve_cache_dir(cfg) == "/var/cache/clio/onnx"
 
 
 def test_the_weights_cache_is_the_agents_own_and_not_fastembeds_default():
@@ -349,7 +349,7 @@ async def test_a_worker_result_arriving_over_the_bus_also_retires(config):
     would still be resident — the fix would pass every in-process test and do
     nothing in production.
     """
-    from ethos.schemas.events import EventKind
+    from clio.schemas.events import EventKind
 
     config.threads.mode = "process"
     published: list[tuple[str, dict[str, Any]]] = []
@@ -595,7 +595,7 @@ class _FakeBrowser:
 @pytest.fixture()
 def pool(monkeypatch) -> BrowserPool:
     """A pool whose sessions are fake, so nothing launches Chromium here."""
-    monkeypatch.setattr("ethos.toolhost.browser.BrowserSession", _FakeBrowser)
+    monkeypatch.setattr("clio.toolhost.browser.BrowserSession", _FakeBrowser)
     return BrowserPool(max_sessions=3, idle_ttl_s=60.0)
 
 
@@ -787,7 +787,7 @@ async def test_an_unfiltered_search_still_asks_all_four():
 
 async def test_the_vectorized_cosine_is_the_cosine():
     """The number that replaced the list comprehension is the same quotient."""
-    from ethos.memory.retrieval import HybridRetriever as HR
+    from clio.memory.retrieval import HybridRetriever as HR
 
     texts = ["[" + ",".join(repr(v) for v in vec) + "]" for vec in
              ([1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 1.0, 0.0], [0.0, 0.0, 0.0])]
@@ -810,7 +810,7 @@ async def test_a_row_too_short_to_match_the_query_is_not_scored_against_it():
     pgvector refuses to store a wrong-width vector, but the column can still hold
     a null and the `text` cast is a parse away from a malformed literal.
     """
-    from ethos.memory.retrieval import HybridRetriever as HR
+    from clio.memory.retrieval import HybridRetriever as HR
 
     hits = [HR._row_to_hit(
         {"id": "1", "kind": "episode", "summary": "s", "body": None, "ts": None,
@@ -922,7 +922,7 @@ def test_the_candidate_matrix_is_one_allocation_not_a_few_hundred_lists():
     The buffer holds the same numbers in a fraction of the memory, and it is the
     array the dot products run against.
     """
-    from ethos.memory.retrieval import HybridRetriever as HR
+    from clio.memory.retrieval import HybridRetriever as HR
 
     dim = 1024
     texts = ["[" + ",".join(repr(float(i)) for i in range(dim)) + "]"

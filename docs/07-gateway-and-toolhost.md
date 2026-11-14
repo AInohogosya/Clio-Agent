@@ -1,12 +1,12 @@
 # The gateway: routing, providers, money
 
-All model calls go through one service. Sources: `ethos/gateway/service.py`,
+All model calls go through one service. Sources: `clio/gateway/service.py`,
 `router.py`, `normalizer.py`, `pricing.py`, `cost.py`, `embeddings.py`,
 `calibration.py`, `config.py:101-195`.
 
 ## 1. Routing
 
-`ModelRouter.select()` (`ethos/gateway/router.py:207-319`) scores every eligible
+`ModelRouter.select()` (`clio/gateway/router.py:207-319`) scores every eligible
 model:
 
 ```
@@ -36,8 +36,8 @@ m* = argmax [ q_m(class) − μ·ĉ − ν·l̂ ]        (router.py:125-126,193-
 
 ### 1.2 Session drivers (3.2)
 
-A `SessionDriver` (`ethos/gateway/providers/base.py`) participates in routing with
-`session_score` carrying `c_hat ≈ 0` (`ethos/gateway/router.py` `is_session_entry`,
+A `SessionDriver` (`clio/gateway/providers/base.py`) participates in routing with
+`session_score` carrying `c_hat ≈ 0` (`clio/gateway/router.py` `is_session_entry`,
 `marginal_cost`) — a subscription-based CLI/session has no marginal token cost, so it
 outranks paid models at equal quality. On 429 or breaker failover, the gateway
 **replays the normalized conversation** on the next driver (`service.py:
@@ -65,13 +65,13 @@ register_session_driver, replay_request, _session_replay`).
 
 ## 3. Providers and normalization
 
-Providers (`ethos/gateway/providers/`): `anthropic_native`, `openai_native`,
+Providers (`clio/gateway/providers/`): `anthropic_native`, `openai_native`,
 `google_native`, `openai_compat` (which learns per-model traits into
 `learned_model_traits.json`, `service.py:388`, consumed by `calibration.py` —
 `RELOAD 30 s`, `PENALTY_WEIGHT 0.5` — so a model that keeps producing malformed JSON
 gets progressively routed away from schema-sensitive calls).
 
-The **normalizer** (`ethos/gateway/normalizer.py`) exists because providers
+The **normalizer** (`clio/gateway/normalizer.py`) exists because providers
 disagree about usage accounting:
 
 - **Disjoint (Anthropic)** vs **inclusive (OpenAI/Google/compat)** token shapes
@@ -85,7 +85,7 @@ disagree about usage accounting:
 
 ## 4. Honest pricing
 
-`ethos/pricing.py:460` — the docstring is a post-mortem of three price bugs, all of
+`clio/pricing.py:460` — the docstring is a post-mortem of three price bugs, all of
 which **biased spend upward**:
 
 1. Flat `dict.get` defaults billed unknown models at an invented mid-range rate —
@@ -107,7 +107,7 @@ catalogue (`LivePriceFetcher`, 6 h TTL, 30-day cache max, atomic write,
 
 ## 5. The spend guard (H2)
 
-`SpendGuard` (`ethos/gateway/cost.py:213-351`) enforces the numeric half of H2:
+`SpendGuard` (`clio/gateway/cost.py:213-351`) enforces the numeric half of H2:
 
 - Caps: `H2_daily_spend_usd = 20.0`, `H2_monthly_spend_usd = 400.0`,
   `H2_capital_at_risk_usd = 100.0` (`config.py:1172-1185`), `on_exceed="block"`.
@@ -123,7 +123,7 @@ catalogue (`LivePriceFetcher`, 6 h TTL, 30-day cache max, atomic write,
 
 ## 6. Embeddings
 
-`ethos/gateway/embeddings.py:302`:
+`clio/gateway/embeddings.py:302`:
 
 - `HashingEmbedder(dim=1024)` (`:39-66`) — zero-dependency fallback; the agent's
   memory never depends on a model being reachable.
@@ -132,7 +132,7 @@ catalogue (`LivePriceFetcher`, 6 h TTL, 30-day cache max, atomic write,
 - `RemoteEmbedder` for roles `toolhost` and `worker` (`:30,164-247`) — those
   processes **borrow the gateway's embedder rather than owning an ONNX arena**:
   "a second ~1.2 GB bge-large ONNX arena" is a defect, not redundancy
-  (`ethos/__main__.py:304-310`).
+  (`clio/__main__.py:304-310`).
 
 ## 7. Theory: money as a first-class dimension
 
@@ -151,8 +151,8 @@ allowed to be expensive when being cheap would be wrong.
 ## Part II — The toolhost: the agent's hands
 
 Every action the agent takes on the world passes through the toolhost
-(`ethos/toolhost/server.py`), a separate supervised process behind a guardian gate.
-Sources: `server.py`, `ethos/toolhost/tools/*`, `kernels.py`, `browser.py`,
+(`clio/toolhost/server.py`), a separate supervised process behind a guardian gate.
+Sources: `server.py`, `clio/toolhost/tools/*`, `kernels.py`, `browser.py`,
 `desktop.py`, `watchers.py`, `pty_session.py`.
 
 ## 1. Execution pipeline
@@ -171,10 +171,10 @@ On **duplicate idempotency key**, the stored prior result is **replayed** rather
 than re-executed (`server.py:322-366`) — the same action key never runs twice.
 
 Transport: Unix socket `run_dir/toolhost.sock` (POSIX) or TCP `127.0.0.1:8701`
-with fallback decided by capability, not convention (`ethos/__main__.py:325-360` —
+with fallback decided by capability, not convention (`clio/__main__.py:325-360` —
 "the missing `AF_UNIX`", not writability, is the question). HTTP surface:
 `GET /healthz`, `GET /tools`, `POST /execute` (`server.py` `create_toolhost_app`).
-Windows is always TCP (`ethos/toolhost/client.py:41-46`).
+Windows is always TCP (`clio/toolhost/client.py:41-46`).
 
 ## 2. The 55 tools
 
@@ -223,7 +223,7 @@ error becomes information rather than noise ("the error is the finding").
   24 h / 50 rows, `MAX_LIMIT 200`, literal `ILIKE` matching, `hasMore` computed via
   limit+1, text clipped to 4000 chars — the agent can audit its own past.
 - **`secrets.*`** persist via pyrage-encrypted storage with `{{secret:KEY}}`
-  interpolation (`ethos/gateway/secrets.py`) and the logger redacts `{{secret:}}`
+  interpolation (`clio/gateway/secrets.py`) and the logger redacts `{{secret:}}`
   patterns ([08-runtime.md](08-runtime.md)).
 - **`comm.send`** is restricted to the `SEND_CHANNELS` list (`tools/comms.py:78`)
   and routes through the outbound pipeline — tools cannot bypass etiquette.
@@ -236,7 +236,7 @@ error becomes information rather than noise ("the error is the finding").
   (`tools/browser_tools.py:14-45`) — the error tells the agent what *is* open.
 - **Desktop** (`desktop.py:91`, Xvfb `:1` on Linux): `desktop.key / type / click /
   move / screenshot / windows` with timeouts 30–60 s. On macOS this drives the real
-  desktop; capabilities are reported by `ethos doctor` (`ethos/platform.py`
+  desktop; capabilities are reported by `clio doctor` (`clio/platform.py`
   `_desktop_possible`).
 - **PTY sessions** (`pty_session.py:278`): lazily imported, POSIX-only via
   `platform.PTY_SUPPORTED` — an absent pty is reported, not silently no-op'd.
@@ -255,13 +255,13 @@ A toolshed manifest carries:
 - an **Ed25519 signature**, verified at registration (`toolshed.py:22`)
 
 Enforcement is **pre-execution**: `GuardianGate.review()` checks the manifest's
-path/host/secret fences (`ethos/guardian/classifier.py:check_manifest_paths`)
+path/host/secret fences (`clio/guardian/classifier.py:check_manifest_paths`)
 before the tool runs — a registered tool cannot exceed what its signature vouched
 for.
 
 ## 6. Watchers
 
-`ethos/toolhost/watchers.py:175` — background file/process watchers the agent can
+`clio/toolhost/watchers.py:175` — background file/process watchers the agent can
 arm, feeding percepts; the toolhost observes so the agent doesn't have to poll.
 
 ## 7. Theory: hands vs mind

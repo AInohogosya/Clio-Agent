@@ -7,19 +7,19 @@ modified or evaded by the agent (H1). Stdlib only.
 Responsibilities:
   1. Spend watchdog: polls the gateway metrics endpoint; on sustained
      overspend writes the DB control flag and optionally suspends the VM.
-  2. Audit anchoring: ingests the agent's anchor.json (ETHOS_ANCHOR_FILE,
+  2. Audit anchoring: ingests the agent's anchor.json (CLIO_ANCHOR_FILE,
      synced from the agent data dir) every poll into a host-side log.
   3. Kill switch: presence of ${OOB_DIR}/stop suspends the VM guest.
   4. Host snapshots: takes VM snapshots on a schedule via the configured
      snapshot command template.
 
 Configure via environment:
-  ETHOS_OOB_DIR         state dir on the host (default /var/lib/ethos-oob)
-  ETHOS_METRICS_URL     gateway/core metrics URL (default http://127.0.0.1:9710/metrics)
-  ETHOS_DAILY_CAP_USD   hard daily cap (default 20.0)
-  ETHOS_MONTHLY_CAP_USD hard monthly cap (default 400.0)
-  ETHOS_SNAPSHOT_CMD    shell command template with {name} (optional)
-  ETHOS_SUSPEND_CMD     shell command to suspend the guest (optional)
+  CLIO_OOB_DIR         state dir on the host (default /var/lib/ethos-oob)
+  CLIO_METRICS_URL     gateway/core metrics URL (default http://127.0.0.1:9710/metrics)
+  CLIO_DAILY_CAP_USD   hard daily cap (default 20.0)
+  CLIO_MONTHLY_CAP_USD hard monthly cap (default 400.0)
+  CLIO_SNAPSHOT_CMD    shell command template with {name} (optional)
+  CLIO_SUSPEND_CMD     shell command to suspend the guest (optional)
 """
 
 from __future__ import annotations
@@ -33,20 +33,20 @@ import urllib.request
 from datetime import UTC, datetime
 from pathlib import Path
 
-OOB_DIR = Path(os.environ.get("ETHOS_OOB_DIR", "/var/lib/ethos-oob"))
-METRICS_URL = os.environ.get("ETHOS_METRICS_URL", "http://127.0.0.1:9710/metrics")
+OOB_DIR = Path(os.environ.get("CLIO_OOB_DIR", "/var/lib/ethos-oob"))
+METRICS_URL = os.environ.get("CLIO_METRICS_URL", "http://127.0.0.1:9710/metrics")
 ANCHOR_FILE = os.environ.get(
-    "ETHOS_ANCHOR_FILE",
+    "CLIO_ANCHOR_FILE",
     "/home/ethos/.ethos/data/anchor.json",
 )
-DAILY_CAP = float(os.environ.get("ETHOS_DAILY_CAP_USD", "20.0"))
-MONTHLY_CAP = float(os.environ.get("ETHOS_MONTHLY_CAP_USD", "400.0"))
-SNAPSHOT_CMD = os.environ.get("ETHOS_SNAPSHOT_CMD", "")
-SUSPEND_CMD = os.environ.get("ETHOS_SUSPEND_CMD", "")
-POLL_S = float(os.environ.get("ETHOS_OOB_POLL_S", "30"))
-OVERSPEND_CYCLES = int(os.environ.get("ETHOS_OOB_OVERSPEND_CYCLES", "4"))
+DAILY_CAP = float(os.environ.get("CLIO_DAILY_CAP_USD", "20.0"))
+MONTHLY_CAP = float(os.environ.get("CLIO_MONTHLY_CAP_USD", "400.0"))
+SNAPSHOT_CMD = os.environ.get("CLIO_SNAPSHOT_CMD", "")
+SUSPEND_CMD = os.environ.get("CLIO_SUSPEND_CMD", "")
+POLL_S = float(os.environ.get("CLIO_OOB_POLL_S", "30"))
+OVERSPEND_CYCLES = int(os.environ.get("CLIO_OOB_OVERSPEND_CYCLES", "4"))
 
-COST_RE = re.compile(r'^ethos_model_cost_usd_total\{[^}]*\} ([0-9.eE+-]+)$', re.M)
+COST_RE = re.compile(r'^clio_model_cost_usd_total\{[^}]*\} ([0-9.eE+-]+)$', re.M)
 
 
 def log(message: str) -> None:
@@ -124,7 +124,7 @@ def snapshot_cycle(last: float) -> float:
     now = time.time()
     if now - last < 900:
         return last
-    name = f"ethos-{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}"
+    name = f"clio-{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}"
     if run_shell(SNAPSHOT_CMD, name):
         log(f"host snapshot taken: {name}")
         return now

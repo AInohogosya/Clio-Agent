@@ -3,9 +3,9 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from ethos.guardian.classifier import classify_tool
-from ethos.toolhost.server import ToolContext
-from ethos.toolhost.tools.history import HistoryBrowseTool
+from clio.guardian.classifier import classify_tool
+from clio.toolhost.server import ToolContext
+from clio.toolhost.tools.history import HistoryBrowseTool
 
 
 class FakeDB:

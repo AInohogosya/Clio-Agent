@@ -9,13 +9,13 @@ from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
-from ethos.config import load_config
+from clio.config import load_config
 
 config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-dsn_env = os.environ.get("ETHOS_DSN")
+dsn_env = os.environ.get("CLIO_DSN") or os.environ.get("ETHOS_DSN")
 if dsn_env:
     if dsn_env.startswith("postgres://"):
         dsn_env = "postgresql://" + dsn_env[len("postgres://"):]

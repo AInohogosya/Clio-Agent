@@ -10,10 +10,10 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from ethos.comms.host import CommsHost, inbound_to_bus
-from ethos.config import WebhookConfig, WhatsappChannelConfig
-from ethos.schemas.messages import Message
-from ethos.social.deliberation import SocialCognition
+from clio.comms.host import CommsHost, inbound_to_bus
+from clio.config import WebhookConfig, WhatsappChannelConfig
+from clio.schemas.messages import Message
+from clio.social.deliberation import SocialCognition
 
 pytestmark = pytest.mark.integration
 
@@ -83,7 +83,7 @@ def loaded_config() -> Any:
     Built rather than shared because these tests edit it: a config mutated in
     place would leak an enabled channel into whichever test ran next.
     """
-    from ethos.config import load_config
+    from clio.config import load_config
 
     return load_config("config")
 

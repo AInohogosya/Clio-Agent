@@ -9,11 +9,11 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from ethos.engine.life import Life, LifeDeps
-from ethos.engine.reverie import Reverie
-from ethos.engine.rhythm import RhythmController
-from ethos.schemas.gsl import Decision, Focus, Outcome
-from ethos.schemas.reverie import ReverieKind
+from clio.engine.life import Life, LifeDeps
+from clio.engine.reverie import Reverie
+from clio.engine.rhythm import RhythmController
+from clio.schemas.gsl import Decision, Focus, Outcome
+from clio.schemas.reverie import ReverieKind
 from tests.conftest import ListAudit, ScriptedGateway, make_config
 
 """
@@ -72,7 +72,7 @@ class _Nothing:
 
 
 def _config():
-    config = make_config(Path("/tmp/ethos-test-reverie"))
+    config = make_config(Path("/tmp/clio-test-reverie"))
     config.paths.ensure()
     return config
 
@@ -457,9 +457,9 @@ def _life_that_can_run_a_whole_cycle(config: Any, hour: int, consolidation: Any 
     Everything below the loop is a stub because the question is what the loop does
     with the hour it is given, not what a model would say about it.
     """
-    from ethos.engine.attention import Attention
-    from ethos.engine.drives import Motivation
-    from ethos.gateway.embeddings import HashingEmbedder
+    from clio.engine.attention import Attention
+    from clio.engine.drives import Motivation
+    from clio.gateway.embeddings import HashingEmbedder
 
     config.timezone = "UTC"
     at_night = datetime(2026, 1, 1, hour, 0, tzinfo=UTC)
@@ -550,7 +550,7 @@ async def test_consolidation_is_keyed_to_its_hour_rather_than_to_a_bedtime():
 
 def test_the_prompt_offers_a_way_out():
     """The prompt has to permit `none`, or the floor is the only thing stopping it."""
-    from ethos.prompts.reverie import REVERIE_PROMPT
+    from clio.prompts.reverie import REVERIE_PROMPT
 
     assert "none" in REVERIE_PROMPT
     assert "allowed" in REVERIE_PROMPT

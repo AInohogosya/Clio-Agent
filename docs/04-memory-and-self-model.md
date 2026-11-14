@@ -1,12 +1,12 @@
 # Memory: store, retrieval, context, consolidation
 
 Clio Agent's memory is PostgreSQL 16 with `pgvector` as the single source of truth —
-not a context window. Sources: `ethos/memory/store.py`, `retrieval.py`, `context.py`,
+not a context window. Sources: `clio/memory/store.py`, `retrieval.py`, `context.py`,
 `consolidate.py`, `continuity.py`, `self_model.py`, `config.py:711-805`.
 
 ## 1. The four memory tables
 
-`MemoryStore` (`ethos/memory/store.py:61-865`):
+`MemoryStore` (`clio/memory/store.py:61-865`):
 
 | Table | Contents | Key fields |
 |---|---|---|
@@ -37,7 +37,7 @@ philosophy applied to the agent's own past.
 
 ## 3. Hybrid retrieval
 
-`ethos/memory/retrieval.py:70-437`. The retrieval score:
+`clio/memory/retrieval.py:70-437`. The retrieval score:
 
 ```
 S = 0.40·cosine + 0.15·bm25 + 0.15·recency + 0.20·importance + 0.10·strength
@@ -60,11 +60,11 @@ catches what embeddings miss (exact names, error strings).
 
 ## 4. Working context: the conversational present
 
-`ethos/memory/context.py:55-654` maintains three layers:
+`clio/memory/context.py:55-654` maintains three layers:
 
 1. **Working buffer** — the live turns, capped `max_turns = 48`, `max_chars = 6000`.
 2. **Narrative thread** — every `narrate_every = 12` turns, a `T1` narrator call
-   (`NARRATE_PROMPT`, ~30 words, `ethos/prompts/context.py:3`) compresses the buffer
+   (`NARRATE_PROMPT`, ~30 words, `clio/prompts/context.py:3`) compresses the buffer
    into the narrative (max 12 lines). Mechanical fallback exists if the model call
    fails (`context.py:255-293`) — the rolling never depends on model availability.
 3. **Retriever feed** — high-salience turns (`durable_salience = 0.7`) become
@@ -76,7 +76,7 @@ thread / 40% recent turns (`context.py:483-504`).
 
 ## 5. Nightly consolidation
 
-`ethos/memory/consolidate.py`. At `run_at = 04:00` (the `record()`/`_pace()` path
+`clio/memory/consolidate.py`. At `run_at = 04:00` (the `record()`/`_pace()` path
 triggers it, `life.py:1889-1913`), a DAG of stages runs
 (`ConsolidationDAG.run_nightly`, `consolidate.py:219-270`):
 
@@ -100,14 +100,14 @@ carrying, and a refreshed model of itself.
 
 ## 6. Continuity: surviving restarts
 
-`ethos/memory/continuity.py:16-136`:
+`clio/memory/continuity.py:16-136`:
 
 - **`continuity.json`** — an atomically-written state file (focus bookmark, working
   state) plus a `checkpoints` table.
 - **`wake_up()` reconciliation**: running action-journal entries from before the
   restart are reconciled to `interrupted`; stale environment entities are cleaned;
   **bus gaps** between last-seen and now are drained via the event bus's
-  `consumed_by` claiming (`ethos/bus/event_bus.py:203-219`). The agent wakes knowing
+  `consumed_by` claiming (`clio/bus/event_bus.py:203-219`). The agent wakes knowing
   what it was in the middle of and what it missed.
 
 ## 7. Theory: memory as commitment device
@@ -131,15 +131,15 @@ The memory design encodes four commitments:
 The agent holds two pictures of itself: a **kernel** the program asserts (which the
 agent cannot rewrite) and a **self-model** the agent maintains (which it can). The
 boundary between them is the central design decision of this document. Sources:
-`ethos/prompts/identity.py`, `ethos/memory/self_model.py`, `ethos/core/seed.py`.
+`clio/prompts/identity.py`, `clio/memory/self_model.py`, `clio/core/seed.py`.
 
 ## 1. The versioned self-model
 
-`ethos/memory/self_model.py:21-185` stores the agent's editable self-picture in a
+`clio/memory/self_model.py:21-185` stores the agent's editable self-picture in a
 `(key, version)` table — every write is a new version, so self-revision is auditable
 and revertible (the reversibility thesis applied to the self).
 
-Seeded keys (`ethos/core/seed.py`, `self_model.py DEFAULTS :28`):
+Seeded keys (`clio/core/seed.py`, `self_model.py DEFAULTS :28`):
 
 - `name` — the name a person gave it (the one field the agent must not change; see
   §3)
@@ -155,7 +155,7 @@ what the agent wishes it were.
 
 ## 2. The identity kernel (stable prefix block 1)
 
-`build_identity_kernel()` (`ethos/prompts/identity.py:489-549`) composes the first
+`build_identity_kernel()` (`clio/prompts/identity.py:489-549`) composes the first
 block of every workspace prompt, ordered deliberately:
 
 ```

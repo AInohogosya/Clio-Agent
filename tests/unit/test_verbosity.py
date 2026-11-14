@@ -1,4 +1,4 @@
-from ethos.social.verbosity import (
+from clio.social.verbosity import (
     VERBOSITY_BALANCED,
     VERBOSITY_DETAILED,
     VERBOSITY_QUIET,

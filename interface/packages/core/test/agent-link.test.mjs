@@ -614,7 +614,7 @@ test('the agent address must be this machine', () => {
     assert.equal(isValidAgentEndpoint(good), true, good);
   }
   for (const bad of [
-    'http://ethos.example.com:8720',
+    'http://clio.example.com:8720',
     'http://192.168.1.10:8720',
     'https://127.0.0.1:8720',
     'http://user:pw@127.0.0.1:8720',

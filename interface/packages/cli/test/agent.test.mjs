@@ -309,10 +309,10 @@ test('the settings file carries the interface fields, and they round-trip', asyn
 
 test('a remote agent address is refused before it can be saved', async () => {
   await withAgent(async ({ phone, path }) => {
-    const result = await phone(['config', 'set', 'agentUrl', 'http://ethos.example.com']);
+    const result = await phone(['config', 'set', 'agentUrl', 'http://clio.example.com']);
     assert.equal(result.status, 1);
     const stored = JSON.parse(readFileSync(path, 'utf8'));
-    assert.notEqual(stored.settings.agentUrl, 'http://ethos.example.com');
+    assert.notEqual(stored.settings.agentUrl, 'http://clio.example.com');
   });
 });
 

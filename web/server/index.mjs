@@ -33,7 +33,7 @@ import { WebSocketServer } from "ws";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
-const DB_DSN = process.env.ETHOS_DSN ?? "postgresql://ethos:ethos@127.0.0.1:5433/ethos";
+const DB_DSN = process.env.CLIO_DSN ?? process.env.ETHOS_DSN ?? "postgresql://ethos:ethos@127.0.0.1:5433/ethos";
 
 /**
  * Where the interface is built from.
@@ -43,8 +43,8 @@ const DB_DSN = process.env.ETHOS_DSN ?? "postgresql://ethos:ethos@127.0.0.1:5433
  * API without it, and refusing to start would make "run the agent, look at it
  * over HTTP" depend on a JavaScript toolchain.
  */
-const PHONE_DIST = process.env.ETHOS_PHONE_DIST
-  ? path.resolve(process.env.ETHOS_PHONE_DIST)
+const PHONE_DIST = process.env.CLIO_PHONE_DIST
+  ? path.resolve(process.env.CLIO_PHONE_DIST)
   : path.resolve(ROOT, "..", "interface", "packages", "web", "dist");
 
 const { Pool, Client } = pg;
@@ -68,7 +68,7 @@ function handle(fn) {
     Promise.resolve()
       .then(() => fn(req, res))
       .catch((error) => {
-        console.error(`ethos-web ${req.method} ${req.path}: ${error?.message ?? error}`);
+        console.error(`clio-web ${req.method} ${req.path}: ${error?.message ?? error}`);
         if (res.headersSent) return;
         res.status(503).json({ error: "agent_unavailable", detail: String(error?.message ?? error) });
       });
@@ -141,20 +141,20 @@ app.get("/api/health", handle(async (_req, res) => {
  * the file cannot be read the caps come back as zero and the panels say "no cap
  * reported", which is honest in a way that a guessed number is not.
  */
-const CONFIG_DIR = process.env.ETHOS_CONFIG_DIR
-  ? path.resolve(process.env.ETHOS_CONFIG_DIR)
+const CONFIG_DIR = process.env.CLIO_CONFIG_DIR
+  ? path.resolve(process.env.CLIO_CONFIG_DIR)
   : path.resolve(ROOT, "..", "config");
 
 /**
  * The port this bridge listens on.
  *
- * `ETHOS_WEB_PORT` wins, then the `web.http_port` key of `config/channels.yaml`
+ * `CLIO_WEB_PORT` wins, then the `web.http_port` key of `config/channels.yaml`
  * — the file the documentation points a deployment at, so editing it does what
  * it says — and 8720 when neither is set. Read here rather than at the top
  * because the config directory has to be resolved first.
  */
 function resolvePort() {
-  const fromEnv = Number(process.env.ETHOS_WEB_PORT);
+  const fromEnv = Number(process.env.CLIO_WEB_PORT);
   if (Number.isFinite(fromEnv) && Number.isInteger(fromEnv) && fromEnv > 0) return fromEnv;
   try {
     const port = readChannelsFile()?.web?.http_port;
@@ -170,13 +170,13 @@ function resolvePort() {
  *
  * `config/` is a directory that is meant to be committed, so a base model — which
  * carries an API key — does not go there. It goes where the rest of the agent's
- * private state is, which is `paths.home` in `config/ethos.yaml` with
- * `ETHOS_HOME` on top: exactly the order `ethos.config.load_config` applies, so
+ * private state is, which is `paths.home` in `config/clio.yaml` with
+ * `CLIO_HOME` on top: exactly the order `clio.config.load_config` applies, so
  * what this process writes is what the gateway reads. Resolving it from the same
  * two sources rather than hard-coding `~/.ethos` is what keeps a `start.sh` run
  * and a bare `node web/server/index.mjs` run pointed at the same file.
  *
- * `~` is expanded the way `ethos/config.py` expands it — with `os.path.expanduser`
+ * `~` is expanded the way `clio/config.py` expands it — with `os.path.expanduser`
  * on the Python side, and by hand here. Doing it by hand is only safe if it is
  * done *properly*, and the obvious one-liner is not: stripping the `~` off
  * `~/.ethos` leaves `/.ethos`, which `path.resolve` then reads as an absolute
@@ -210,12 +210,12 @@ function usableHome(value) {
 }
 
 function resolveAgentHome() {
-  if (process.env.ETHOS_HOME) {
-    const explicit = usableHome(expandHome(process.env.ETHOS_HOME));
+  if (process.env.CLIO_HOME) {
+    const explicit = usableHome(expandHome(process.env.CLIO_HOME));
     if (explicit) return explicit;
   }
   try {
-    const raw = fs.readFileSync(path.join(CONFIG_DIR, "ethos.yaml"), "utf8");
+    const raw = fs.readFileSync(path.join(CONFIG_DIR, "clio.yaml"), "utf8");
     const home = loadYaml(raw)?.paths?.home;
     if (typeof home === "string" && home.trim()) {
       const configured = usableHome(expandHome(home));
@@ -235,7 +235,7 @@ const IDENTITY_FILE = path.join(AGENT_HOME, "identity.yaml");
  *
  * `channels.yaml` here is an *overlay*, not a copy: the same shape as the shipped
  * `config/channels.yaml`, merged over it key by key by `readChannelsFile`, exactly
- * as `ethos.config.load_config` does on the Python side. `people.yaml` overlays
+ * as `clio.config.load_config` does on the Python side. `people.yaml` overlays
  * the contact book the same way, and a `null` address there is a removal.
  *
  * Both are here for the reason `base_model.yaml` is: a bot token and a chat id
@@ -259,7 +259,7 @@ const PORT = resolvePort();
  *
  * A vendor, not a protocol, is what a person picks in a settings screen; what the
  * agent needs to know is which adapter to hand the request to. So this maps
- * forward into the four wire protocols `ethos/gateway/service.py` has an adapter
+ * forward into the four wire protocols `clio/gateway/service.py` has an adapter
  * for, and a provider that is not in this table is not one the agent can be
  * pointed at.
  */
@@ -865,7 +865,7 @@ const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
  * is interpolated into the first line of the agent's own system prompt, where a
  * newline would end the sentence the prompt opens with and start another. This is
  * the cheapest prompt injection there is: a field labelled "what should I call you"
- * that silently rewrites the identity it is written into. `ethos.config` repeats the
+ * that silently rewrites the identity it is written into. `clio.config` repeats the
  * rule with the same pattern when it reads the file, so a name that reaches the
  * agent some other way is refused the same way.
  */
@@ -921,7 +921,7 @@ function baseUrlOf(provider, value) {
  * The agent posts its own reasoning to this address with a credential attached,
  * so the check is about where that traffic can go rather than about whether the
  * string parses: plain `http` only to this machine, and never a private,
- * link-local or unspecified address. `ethos.config.is_valid_base_url` repeats this
+ * link-local or unspecified address. `clio.config.is_valid_base_url` repeats this
  * when the file is read; doing it here as well means a bad address is refused
  * with an answer the person can see, instead of being written and then ignored.
  */
@@ -1166,14 +1166,14 @@ function fsyncWritten(file) {
  * mid-session read as the agent abruptly thinking with a different model and
  * nothing more — and an instruction sent from the browser was present only as
  * the replies it provoked. Same file, same line shape, and the same redaction,
- * as `ethos/observability/exhaustive.py`: a record that carried a live
+ * as `clio/observability/exhaustive.py`: a record that carried a live
  * credential would not be a more complete record.
  *
  * Never throws: a log line that could fail the write it describes is a worse
  * failure than a lost line.
  */
-const EXHAUSTIVE_LOG_DIR = process.env.ETHOS_EXHAUSTIVE_LOG_DIR
-  ? path.resolve(expandHome(process.env.ETHOS_EXHAUSTIVE_LOG_DIR))
+const EXHAUSTIVE_LOG_DIR = process.env.CLIO_EXHAUSTIVE_LOG_DIR
+  ? path.resolve(expandHome(process.env.CLIO_EXHAUSTIVE_LOG_DIR))
   : path.join(AGENT_HOME, 'data', 'logs');
 
 const EXHAUSTIVE_REDACTED = '[REDACTED]';
@@ -1293,7 +1293,7 @@ function writeBaseModel(body) {
   const storedFile = readBaseModelFileForWrite();
   if (!storedFile.ok) {
     const detail = `${BASE_MODEL_FILE} is not a readable settings document; nothing was written to it`;
-    console.error(`ethos-web base model not written — ${detail}`);
+    console.error(`clio-web base model not written — ${detail}`);
     return { error: "settings_unreadable", detail };
   }
   const stored = storedFile.data;
@@ -1371,7 +1371,7 @@ function writeBaseModel(body) {
     // The path goes to the log and not to the page: a surface is shown what to
     // do about it, and the log line is where the directory itself belongs.
     const detail = `${AGENT_HOME}: ${error?.code ?? error?.message ?? error}`;
-    console.error(`ethos-web base model not written — ${detail}`);
+    console.error(`clio-web base model not written — ${detail}`);
     return { error: "home_unwritable", detail };
   }
   const after = readBaseModel();
@@ -1402,7 +1402,7 @@ function readIdentityFile() {
  * What the agent is called, as a surface may see it.
  *
  * `configured` is the honest half of this answer. An empty `self_name` does not mean
- * the agent has no name — it has whatever `config/ethos.yaml` calls it — it means no
+ * the agent has no name — it has whatever `config/clio.yaml` calls it — it means no
  * person has chosen one, which is a different thing, and the one a settings screen has
  * to offer to fix rather than display as a fact.
  */
@@ -1443,7 +1443,7 @@ function writeIdentity(body) {
   }
 
   // Trimmed first, then checked, and the trimmed form is what gets written — the same
-  // order `ethos.config.normalise_agent_name` uses, so both sides agree about which
+  // order `clio.config.normalise_agent_name` uses, so both sides agree about which
   // names exist and neither can write a name it would then refuse. `text` has already
   // rejected anything carrying a control character, which is the half that matters:
   // the check and the write have to be about the same string, or a name could be
@@ -1465,7 +1465,7 @@ function writeIdentity(body) {
       /* nothing was written */
     }
     const detail = `${AGENT_HOME}: ${error?.code ?? error?.message ?? error}`;
-    console.error(`ethos-web agent name not written — ${detail}`);
+    console.error(`clio-web agent name not written — ${detail}`);
     return { error: "home_unwritable", detail };
   }
   const after = readIdentity();
@@ -1748,7 +1748,7 @@ function mergeSection(base, overlay) {
  * Merged key by key rather than replaced, and that is the point. A replacement
  * would require the home file to carry every door to be right, so writing one
  * Telegram token into it would silently switch off WhatsApp, Slack, Discord and
- * the webhook receiver. `ethos.config.load_config` merges the same two files the
+ * the webhook receiver. `clio.config.load_config` merges the same two files the
  * same way, so what a settings screen writes and what the agent runs cannot
  * disagree about what this machine is configured to do.
  */
@@ -1790,7 +1790,7 @@ function readPeopleFile() {
  * The doors a person can turn on, and what each one needs before it can be.
  *
  * One table, for the same reason `DOOR_CREDENTIALS` is one table in
- * `ethos/config.py`: three readers — the comms host that skips a door it cannot
+ * `clio/config.py`: three readers — the comms host that skips a door it cannot
  * build, `doctor` that says why, and this form — would otherwise each carry their
  * own copy of the same list and disagree. The credential keys are the fields on
  * the channel's own configuration, so there is no name here to keep in step.
@@ -1993,7 +1993,7 @@ function readChannelSetup(person = "owner") {
  *
  * Two files, written to a sibling temporary and renamed, at 0600 from the moment
  * they exist: the channel document and the contact-book address. Both are read by
- * the agent when `ethos-comms` next starts, so a half-written one would be a door
+ * the agent when `clio-comms` next starts, so a half-written one would be a door
  * that is half configured.
  */
 function writeChannelSetup(body) {
@@ -2085,7 +2085,7 @@ function writeChannelSetup(body) {
   for (const file of [CHANNELS_FILE, ...(address !== undefined ? [PEOPLE_FILE] : [])]) {
     if (parseYamlFile(file).ok) continue;
     const detail = `${file} is not a readable settings document; nothing was written to it`;
-    console.error(`ethos-web channel doors not written — ${detail}`);
+    console.error(`clio-web channel doors not written — ${detail}`);
     return { error: "settings_unreadable", detail };
   }
   const written = writeHomeDocument(CHANNELS_FILE, (document) => {
@@ -2197,7 +2197,7 @@ function writeHomeDocument(file, change, what) {
   const stored = parseYamlFile(file);
   if (!stored.ok) {
     const detail = `${file} is not a readable settings document; nothing was written to it`;
-    console.error(`ethos-web ${what} not written — ${detail}`);
+    console.error(`clio-web ${what} not written — ${detail}`);
     return { error: "settings_unreadable", detail };
   }
   const document = change({ ...stored.data });
@@ -2215,7 +2215,7 @@ function writeHomeDocument(file, change, what) {
       /* nothing was written */
     }
     const detail = `${AGENT_HOME}: ${error?.code ?? error?.message ?? error}`;
-    console.error(`ethos-web ${what} not written — ${detail}`);
+    console.error(`clio-web ${what} not written — ${detail}`);
     return { error: "home_unwritable", detail };
   }
   return { ok: true };
@@ -2377,15 +2377,15 @@ function readChannels(book = readAddressBook()) {
 /**
  * The share of the daily cap the gateway reserves for committed work.
  *
- * Read from `gateway.budget.commitment_reserve_pct` in `config/ethos.yaml` —
- * the same key `ethos/gateway/cost.py` splits the cap by — so a dashboard
+ * Read from `gateway.budget.commitment_reserve_pct` in `config/clio.yaml` —
+ * the same key `clio/gateway/cost.py` splits the cap by — so a dashboard
  * retuning the reserve does not quietly disagree with the gate that enforces
  * it. The default matches the file's, not the code's, so an unreadable config
  * and an untouched one answer the same.
  */
 function commitmentReserveShare() {
   try {
-    const raw = fs.readFileSync(path.join(CONFIG_DIR, "ethos.yaml"), "utf8");
+    const raw = fs.readFileSync(path.join(CONFIG_DIR, "clio.yaml"), "utf8");
     const share = loadYaml(raw)?.gateway?.budget?.commitment_reserve_pct;
     if (typeof share === "number" && Number.isFinite(share) && share >= 0 && share <= 1) return share;
   } catch {
@@ -2433,7 +2433,7 @@ async function budgetCaps() {
 /**
  * How many models the agent's own catalogue holds.
  *
- * Read from the same file `ethos/gateway/service.py` routes over, so the number
+ * Read from the same file `clio/gateway/service.py` routes over, so the number
  * on the screen is the number the router has. Zero when the file cannot be read:
  * a count is a thing to be right about, and a guessed one would put a number in
  * front of somebody that no process is using.
@@ -2512,7 +2512,7 @@ async function readView() {
     // timezone, against the guard's UTC midnight: a deployment whose database
     // runs on local time was showing a different day than the one being capped.
     //
-    // `ethos/gateway/cost.py` holds the canonical definitions (`SPEND_SQL` and
+    // `clio/gateway/cost.py` holds the canonical definitions (`SPEND_SQL` and
     // friends, and `start_of_day`). This is the same query written twice
     // because this process speaks SQL and not Python; `tests/unit/test_pricing.py`
     // asserts the two agree, because the drift that produced this was silent.
@@ -2631,7 +2631,7 @@ app.get("/api/snapshot", handle(async (_req, res) => {
  * "what is on page four". Everything else is a filter on the same window:
  * `person` and `channel` narrow it to one conversation, `q` searches the text.
  *
- * The delivered-only rule is the agent's own (`ethos/social/conversation.py`):
+ * The delivered-only rule is the agent's own (`clio/social/conversation.py`):
  * the transcript holds rows the outbound path wrote and nobody ever received,
  * and a history that shows a held message as if it was said is lying twice.
  */
@@ -2700,18 +2700,18 @@ app.get("/api/messages", handle(async (req, res) => {
 // Clio Agent settings (token budget + every config file), for the settings
 // screens. One allowlist maps a field id to its YAML cell; GET returns the
 // flat values, POST merges a subset back. Writes go to config/*.yaml, the
-// files `ethos.config.load_config` reads, atomically (tmp + rename).
+// files `clio.config.load_config` reads, atomically (tmp + rename).
 // ---------------------------------------------------------------------------
 const AGENT_CONFIG_FIELDS = [
-  { id: "general.self_name", file: "ethos.yaml", path: "self_name", type: "text" },
-  { id: "general.timezone", file: "ethos.yaml", path: "timezone", type: "select", options: ["local", "UTC", "Asia/Tokyo", "America/Los_Angeles", "Europe/London"] },
-  { id: "gateway.host", file: "ethos.yaml", path: "gateway.host", type: "text" },
-  { id: "gateway.port", file: "ethos.yaml", path: "gateway.port", type: "number", min: 1, max: 65535 },
-  { id: "gateway.toolhost_port", file: "ethos.yaml", path: "gateway.toolhost_port", type: "number", min: 1, max: 65535 },
-  { id: "workers.count", file: "ethos.yaml", path: "workers.count", type: "number", min: 1, max: 32 },
-  { id: "threads.max_concurrent", file: "ethos.yaml", path: "threads.max_concurrent", type: "number", min: 1, max: 64 },
-  { id: "threads.max_depth", file: "ethos.yaml", path: "threads.max_depth", type: "number", min: 1, max: 16 },
-  { id: "threads.mode", file: "ethos.yaml", path: "threads.mode", type: "select", options: ["inprocess", "subprocess"] },
+  { id: "general.self_name", file: "clio.yaml", path: "self_name", type: "text" },
+  { id: "general.timezone", file: "clio.yaml", path: "timezone", type: "select", options: ["local", "UTC", "Asia/Tokyo", "America/Los_Angeles", "Europe/London"] },
+  { id: "gateway.host", file: "clio.yaml", path: "gateway.host", type: "text" },
+  { id: "gateway.port", file: "clio.yaml", path: "gateway.port", type: "number", min: 1, max: 65535 },
+  { id: "gateway.toolhost_port", file: "clio.yaml", path: "gateway.toolhost_port", type: "number", min: 1, max: 65535 },
+  { id: "workers.count", file: "clio.yaml", path: "workers.count", type: "number", min: 1, max: 32 },
+  { id: "threads.max_concurrent", file: "clio.yaml", path: "threads.max_concurrent", type: "number", min: 1, max: 64 },
+  { id: "threads.max_depth", file: "clio.yaml", path: "threads.max_depth", type: "number", min: 1, max: 16 },
+  { id: "threads.mode", file: "clio.yaml", path: "threads.mode", type: "select", options: ["inprocess", "subprocess"] },
   { id: "hard_limits.budget_unit", file: "permissions.yaml", path: "hard_limits.budget_unit", type: "select", options: ["usd", "tokens"] },
   { id: "hard_limits.H2_per_minute_limit", file: "permissions.yaml", path: "hard_limits.H2_per_minute_limit", type: "number", nullable: true, min: 0 },
   { id: "hard_limits.H2_per_10_minutes_limit", file: "permissions.yaml", path: "hard_limits.H2_per_10_minutes_limit", type: "number", nullable: true, min: 0 },
@@ -2722,14 +2722,14 @@ const AGENT_CONFIG_FIELDS = [
   { id: "hard_limits.on_exceed", file: "permissions.yaml", path: "hard_limits.on_exceed", type: "select", options: ["warn", "block"] },
   { id: "hard_limits.H2_capital_at_risk_usd", file: "permissions.yaml", path: "hard_limits.H2_capital_at_risk_usd", type: "number", min: 0 },
   { id: "hard_limits.money_threshold_usd", file: "permissions.yaml", path: "hard_limits.money_threshold_usd", type: "number", min: 0 },
-  { id: "gateway.routing.mu", file: "ethos.yaml", path: "gateway.routing.mu", type: "number", min: 0 },
-  { id: "gateway.routing.nu", file: "ethos.yaml", path: "gateway.routing.nu", type: "number", min: 0 },
-  { id: "gateway.circuit_breaker.max_failures", file: "ethos.yaml", path: "gateway.circuit_breaker.max_failures", type: "number", min: 1 },
-  { id: "gateway.circuit_breaker.cooldown_s", file: "ethos.yaml", path: "gateway.circuit_breaker.cooldown_s", type: "number", min: 0 },
-  { id: "gateway.retry.max_retries", file: "ethos.yaml", path: "gateway.retry.max_retries", type: "number", min: 0, max: 50 },
-  { id: "gateway.retry.backoff_s", file: "ethos.yaml", path: "gateway.retry.backoff_s", type: "number", min: 0 },
-  { id: "gateway.retry.max_backoff_s", file: "ethos.yaml", path: "gateway.retry.max_backoff_s", type: "number", min: 0 },
-  { id: "gateway.retry.fail_over", file: "ethos.yaml", path: "gateway.retry.fail_over", type: "boolean" },
+  { id: "gateway.routing.mu", file: "clio.yaml", path: "gateway.routing.mu", type: "number", min: 0 },
+  { id: "gateway.routing.nu", file: "clio.yaml", path: "gateway.routing.nu", type: "number", min: 0 },
+  { id: "gateway.circuit_breaker.max_failures", file: "clio.yaml", path: "gateway.circuit_breaker.max_failures", type: "number", min: 1 },
+  { id: "gateway.circuit_breaker.cooldown_s", file: "clio.yaml", path: "gateway.circuit_breaker.cooldown_s", type: "number", min: 0 },
+  { id: "gateway.retry.max_retries", file: "clio.yaml", path: "gateway.retry.max_retries", type: "number", min: 0, max: 50 },
+  { id: "gateway.retry.backoff_s", file: "clio.yaml", path: "gateway.retry.backoff_s", type: "number", min: 0 },
+  { id: "gateway.retry.max_backoff_s", file: "clio.yaml", path: "gateway.retry.max_backoff_s", type: "number", min: 0 },
+  { id: "gateway.retry.fail_over", file: "clio.yaml", path: "gateway.retry.fail_over", type: "boolean" },
   { id: "social.deliberation_max_tokens", file: "social.yaml", path: "deliberation_max_tokens", type: "number", min: 500, max: 200000 },
   { id: "social.deliberation_escalated_max_tokens", file: "social.yaml", path: "deliberation_escalated_max_tokens", type: "number", min: 500, max: 500000 },
   { id: "social.execution_state_window_min", file: "social.yaml", path: "execution_state_window_min", type: "number", min: 1 },
@@ -2772,8 +2772,8 @@ const AGENT_CONFIG_FIELDS = [
   { id: "permissions.approval_timeout_s", file: "permissions.yaml", path: "approval_timeout_s", type: "number", min: 0 },
   { id: "permissions.guardian.mode", file: "permissions.yaml", path: "guardian.mode", type: "select", options: ["field", "normal"] },
   { id: "permissions.network.deny_private_ranges", file: "permissions.yaml", path: "network.deny_private_ranges", type: "boolean" },
-  { id: "ethos.subagents.tier", file: "ethos.yaml", path: "subagents.tier", type: "select", options: ["T1", "T2", "T3"] },
-  { id: "ethos.subagents.model_name", file: "ethos.yaml", path: "subagents.model_name", type: "text" },
+  { id: "clio.subagents.tier", file: "clio.yaml", path: "subagents.tier", type: "select", options: ["T1", "T2", "T3"] },
+  { id: "clio.subagents.model_name", file: "clio.yaml", path: "subagents.model_name", type: "text" },
 ];
 const AGENT_CONFIG_MAP = new Map(AGENT_CONFIG_FIELDS.map((f) => [f.id, f]));
 
@@ -3011,7 +3011,7 @@ async function publish(kind, source, payload) {
     "INSERT INTO events (ts, kind, source, payload) VALUES (now(), $1, $2, $3::jsonb) RETURNING id",
     [kind, source, JSON.stringify(payload)],
   );
-  await pool.query("SELECT pg_notify('ethos_events', $1)", [
+  await pool.query("SELECT pg_notify('clio_events', $1)", [
     JSON.stringify({ id: Number(inserted.rows[0].id) }),
   ]);
   return Number(inserted.rows[0].id);
@@ -3028,7 +3028,7 @@ async function publish(kind, source, payload) {
  * that a resume must not silently restart an agent somebody had stopped on
  * purpose — but that rule assumed a stop ended the *process*, so there was
  * nothing left for a resume to restart and the flag had to outlive it. A stop
- * parks the agent now (`ethos/engine/life.py`), it is still there, and the
+ * parks the agent now (`clio/engine/life.py`), it is still there, and the
  * Resume button beside the Stop button is how it is started again. So the case
  * the old rule protected against is the one the surface cannot express any more:
  * a person pressing Resume is asking for the agent back.
@@ -3281,7 +3281,7 @@ app.post("/api/intentions/:id/close", handle(async (req, res) => {
  * At safety levels 2-3 a network command (and APEX, at any level below 4)
  * creates a pending approval inside the toolhost's `ApprovalManager` and the
  * step waits — fail-closed — for `approval_timeout_s`. Until now the only road
- * to that decision was the `ethos approvals` CLI on the agent's machine; the
+ * to that decision was the `clio approvals` CLI on the agent's machine; the
  * interfaces had none, which is why 2026-11-08..10 filled the action journal
  * with `rejected (timeout)` rows: the steps asked, nobody was watching the one
  * surface that could answer, and five hours later the command was denied.
@@ -3294,9 +3294,9 @@ app.post("/api/intentions/:id/close", handle(async (req, res) => {
  * authority acting on a tool run, and a cross-origin page does not get to
  * spend it.
  */
-const TOOLHOST_SOCK = process.env.ETHOS_TOOLHOST_SOCK
-  ?? path.join(process.env.ETHOS_HOME ?? path.join(os.homedir(), ".ethos"), "run", "toolhost.sock");
-const TOOLHOST_TCP = process.env.ETHOS_TOOLHOST_URL ?? "http://127.0.0.1:8701";
+const TOOLHOST_SOCK = process.env.CLIO_TOOLHOST_SOCK
+  ?? path.join(process.env.CLIO_HOME ?? path.join(os.homedir(), ".ethos"), "run", "toolhost.sock");
+const TOOLHOST_TCP = process.env.CLIO_TOOLHOST_URL ?? "http://127.0.0.1:8701";
 const TOOLHOST_TIMEOUT_MS = 4000;
 
 function toolhostRequest(method, requestPath, body) {
@@ -3407,13 +3407,13 @@ app.post("/api/approvals/:id/deny", handle(async (req, res) => {
  * registered here, the relay itself answers GETs and nothing else, and the
  * panel draws with pointer events disabled — so a view that cannot ask for
  * input at any layer cannot accidentally become one. Discovery scans the
- * relay's small port range (ETHOS_APEX_SCREEN_PORT, default 8788, upward) and
+ * relay's small port range (CLIO_APEX_SCREEN_PORT, default 8788, upward) and
  * requires the relay's own `readOnly` marker, so a different loopback service
  * that happens to live on a nearby port is never mistaken for a run.
  */
-const APEX_SCREEN_BASE_PORT = Number.isInteger(Number(process.env.ETHOS_APEX_SCREEN_PORT))
-  && Number(process.env.ETHOS_APEX_SCREEN_PORT) > 0
-  ? Number(process.env.ETHOS_APEX_SCREEN_PORT)
+const APEX_SCREEN_BASE_PORT = Number.isInteger(Number(process.env.CLIO_APEX_SCREEN_PORT))
+  && Number(process.env.CLIO_APEX_SCREEN_PORT) > 0
+  ? Number(process.env.CLIO_APEX_SCREEN_PORT)
   : 8788;
 const APEX_SCREEN_PORT_SPAN = 8;
 const APEX_SCREEN_PROBE_TIMEOUT_MS = 600;
@@ -4329,7 +4329,7 @@ app.post(`${PHONE_BRIDGE_PREFIX}/complete`, (req, res) => {
       if (!res.writableEnded) res.end();
     }
   })().catch((error) => {
-    console.error(`ethos-web POST /__phone/complete: ${error?.message ?? error}`);
+    console.error(`clio-web POST /__phone/complete: ${error?.message ?? error}`);
     if (!res.headersSent) {
       res.status(503).json({ error: "agent_unavailable", detail: String(error?.message ?? error) });
     }
@@ -4437,7 +4437,7 @@ async function phoneComplete(settings, apiKey, prompt, history, signal) {
  * A bridge that started before `npm run build` finished therefore had no static
  * routes for its whole life, and the only cure was restarting it — while every
  * signal it could give said everything was fine: `/api/health` answered, so
- * `ethos status` printed "interface: up", and a second start found the port taken
+ * `clio status` printed "interface: up", and a second start found the port taken
  * and reported that the page was already being served.
  *
  * Asking at request time costs one `stat` and makes the answer true. The build
@@ -4448,7 +4448,7 @@ async function phoneComplete(settings, apiKey, prompt, history, signal) {
  */
 const NOT_BUILT =
   `The interface is not built yet.\n\n  npm run build          # from the checkout root\n` +
-  `  # or point ETHOS_PHONE_DIST at an existing build\n\nThe API is live on this port regardless.\n`;
+  `  # or point CLIO_PHONE_DIST at an existing build\n\nThe API is live on this port regardless.\n`;
 
 const indexFile = () => path.join(PHONE_DIST, "index.html");
 
@@ -4482,7 +4482,7 @@ app.get("*", (_req, res) => {
  * framework chose, and a code a client can match.
  */
 app.use((error, req, res, _next) => {
-  console.error(`ethos-web ${req.method} ${req.path}: ${error?.message ?? error}`);
+  console.error(`clio-web ${req.method} ${req.path}: ${error?.message ?? error}`);
   if (res.headersSent) return;
   const status = typeof error?.status === "number" ? error.status
     : typeof error?.statusCode === "number" ? error.statusCode
@@ -4611,7 +4611,7 @@ async function maintainListener() {
         }
       });
       await client.connect();
-      await client.query("LISTEN ethos_events");
+      await client.query("LISTEN clio_events");
       listenBackoffMs = 1000;
       await disconnected;
     } catch {
@@ -4635,7 +4635,7 @@ void maintainListener();
  *
  * An unhandled `error` on a listening server is an uncaught exception: the
  * process dies with `Error: listen EADDRINUSE` and a Node stack on stderr, which
- * the supervisor files under `ethos-web.log` where nobody reads it. And the
+ * the supervisor files under `clio-web.log` where nobody reads it. And the
  * situation is usually not a fault at all — the supervisor starts this bridge
  * alongside an agent that may already have one running, so the ordinary case is a
  * second bridge finding the port taken.
@@ -4644,7 +4644,7 @@ void maintainListener();
  * announced that the page on that port was the other bridge's, and exited 0,
  * without asking. When the bridge holding the port started before the interface
  * was built it has no static routes at all, and answers `/` with a 404 — so a
- * second `ethos up`, a second `npm start`, and `ethos status` all reported a
+ * second `clio up`, a second `npm start`, and `clio status` all reported a
  * working interface while the page was unreachable. Asking costs one request and
  * is the difference between a start command that is true and one that has to be
  * believed.
@@ -4687,35 +4687,35 @@ function reportListenFailure(error) {
     void probeExistingListener().then((answer) => {
       if (answer.servesPage) {
         console.error(
-          `ethos-web: ${PORT} is already in use — another bridge is serving the interface there. ` +
+          `clio-web: ${PORT} is already in use — another bridge is serving the interface there. ` +
             `Nothing to do: the page on http://127.0.0.1:${PORT} is that one.`,
         );
         process.exit(0);
       }
       console.error(
-        `ethos-web: ${PORT} is already in use, but nothing there is serving the interface — ` +
+        `clio-web: ${PORT} is already in use, but nothing there is serving the interface — ` +
           `asking it for the page ${answer.detail}.`,
       );
       console.error(
         "   That is what a bridge started before the interface was built looks like: it holds\n" +
           "   the port and answers its API, and serves no page. Stop it and start this one again:",
       );
-      // `make stop`, not `ethos stop`: `ethos` is the checkout's console script, so
+      // `make stop`, not `clio stop`: `clio` is the checkout's console script, so
       // it is only on PATH in a shell that has activated the virtualenv, and this
       // message is read by people whose shell has not. A remedy that is itself
       // "command not found" is the same failure as the one being reported.
       console.error(`     make stop && npm start          # stop the agent holding ${PORT}`);
       console.error("   Or leave it alone and run a second one on its own port:");
-      console.error("     ETHOS_WEB_PORT=8721 npm start");
+      console.error("     CLIO_WEB_PORT=8721 npm start");
       process.exit(1);
     });
     return;
   }
   if (error?.code === "EACCES") {
-    console.error(`ethos-web: not allowed to listen on ${PORT} — pick another with ETHOS_WEB_PORT.`);
+    console.error(`clio-web: not allowed to listen on ${PORT} — pick another with CLIO_WEB_PORT.`);
     process.exit(1);
   }
-  console.error(`ethos-web: could not listen on ${PORT}: ${error?.message ?? error}`);
+  console.error(`clio-web: could not listen on ${PORT}: ${error?.message ?? error}`);
   process.exit(1);
 }
 
@@ -4730,5 +4730,5 @@ server.listen(PORT, "127.0.0.1", () => {
   const ui = fs.existsSync(indexFile())
     ? `Clio Agent 3.1 on http://127.0.0.1:${PORT}`
     : "interface not built yet (the API is live; the page appears once `npm run build` finishes)";
-  console.log(`ethos-web listening on http://127.0.0.1:${PORT} — ${ui}`);
+  console.log(`clio-web listening on http://127.0.0.1:${PORT} — ${ui}`);
 });

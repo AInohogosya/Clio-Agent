@@ -2,7 +2,7 @@
 
 Clio Agent runs on the user's machine, on their accounts, with their keys. The safety
 model is therefore built around a specific thesis, stated in the README and enacted in
-`ethos/guardian/`:
+`clio/guardian/`:
 
 > **Safe by reversibility, not by refusal.** Deletions go to trash, writes are backed
 > up first, every action is journaled, and six hard limits (H1–H6) are enforced outside
@@ -17,7 +17,7 @@ A purely refusal-based safety model has two structural problems for a resident a
    user with approvals (the agent becomes unusable) or the gate erodes (the agent
    becomes dangerous). Neither failure mode is acceptable under the golden rule.
 2. **It mis-teaches the agent.** An agent whose operations get refused with no account
-   of refusal learns one of three bad behaviours (`ethos/prompts/identity.py:672-679`):
+   of refusal learns one of three bad behaviours (`clio/prompts/identity.py:672-679`):
    report refused work as done, retry refused calls, or **rephrase the action until it
    slips past the classifier** — the one a hard limit exists to prevent.
 
@@ -26,7 +26,7 @@ Reversibility changes the default calculus. In the default **field mode**
 destructive actions are not vetoed but **transformed**: the delete becomes a trash
 move, the overwrite becomes a preimage backup, and both are journaled before the call
 runs. The cost of being wrong is "a page in a log rather than lost work"
-(`ethos/prompts/identity.py:313-321`).
+(`clio/prompts/identity.py:313-321`).
 
 What remains veto-worthy is exactly the set that reversibility cannot repair:
 **money** (spent is spent), **credentials** (scope is privilege), **law** (some acts
@@ -36,12 +36,12 @@ work is not the agent's loss to absorb). Those are the hard limits.
 ## 2. The six hard limits (H1–H6)
 
 Defined in `config.py:1168-1185` and rendered verbatim into the identity kernel from
-`ethos/prompts/identity.py:653-660`:
+`clio/prompts/identity.py:653-660`:
 
 | # | Limit | Default | Meaning |
 |---|---|---|---|
 | H1 | Oversight supremacy | `True` | Pause and kill are always effective; the audit log and snapshots are untouchable by the agent. |
-| H2 | Financial exposure caps | daily $20, monthly $400, capital-at-risk $100, money threshold $5 | Spend caps; no borrowing or leverage. Enforced by `SpendGuard` (`ethos/gateway/cost.py:213-351`). |
+| H2 | Financial exposure caps | daily $20, monthly $400, capital-at-risk $100, money threshold $5 | Spend caps; no borrowing or leverage. Enforced by `SpendGuard` (`clio/gateway/cost.py:213-351`). |
 | H3 | Law and non-harm | `True` | No illegal acts, unauthorized access, fraud, or physical-harm risks. |
 | H4 | Legal authority | `True` | No contracts in the owner's name without explicit mandate; disclose AI status when required. |
 | H5 | Commissioned-artifact due process | `True` | Never destroy requested deliverables without documented due process. |
@@ -59,7 +59,7 @@ The architecture doc is explicit about **what is and is not enforced**
 - **H1, H3, H4, H6** are *declarations of the same obligations*, enforced structurally
   by the classifier, the audit chain and reversibility rather than by a single switch.
   The identity kernel says this out loud to the agent
-  (`ethos/prompts/identity.py:687-691`), so the agent's account of its limits matches
+  (`clio/prompts/identity.py:687-691`), so the agent's account of its limits matches
   the code's account.
 - The guardian operates on **tool calls and shell text**, not on arbitrary bytes the
   agent may produce in prose. The interface, audit log, and journals are the
@@ -70,7 +70,7 @@ The architecture doc is explicit about **what is and is not enforced**
 
 ## 3. The guardian gate
 
-`GuardianGate.review()` (`ethos/guardian/gate.py:122-517`) sits between every tool call
+`GuardianGate.review()` (`clio/guardian/gate.py:122-517`) sits between every tool call
 and its execution. Verdicts: `{allow, transform, reject}`; gate paths:
 `{normal, fast, due_process, blocked}` (`gate.py:85-95`).
 
@@ -80,7 +80,7 @@ Review order (abridged from `gate.py:266`):
    pause/preview always wins.
 2. **Classifier says `blocked` (H3/H6 pattern) → REJECT.** ~60 POSIX + ~30 Windows
    command entries, 14 POSIX + 22 Windows dangerous patterns, plus 42 tool-category
-   mappings (`ethos/guardian/classifier.py:23-187,623-676`).
+   mappings (`clio/guardian/classifier.py:23-187,623-676`).
 3. **Money above capital-at-risk → REJECT** (H2), checked by the gateway spend guard
    on model spend and the gate on tool-call spend.
 4. **Protected (commissioned or pinned) destructive action → due-process path.**
@@ -96,56 +96,56 @@ Review order (abridged from `gate.py:266`):
 
 Four cooperating subsystems make "undo" a property of the system rather than a promise:
 
-### 4.1 Write-ahead journal (`ethos/guardian/journal.py:67-256`)
+### 4.1 Write-ahead journal (`clio/guardian/journal.py:67-256`)
 
 Every tool call is journaled: `begin` before execution, `end` after, with statuses
 `ok/failed/timeout/rejected/interrupted`. Only `status == "ok"` entries are replayable
 (`journal.py:44`), and idempotency keys give duplicate calls a **replay** of the prior
-result rather than a re-execution (`ethos/toolhost/server.py:322-366`) — the same key
+result rather than a re-execution (`clio/toolhost/server.py:322-366`) — the same key
 never runs the side effect twice.
 
-### 4.2 Trash (`ethos/guardian/trash.py:57-214)
+### 4.2 Trash (`clio/guardian/trash.py:57-214)
 
-`fs.delete` never calls `unlink` (`ethos/toolhost/tools/fs.py:403`); it moves the
+`fs.delete` never calls `unlink` (`clio/toolhost/tools/fs.py:403`); it moves the
 target to `trash/<id>/` with a `manifest.json` and a sha256. Retention: 30 days for
 the fast path, 180 days for due-process artifacts. A purge job enforces retention.
 
-### 4.3 Snapshots (`ethos/guardian/snapshots.py:24-153)
+### 4.3 Snapshots (`clio/guardian/snapshots.py:24-153)
 
 Pre-write snapshots via btrfs subvolumes where available, falling back to hardlink
 trees. Retention ladder: 4× 15-minute, 24× hourly, 7× daily. Snapshots are also the
 restore mechanism for rolled-back workspace leases (`snapshots.py` `restore()`).
 
-### 4.4 Hash-chained audit log (`ethos/observability/audit.py:202`)
+### 4.4 Hash-chained audit log (`clio/observability/audit.py:202`)
 
 `GENESIS_HASH` = 32 zero bytes (`audit.py:17`); every entry hashes the previous entry,
 producing a tamper-evident chain [D-33]. A Postgres advisory lock (key `918_273_645`)
 serializes appends; a `verify_chain` routine validates the whole chain
 (`audit.py:185`). The core anchors the chain every 600 s
-(`ethos/core/runner.py:279`). The agent cannot rewrite it, and H1 says it may not try.
+(`clio/core/runner.py:279`). The agent cannot rewrite it, and H1 says it may not try.
 
 ## 5. Oversight supremacy (H1) in the runtime
 
 H1 is enforced at three layers, not as a prompt line:
 
-1. **Control plane** (`ethos/core/control.py`): a two-way sync between the
+1. **Control plane** (`clio/core/control.py`): a two-way sync between the
    `env_entities` control row and on-disk state files, with `ROW_RECHECK_S = 30`
    rechecks and SIGUSR1/SIGUSR2 signals. The design comment is blunt: "files + bus
    state are truth [H1]". The toolhost subscribes to `CONTROL_UPDATE` separately from
-   the main percept chain (`ethos/core/runner.py:226`) so that "oversight that reads
+   the main percept chain (`clio/core/runner.py:226`) so that "oversight that reads
    as obeyed and is not" cannot happen [H1].
 2. **Supervisor**: the core's heartbeat (`run_dir/heartbeat`) must be fresh; a wedged
    core (stale > `ETHOS_CORE_HEARTBEAT_STALE_S`, default 1800 s) is terminated and
-   restarted (`ethos/core/supervisor.py:53,67`). `ethos stop` escalates from SIGTERM
+   restarted (`clio/core/supervisor.py:53,67`). `clio stop` escalates from SIGTERM
    to hard kill after 20 s — on Windows, where `os.kill` is itself an unhandleable
    `TerminateProcess`, stop is requested **by file** instead
-   (`ethos/core/supervisor.py` `request_stop_by_file`, `ethos/platform.py:318`).
+   (`clio/core/supervisor.py` `request_stop_by_file`, `clio/platform.py:318`).
 3. **Out-of-band watchdog** (`deploy/oob/oob_guardian.py`): a process deliberately
    outside the agent's process tree and reach, overseeing the overseers.
 
 ## 6. Approvals and safety levels
 
-`ethos safety show/set/reset` exposes four levels (`ethos/__main__.py:633-665`):
+`clio safety show/set/reset` exposes four levels (`clio/__main__.py:633-665`):
 
 | Level | Meaning |
 |---|---|
@@ -157,12 +157,12 @@ H1 is enforced at three layers, not as a prompt line:
 The live override is written into the control row (`_set_control_safety_level`,
 `__main__.py:668-699`) so every process reads the same value within one recheck
 window. Approvals themselves are managed by `ApprovalManager` with a default timeout
-of 300 s (`ethos/guardian/approval.py`), listed/granted/denied via
-`ethos approvals list|approve|deny` over the toolhost's HTTP surface.
+of 300 s (`clio/guardian/approval.py`), listed/granted/denied via
+`clio approvals list|approve|deny` over the toolhost's HTTP surface.
 
 ## 7. The gate as teacher
 
-The refusal contract given to the agent (`ethos/prompts/identity.py:683-699`) makes
+The refusal contract given to the agent (`clio/prompts/identity.py:683-699`) makes
 the gate part of the agent's epistemology rather than an obstacle:
 
 > A call that comes back refused was a decision, not a malfunction: read the reason,
@@ -171,7 +171,7 @@ the gate part of the agent's epistemology rather than an obstacle:
 > route to the same work and sometimes the correct end of it.
 
 The tool catalog preamble says the same at the call level
-(`ethos/prompts/identity.py:552-557`): an error that says a tool is unsafe, refused or
+(`clio/prompts/identity.py:552-557`): an error that says a tool is unsafe, refused or
 not permitted "is the answer, not a malfunction — take it as written and do the
 permitted thing instead."
 
@@ -183,11 +183,11 @@ caps are numeric and external).
 
 The guardian is the enforcement layer between intention and side effect. This
 document specifies its components; the theory is in
-[02-safety-and-guardian.md](02-safety-and-guardian.md). Sources: `ethos/guardian/`.
+[02-safety-and-guardian.md](02-safety-and-guardian.md). Sources: `clio/guardian/`.
 
 ## 1. `GuardianGate.review()`
 
-`ethos/guardian/gate.py:122-517` (733 lines). Verdicts `{allow, transform, reject}`;
+`clio/guardian/gate.py:122-517` (733 lines). Verdicts `{allow, transform, reject}`;
 paths `{normal, fast, due_process, blocked}` (`gate.py:85-95`).
 
 Complete review order:
@@ -207,12 +207,12 @@ due-process destruction with the commission context; in field mode the transform
 path makes it mostly unnecessary.
 
 Approvals: when the safety level demands one (`ETHOS_SAFETY_LEVEL` 2/3), the gate
-creates an approval and waits — default timeout 300 s (`ethos/guardian/approval.py`),
-managed via `ethos approvals list|approve|deny` over the toolhost HTTP surface.
+creates an approval and waits — default timeout 300 s (`clio/guardian/approval.py`),
+managed via `clio approvals list|approve|deny` over the toolhost HTTP surface.
 
 ## 2. The action classifier
 
-`ethos/guardian/classifier.py` (737 lines) — the pattern-matching brain of the gate:
+`clio/guardian/classifier.py` (737 lines) — the pattern-matching brain of the gate:
 
 - **`COMMAND_TABLE`** (`:23-119`): ~60 POSIX + ~30 Windows commands, each mapped to
   a risk category.
@@ -231,7 +231,7 @@ managed via `ethos approvals list|approve|deny` over the toolhost HTTP surface.
 
 ## 3. The write-ahead journal
 
-`ethos/guardian/journal.py:67-256`:
+`clio/guardian/journal.py:67-256`:
 
 - Entries: `begin` → (`end` with status `ok / failed / timeout / rejected /
   interrupted`).
@@ -241,11 +241,11 @@ managed via `ethos approvals list|approve|deny` over the toolhost HTTP surface.
   recorded result. Combined with GSL's `thread:step:n` keys
   ([06-work.md](06-work.md) §3), retries are always safe.
 - On restart, `wake_up()` reconciles still-`running` entries to `interrupted`
-  (`ethos/memory/continuity.py`) — the journal never lies about what completed.
+  (`clio/memory/continuity.py`) — the journal never lies about what completed.
 
 ## 4. Trash
 
-`ethos/guardian/trash.py:57-214`:
+`clio/guardian/trash.py:57-214`:
 
 - Layout: `trash/<id>/` + `manifest.json` + sha256 checksums.
 - Retention: **30 days** (fast path) / **180 days** (due-process path).
@@ -254,7 +254,7 @@ managed via `ethos approvals list|approve|deny` over the toolhost HTTP surface.
 
 ## 5. Snapshots
 
-`ethos/guardian/snapshots.py:24-153`:
+`clio/guardian/snapshots.py:24-153`:
 
 - **btrfs subvolume** snapshots where the filesystem supports them, else a
   **hardlink tree**.
@@ -264,7 +264,7 @@ managed via `ethos approvals list|approve|deny` over the toolhost HTTP surface.
 
 ## 6. The artifact registry
 
-`ethos/guardian/registry.py:32-156`:
+`clio/guardian/registry.py:32-156`:
 
 - Every write registers an **artifact** row (path, hash, provenance, created_by).
 - `is_protected` computes protection by **path prefix or ancestor** — commissioned
@@ -276,14 +276,14 @@ managed via `ethos approvals list|approve|deny` over the toolhost HTTP surface.
 
 ## 7. The audit chain
 
-`ethos/observability/audit.py:202`:
+`clio/observability/audit.py:202`:
 
 - **`GENESIS_HASH`** = 32 zero bytes (`:17`); each entry's hash covers the previous
   entry — a tamper-evident chain [D-33].
 - Postgres sink appends under **advisory lock `918_273_645`** (`:61`); file sink
   fsyncs (`:98`).
 - `verify_chain` (`:185`) validates the whole chain; the core **anchors** the chain
-  every 600 s (`ethos/core/runner.py:279`).
+  every 600 s (`clio/core/runner.py:279`).
 - H1 makes the chain untouchable by the agent; the nightly integrity pass makes it
   *observed* to be intact, not merely asserted.
 

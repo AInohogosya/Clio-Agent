@@ -1,7 +1,7 @@
 # Clio Agent — Design Documentation
 
 This folder documents the **fine-grained mechanisms, specifications, theories, and
-philosophy** of **Clio Agent 3.1** (Python package `ethos`). It is written against the
+philosophy** of **Clio Agent 3.1** (Python package `clio`). It is written against the
 code in this checkout: every load-bearing claim carries a `file:line` reference, and
 where the code and the prose disagree, the code is the source of truth.
 
@@ -11,14 +11,14 @@ Clio Agent is not a function that maps a prompt to a reply. It is a **resident**
 continuously-running autonomous agent with its own clock, its own memory, its own
 intentions, and its own sense of time. Its core is a tick-based **life loop**
 (`pace → perceive → attend → decide → act → record`) that runs whether or not anyone
-is talking to it (`ethos/engine/life.py:147-151`).
+is talking to it (`clio/engine/life.py:147-151`).
 
 Two commitments run through everything:
 
-> **Golden rule** (`ethos/prompts/identity.py:171-179`): *human-likeness and performance
+> **Golden rule** (`clio/prompts/identity.py:171-179`): *human-likeness and performance
 > are both mandatory. Neither is sacrificed for the other.*
 
-> **Safety thesis** (`ethos/guardian/`): *safe by reversibility, not by refusal.*
+> **Safety thesis** (`clio/guardian/`): *safe by reversibility, not by refusal.*
 > Deletions go to trash, writes are backed up before they land, every action is journaled,
 > and six hard limits (H1–H6) are enforced **outside the mind**.
 
@@ -38,7 +38,7 @@ Two commitments run through everything:
 
 ## Conventions used in these documents
 
-- **`file:line` references** point at this checkout, e.g. `ethos/engine/rhythm.py:92-122`.
+- **`file:line` references** point at this checkout, e.g. `clio/engine/rhythm.py:92-122`.
 - **Parts.** Where two or three subjects share a document, each subject is a `Part`
   heading; section numbering restarts per part, so a reference like "§5" means the
   5th section of the part under discussion.

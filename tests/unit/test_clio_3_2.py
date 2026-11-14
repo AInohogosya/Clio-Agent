@@ -1,4 +1,4 @@
-"""Clio Agent 3.2 (`ethos`): RIG, federation, leases, sessions, manifests.
+"""Clio Agent 3.2 (`clio`): RIG, federation, leases, sessions, manifests.
 
 All tests avoid PostgreSQL; store/router/gate logic is exercised through
 pure functions and in-memory fakes.
@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from ethos.engine.drives import (
+from clio.engine.drives import (
     DriveInputs,
     commitment_gain,
     curiosity_gain,
@@ -20,23 +20,23 @@ from ethos.engine.drives import (
     order_gain,
     pressures,
 )
-from ethos.engine.workspace import WorkspaceAssembler, render_commitments, summarize_dag
-from ethos.gateway.cost import CostCalculator
-from ethos.gateway.providers.base import SessionDriver, session_score
-from ethos.gateway.router import ModelRouter
-from ethos.gsl.planner import decompose_into_children, needs_decomposition
-from ethos.gsl.verification import gate_blocks_completion, gate_children
-from ethos.guardian.classifier import check_manifest_paths
-from ethos.guardian.gate import GateDecision, GuardianGate
-from ethos.memory.retrieval import HybridRetriever
-from ethos.memory.store import CycleError, allocate_ev_budgets, dag_has_cycle
-from ethos.schemas.events import EventKind
-from ethos.schemas.models import ModelRequest, NormalizedResponse, Usage
-from ethos.social.deliberation import SocialCognition
-from ethos.social.etiquette import OutboundPipeline
-from ethos.threads.context import WorkspaceLeaseManager, check_allowed_path
-from ethos.threads.manager import allocate_child_budget, ev_weight
-from ethos.toolhost.tools.toolshed import verify_tool_signature
+from clio.engine.workspace import WorkspaceAssembler, render_commitments, summarize_dag
+from clio.gateway.cost import CostCalculator
+from clio.gateway.providers.base import SessionDriver, session_score
+from clio.gateway.router import ModelRouter
+from clio.gsl.planner import decompose_into_children, needs_decomposition
+from clio.gsl.verification import gate_blocks_completion, gate_children
+from clio.guardian.classifier import check_manifest_paths
+from clio.guardian.gate import GateDecision, GuardianGate
+from clio.memory.retrieval import HybridRetriever
+from clio.memory.store import CycleError, allocate_ev_budgets, dag_has_cycle
+from clio.schemas.events import EventKind
+from clio.schemas.models import ModelRequest, NormalizedResponse, Usage
+from clio.social.deliberation import SocialCognition
+from clio.social.etiquette import OutboundPipeline
+from clio.threads.context import WorkspaceLeaseManager, check_allowed_path
+from clio.threads.manager import allocate_child_budget, ev_weight
+from clio.toolhost.tools.toolshed import verify_tool_signature
 from tests.conftest import ListAudit, simple_request
 
 
@@ -363,7 +363,7 @@ def test_workspace_lease_commit_and_rollback_isolation(tmp_path):
 def test_lease_budget_limit_blocks_in_gate(tmp_path, monkeypatch):
     cfg = _make_config(tmp_path)
     cfg.permissions.guardian.mode = "strict"
-    monkeypatch.setenv("ETHOS_GUARDIAN_MODE", "strict")
+    monkeypatch.setenv("CLIO_GUARDIAN_MODE", "strict")
     manager = WorkspaceLeaseManager(cfg)
     target: Path = tmp_path / "target"
     target.mkdir()
@@ -399,7 +399,7 @@ def test_lease_budget_limit_blocks_in_gate(tmp_path, monkeypatch):
 
 def test_router_session_scores_zero_marginal_cost(tmp_path):
     cfg = _make_config(tmp_path)
-    from ethos.config import ModelEntry
+    from clio.config import ModelEntry
 
     session_entry = ModelEntry(
         provider="session", model="session:cli", tiers=["T2"],
@@ -438,7 +438,7 @@ def test_session_driver_snapshot_and_replay():
 
 
 def test_gateway_replay_rebuilds_request(tmp_path):
-    from ethos.gateway.service import GatewayService
+    from clio.gateway.service import GatewayService
 
     cfg = _make_config(tmp_path)
     service = GatewayService(cfg, db=None, providers={})
@@ -483,7 +483,7 @@ def test_gate_enforces_manifest(tmp_path, monkeypatch):
 
     cfg = _make_config(tmp_path)
     cfg.permissions.guardian.mode = "strict"
-    monkeypatch.setenv("ETHOS_GUARDIAN_MODE", "strict")
+    monkeypatch.setenv("CLIO_GUARDIAN_MODE", "strict")
     audit = ListAudit()
     from tests.conftest import FakeRegistry, FakeVerifier, NoopControl, NoopSnapshots
 
@@ -506,7 +506,7 @@ def test_gate_enforces_manifest(tmp_path, monkeypatch):
 def test_toolshed_register_carries_manifest(tmp_path):
     # Indirectly: check_manifest_paths + _content_hash behaviour the toolshed
     # register/run path depends on.
-    from ethos.toolhost.tools.toolshed import _content_hash
+    from clio.toolhost.tools.toolshed import _content_hash
 
     script = tmp_path / "tool.py"
     script.write_text("print(1)")

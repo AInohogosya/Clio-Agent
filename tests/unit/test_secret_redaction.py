@@ -21,7 +21,7 @@ import logging
 
 import pytest
 
-from ethos.observability.logger import REDACTED, RedactingFilter, redact_value
+from clio.observability.logger import REDACTED, RedactingFilter, redact_value
 
 #: Shape only, and deliberately not the live token. A real one in a test file is a
 #: real one in a git history, in every clone, and in every CI cache — which is the

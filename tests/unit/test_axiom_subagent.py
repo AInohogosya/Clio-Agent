@@ -14,24 +14,24 @@ import asyncio
 from types import SimpleNamespace
 from typing import Any
 
-from ethos.config import EthosConfig, SubagentConfig
-from ethos.prompts.gsl import delegation_note
-from ethos.subagents import SubagentRegistry
-from ethos.subagents.axiom import AxiomSubAgent
-from ethos.subagents.base import (
+from clio.config import ClioConfig, SubagentConfig
+from clio.prompts.gsl import delegation_note
+from clio.subagents import SubagentRegistry
+from clio.subagents.axiom import AxiomSubAgent
+from clio.subagents.base import (
     STATUS_DONE,
     STATUS_FAILED,
 )
-from ethos.subagents.bridge import axiom_engine_config
+from clio.subagents.bridge import axiom_engine_config
 
 
-def _config_with(**overrides: Any) -> EthosConfig:
+def _config_with(**overrides: Any) -> ClioConfig:
     agents = [
         SubagentConfig(name="foundry"),
         SubagentConfig(name="apex"),
         SubagentConfig(name="axiom", **overrides),
     ]
-    return EthosConfig(subagents={"agents": agents})
+    return ClioConfig(subagents={"agents": agents})
 
 
 # ---- registry and wiring ------------------------------------------------------
@@ -49,11 +49,11 @@ def test_the_registry_knows_three_programs():
 
 def test_the_default_deployment_names_axiom():
     """A config with no `subagents:` section still has the third worker."""
-    assert EthosConfig().subagents.agent("axiom") is not None
+    assert ClioConfig().subagents.agent("axiom") is not None
 
 
 def test_the_axiom_tool_is_in_the_catalog():
-    from ethos.subagents.tools import AxiomRunTool
+    from clio.subagents.tools import AxiomRunTool
 
     tool = AxiomRunTool()
     assert tool.name == "subagent.axiom"

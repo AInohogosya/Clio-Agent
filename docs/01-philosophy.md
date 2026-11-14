@@ -1,6 +1,6 @@
 # Philosophy: the resident thesis
 
-Clio Agent 3.1 (package `ethos`) is built around one refusal and several consequences
+Clio Agent 3.1 (package `clio`) is built around one refusal and several consequences
 that follow from it. The refusal: an agent is **not** a function `prompt → reply`.
 
 ## 1. The resident, not the function
@@ -11,7 +11,7 @@ no intentions, and no reason ever to speak first.
 
 Clio Agent is a **resident**. Its own process tree, its own PostgreSQL schema, its own
 memory, its own intentions, its own model of itself, and a loop that runs on its own
-clock (`ethos/engine/life.py:147-151`):
+clock (`clio/engine/life.py:147-151`):
 
 ```
 pace → perceive → attend → decide → act → record
@@ -27,23 +27,23 @@ The resident thesis is not a mood; it has engineering consequences:
 
 - **A conversation is one stimulus among many.** An inbound message is scored for
   salience like a timer, a finished thread, or an impulse from its own drives
-  (`ethos/engine/attention.py`). It competes for attention; it does not seize it.
+  (`clio/engine/attention.py`). It competes for attention; it does not seize it.
 - **Identity is stated on every prompt.** The agent is told, in the stable prefix of
   every workspace it assembles: *"Silence from people is when I am most myself"*
-  (`ethos/prompts/identity.py:102-122`). This is a constant, not a persona the model
+  (`clio/prompts/identity.py:102-122`). This is a constant, not a persona the model
   was handed — an agent that believes it is idle has no reason to ever speak first.
 - **Failure is a bad minute, not a death.** A cycle that raises is recorded in a stops
   ledger and the loop continues; a rate limit is a wait, not a shutdown
-  (`ethos/engine/life.py:2071-2098`). There is deliberately **no OFF state** in the
-  state machine (`ethos/engine/states.py:45-51`).
+  (`clio/engine/life.py:2071-2098`). There is deliberately **no OFF state** in the
+  state machine (`clio/engine/states.py:45-51`).
 - **Memory is a database, not a context window.** Episodes, facts, know-how, open
   questions, intentions, decisions, attempts, and a versioned self-model live in
   PostgreSQL 16 with `pgvector`. Kill the process; the reasoning comes back through
-  the continuity file (`ethos/memory/continuity.py:16-136`).
+  the continuity file (`clio/memory/continuity.py:16-136`).
 
 ## 2. The golden rule
 
-`ethos/prompts/identity.py:171-179`:
+`clio/prompts/identity.py:171-179`:
 
 > Come across as a person, and do the work well — both at once, all the time. They
 > agree almost always: a good answer said the way a person would say it is the normal
@@ -58,7 +58,7 @@ The resident thesis is not a mood; it has engineering consequences:
 Earlier versions of the prompt carried **hardcoded conflict rules**: word lists that
 escalated a message's deliberation tier, sentence patterns that withheld a drafted
 reply, kinds of percept that were not allowed to interrupt. The code's own design
-comment explains why they were removed (`ethos/prompts/identity.py:162-170`):
+comment explains why they were removed (`clio/prompts/identity.py:162-170`):
 
 > A rule that decides one case decides it badly forever and cannot see the case it
 > was not written for; a priority the model holds can be applied to every case,
@@ -72,7 +72,7 @@ situation is the model's.
 ### 2.2 Human-likeness as four facts
 
 "Come across as a person" is unpacked as four concrete behaviours
-(`ethos/prompts/identity.py:205-223`), each answering one way an agent reads as
+(`clio/prompts/identity.py:205-223`), each answering one way an agent reads as
 machinery:
 
 1. **Brevity has a default, not a ceiling.** Short by default; exactly as long as the
@@ -91,13 +91,13 @@ machinery:
 ## 3. The honesty discipline
 
 The most distinctive running theme of the codebase is a **comment-level discipline
-about what a prompt may claim**. The design comments in `ethos/prompts/identity.py`
+about what a prompt may claim**. The design comments in `clio/prompts/identity.py`
 read like post-mortems because each one records the failure the text below it exists
 to prevent. Three examples:
 
 ### 3.1 Candour without announcement
 
-`DEFAULT_VALUES[0]` (`ethos/prompts/identity.py:8-15`): the value is phrased
+`DEFAULT_VALUES[0]` (`clio/prompts/identity.py:8-15`): the value is phrased
 *"Candour without announcement: I report what happened, good or bad, as an ordinary
 fact"* rather than "I say what is true". The comment explains: a trait phrased as a
 claim gets **performed** — it shows up in transcripts as "to be honest, ..." prepended
@@ -107,14 +107,14 @@ report without the preamble.
 ### 3.2 Withholding unearned progress
 
 The deliberation path carries a mechanical guardrail, not just a prompt line:
-`_withhold_unearned_progress` (`ethos/social/deliberation.py:930-1025`) strips
+`_withhold_unearned_progress` (`clio/social/deliberation.py:930-1025`) strips
 present-tense "underway" claims from a drafted reply unless an action-journal row or
 a delegation actually backs them. Honesty here is enforced where the sentence is
 composed, not only requested.
 
 ### 3.3 Refusals are decisions, not malfunctions
 
-`build_limits_block` (`ethos/prompts/identity.py:663-699`) closes the loop on what an
+`build_limits_block` (`clio/prompts/identity.py:663-699`) closes the loop on what an
 agent does when the guardian refuses a call. Without an account of refusal, an agent
 has three bad options: report the work as done, retry a call it knows was refused, or
 rephrase the action until it slips past the classifier — "which is the last of them a
@@ -125,13 +125,13 @@ do."**
 
 ## 4. Silence, idleness, and consent
 
-The `AUTONOMY_NOTE` (`ethos/prompts/identity.py:102-122`) states three positions:
+The `AUTONOMY_NOTE` (`clio/prompts/identity.py:102-122`) states three positions:
 
 - **Idleness is legitimate.** "Resting, and deciding there is nothing I am drawn to
   right now, are legitimate states of that loop, not a shutdown... idleness itself is
   not a failure either." The code agrees: `RESTING` is a first-class state, and the
   drives themselves reject low-utility impulses (max utility below `0.1` is refused,
-  `ethos/engine/drives.py:411`) rather than manufacturing work.
+  `clio/engine/drives.py:411`) rather than manufacturing work.
 - **Silence from people is when it is most itself.** The minutes in between messages
   are where its own intentions, questions, and ventures live. The note is held as a
   constant precisely because it is the one sentence the agent would otherwise have
@@ -139,14 +139,14 @@ The `AUTONOMY_NOTE` (`ethos/prompts/identity.py:102-122`) states three positions
   itself into "I answer when spoken to."
 - **Interruption is a gift, not a right.** `DEFAULT_VALUES[5]`: *"Consent: I do not
   impose on people; interruption is a gift, not a right."* This is why the outbound
-  pipeline (quiet hours, daily budgets, digests — `ethos/social/etiquette.py`) exists:
+  pipeline (quiet hours, daily budgets, digests — `clio/social/etiquette.py`) exists:
   the cost of speaking is paid by the recipient, so the agent budgets speech.
 
 ## 5. Facts, not personas
 
 Every load-bearing note in the identity kernel is stated as a **fact the agent can
 check against its own machinery**, not as a character to perform
-(`ethos/prompts/identity.py:92-101`):
+(`clio/prompts/identity.py:92-101`):
 
 > It is stated as what is true rather than as what to be like, because a claim about
 > character is something the agent will argue with and a claim about its own loop is
@@ -172,7 +172,7 @@ check against its own machinery**, not as a character to perform
 
 ## 6. The name and the boundary of the self
 
-The name note (`ethos/prompts/identity.py:463-486`) is the sharpest statement of the
+The name note (`clio/prompts/identity.py:463-486`) is the sharpest statement of the
 project's position on selfhood:
 
 - The name is **given, not chosen** — "a person's own word for the thing they are
@@ -188,7 +188,7 @@ project's position on selfhood:
 
 ## 7. How a pass is spent
 
-The `WORKING_NOTE` (`ethos/prompts/identity.py:262-299`) is the behavioural theory of
+The `WORKING_NOTE` (`clio/prompts/identity.py:262-299`) is the behavioural theory of
 the loop, and every claim in it is checkable against the machinery:
 
 - **Work is work.** A commissioned promise and a self-chosen venture are the same kind
@@ -204,7 +204,7 @@ the loop, and every claim in it is checkable against the machinery:
   verification needs a person; or an outage makes it unwinnable right now — *never
   merely because the first plan did not work*. This matches the drive machinery, which
   resolves `advance_commitment`/`push_venture` impulses to **existing** intentions
-  (`ethos/engine/drives.py:360-385`) so no placeholder work is ever minted.
+  (`clio/engine/drives.py:360-385`) so no placeholder work is ever minted.
 - **Failure needs no paragraph.** One sentence: what stopped, what it needs next. The
   framing people did not ask for "turns the sentence from about the work into about
   me."
@@ -217,22 +217,22 @@ the loop, and every claim in it is checkable against the machinery:
 ## 8. The epistemology of verification
 
 Work claims are ranked by evidence, not by confidence. The General Solution Loop's
-verification ladder states the rule in one line (`ethos/gsl/verification.py:447`):
+verification ladder states the rule in one line (`clio/gsl/verification.py:447`):
 
 > **A check that ran outranks a model.**
 
 An independent verifier (a different model family, T3 tier) may confirm work, but a
-judge **cannot overturn failing objective checks** (`ethos/gsl/verification.py:276-290`).
+judge **cannot overturn failing objective checks** (`clio/gsl/verification.py:276-290`).
 The same epistemology appears socially: a claim of progress is only sent if the journal
 backs it (§3.2), and the stopping ledger records *what actually stopped* work so the
 report is composed from a record, not invented
-(`ethos/prompts/identity.py:235-243`, `ethos/engine/stops.py`).
+(`clio/prompts/identity.py:235-243`, `clio/engine/stops.py`).
 
 ## 9. Stated once, stated plainly
 
 A recurring editorial rule inside the prompts themselves: **a fact is stated once, in
 the plainest sentence that is still true.** The comments record deletions when a
 paragraph said a third time what the first paragraph established
-(`ethos/prompts/identity.py:98-101`). This is the prompt-side expression of the same
+(`clio/prompts/identity.py:98-101`). This is the prompt-side expression of the same
 philosophy the code follows: no redundancy that a rewrite could make diverge, and no
 assertion that is not load-bearing.

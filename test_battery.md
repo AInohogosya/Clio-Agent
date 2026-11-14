@@ -52,7 +52,7 @@ tool actions. 103 "response cut off" + 434 gateway-retry events in core log.
 
 ## FIX ATTEMPTS (infra only; agent tasks untouched)
 1. Restarted Postgres via ensure_postgres.sh (was down; stale pidfile).
-2. Restarted agent via `ethos up --no-open` (was deliberately stopped 12:30:50Z).
+2. Restarted agent via `clio up --no-open` (was deliberately stopped 12:30:50Z).
 3. Repointed ~/.ethos/base_model.yaml crouton-alpha -> minimax (NVIDIA, working on
    small prompts); backup: base_model.yaml.bak-20261104-2155. Agent still produced
    empty actions on large solver prompts.
@@ -68,7 +68,7 @@ agent can run the solver and complete T5B/T6/T8. Agent left running.
 ## UPDATE 2026-11-05 06:33 JST (goal resumed)
 - No overnight progress: T6 bug still present, T7/T8 empty, all untouched since 21:41.
 - Agent stack now FULLY DOWN: interface 8720 = 000, web door 8710 = 000,
-  pg 5433 = 000, no postgres/ethos processes.
+  pg 5433 = 000, no postgres/clio processes.
 - Escalated shell is 403-rejected (OpenRouter key limit), so Postgres/agent cannot
   be restarted by the observer. Same root cause: no working reasoning-model key.
 - Only OPENROUTER + NVIDIA keys are set; no new reasoning-model key added.

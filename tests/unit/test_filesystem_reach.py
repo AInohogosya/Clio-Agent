@@ -30,13 +30,13 @@ from typing import Any
 
 import pytest
 
-from ethos.config import PathsConfig
-from ethos.guardian.gate import GuardianGate
-from ethos.guardian.registry import ArtifactRegistry
-from ethos.paths import ReachEntry, agent_home, probe_reach, resolve, user_home
-from ethos.prompts.identity import build_identity_kernel
-from ethos.toolhost.server import ToolContext
-from ethos.toolhost.tools.fs import (
+from clio.config import PathsConfig
+from clio.guardian.gate import GuardianGate
+from clio.guardian.registry import ArtifactRegistry
+from clio.paths import ReachEntry, agent_home, probe_reach, resolve, user_home
+from clio.prompts.identity import build_identity_kernel
+from clio.toolhost.server import ToolContext
+from clio.toolhost.tools.fs import (
     FsEditTool,
     FsListTool,
     FsMkdirTool,
@@ -281,7 +281,7 @@ def test_a_relative_base_can_be_overridden_for_the_rare_caller_that_needs_it() -
 def test_the_fs_tools_use_the_shared_rule() -> None:
     """One rule, not seven copies of it.
 
-    Each tool resolves through `ethos.paths.resolve`; this asserts the helper it
+    Each tool resolves through `clio.paths.resolve`; this asserts the helper it
     delegates to is the shared one, so a future edit cannot quietly give one tool
     a private base directory and leave the other six on the user's home.
     """
@@ -314,7 +314,7 @@ def test_the_toolhost_stops_passing_a_home_dir_to_the_gate() -> None:
     a parameter added back to the signature and threaded through again by
     someone who has read this file and disagreed with it.
     """
-    import ethos.toolhost.server as server_module
+    import clio.toolhost.server as server_module
 
     assert "home_dir" not in inspect.getsource(server_module)
 
@@ -332,7 +332,7 @@ def test_nothing_in_the_fs_tools_compares_a_path_against_a_root() -> None:
     directory, and backups are part of the permission model rather than a
     boundary within it.
     """
-    import ethos.toolhost.tools.fs as fs_module
+    import clio.toolhost.tools.fs as fs_module
 
     source = inspect.getsource(fs_module)
     for containment in (
@@ -350,7 +350,7 @@ def test_the_reach_note_is_part_of_the_identity_block() -> None:
     that is asserted too: `STABLE_BLOCKS` is where the prompt cache is cut, and
     moving it changes the price of every call in every thread.
     """
-    from ethos.engine.workspace import BLOCK_ORDER, STABLE_BLOCKS
+    from clio.engine.workspace import BLOCK_ORDER, STABLE_BLOCKS
 
     kernel = build_identity_kernel("Aria", user_home_dir="/home/ana",
                                    agent_home_dir="/home/ana/.ethos")
@@ -404,7 +404,7 @@ def test_probe_reach_reports_a_directory_it_can_use() -> None:
 def test_probe_reach_leaves_nothing_behind() -> None:
     """`doctor` is run when somebody least expects their filesystem touched."""
     for entry in probe_reach(extra=(str(Path.home()),)):
-        leftovers = [p.name for p in Path(entry.path).glob(".ethos-reach-probe-*")] \
+        leftovers = [p.name for p in Path(entry.path).glob(".clio-reach-probe-*")] \
             if entry.exists else []
         assert leftovers == []
 

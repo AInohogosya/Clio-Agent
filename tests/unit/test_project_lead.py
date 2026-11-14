@@ -19,22 +19,22 @@ from uuid import uuid4
 
 import pytest
 
-from ethos.engine.attention import Attention, project_preemption_allowed
-from ethos.engine.drives import DriveInputs, propose_impulses
-from ethos.engine.life import Life, LifeDeps
-from ethos.engine.rhythm import RhythmController
-from ethos.gateway.embeddings import HashingEmbedder
-from ethos.gsl.loop import GeneralSolverLoop, GovernanceOutbox
-from ethos.guardian.gate import GuardianGate
-from ethos.guardian.journal import ActionJournal
-from ethos.guardian.registry import ArtifactRegistry
-from ethos.memory.store import MemoryStore, ProjectProgressLedger
-from ethos.schemas.events import Percept
-from ethos.schemas.gsl import Focus
-from ethos.schemas.messages import SocialAction, SocialDecision
-from ethos.social.deliberation import SocialCognition, _ExecutionState
-from ethos.social.etiquette import OutboundPipeline
-from ethos.threads.context import WorkspaceLeaseManager
+from clio.engine.attention import Attention, project_preemption_allowed
+from clio.engine.drives import DriveInputs, propose_impulses
+from clio.engine.life import Life, LifeDeps
+from clio.engine.rhythm import RhythmController
+from clio.gateway.embeddings import HashingEmbedder
+from clio.gsl.loop import GeneralSolverLoop, GovernanceOutbox
+from clio.guardian.gate import GuardianGate
+from clio.guardian.journal import ActionJournal
+from clio.guardian.registry import ArtifactRegistry
+from clio.memory.store import MemoryStore, ProjectProgressLedger
+from clio.schemas.events import Percept
+from clio.schemas.gsl import Focus
+from clio.schemas.messages import SocialAction, SocialDecision
+from clio.social.deliberation import SocialCognition, _ExecutionState
+from clio.social.etiquette import OutboundPipeline
+from clio.threads.context import WorkspaceLeaseManager
 from tests.conftest import ListAudit, make_config
 
 
@@ -361,7 +361,7 @@ async def test_guardian_enforces_the_projects_own_lease(tmp_path, monkeypatch):
     the gate resolves the fence by `workspace_lease_id`, not by accident."""
     cfg = _make_config(tmp_path)
     cfg.permissions.guardian.mode = "strict"
-    monkeypatch.setenv("ETHOS_GUARDIAN_MODE", "strict")
+    monkeypatch.setenv("CLIO_GUARDIAN_MODE", "strict")
     leases = WorkspaceLeaseManager(cfg)
     projects_root = cfg.paths.work / ".projects" / "p1"
     projects_root.mkdir(parents=True, exist_ok=True)
@@ -637,7 +637,7 @@ async def test_progress_ledger_preserves_preempted_projects_progress(tmp_path, d
 def test_workspace_renders_the_project_portfolio_below_the_focus_dag(config=None):
     """The commitments block keeps the focus DAG and adds every project's
     compact standing below it — with nodes, files, blockers and checkpoint."""
-    from ethos.engine.workspace import render_commitments
+    from clio.engine.workspace import render_commitments
 
     commitments = [
         {"status": "in_progress", "title": "Focus work", "priority": 0.8,
@@ -686,8 +686,8 @@ class _ContextStub:
 async def test_the_focus_quantum_survives_a_restart(tmp_path):
     """`active_project_id` and its quantum clock persist through continuity
     and come back on wake — a restart does not re-open the lock."""
-    from ethos.memory.continuity import ContinuityManager
-    from ethos.schemas.gsl import Decision, Outcome
+    from clio.memory.continuity import ContinuityManager
+    from clio.schemas.gsl import Decision, Outcome
 
     cfg = _make_config(tmp_path)
     continuity = ContinuityManager(cfg)
@@ -756,7 +756,7 @@ async def test_deliberation_context_carries_bound_project_and_portfolio(tmp_path
 
 
 def test_decomposition_marks_human_nodes_with_instruction_spec():
-    from ethos.gsl.planner import decompose_into_children
+    from clio.gsl.planner import decompose_into_children
 
     specs = decompose_into_children(
         "Deploy the service to production using the production credentials",
@@ -986,7 +986,7 @@ async def test_evergreen_project_ships_a_milestone_then_rests(tmp_path):
     assert shipped, "the ship is reported to the owner"
 
     # Once the cooldown elapses the impulse proposes the next cycle.
-    from ethos.engine.drives import DRIVES
+    from clio.engine.drives import DRIVES
 
     pressures = {d: 0.9 for d in DRIVES}
     impulses = propose_impulses(

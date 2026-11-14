@@ -13,15 +13,12 @@ from types import SimpleNamespace
 from typing import Any
 from uuid import uuid4
 
-from ethos.config import EthosConfig
-from ethos.gateway.calibration import (
+from clio.gateway.calibration import (
     QualityCalibration,
     effective_quality,
     write_model_quality,
 )
-from ethos.gsl.loop import GeneralSolverLoop, _environment_blocked
-from tests.conftest import make_config
-
+from clio.gsl.loop import GeneralSolverLoop, _environment_blocked
 
 # ------------------------------------------------------------- calibration
 

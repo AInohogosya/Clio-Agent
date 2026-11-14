@@ -28,7 +28,7 @@ import { after, before, test } from 'node:test';
  *     line opens and start another, turning "what should I call you" into the cheapest
  *     prompt injection there is.
  *
- * The rule itself is repeated in `ethos.config`, so a mistake here degrades to "the
+ * The rule itself is repeated in `clio.config`, so a mistake here degrades to "the
  * agent ignored it" rather than to a rewritten identity. But a mistake that silently
  * ignores a person's settings is still a bug, and it is only visible from out here.
  *
@@ -56,11 +56,11 @@ async function freePort() {
 }
 
 before(async () => {
-  home = mkdtempSync(join(tmpdir(), 'ethos-identity-'));
+  home = mkdtempSync(join(tmpdir(), 'clio-identity-'));
   const port = await freePort();
   base = `http://127.0.0.1:${port}`;
   child = spawn(process.execPath, [SERVER], {
-    env: { ...process.env, ETHOS_HOME: home, ETHOS_CONFIG_DIR: CONFIG_DIR, ETHOS_WEB_PORT: String(port) },
+    env: { ...process.env, CLIO_HOME: home, CLIO_CONFIG_DIR: CONFIG_DIR, CLIO_WEB_PORT: String(port) },
     stdio: 'ignore',
   });
   // Wait for the listener rather than a fixed sleep: a test that runs before the

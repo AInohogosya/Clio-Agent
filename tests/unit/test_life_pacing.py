@@ -7,10 +7,10 @@ from typing import Any
 
 import pytest
 
-from ethos.engine.life import Life, LifeDeps
-from ethos.engine.rhythm import RhythmController
-from ethos.engine.states import State
-from ethos.schemas.events import Percept
+from clio.engine.life import Life, LifeDeps
+from clio.engine.rhythm import RhythmController
+from clio.engine.states import State
+from clio.schemas.events import Percept
 from tests.conftest import make_config
 
 """

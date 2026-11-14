@@ -2,12 +2,12 @@
 
 When a message arrives, the agent does not answer reflexively. It **deliberates**:
 it decides *whether* to reply, *when*, *what*, or whether to do nothing with a
-recorded reason. Sources: `ethos/social/deliberation.py`, `ethos/schemas/messages.py`,
-`ethos/prompts/deliberation.py`.
+recorded reason. Sources: `clio/social/deliberation.py`, `clio/schemas/messages.py`,
+`clio/prompts/deliberation.py`.
 
 ## 1. The decision vocabulary
 
-Actions (`ethos/schemas/messages.py:132-138`) — six, not two:
+Actions (`clio/schemas/messages.py:132-138`) — six, not two:
 
 | Action | Meaning |
 |---|---|
@@ -38,7 +38,7 @@ ignore_reason, creates_intention, intention_spec, tier_used, decided`
 
 ## 2. The deliberation call
 
-`SocialCognition.deliberate()` (`ethos/social/deliberation.py:394-1025`):
+`SocialCognition.deliberate()` (`clio/social/deliberation.py:394-1025`):
 
 - **Tier**: a mechanical **consequential-text test** (`is_consequential_text`,
   `deliberation.py:201-249`) — word-boundary matches plus a `$<digit>` money regex —
@@ -47,9 +47,9 @@ ignore_reason, creates_intention, intention_spec, tier_used, decided`
   first-chance budget `48_000`, `REASONING_BUDGET = 400`
   (`deliberation.py:77-99`; consequential gets the escalated ceiling first,
   `:422-439`). Stage notices cap at 900 tokens.
-- **Prompt contents** (`ethos/prompts/deliberation.py:65-252`): the recent
+- **Prompt contents** (`clio/prompts/deliberation.py:65-252`): the recent
   conversation (open conversations within 72 h, limit 8, last 6 turns at 400 chars
-  each — `ethos/social/conversation.py:36`), open commitments, and the
+  each — `clio/social/conversation.py:36`), open commitments, and the
   **execution-state block** (`deliberation.py:469`): what is in the action journal,
   what is blocked, what is delegated, what stages are pending, real progress. This
   block is what makes the honesty guardrail possible (§4).
@@ -81,11 +81,11 @@ The reply path also covers **initiated** contact:
 
 - **Stage notices** — "tell me when it's done": a commissioned intention reaching
   `done / parked / awaiting_review` produces a notice to whoever is waiting
-  (`ethos/gsl/loop.py:2022`, `ethos/memory/store.py:563-711`), decided at `notify`
+  (`clio/gsl/loop.py:2022`, `clio/memory/store.py:563-711`), decided at `notify`
   priority in `decide()` ([03-engine.md](03-engine.md) §5) and rendered through
   a small dedicated prompt (`prompts/deliberation.py:254-295`, `{"text"}`).
 - **Ignore-streak review**: if the agent has ignored ≥3 messages from one person,
-  the relationship store triggers a `T3` review (`ethos/social/relationships.py`,
+  the relationship store triggers a `T3` review (`clio/social/relationships.py`,
   `STREAK_REVIEW_THRESHOLD = 3`) — persistent silence is itself a signal worth
   deliberating about.
 
@@ -98,7 +98,7 @@ incoming commissions before they become intentions:
 - A spec **outside its skill or authority** → `boundary`.
 - A spec it **legitimately disagrees with** → `deliberate_disagreement`.
 - A clean spec routes into normal `deliberate()` handling, with a `COMMISSION_NOTE`
-  in the prompt (`ethos/prompts/deliberation.py:624`) covering money thresholds and
+  in the prompt (`clio/prompts/deliberation.py:624`) covering money thresholds and
   disclosure obligations (H2/H4).
 
 The agent is an equal party: it may decline work with a reason, and "declining with
@@ -106,9 +106,9 @@ a categorized reason" is one of the six documented behaviours of the product.
 
 ## 6. Cross-talk awareness
 
-Each conversation carries a **cross-talk note** (`ethos/prompts/identity.py:377-419`,
+Each conversation carries a **cross-talk note** (`clio/prompts/identity.py:377-419`,
 selected by preview mode; rendered per conversation in
-`ethos/social/conversation.py:110-146`):
+`clio/social/conversation.py:110-146`):
 
 - **Preview (closed)**: nothing crosses. Not a name, not that another person exists,
   not a confirmation if asked. "What people tell me stays with them" is said plainly
@@ -140,10 +140,10 @@ The deliberation layer implements a specific theory of conversation:
 ## Part II — Etiquette: the outbound pipeline
 
 Every message the agent sends is mediated by `OutboundPipeline`
-(`ethos/social/etiquette.py:40-412`), tagged [D-31] in the code. The premise: the
+(`clio/social/etiquette.py:40-412`), tagged [D-31] in the code. The premise: the
 cost of a message is paid by its recipient, so speech is budgeted, batched, and
 held to a calendar. Sources: `etiquette.py`, `config.py:1123-1145`,
-`ethos/social/relationships.py`, `conversation.py`.
+`clio/social/relationships.py`, `conversation.py`.
 
 ## 1. The controls
 
@@ -163,13 +163,13 @@ Mechanics:
 - **Unsolicited low/normal** messages go through repeat/held-back checks and land in
   the **digest queue**; `flush_due_digests` (`etiquette.py:296-353`) releases them
   when the window closes.
-- **Conversations** are keyed `channel:person_id` (`ethos/social/conversation.py:26-33`),
+- **Conversations** are keyed `channel:person_id` (`clio/social/conversation.py:26-33`),
   and each carries its cross-talk note (`conversation.py:110-146`), strict in preview
   mode.
 
 ## 2. Relationships
 
-`RelationshipStore` (`ethos/social/relationships.py:15-102`):
+`RelationshipStore` (`clio/social/relationships.py:15-102`):
 
 - A `people` table keyed by the channel `person_id` prefixes
   (`tg:`, `wa:`, `slack:<channel>`, `dc:`, `line:`, `teams:`, `gchat:`, `email:`,
@@ -187,12 +187,12 @@ Mechanics:
 `_principal_kind` / `is_resident_address` / `_deliver_resident`
 (`etiquette.py`): humans keep quiet hours, 120-minute digests and the 6/3/1 caps;
 **residents bypass** — the `OutboundPipeline.send` fast-path delivers structured
-JSON over the event bus (`publish_commission` kinds, `ethos/bus/event_bus.py:19,208`).
+JSON over the event bus (`publish_commission` kinds, `clio/bus/event_bus.py:19,208`).
 Machine-to-machine speech does not need a morning.
 
 ## 4. Verbosity learning
 
-`ethos/social/verbosity.py` (`VERBOSITY_INTERVAL_MIN 60/15/3`, EN+JA patterns) tracks
+`clio/social/verbosity.py` (`VERBOSITY_INTERVAL_MIN 60/15/3`, EN+JA patterns) tracks
 reply-length feedback signals per person on decaying intervals: one-word replies,
 "just the answer please", or their Japanese equivalents are signals that this
 conversation wants terseness. Length is a per-relationship property, learned, not a
@@ -204,7 +204,7 @@ The design could have said "be considerate about messaging people." Instead the
 controls are in code because:
 
 1. **They are checkable.** "The agent can be held to" a 6-per-day cap; a prompt line
-   about consideration cannot be audited (`ethos/prompts/identity.py:362-366` states
+   about consideration cannot be audited (`clio/prompts/identity.py:362-366` states
    the same principle for cross-talk).
 2. **They encode consent.** "Interruption is a gift, not a right"
    (`DEFAULT_VALUES[5]`): the pipeline makes unsolicited interruption a **rationed

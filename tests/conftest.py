@@ -11,11 +11,12 @@ from uuid import uuid4
 
 import pytest
 
-from ethos.config import EmbeddingConfig, EthosConfig, PathsConfig
-from ethos.db import Database
-from ethos.gateway.embeddings import HashingEmbedder
-from ethos.observability import exhaustive
-from ethos.schemas.models import (
+from clio.config import ClioConfig, EmbeddingConfig, PathsConfig
+from clio.db import Database
+from clio.env import env, set_env
+from clio.gateway.embeddings import HashingEmbedder
+from clio.observability import exhaustive
+from clio.schemas.models import (
     ModelMessage,
     ModelRequest,
     NormalizedResponse,
@@ -23,13 +24,13 @@ from ethos.schemas.models import (
     Tier,
     Usage,
 )
-from ethos.schemas.tools import ToolSpec
+from clio.schemas.tools import ToolSpec
 
-os.environ.setdefault("ETHOS_EMBEDDING", "hashing")
+os.environ.setdefault("CLIO_EMBEDDING", "hashing")
 
-# The agent's own database, derived rather than repeated: `ETHOS_DSN` is what the
+# The agent's own database, derived rather than repeated: `CLIO_DSN` is what the
 # agent and the bridge are pointed at, and the suite must never write into it.
-AGENT_DSN = os.environ.get("ETHOS_DSN", "postgresql://ethos:ethos@127.0.0.1:5433/ethos")
+AGENT_DSN = env("DSN", "postgresql://ethos:ethos@127.0.0.1:5433/ethos")
 
 # The database the suites are allowed to write into.
 #
@@ -45,9 +46,9 @@ AGENT_DSN = os.environ.get("ETHOS_DSN", "postgresql://ethos:ethos@127.0.0.1:5433
 # is a suite nobody can run.
 #
 # So the tests get a database of their own, created and migrated on demand.
-# `ETHOS_TEST_DSN` still wins: pointing the suite at a database is how a
+# `CLIO_TEST_DSN` still wins: pointing the suite at a database is how a
 # deployment runs it against a throwaway cluster.
-TEST_DATABASE = os.environ.get("ETHOS_TEST_DB", "ethos_test")
+TEST_DATABASE = env("TEST_DB", "clio_test")
 
 
 def test_database_dsn() -> str:
@@ -94,17 +95,18 @@ def provision_test_database() -> bool:
         cfg = AlembicConfig(str(root / "migrations" / "alembic.ini"))
         # `migrations/env.py` reads the DSN from the environment and overrides
         # whatever the config was given, so this is the only way to point it at
-        # the suite's database — and the same way `ethos db upgrade` is pointed
+        # the suite's database — and the same way `clio db upgrade` is pointed
         # at one by hand.
-        previous = os.environ.get("ETHOS_DSN")
-        os.environ["ETHOS_DSN"] = dsn
+        previous = env("DSN")
+        set_env("DSN", dsn)
         try:
             command.upgrade(cfg, "head")
         finally:
             if previous is None:
+                os.environ.pop("CLIO_DSN", None)
                 os.environ.pop("ETHOS_DSN", None)
             else:
-                os.environ["ETHOS_DSN"] = previous
+                set_env("DSN", previous)
     except Exception:
         return False
     return True
@@ -294,9 +296,9 @@ class NoopSnapshots:
         raise NotImplementedError
 
 
-def make_config(tmp_dir: Path) -> EthosConfig:
-    home = tmp_dir / "ethos-home"
-    config = EthosConfig()
+def make_config(tmp_dir: Path) -> ClioConfig:
+    home = tmp_dir / "clio-home"
+    config = ClioConfig()
     config.paths = PathsConfig(
         home=home,
         workspace=home / "workspace",
@@ -308,12 +310,12 @@ def make_config(tmp_dir: Path) -> EthosConfig:
         threads=home / "work" / ".threads",
     )
     config.gateway.embedding = EmbeddingConfig(provider="hashing", dim=1024)
-    config.database.dsn = os.environ.get("ETHOS_TEST_DSN", test_database_dsn())
+    config.database.dsn = env("TEST_DSN", test_database_dsn())
     return config
 
 
 @pytest.fixture()
-def config(tmp_path: Path) -> EthosConfig:
+def config(tmp_path: Path) -> ClioConfig:
     cfg = make_config(tmp_path)
     cfg.paths.ensure()
     return cfg
@@ -342,7 +344,7 @@ def exhaustive_log_sandbox(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> N
     monkeypatch.setattr(exhaustive, "_default_dir", sandbox)
     # For processes a test spawns, which import the module afresh: the patch
     # above covers this process, the variable covers its children.
-    monkeypatch.setenv("ETHOS_EXHAUSTIVE_LOG_DIR", str(sandbox))
+    monkeypatch.setenv("CLIO_EXHAUSTIVE_LOG_DIR", str(sandbox))
 
 
 @pytest.fixture(scope="session")
@@ -354,7 +356,7 @@ def test_dsn() -> str:
     can be believed, and a database nobody cleans is a database somebody has to.
     A DSN the operator chose is never dropped — that one was not ours.
     """
-    configured = os.environ.get("ETHOS_TEST_DSN")
+    configured = env("TEST_DSN")
     if configured:
         yield configured
         return
@@ -412,6 +414,6 @@ def simple_request(**overrides: Any) -> ModelRequest:
 
 @pytest.fixture()
 def quirks() -> Any:
-    from ethos.config import QuirksConfig
+    from clio.config import QuirksConfig
 
     return QuirksConfig().anthropic

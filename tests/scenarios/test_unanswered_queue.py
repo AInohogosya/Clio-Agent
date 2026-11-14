@@ -6,7 +6,7 @@ from uuid import uuid4
 
 import pytest
 
-from ethos.social.deliberation import SocialCognition
+from clio.social.deliberation import SocialCognition
 from tests.conftest import make_config
 
 pytestmark = pytest.mark.scenario

@@ -4,10 +4,10 @@ from typing import Any
 
 import pytest
 
-from ethos.config import load_config
-from ethos.memory.context import ContextLayer
-from ethos.schemas.context import TurnKind
-from ethos.schemas.models import NormalizedResponse, Usage
+from clio.config import load_config
+from clio.memory.context import ContextLayer
+from clio.schemas.context import TurnKind
+from clio.schemas.models import NormalizedResponse, Usage
 
 
 class NarrationGateway:
@@ -57,9 +57,9 @@ def context_config():
 
 
 def make_layer(context_config, gateway=None, memory=None) -> ContextLayer:
-    from ethos.config import EthosConfig
+    from clio.config import ClioConfig
 
-    config = EthosConfig()
+    config = ClioConfig()
     config.memory.context = context_config
     return ContextLayer(config, memory=memory, gateway=gateway)
 

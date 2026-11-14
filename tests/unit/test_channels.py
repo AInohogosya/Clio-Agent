@@ -11,12 +11,12 @@ from typing import Any
 
 import pytest
 
-from ethos.comms.adapters import telegram as telegram_adapter_module
-from ethos.comms.adapters.base import ChannelAdapter
-from ethos.comms.adapters.telegram import TelegramAdapter, _display_name, _handle
-from ethos.comms.adapters.whatsapp import WhatsappAdapter, normalize_phone
-from ethos.comms.webhook import WebhookReceiver, meta_signature
-from ethos.schemas.messages import Message
+from clio.comms.adapters import telegram as telegram_adapter_module
+from clio.comms.adapters.base import ChannelAdapter
+from clio.comms.adapters.telegram import TelegramAdapter, _display_name, _handle
+from clio.comms.adapters.whatsapp import WhatsappAdapter, normalize_phone
+from clio.comms.webhook import WebhookReceiver, meta_signature
+from clio.schemas.messages import Message
 
 APP_SECRET = "app-secret-for-tests"
 VERIFY_TOKEN = "verify-token-for-tests"
@@ -696,10 +696,10 @@ async def test_telegram_send_refuses_a_foreign_person_id():
 def _core_style_config(monkeypatch: pytest.MonkeyPatch, telegram: bool = True):
     """The shipped config with one polling channel on and no credentials needed.
 
-    `ethos-core` and `ethos-comms` both build their adapters from one file, which
+    `clio-core` and `clio-comms` both build their adapters from one file, which
     is the whole reason this split has to hold rather than being a convention.
     """
-    from ethos.config import TelegramChannelConfig, load_config
+    from clio.config import TelegramChannelConfig, load_config
 
     config = load_config("config")
     config.channels.cli.enabled = False
@@ -747,7 +747,7 @@ def _host_with(config: Any, adapter: RecordingAdapter) -> Any:
     replaces before it looks at it. The invariant under test is unchanged — which
     half of an adapter a given process opens — and this is the seam that reaches it.
     """
-    from ethos.comms.host import CommsHost, _Plan
+    from clio.comms.host import CommsHost, _Plan
 
     host = CommsHost(config, on_inbound=lambda _m: asyncio.sleep(0))
     plan = _Plan(adapters={"recording": adapter}, signatures={"recording": ("recording",)})
@@ -766,7 +766,7 @@ async def test_the_listening_process_opens_every_door(monkeypatch: pytest.Monkey
 
 
 async def test_the_answering_process_opens_no_door(monkeypatch: pytest.MonkeyPatch):
-    """`ethos-core` starts every channel to send on it and listens on none.
+    """`clio-core` starts every channel to send on it and listens on none.
 
     This is the arrangement the channel feature needs. Both processes build the
     same adapters from the same file, so a listener opened by both is not two
@@ -796,7 +796,7 @@ async def test_a_door_only_the_listening_process_opens_stays_shut_for_the_others
     making is both halves of it: the answering process still needs the routes, so it
     knows where a reply goes, and it must not have taken the port to get them.
     """
-    from ethos.comms.host import CommsHost
+    from clio.comms.host import CommsHost
 
     config = _slack_style_config(monkeypatch, enabled=True)
     host = CommsHost(config, on_inbound=lambda _m: asyncio.sleep(0))
@@ -825,9 +825,9 @@ async def test_a_door_the_other_process_holds_is_not_logged_as_a_failure(
 ):
     """The one failure this arrangement is *for*, said as what it is.
 
-    `ethos-core` builds the same adapters `ethos-comms` does and opens none of the
+    `clio-core` builds the same adapters `clio-comms` does and opens none of the
     doors, so `EADDRINUSE` on the web socket is the design working: this process
-    was told to answer, and `ethos-comms` is already answering. It was logged as
+    was told to answer, and `clio-comms` is already answering. It was logged as
     `adapter_start_failed` with a full traceback on every start of every agent,
     which is how a wall of red in the log teaches somebody to stop reading the log
     — and the log is where the start-up failures worth reading are.
@@ -868,12 +868,12 @@ async def test_a_door_nobody_is_holding_is_still_a_failure(monkeypatch: pytest.M
 async def test_email_only_fetches_when_it_is_listening():
     """One mailbox fetched twice is one mailbox half-read.
 
-    `ethos-core` builds the SMTP sender because it has to be able to answer by
+    `clio-core` builds the SMTP sender because it has to be able to answer by
     email; the IMAP loop belongs to the process that listens, because the second
     login to a mailbox sees nothing that has not already been marked seen and
     reports no reason for it.
     """
-    from ethos.comms.adapters.email import EmailAdapter
+    from clio.comms.adapters.email import EmailAdapter
 
     adapter = EmailAdapter("a@b.c", "pw", "imap", "smtp", 60, lambda _m: asyncio.sleep(0))
     await adapter.start()
@@ -905,7 +905,7 @@ def test_email_names_the_sender_from_the_from_header():
     been assigning both since the first version: the name half went into a local
     variable nothing read. So every email reached the agent as a bare address.
     """
-    from ethos.comms.adapters.email import EmailAdapter
+    from clio.comms.adapters.email import EmailAdapter
 
     adapter = EmailAdapter("a@b.c", "pw", "imap", "smtp", 60, lambda _m: asyncio.sleep(0))
     message = adapter._parse_email(_email_bytes("Ada Lovelace <ada@example.com>"))
@@ -924,7 +924,7 @@ def test_email_does_not_pass_an_address_off_as_a_name():
     "the agent knows a string that looks like a name". So it is `None`, and the
     address — which is already `person_id` — is what the agent sees.
     """
-    from ethos.comms.adapters.email import EmailAdapter, _header_name
+    from clio.comms.adapters.email import EmailAdapter, _header_name
 
     assert _header_name("alice@example.com", "alice@example.com") is None
     assert _header_name("", "alice@example.com") is None
@@ -1257,7 +1257,7 @@ async def test_the_long_poll_is_the_listening_half(monkeypatch: pytest.MonkeyPat
     """`start` opens the bot; only `listen` starts asking Telegram for updates.
 
     The adapter's own `start` and `listen` run, against a stand-in application,
-    because the split is the whole claim: `ethos-core` has to end up able to
+    because the split is the whole claim: `clio-core` has to end up able to
     *send* on Telegram — a reply to a question asked there is what leaves through
     this bot — without ever issuing a `getUpdates`. A second long-poll is not a
     second reader, it is a `409 Conflict` for as long as the first process lives,
@@ -1341,7 +1341,7 @@ def test_slack_allowlist_admits_nobody_when_empty():
     allowlist answers whoever adds it — and an agent holding a shell answering
     strangers is a published endpoint rather than a convenience.
     """
-    from ethos.comms.adapters.slack import SlackAdapter
+    from clio.comms.adapters.slack import SlackAdapter
 
     assert SlackAdapter("xoxb-t", []).accepts("U1", "C1") is False
     assert SlackAdapter("xoxb-t", ["U1"]).accepts("U1", "C1") is True
@@ -1355,7 +1355,7 @@ def test_slack_can_be_told_to_answer_anybody():
     this is the setting that makes the channel usable at all — and it is still not
     something an empty list may imply.
     """
-    from ethos.comms.adapters.slack import SlackAdapter
+    from clio.comms.adapters.slack import SlackAdapter
 
     assert SlackAdapter("xoxb-t", [], accept_from_anyone=True).accepts("U9", "C9") is True
     assert SlackAdapter("xoxb-t", []).accepts("U9", "C9") is False
@@ -1392,7 +1392,7 @@ async def test_slack_names_the_sender_by_asking_slack_once():
     writing, and the cache is what keeps that affordable — a busy channel would
     otherwise spend one API call per message on an answer that does not change.
     """
-    from ethos.comms.adapters.slack import SlackAdapter
+    from clio.comms.adapters.slack import SlackAdapter
 
     received: list[Message] = []
     http = _RecordingHttp()
@@ -1423,7 +1423,7 @@ async def test_slack_falls_back_to_the_id_when_it_may_not_ask():
     that will never arrive is worse than having no name at all — it is an API call
     on the path of every inbound message, forever. So the refusal is remembered.
     """
-    from ethos.comms.adapters.slack import SlackAdapter
+    from clio.comms.adapters.slack import SlackAdapter
 
     received: list[Message] = []
     http = _RecordingHttp({"ok": False, "error": "missing_scope"})
@@ -1451,7 +1451,7 @@ async def test_a_slack_user_lookup_that_raises_is_not_an_inbound_failure():
     `users.info` going wrong — a timeout, a dropped connection — must not cost the
     message, and must not take the whole webhook handler down with it.
     """
-    from ethos.comms.adapters.slack import SlackAdapter
+    from clio.comms.adapters.slack import SlackAdapter
 
     class BrokenHttp:
         async def get(self, *_args: Any, **_kwargs: Any) -> Any:
@@ -1480,7 +1480,7 @@ async def test_the_slack_name_cache_is_bounded():
     number of them. Unbounded, it is a slow leak created by the setting that adds
     it.
     """
-    from ethos.comms.adapters.slack import SlackAdapter
+    from clio.comms.adapters.slack import SlackAdapter
 
     http = _RecordingHttp()
     adapter = SlackAdapter("xoxb-t", [], accept_from_anyone=True, http=http)
@@ -1500,7 +1500,7 @@ def test_slack_allowlist_admits_either_a_person_or_a_conversation():
     — and the reply path needs the second while the filter needs the first. A
     deployment should be able to allowlist whichever it has.
     """
-    from ethos.comms.adapters.slack import SlackAdapter
+    from clio.comms.adapters.slack import SlackAdapter
 
     by_user = SlackAdapter("x", ["U1"])
     assert by_user.accepts("U1", "C9") is True
@@ -1516,7 +1516,7 @@ def test_the_slack_signature_covers_a_version_a_timestamp_and_the_body():
     bytes signed at two different seconds are two different signatures. A receiver
     that recomputed over the body on its own would refuse every real request.
     """
-    from ethos.comms.adapters.slack import slack_signature
+    from clio.comms.adapters.slack import slack_signature
 
     verify = slack_signature(SLACK_SECRET, now_fn=lambda: 1_700_000_000.0)
     raw = b'{"type":"event_callback"}'
@@ -1542,7 +1542,7 @@ def test_a_replayed_slack_request_expires():
     saw one valid POST — a proxy log, a packet capture — and the agent would
     deliberate on the same message again.
     """
-    from ethos.comms.adapters.slack import MAX_SIGNATURE_AGE_S, slack_signature
+    from clio.comms.adapters.slack import MAX_SIGNATURE_AGE_S, slack_signature
 
     raw = b'{"type":"event_callback"}'
     sent_at = 1_700_000_000
@@ -1559,7 +1559,7 @@ def test_a_slack_request_with_no_usable_timestamp_is_refused():
     Otherwise the one request that could never expire would be the one carrying no
     timestamp at all — which is exactly the request a forger would send.
     """
-    from ethos.comms.adapters.slack import slack_signature
+    from clio.comms.adapters.slack import slack_signature
 
     verify = slack_signature(SLACK_SECRET, now_fn=lambda: 1_700_000_000.0)
     for stamp in ("", "not-a-number", "1e9"):
@@ -1576,7 +1576,7 @@ def test_slack_parse_ignores_edits_bots_and_its_own_messages():
     straight back to it as an inbound message, and the two ends answer each other
     until somebody notices.
     """
-    from ethos.comms.adapters.slack import SlackAdapter
+    from clio.comms.adapters.slack import SlackAdapter
 
     adapter = SlackAdapter("xoxb-t", ["U1"], self_user_id="U9SELF")
     assert adapter.parse(json.loads(slack_event())) != []
@@ -1605,14 +1605,14 @@ def test_slack_parse_is_total(payload):
     in the same envelope as a real event is a shape this has to survive rather
     than reject.
     """
-    from ethos.comms.adapters.slack import SlackAdapter
+    from clio.comms.adapters.slack import SlackAdapter
 
     adapter = SlackAdapter("xoxb-t", ["U1"])
     assert adapter.parse(payload) == []
 
 
 def test_a_redelivered_slack_event_is_recorded_once():
-    from ethos.comms.adapters.slack import SlackAdapter
+    from clio.comms.adapters.slack import SlackAdapter
 
     adapter = SlackAdapter("xoxb-t", ["U1"])
     assert adapter.mark_seen("Ev1") is True
@@ -1622,7 +1622,7 @@ def test_a_redelivered_slack_event_is_recorded_once():
 
 async def test_a_signed_slack_event_reaches_the_inbound_handler():
     """The end the whole door exists for, over the real receiver and a real socket."""
-    from ethos.comms.adapters.slack import SlackAdapter, slack_signature
+    from clio.comms.adapters.slack import SlackAdapter, slack_signature
 
     received: list[Message] = []
 
@@ -1653,7 +1653,7 @@ async def test_a_signed_slack_event_reaches_the_inbound_handler():
 
 
 async def test_an_unsigned_slack_event_is_refused():
-    from ethos.comms.adapters.slack import SlackAdapter, slack_signature
+    from clio.comms.adapters.slack import SlackAdapter, slack_signature
 
     received: list[Message] = []
 
@@ -1689,7 +1689,7 @@ async def test_the_url_verification_challenge_is_echoed_with_no_signature():
     does nothing: the reply is the caller's own string, echoed, and no handler
     runs.
     """
-    from ethos.comms.adapters.slack import SlackAdapter, slack_signature
+    from clio.comms.adapters.slack import SlackAdapter, slack_signature
 
     ran: list[dict[str, Any]] = []
 
@@ -1718,7 +1718,7 @@ async def test_the_url_verification_challenge_is_echoed_with_no_signature():
 
 
 async def test_a_signed_slack_send_posts_to_the_web_api():
-    from ethos.comms.adapters.slack import SlackAdapter
+    from clio.comms.adapters.slack import SlackAdapter
 
     http = FakeHttp(FakeResponse(200, {"ok": True, "message": {"ts": "1700.0002"}}))
     adapter = SlackAdapter("xoxb-token", [], http=http)
@@ -1739,7 +1739,7 @@ async def test_a_slack_200_that_says_not_ok_is_a_refusal():
     that believes a message arrived when it did not is the specific lie this whole
     class of check exists to prevent.
     """
-    from ethos.comms.adapters.slack import SlackAdapter
+    from clio.comms.adapters.slack import SlackAdapter
 
     http = FakeHttp(FakeResponse(200, {"ok": False, "error": "not_in_channel"}))
     adapter = SlackAdapter("xoxb-token", [], http=http)
@@ -1749,7 +1749,7 @@ async def test_a_slack_200_that_says_not_ok_is_a_refusal():
 
 
 async def test_slack_send_refuses_a_person_id_from_another_channel():
-    from ethos.comms.adapters.slack import SlackAdapter
+    from clio.comms.adapters.slack import SlackAdapter
 
     http = FakeHttp(FakeResponse(200, {"ok": True}))
     adapter = SlackAdapter("xoxb-token", [], http=http)
@@ -1765,7 +1765,7 @@ def test_a_slack_thread_is_used_only_when_the_timestamp_is_one():
     timestamp; anything else leaves the reply top-level, which is visible, rather
     than filing it under a thread that does not exist.
     """
-    from ethos.comms.adapters.slack import _thread_stamp
+    from clio.comms.adapters.slack import _thread_stamp
 
     assert _thread_stamp("1700000000.000100") == "1700000000.000100"
     assert _thread_stamp("1700000000.1") == ""
@@ -1821,7 +1821,7 @@ class FakeSocket:
 
 
 def test_discord_allowlist_admits_nobody_when_empty():
-    from ethos.comms.adapters.discord import DiscordAdapter
+    from clio.comms.adapters.discord import DiscordAdapter
 
     assert DiscordAdapter("t", []).accepts("1", "9") is False
     assert DiscordAdapter("t", ["1"]).accepts("1", "9") is True
@@ -1835,7 +1835,7 @@ def test_a_bot_message_is_never_inbound():
     is the first thing to be tested because it is the cheapest: it costs one
     boolean read before any parsing happens at all.
     """
-    from ethos.comms.adapters.discord import DiscordAdapter
+    from clio.comms.adapters.discord import DiscordAdapter
 
     adapter = DiscordAdapter(DISCORD_TOKEN, ["1234"])
     assert adapter.parse({"author": {"id": "1234", "bot": True}, "channel_id": "9",
@@ -1855,7 +1855,7 @@ def test_discord_parse_drops_its_own_application_id():
     set, which matters because an empty `content` on every event is also what a
     missing `MESSAGE_CONTENT` intent looks like.
     """
-    from ethos.comms.adapters.discord import DiscordAdapter
+    from clio.comms.adapters.discord import DiscordAdapter
 
     adapter = DiscordAdapter(DISCORD_TOKEN, ["1234"], application_id="1234")
     assert adapter.parse({"author": {"id": "1234"}, "channel_id": "9", "content": "mine"}) is None
@@ -1877,7 +1877,7 @@ def test_discord_parse_is_total(message):
     another one, and the next unknown shape would do the same: a message type
     added by the server would cost the channel its listener entirely.
     """
-    from ethos.comms.adapters.discord import DiscordAdapter
+    from clio.comms.adapters.discord import DiscordAdapter
 
     assert DiscordAdapter(DISCORD_TOKEN, ["1"]).parse(message) is None
 
@@ -1888,7 +1888,7 @@ def test_a_heartbeat_interval_is_believed_within_limits():
     The floor is far below Discord's own maximum, so it costs nothing; the cap is
     what saves the process from being zombied by the server for looking idle.
     """
-    from ethos.comms.adapters.discord import _heartbeat_interval
+    from clio.comms.adapters.discord import _heartbeat_interval
 
     assert _heartbeat_interval({"heartbeat_interval": 41_250}) == 41.25
     assert _heartbeat_interval({"heartbeat_interval": 0}) == 41.25
@@ -1904,7 +1904,7 @@ def test_a_long_message_is_split_at_a_line_and_never_cut_mid_word():
     the transcript as though it had been sent whole, and the missing half is only
     known to the process that dropped it.
     """
-    from ethos.comms.adapters.discord import _split_message
+    from clio.comms.adapters.discord import _split_message
 
     assert _split_message("short") == ["short"]
     assert _split_message("") == []
@@ -1926,7 +1926,7 @@ async def test_a_hello_identifies_and_a_dispatch_becomes_a_message():
     Every frame the adapter reacts to is driven here — HELLO, then a dispatch —
     so what is under test is the state machine and not a copy of its rules.
     """
-    from ethos.comms.adapters.discord import DiscordAdapter
+    from clio.comms.adapters.discord import DiscordAdapter
 
     received: list[Message] = []
 
@@ -1964,7 +1964,7 @@ def test_discord_prefers_the_display_name_over_the_handle():
     chose to be called. Reading them the other way round gives every sender a
     handle where a name was sitting in the same payload.
     """
-    from ethos.comms.adapters.discord import DiscordAdapter, _author_name
+    from clio.comms.adapters.discord import DiscordAdapter, _author_name
 
     adapter = DiscordAdapter(DISCORD_TOKEN, ["1234"])
     assert adapter.parse({
@@ -1986,7 +1986,7 @@ def test_discord_can_be_told_to_answer_anybody():
     into — and reading an empty `allowed_ids` as permission to do that would make
     every Discord setup that has not been filled in yet do exactly that.
     """
-    from ethos.comms.adapters.discord import DiscordAdapter
+    from clio.comms.adapters.discord import DiscordAdapter
 
     assert DiscordAdapter(DISCORD_TOKEN, []).accepts("9", "C1") is False
     assert DiscordAdapter(DISCORD_TOKEN, [], accept_from_anyone=True).accepts("9", "C1") is True
@@ -1994,7 +1994,7 @@ def test_discord_can_be_told_to_answer_anybody():
 
 
 async def test_an_unlisted_author_is_not_recorded_at_all():
-    from ethos.comms.adapters.discord import DiscordAdapter
+    from clio.comms.adapters.discord import DiscordAdapter
 
     received: list[Message] = []
 
@@ -2014,7 +2014,7 @@ async def test_an_unreadable_frame_does_not_end_the_connection():
     was ignored, must not cost the channel its listener: raising here would close
     the socket, which is the reconnect loop's job and not this function's.
     """
-    from ethos.comms.adapters.discord import DiscordAdapter
+    from clio.comms.adapters.discord import DiscordAdapter
 
     received: list[Message] = []
 
@@ -2042,7 +2042,7 @@ async def test_a_gateway_that_asks_to_reconnect_is_a_reconnect_not_a_failure():
     Treated as a failure they would each print a traceback on a routine event, and
     a log that prints a traceback for normal operation is a log nobody reads.
     """
-    from ethos.comms.adapters.discord import DiscordAdapter, _Reconnect
+    from clio.comms.adapters.discord import DiscordAdapter, _Reconnect
 
     socket = FakeSocket([{"op": 7, "d": None}])
     adapter = DiscordAdapter(DISCORD_TOKEN, ["1234"], connect=lambda _u: _ready(socket))
@@ -2059,7 +2059,7 @@ async def test_starting_to_send_does_not_open_the_gateway():
     invalidates the first session, and the channel then hears nothing while every
     log line says it connected.
     """
-    from ethos.comms.adapters.discord import DiscordAdapter
+    from clio.comms.adapters.discord import DiscordAdapter
 
     http = FakeHttp(FakeResponse(200, {"id": "42"}))
     adapter = DiscordAdapter(DISCORD_TOKEN, ["1234"], http=http, connect=_never_connect)
@@ -2074,7 +2074,7 @@ async def test_starting_to_send_does_not_open_the_gateway():
 
 
 async def test_a_discord_send_posts_to_the_channel_with_the_bot_prefix():
-    from ethos.comms.adapters.discord import DiscordAdapter
+    from clio.comms.adapters.discord import DiscordAdapter
 
     http = FakeHttp(FakeResponse(200, {"id": "6000"}))
     adapter = DiscordAdapter(DISCORD_TOKEN, [], http=http)
@@ -2090,7 +2090,7 @@ async def test_a_discord_send_posts_to_the_channel_with_the_bot_prefix():
 
 
 async def test_a_discord_refusal_is_reported_as_a_refusal():
-    from ethos.comms.adapters.discord import DiscordAdapter
+    from clio.comms.adapters.discord import DiscordAdapter
 
     http = FakeHttp(FakeResponse(403, {"message": "Missing Access", "code": 50001}))
     adapter = DiscordAdapter(DISCORD_TOKEN, [], http=http)
@@ -2101,7 +2101,7 @@ async def test_a_discord_refusal_is_reported_as_a_refusal():
 
 
 async def test_a_discord_send_refuses_a_person_id_from_another_channel():
-    from ethos.comms.adapters.discord import DiscordAdapter
+    from clio.comms.adapters.discord import DiscordAdapter
 
     http = FakeHttp(FakeResponse(200, {"id": "1"}))
     adapter = DiscordAdapter(DISCORD_TOKEN, [], http=http)
@@ -2117,7 +2117,7 @@ async def _run_session(adapter: Any) -> None:
     is a reconnect — so the tests below assert on what happened *before* the end
     rather than pretending the session completed.
     """
-    from ethos.comms.adapters.discord import _Reconnect
+    from clio.comms.adapters.discord import _Reconnect
 
     try:
         await adapter._session()
@@ -2179,7 +2179,7 @@ async def test_a_route_may_use_a_signature_scheme_that_is_not_metas(monkeypatch:
 
 def _slack_style_config(monkeypatch: pytest.MonkeyPatch, **overrides: Any) -> Any:
     """The shipped config with one webhook channel on and no credentials needed."""
-    from ethos.config import DiscordChannelConfig, SlackChannelConfig, load_config
+    from clio.config import DiscordChannelConfig, SlackChannelConfig, load_config
 
     config = load_config("config")
     config.channels.cli.enabled = False
@@ -2202,7 +2202,7 @@ async def test_slack_is_built_only_when_the_webhook_can_receive_it(monkeypatch: 
     Skipped loudly rather than quietly, because a channel that is on in the config
     and absent from the process is a channel an operator will believe is working.
     """
-    from ethos.comms.host import CommsHost
+    from clio.comms.host import CommsHost
 
     config = _slack_style_config(monkeypatch)
     config.channels.webhook.enabled = False
@@ -2218,7 +2218,7 @@ async def test_slack_is_skipped_when_a_credential_is_missing(monkeypatch: pytest
     That looks exactly like a channel nobody is speaking to, so the absence is
     reported rather than left to be discovered one silent delivery at a time.
     """
-    from ethos.comms.host import CommsHost
+    from clio.comms.host import CommsHost
 
     config = _slack_style_config(monkeypatch)
     monkeypatch.delenv("SLACK_SIGNING_SECRET", raising=False)
@@ -2234,7 +2234,7 @@ async def test_two_push_channels_share_one_receiver(monkeypatch: pytest.MonkeyPa
     the loser is logged as a webhook that failed to start — which is the whole of
     what an operator sees when the channel stops receiving.
     """
-    from ethos.comms.host import CommsHost
+    from clio.comms.host import CommsHost
 
     config = _slack_style_config(monkeypatch, enabled=True)
     config.channels.whatsapp.enabled = True
@@ -2251,8 +2251,8 @@ async def test_two_push_channels_share_one_receiver(monkeypatch: pytest.MonkeyPa
 
 
 async def test_discord_is_skipped_without_a_token(monkeypatch: pytest.MonkeyPatch):
-    from ethos.comms.host import CommsHost
-    from ethos.config import DiscordChannelConfig
+    from clio.comms.host import CommsHost
+    from clio.config import DiscordChannelConfig
 
     config = _slack_style_config(monkeypatch)
     config.channels.discord = DiscordChannelConfig(enabled=True, token_env="ABSENT_DISCORD_TOKEN")
@@ -2264,8 +2264,8 @@ async def test_discord_is_skipped_without_a_token(monkeypatch: pytest.MonkeyPatc
 
 async def test_discord_needs_no_webhook_because_it_has_no_door(monkeypatch: pytest.MonkeyPatch):
     """The one channel here with no callback URL, and so no reason to need one."""
-    from ethos.comms.host import CommsHost
-    from ethos.config import DiscordChannelConfig
+    from clio.comms.host import CommsHost
+    from clio.config import DiscordChannelConfig
 
     config = _slack_style_config(monkeypatch)
     config.channels.webhook.enabled = False
@@ -2306,7 +2306,7 @@ def test_the_default_classification_treats_a_socket_as_transient_and_a_config_as
     question the host can answer without knowing anything about the channel — and
     `OSError` is the shape that answer arrives in for every HTTP adapter here.
     """
-    from ethos.comms.adapters.base import ChannelAdapter
+    from clio.comms.adapters.base import ChannelAdapter
 
     assert ChannelAdapter.is_transient(OSError(111, "Connection refused")) is True
     assert ChannelAdapter.is_transient(TimeoutError()) is True

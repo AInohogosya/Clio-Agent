@@ -5,16 +5,16 @@ from typing import Any
 
 import pytest
 
-from ethos.schemas.tools import ToolErrorCode
-from ethos.toolhost.browser import (
+from clio.schemas.tools import ToolErrorCode
+from clio.toolhost.browser import (
     BrowserPool,
     BrowserSession,
     NoPageError,
     SelectorTimeoutError,
     VisitTimeoutError,
 )
-from ethos.toolhost.server import ToolContext
-from ethos.toolhost.tools.browser_tools import (
+from clio.toolhost.server import ToolContext
+from clio.toolhost.tools.browser_tools import (
     BrowserClickTool,
     BrowserExtractTool,
     BrowserScreenshotTool,

@@ -4,7 +4,7 @@ Revision ID: 0006
 Revises: 0005
 Create Date: 2026-11-08
 
-Adds the schema behind Clio Agent 3.2 (`ethos`): Recursive Intention Graphs,
+Adds the schema behind Clio Agent 3.2 (`clio`): Recursive Intention Graphs,
 EV-proportional budgets, federated resident principals, scoped institutional
 memory, and transactional workspace leases. All changes are additive and
 reversible: downgrade() drops exactly what upgrade() added.

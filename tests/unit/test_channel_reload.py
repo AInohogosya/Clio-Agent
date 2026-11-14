@@ -17,8 +17,8 @@ from typing import Any
 
 import pytest
 
-from ethos.comms.adapters.base import ChannelAdapter
-from ethos.comms.host import CommsHost, _Plan
+from clio.comms.adapters.base import ChannelAdapter
+from clio.comms.host import CommsHost, _Plan
 
 REPO_CONFIG = Path(__file__).resolve().parents[2] / "config"
 
@@ -78,7 +78,7 @@ class PortTaken(FakeAdapter):
 
 def _telegram_only(monkeypatch: pytest.MonkeyPatch, **telegram: Any) -> Any:
     """The shipped config with one polling door and nothing else that listens."""
-    from ethos.config import load_config
+    from clio.config import load_config
 
     monkeypatch.chdir(REPO_CONFIG.parent)
     config = load_config(str(REPO_CONFIG))
@@ -231,10 +231,10 @@ async def test_a_poll_that_finds_nothing_different_does_not_touch_a_running_door
 
 
 async def test_the_answering_process_opens_no_door_when_it_reloads(monkeypatch: pytest.MonkeyPatch):
-    """`ethos-core` follows the configuration without ever taking a door.
+    """`clio-core` follows the configuration without ever taking a door.
 
     A reload is the one moment this process is handed a fresh, complete set of
-    channels and could plausibly open them. It must not, because `ethos-comms` is
+    channels and could plausibly open them. It must not, because `clio-comms` is
     already holding every one, and two pollers on one bot is a conflict rather than
     redundancy.
     """
@@ -362,14 +362,14 @@ async def test_a_change_to_the_file_is_picked_up_with_nothing_told_about_it(
     """
     home = tmp_path / "home"
     home.mkdir()
-    monkeypatch.setenv("ETHOS_HOME", str(home))
-    monkeypatch.setenv("ETHOS_CONFIG_DIR", str(REPO_CONFIG))
+    monkeypatch.setenv("CLIO_HOME", str(home))
+    monkeypatch.setenv("CLIO_CONFIG_DIR", str(REPO_CONFIG))
     monkeypatch.setenv("TEST_TG_TOKEN", "test-token")
     monkeypatch.chdir(tmp_path)
 
     recorder = Recorder()
     monkeypatch.setattr(
-        "ethos.comms.host.TelegramAdapter",
+        "clio.comms.host.TelegramAdapter",
         lambda token, **kwargs: FakeAdapter(recorder, "telegram", token=token, **kwargs),
     )
 
@@ -421,7 +421,7 @@ async def test_a_file_that_will_not_parse_leaves_every_door_exactly_as_it_was(
     def _unreadable() -> Any:
         raise ValueError("channels.yaml: mapping values are not allowed here")
 
-    monkeypatch.setattr("ethos.comms.host.load_channels_config", _unreadable)
+    monkeypatch.setattr("clio.comms.host.load_channels_config", _unreadable)
     watcher = asyncio.create_task(host.watch_channels(interval=0.01))
     try:
         await asyncio.sleep(0.1)
@@ -473,7 +473,7 @@ async def _lingering_poller() -> None:
 
 
 def _telegram_adapter() -> Any:
-    from ethos.comms.adapters.telegram import TelegramAdapter
+    from clio.comms.adapters.telegram import TelegramAdapter
 
     adapter = TelegramAdapter("t", accept_from_anyone=True)
     adapter._polling = True
@@ -545,7 +545,7 @@ async def test_a_poll_reads_the_configuration_only_when_the_files_have_moved(mon
     and a tax, and it is observable: the read is what decides whether anything
     is reconciled at all.
     """
-    from ethos.comms import host as host_module
+    from clio.comms import host as host_module
 
     reads = 0
     real_load = host_module.load_channels_config
@@ -586,7 +586,7 @@ async def test_the_configuration_is_read_again_periodically_even_when_the_files_
     as long as the process lives, which is the one failure this whole mechanism
     exists to remove — traded for a small saving on a poll that changes nothing.
     """
-    from ethos.comms import host as host_module
+    from clio.comms import host as host_module
 
     monkeypatch.setattr(host_module, "RESCAN_EVERY_POLLS", 3)
     reads = 0
@@ -627,14 +627,14 @@ async def test_a_save_that_lands_before_the_watchers_first_poll_is_not_missed(
     """
     home = tmp_path / "home"
     home.mkdir()
-    monkeypatch.setenv("ETHOS_HOME", str(home))
-    monkeypatch.setenv("ETHOS_CONFIG_DIR", str(REPO_CONFIG))
+    monkeypatch.setenv("CLIO_HOME", str(home))
+    monkeypatch.setenv("CLIO_CONFIG_DIR", str(REPO_CONFIG))
     monkeypatch.setenv("TEST_TG_TOKEN", "test-token")
     monkeypatch.chdir(tmp_path)
 
     recorder = Recorder()
     monkeypatch.setattr(
-        "ethos.comms.host.TelegramAdapter",
+        "clio.comms.host.TelegramAdapter",
         lambda token, **kwargs: FakeAdapter(recorder, "telegram", token=token, **kwargs),
     )
     host = _host(_telegram_only(monkeypatch, enabled=False), recorder)
@@ -665,11 +665,13 @@ def test_a_reload_does_not_reach_out_to_the_environment_twice(monkeypatch: pytes
     every poll look like a change and rebuild the doors twice a second — a poller
     restarted in a loop, which is a channel that never gets to answer anything.
     """
-    from ethos.config import load_config
+    from clio.config import load_config
 
     monkeypatch.chdir(REPO_CONFIG.parent)
     config = load_config(str(REPO_CONFIG))
-    config.channels.cli.enabled = False
+    # One door, deliberately: the CLI adapter is credential-free, so this test
+    # does not depend on which channels a deployment happens to hold tokens for.
+    config.channels.cli.enabled = True
     config.channels.web.enabled = False
 
     async def on_inbound(_message: Any) -> None:
@@ -679,13 +681,17 @@ def test_a_reload_does_not_reach_out_to_the_environment_twice(monkeypatch: pytes
     first = host.plan(config.channels)
     second = host.plan(config.channels)
     assert first.fingerprint() == second.fingerprint()
-    assert first.adapters["telegram" if "telegram" in first.adapters else "cli"] is not \
-        second.adapters["telegram" if "telegram" in second.adapters else "cli"], "fresh objects, same answer"
+    # Any planned door answers the question — which one exists depends on the
+    # deployment's channel configuration, and the point here is that the same
+    # configuration plans fresh adapter objects twice.
+    assert first.adapters, "the configuration plans at least one door"
+    name = next(iter(first.adapters))
+    assert first.adapters[name] is not second.adapters[name], "fresh objects, same answer"
 
 
 def test_the_watcher_interval_is_short_enough_to_be_invisible_and_long_enough_to_be_free():
     """The number is a judgement, so it is asserted rather than left to drift."""
-    from ethos.comms.host import WATCH_INTERVAL_S
+    from clio.comms.host import WATCH_INTERVAL_S
 
     assert 0.5 <= WATCH_INTERVAL_S <= 5.0
 
@@ -785,7 +791,7 @@ async def test_a_refusal_is_retried_far_more_slowly_than_a_network_blip(monkeypa
     write a traceback every few seconds for as long as the operator was asleep. A
     dropped connection is the same fact twice in a row, so it gets the fast end.
     """
-    from ethos.comms.host import DOOR_RETRY_BASE_S, DOOR_RETRY_PERMANENT_S
+    from clio.comms.host import DOOR_RETRY_BASE_S, DOOR_RETRY_PERMANENT_S
 
     recorder = Recorder()
     flaky = FlakyAdapter(recorder, "telegram", failures=99,
@@ -839,7 +845,7 @@ async def test_a_shut_door_is_left_alone_until_its_own_clock_runs_out(monkeypatc
     Each failed attempt has to push the next one further out, or a door that is
     down is retried on the poll's cadence forever and the curve is decorative.
     """
-    from ethos.comms.host import DOOR_RETRY_BASE_S, DOOR_RETRY_MAX_S
+    from clio.comms.host import DOOR_RETRY_BASE_S, DOOR_RETRY_MAX_S
 
     recorder = Recorder()
     adapter = FlakyAdapter(recorder, "telegram", failures=99)
@@ -900,8 +906,8 @@ async def test_a_broken_file_that_holds_no_door_does_not_hold_the_doors_shut(
     """
     home = tmp_path / "home"
     home.mkdir()
-    monkeypatch.setenv("ETHOS_HOME", str(home))
-    monkeypatch.setenv("ETHOS_CONFIG_DIR", str(REPO_CONFIG))
+    monkeypatch.setenv("CLIO_HOME", str(home))
+    monkeypatch.setenv("CLIO_CONFIG_DIR", str(REPO_CONFIG))
     monkeypatch.setenv("TEST_TG_TOKEN", "test-token")
     monkeypatch.chdir(tmp_path)
 
@@ -914,11 +920,11 @@ async def test_a_broken_file_that_holds_no_door_does_not_hold_the_doors_shut(
     for src in REPO_CONFIG.glob("*.yaml"):
         (config_copy / src.name).write_bytes(src.read_bytes())
     (config_copy / "models.yaml").write_text("tiers: [unclosed\n", encoding="utf-8")
-    monkeypatch.setenv("ETHOS_CONFIG_DIR", str(config_copy))
+    monkeypatch.setenv("CLIO_CONFIG_DIR", str(config_copy))
 
     recorder = Recorder()
     monkeypatch.setattr(
-        "ethos.comms.host.TelegramAdapter",
+        "clio.comms.host.TelegramAdapter",
         lambda token, **kwargs: FakeAdapter(recorder, "telegram", token=token, **kwargs),
     )
     host = _host(_telegram_only(monkeypatch, enabled=False), recorder)

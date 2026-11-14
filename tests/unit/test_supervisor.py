@@ -8,14 +8,14 @@ import time
 from pathlib import Path
 from typing import Any
 
-from ethos.core.status import (
+from clio.core.status import (
     AGENT_ABSENT_S,
     PRESENCE_EVENT,
     agent_liveness,
     describe_age,
     interface_port,
 )
-from ethos.core.supervisor import ProcessSpec, Supervisor, node_tool
+from clio.core.supervisor import ProcessSpec, Supervisor, node_tool
 from tests.conftest import make_config
 
 """
@@ -76,8 +76,8 @@ def test_a_child_that_cannot_be_spawned_does_not_end_the_supervisor(
     supervisor's own absence, and it must not be reported as one.
     """
     supervisor = _supervisor(tmp_path)
-    good = ProcessSpec("ethos-core", ["/bin/echo", "core"])
-    missing = ProcessSpec("ethos-web", ["/nonexistent/node", "web/server/index.mjs"], optional=True)
+    good = ProcessSpec("clio-core", ["/bin/echo", "core"])
+    missing = ProcessSpec("clio-web", ["/nonexistent/node", "web/server/index.mjs"], optional=True)
     supervisor.specs = [missing, good]
 
     started: list[str] = []
@@ -107,7 +107,7 @@ def test_a_child_that_never_started_is_restarted_like_one_that_died(
     """
     supervisor = _supervisor(tmp_path)
     supervisor.BACKOFF_S = 0.0
-    spec = ProcessSpec("ethos-gateway", ["/nonexistent/gateway", "gateway"])
+    spec = ProcessSpec("clio-gateway", ["/nonexistent/gateway", "gateway"])
     supervisor.specs = [spec]
 
     attempts: list[int] = []
@@ -131,13 +131,13 @@ def test_a_required_child_is_never_given_up_on(tmp_path: Any, monkeypatch: Any) 
     life of the supervisor: the person whose missing API key caused the loop
     pasted the key into the settings page and the agent stayed dead, because
     the one process that watches for children had stopped watching for
-    this one. In the field the operator's stop is `ethos stop` -- never a
+    this one. In the field the operator's stop is `clio stop` -- never a
     crash count -- so a required child is asked again on every sweep, on a
     backoff that resets after a minute of stable life.
     """
     supervisor = _supervisor(tmp_path)
     supervisor.BACKOFF_S = 0.0
-    spec = ProcessSpec("ethos-gateway", ["/nonexistent/gateway", "gateway"])
+    spec = ProcessSpec("clio-gateway", ["/nonexistent/gateway", "gateway"])
     supervisor.specs = [spec]
 
     attempts: list[int] = []
@@ -164,12 +164,12 @@ def test_a_silent_core_is_terminated_as_wedged(tmp_path: Any, monkeypatch: Any) 
     supervisor reads it only for the core, only when it exists, and never
     kills anything else for being quiet.
     """
-    import ethos.core.supervisor as supervisor_module
+    import clio.core.supervisor as supervisor_module
 
     supervisor = _supervisor(tmp_path)
     monkeypatch.setattr(supervisor_module, "CORE_HEARTBEAT_STALE_S", 60.0)
-    core = ProcessSpec("ethos-core", ["x"])
-    other = ProcessSpec("ethos-gateway", ["x"])
+    core = ProcessSpec("clio-core", ["x"])
+    other = ProcessSpec("clio-gateway", ["x"])
     core_proc, other_proc = _FakeProc(pid=1), _FakeProc(pid=2)
     core.proc = core_proc
     other.proc = other_proc
@@ -213,7 +213,7 @@ def test_a_freshly_started_core_is_not_judged_by_the_heartbeat_of_the_dead_one(
     moves the baseline, so the newest core is judged from the moment it was
     asked to run, not from the moment its predecessor went quiet.
     """
-    import ethos.core.supervisor as supervisor_module
+    import clio.core.supervisor as supervisor_module
 
     supervisor = _supervisor(tmp_path)
     monkeypatch.setattr(supervisor_module, "CORE_HEARTBEAT_STALE_S", 60.0)
@@ -232,7 +232,7 @@ def test_a_freshly_started_core_is_not_judged_by_the_heartbeat_of_the_dead_one(
         return _FakeProc()
 
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
-    core = ProcessSpec("ethos-core", ["core"])
+    core = ProcessSpec("clio-core", ["core"])
     supervisor.specs = [core]
 
     assert supervisor._open(core) is True
@@ -263,7 +263,7 @@ def test_an_optional_child_that_finds_the_job_done_is_not_a_failure(
     failures worth reading are.
     """
     supervisor = _supervisor(tmp_path)
-    spec = ProcessSpec("ethos-web", ["node", "index.mjs"], optional=True)
+    spec = ProcessSpec("clio-web", ["node", "index.mjs"], optional=True)
     supervisor._retire(spec, 0)
     assert spec.retired is True, "it must not be started again — the port is held"
     assert spec.proc is None
@@ -273,18 +273,18 @@ def test_an_optional_child_that_finds_the_job_done_is_not_a_failure(
 
 
 def test_a_signal_ends_the_supervisor_rather_than_only_its_children(tmp_path: Any) -> None:
-    """`ethos stop` has to stop something.
+    """`clio stop` has to stop something.
 
     The signal used to start a shutdown task and be done with it, while the main
     loop carried on sleeping and polling over children that were already gone —
     a supervisor that would not exit, so a launcher waiting for the pid to
-    disappear waited for ever, and a second `ethos up` found a live supervisor
+    disappear waited for ever, and a second `clio up` found a live supervisor
     and refused to start the agent. The request for a stop is a flag; the loop
     that owns the children is what acts on it.
     """
     supervisor = _supervisor(tmp_path)
     alive = _FakeProc(pid=7)
-    supervisor.specs = [ProcessSpec("ethos-core", ["x"], optional=False)]
+    supervisor.specs = [ProcessSpec("clio-core", ["x"], optional=False)]
     supervisor.specs[0].proc = alive
 
     supervisor._request_stop()
@@ -324,7 +324,7 @@ def test_a_supervisor_only_removes_the_pid_file_that_is_its_own(tmp_path: Any) -
     """The pid file is a shared, unowned piece of the run directory.
 
     Anything can be writing it — another launcher's supervisor, an operator's own
-    script — and deleting a live pid out from under it is how a second `ethos up`
+    script — and deleting a live pid out from under it is how a second `clio up`
     comes to believe the agent is not running while it very much is.
     """
     supervisor = _supervisor(tmp_path)
@@ -345,7 +345,7 @@ def test_a_supervisor_only_removes_the_pid_file_that_is_its_own(tmp_path: Any) -
 
 def _off_path(monkeypatch: Any) -> None:
     """Pretends `PATH` has nothing on it, as it is for every non-interactive start."""
-    monkeypatch.setattr("ethos.core.supervisor.shutil.which", lambda name, **kw: None)
+    monkeypatch.setattr("clio.core.supervisor.shutil.which", lambda name, **kw: None)
 
 
 def _installed(directory: Path, tool: str) -> Path:
@@ -435,7 +435,7 @@ def test_a_recorded_stop_is_not_overruled_by_a_recent_sign_of_life(
 ) -> None:
     """The blind spot recency has, and the case it produced here.
 
-    `ethos stop` asks the agent to end and then, ten seconds later, kills
+    `clio stop` asks the agent to end and then, ten seconds later, kills
     whatever has not. The agent notices a stop at the top of its next pass, which
     may be a minute away, so the one moment it knows for certain that it is
     ending is the moment its own record of having ended went unwritten. For the
@@ -496,7 +496,7 @@ def test_an_unreachable_database_is_reported_not_raised(tmp_path: Any, monkeypat
     def refuse(*args: Any, **kwargs: Any) -> None:
         raise RuntimeError("no answer from the database at 127.0.0.1:1/nothing")
 
-    monkeypatch.setattr("ethos.core.status._observation", refuse)
+    monkeypatch.setattr("clio.core.status._observation", refuse)
     alive, _age, detail = agent_liveness(config)
     assert alive is False
     assert "no answer from the database" in detail
@@ -506,11 +506,11 @@ def test_the_bridge_port_is_the_one_the_bridge_uses(tmp_path: Any, monkeypatch: 
     """A status line about the wrong port is the most useless thing it could print."""
     config = make_config(tmp_path)
     config.channels.web.http_port = 8720
-    monkeypatch.delenv("ETHOS_WEB_PORT", raising=False)
+    monkeypatch.delenv("CLIO_WEB_PORT", raising=False)
     assert interface_port(config) == 8720
-    monkeypatch.setenv("ETHOS_WEB_PORT", "9999")
+    monkeypatch.setenv("CLIO_WEB_PORT", "9999")
     assert interface_port(config) == 9999
-    monkeypatch.setenv("ETHOS_WEB_PORT", "nonsense")
+    monkeypatch.setenv("CLIO_WEB_PORT", "nonsense")
     assert interface_port(config) == 8720, "a port that is not a port falls back, it does not fail"
 
 
@@ -531,7 +531,7 @@ def test_the_presence_event_is_the_one_the_interface_listens_to() -> None:
     not running" arrives from a surface while the agent is answering somebody
     else's question.
     """
-    from ethos.schemas.events import EventKind
+    from clio.schemas.events import EventKind
 
     assert PRESENCE_EVENT == EventKind.PRESENCE_UPDATE
 
@@ -548,7 +548,7 @@ def _presence(monkeypatch: Any, age_s: float) -> None:
     async def fake_observation(_dsn: str) -> tuple[datetime, datetime]:
         return seen, now
 
-    monkeypatch.setattr("ethos.core.status._observation", fake_observation)
+    monkeypatch.setattr("clio.core.status._observation", fake_observation)
 
 
 def _no_stop_record(config: Any) -> None:
@@ -580,7 +580,7 @@ def test_the_run_loop_ends_when_a_stop_is_asked_for(
     """`run()` has to come back.
 
     A launcher waits for the supervisor's pid to disappear, and a second
-    `ethos up` believes a live supervisor means the agent is already up — so a
+    `clio up` believes a live supervisor means the agent is already up — so a
     loop that keeps polling over children that are already gone turns a stop into
     a hang and the next start into a refusal. The loop is run here for real, with
     one real child, and the request comes from the same place a signal does.
@@ -592,7 +592,7 @@ def test_the_run_loop_ends_when_a_stop_is_asked_for(
     supervisor = _supervisor(tmp_path)
     monkeypatch.setattr(Supervisor, "build_specs", lambda self: None)
     monkeypatch.setattr(Supervisor, "POLL_S", 0.05)
-    supervisor.specs = [ProcessSpec("ethos-sleeper", ["/bin/sleep", "30"])]
+    supervisor.specs = [ProcessSpec("clio-sleeper", ["/bin/sleep", "30"])]
 
     async def run() -> float:
         task = asyncio.create_task(supervisor.run())
@@ -615,14 +615,14 @@ SHORT_TIMEOUT_S = 5.0
 def test_shutdown_is_written_where_the_signal_is(tmp_path: Any, monkeypatch: Any) -> None:
     """The agent records its own ending before it can be killed for not.
 
-    `ethos-core` handles `SIGTERM` by setting the stop flag, and the life loop
+    `clio-core` handles `SIGTERM` by setting the stop flag, and the life loop
     writes `state: "stopped"` when it reaches its exit — a whole cycle later, at
     the earliest. Its supervisor gives children ten seconds and then kills them,
     so in the normal case the record was never written at all.
     """
     import json
 
-    from ethos.core.runner import _shutdown
+    from clio.core.runner import _shutdown
 
     written: list[dict[str, Any]] = []
 
@@ -686,7 +686,7 @@ def test_the_bridge_is_started_by_the_program_that_reads_its_package_json(
     """
     supervisor = _supervisor(tmp_path)
     supervisor.build_specs()
-    web = [spec for spec in supervisor.specs if spec.name == "ethos-web"]
+    web = [spec for spec in supervisor.specs if spec.name == "clio-web"]
     if not web:
         return  # web/node_modules is not installed here; nothing to assert
     argv = web[0].argv
@@ -699,7 +699,7 @@ def test_the_bridge_is_started_by_the_program_that_reads_its_package_json(
 # ---------------------------------------------------------------------------
 # Stopping the supervisor where a signal cannot.
 #
-# Windows has no SIGTERM that a detached process can receive, so `ethos stop`
+# Windows has no SIGTERM that a detached process can receive, so `clio stop`
 # there writes a request file and the supervisor's existing two-second poll loop
 # notices it. Every one of these is about the *file* being real, because the whole
 # design rests on the supervisor reacting to it rather than ignoring it — and the
@@ -726,9 +726,9 @@ def test_a_stop_request_is_written_where_the_supervisor_looks_for_it(tmp_path: A
 def test_a_stop_request_that_cannot_be_written_is_reported_not_raised(
     tmp_path: Any, monkeypatch: Any
 ) -> None:
-    """A refused ask must be a `False`, so `ethos stop` can say so.
+    """A refused ask must be a `False`, so `clio stop` can say so.
 
-    Raising here would escape `ethos stop` as a traceback about a permission bit,
+    Raising here would escape `clio stop` as a traceback about a permission bit,
     which is a much worse answer than "its run directory is not writable" — and it
     would be a *false* answer, because nothing was sent and the agent is still up.
     """
@@ -748,7 +748,7 @@ def test_a_stale_stop_request_does_not_stop_a_fresh_supervisor(tmp_path: Any) ->
 
     The leftover request is the hazard: without the `run()` sweep that clears it, a
     machine that hard-killed its agent once would start a new one that shut itself
-    down within two seconds, and `ethos up` would report it as running. That is a
+    down within two seconds, and `clio up` would report it as running. That is a
     false *start*, which is worse than a failure because nothing is broken enough
     to notice.
     """

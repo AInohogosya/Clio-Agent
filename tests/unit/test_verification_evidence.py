@@ -28,7 +28,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from ethos.gsl.verification import VerificationLadder
+from clio.gsl.verification import VerificationLadder
 from tests.conftest import ListAudit, ScriptedGateway, make_config
 
 
@@ -231,7 +231,7 @@ async def test_the_judge_is_shown_the_code_and_not_a_description_of_it(tmp_path:
         intention=_Intention(commissioned="owner"), criteria=[], artifact=artifact,
         cwd=tmp_path, changed_paths=[source],
     )
-    from ethos.gsl.verification import _artifact_text
+    from clio.gsl.verification import _artifact_text
 
     text = _artifact_text(artifact)
     assert "+NEW" in text and str(source) in text
@@ -239,7 +239,7 @@ async def test_the_judge_is_shown_the_code_and_not_a_description_of_it(tmp_path:
 
 def test_the_verifier_prompt_says_a_failing_test_is_a_failing_test() -> None:
     """The judge is told what the machine output means, in the judge's own prompt."""
-    from ethos.prompts.gsl import VERIFIER_PROMPT
+    from clio.prompts.gsl import VERIFIER_PROMPT
 
     # Prompts are wrapped for reading, so the assertion is about the sentences
     # rather than about the line breaks inside them.

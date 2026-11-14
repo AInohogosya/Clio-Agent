@@ -35,9 +35,9 @@ from typing import Any
 
 import pytest
 
-import ethos.toolhost.tools as tools_package
-from ethos.prompts.identity import build_tool_catalog_block
-from ethos.toolhost.server import Tool
+import clio.toolhost.tools as tools_package
+from clio.prompts.identity import build_tool_catalog_block
+from clio.toolhost.server import Tool
 
 
 def render(tools: list[dict[str, Any]]) -> str:
@@ -100,7 +100,7 @@ def registered_tools() -> list[dict[str, Any]]:
     """Every tool the toolhost registers, exactly as `Toolhost.catalog` would."""
     found: dict[str, dict[str, Any]] = {}
     for module in pkgutil.iter_modules(tools_package.__path__):
-        mod = importlib.import_module(f"ethos.toolhost.tools.{module.name}")
+        mod = importlib.import_module(f"clio.toolhost.tools.{module.name}")
         for _, obj in inspect.getmembers(mod, inspect.isclass):
             if issubclass(obj, Tool) and obj is not Tool and getattr(obj, "name", None) \
                     and hasattr(obj, "input_schema"):

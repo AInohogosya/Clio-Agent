@@ -1,23 +1,23 @@
 # The process model: seven processes, one event bus
 
 Clio Agent runs as a supervised constellation of processes that share one database
-and one event bus. Sources: `ethos/core/supervisor.py`, `bootstrap.py`, `runner.py`,
-`control.py`, `ethos/bus/event_bus.py`, `ethos/platform.py`, `config.py:62-75,207-211,1202-1243`.
+and one event bus. Sources: `clio/core/supervisor.py`, `bootstrap.py`, `runner.py`,
+`control.py`, `clio/bus/event_bus.py`, `clio/platform.py`, `config.py:62-75,207-211,1202-1243`.
 
 ## 1. The seven processes
 
-`Supervisor.build_specs()` (`ethos/core/supervisor.py:189-234`):
+`Supervisor.build_specs()` (`clio/core/supervisor.py:189-234`):
 
 | Process | Command | Optional | Why it is separate |
 |---|---|---|---|
-| `ethos-gateway` | `gateway` | no | model I/O and money accounting, isolated from the mind |
-| `ethos-toolhost` | `toolhost` | no | every side effect, behind the guardian |
-| `ethos-comms` | `comms` | no | all channel listening (exactly one long-poll per bot) |
-| `ethos-workers-{1,2}` | `worker` | count via `config.workers.count` (default 2) | delegated goal pursuit |
-| `ethos-core` | `core` **without** `--listen-channels` | no | the life loop; would double-poll channels otherwise (`__main__.py:195-201`) |
-| `ethos-web` | `node web/server/index.mjs` | **yes** (only if `web/node_modules` exists) | interface bridge |
+| `clio-gateway` | `gateway` | no | model I/O and money accounting, isolated from the mind |
+| `clio-toolhost` | `toolhost` | no | every side effect, behind the guardian |
+| `clio-comms` | `comms` | no | all channel listening (exactly one long-poll per bot) |
+| `clio-workers-{1,2}` | `worker` | count via `config.workers.count` (default 2) | delegated goal pursuit |
+| `clio-core` | `core` **without** `--listen-channels` | no | the life loop; would double-poll channels otherwise (`__main__.py:195-201`) |
+| `clio-web` | `node web/server/index.mjs` | **yes** (only if `web/node_modules` exists) | interface bridge |
 
-Ports/sockets: gateway UDS `/run/ethos/gateway.sock` or TCP `127.0.0.1:8700`
+Ports/sockets: gateway UDS `/run/clio/gateway.sock` or TCP `127.0.0.1:8700`
 (`config.py:207-211`); toolhost `run_dir/toolhost.sock` or `8701`; web HTTP `8720`,
 WS `8710` (`config.py:1202-1205`); webhook receiver `127.0.0.1:8730`
 (`:1233-1243`); CLI socket `~/.ethos/run/cli.sock` (`:1197-1199`); core metrics
@@ -27,7 +27,7 @@ WS `8710` (`config.py:1202-1205`); webhook receiver `127.0.0.1:8730`
 
 ## 2. The supervisor
 
-`ethos/core/supervisor.py:144-145,293-395`:
+`clio/core/supervisor.py:144-145,293-395`:
 
 - Poll every `2.0 s`; required children restart **forever** with
   `backoff_seconds(count, base=3.0, max=48.0)`; the optional bridge is never
@@ -38,32 +38,32 @@ WS `8710` (`config.py:1202-1205`); webhook receiver `127.0.0.1:8730`
   that hangs without raising still gets caught.
 - Shutdown: reverse-order `terminate()` → `10.0 s` grace (`SHUTDOWN_GRACE_S`) →
   `kill()`.
-- Windows: `ethos stop` writes a **stop-request file**
+- Windows: `clio stop` writes a **stop-request file**
   (`request_stop_by_file`), because CPython's `os.kill` on Windows is an
   unhandleable `TerminateProcess` for any signal other than CTRL_C/BREAK
-  (`ethos/__main__.py:954-998`, `platform.py:318`); escalation is
+  (`clio/__main__.py:954-998`, `platform.py:318`); escalation is
   `taskkill /T /F` after 20 s.
 
 ## 3. Bootstrap
 
-`bring_up()` (`ethos/core/bootstrap.py:428-553`), idempotent:
+`bring_up()` (`clio/core/bootstrap.py:428-553`), idempotent:
 
 ```
-ensure Postgres → ethos db upgrade → ethos db seed (non-fatal)
-  → install/build interface → ethos doctor
+ensure Postgres → clio db upgrade → clio db seed (non-fatal)
+  → install/build interface → clio doctor
   → detached supervisor (POSIX start_new_session)
-  → ethos await-agent → ethos status → open browser
+  → clio await-agent → clio status → open browser
 ```
 
 - Exit codes `0 / 1 / 130` (`bootstrap.py:73-78`); 130 = Ctrl-C, and the agent
   **keeps running** — it was detached on purpose (`start_new_session`).
-- **Liveness is a sign of life, not a pid**: `ethos status` and `ethos await-agent`
+- **Liveness is a sign of life, not a pid**: `clio status` and `clio await-agent`
   wait for the agent to have actually *answered for itself* within a window
-  (900 s, `ethos/core/status.py:29`, matching the interface's `AGENT_ABSENT_MS`) —
+  (900 s, `clio/core/status.py:29`, matching the interface's `AGENT_ABSENT_MS`) —
   "a supervisor whose children have all died is still a live process, and a bridge
   with the agent down serves the agent's last known state perfectly"
   (`__main__.py:587-593`).
-- `ethos doctor` probes reality before declaring health: pgvector presence, alembic
+- `clio doctor` probes reality before declaring health: pgvector presence, alembic
   head comparison, **real model requests** ("a present key is not a working one";
   only base-model failure fails the exit code — "the catalogue is a set of
   fallbacks"), channel door report, and a **filesystem reach probe**
@@ -72,7 +72,7 @@ ensure Postgres → ethos db upgrade → ethos db seed (non-fatal)
 
 ## 4. The event bus
 
-`EventBus` (`ethos/bus/event_bus.py:40-219`) — a transactional Postgres
+`EventBus` (`clio/bus/event_bus.py:40-219`) — a transactional Postgres
 LISTEN/NOTIFY bus [D-10]:
 
 - `publish()` INSERTs into `events` and issues `pg_notify` **in the same
@@ -83,7 +83,7 @@ LISTEN/NOTIFY bus [D-10]:
   (`:42`).
 - **`drain()`** claims unconsumed events via a `consumed_by` array (`:203-219`) —
   startup gap recovery: what happened while the agent was down is not lost.
-- Event kinds (`ethos/schemas/events.py:10-31`): `percept, msg.inbound,
+- Event kinds (`clio/schemas/events.py:10-31`): `percept, msg.inbound,
   msg.outbound, timer.fired, thread.request, thread.result, control.update,
   guardian.undo, thought.new, intention.update, presence.update, message.new,
   message.handled, action.update, budget.update, guardian.update, schedule.set,
@@ -95,7 +95,7 @@ LISTEN/NOTIFY bus [D-10]:
 
 ## 5. The control plane
 
-`ethos/core/control.py:427`:
+`clio/core/control.py:427`:
 
 - `CONTROL_KEY "lifecycle"`, recheck every `ROW_RECHECK_S = 30` s.
 - **Two-way sync between the env_entities row and on-disk state files** (`:343`) —
@@ -104,16 +104,16 @@ LISTEN/NOTIFY bus [D-10]:
 - `owns_row` semantics: the toolhost passes `owns_row=False` — "this process obeys
   the lifecycle…; without it every restart of *this* process would rewrite the row
   with its own `stopped: false`" (`__main__.py:290`).
-- `ethos safety set` writes a live override into the row (`__main__.py:668-699`);
+- `clio safety set` writes a live override into the row (`__main__.py:668-699`);
   SIGUSR1/SIGUSR2 deliver immediate rechecks (`control.py:422`).
 
 ## 6. Platform abstraction
 
-`ethos/platform.py:561` exists because capability differences between OSes split
+`clio/platform.py:561` exists because capability differences between OSes split
 into two kinds (`:1-35`):
 
 1. **Absent capabilities** (pty, Unix sockets, X11) — asked and **reported**
-   (`available_capabilities()`, `:497-546`; `ethos doctor` prints name + reason).
+   (`available_capabilities()`, `:497-546`; `clio doctor` prints name + reason).
    "Nothing is silently no-op'd" (`:30`).
 2. **Silently different conventions** — answered here, once:
    - `process_is_alive` (`:251-297`): on Windows `os.kill(pid, 0)` is a *kill*, not
@@ -155,15 +155,15 @@ The seven-process split encodes separable concerns with different failure modes:
 ## Part II — Communications: doors, not decisions
 
 Channels are modeled as **doors**: a door being open means the agent *can hear*
-through it; speaking is a separate capability. Sources: `ethos/comms/host.py`,
-`adapters/*`, `webhook.py`, `jwt.py`, `ethos/comms/adapters/base.py:93-216`.
+through it; speaking is a separate capability. Sources: `clio/comms/host.py`,
+`adapters/*`, `webhook.py`, `jwt.py`, `clio/comms/adapters/base.py:93-216`.
 
 ## 1. The adapter contract
 
 `ChannelAdapter` (`adapters/base.py:93-216`):
 
 - **`start = can speak, listen = can hear`** [P7] — the two capabilities are separate
-  flags on every door. `ethos core` starts **send-only** (the comms process owns
+  flags on every door. `clio core` starts **send-only** (the comms process owns
   listening), which is why a send can exist without a poller and vice versa.
 - **Empty allowlist admits nobody.** `accept_from_anyone` is a *separate* switch
   (`base.py:139-157`) — the failure of an allowlist can never be silently papered
@@ -196,7 +196,7 @@ webhook port**, distinguished by path.
 
 ## 3. Webhook security
 
-`ethos/comms/webhook.py:407` — the order of operations is the security:
+`clio/comms/webhook.py:407` — the order of operations is the security:
 
 1. **Auth before parse**: signature (HMAC over the **raw** body,
    `meta_signature = sha256`) is verified before any body decoding (`:39,64,83,112`).
@@ -212,7 +212,7 @@ webhook port**, distinguished by path.
 
 ## 4. JWT verification
 
-`ethos/comms/jwt.py:564` (Teams, GoogleChat):
+`clio/comms/jwt.py:564` (Teams, GoogleChat):
 
 - Algorithm **pinned to `RS256`** (`:65`) — the `alg` header is never trusted.
 - Parse order: **shape → signature → audience → time → identity** (`:370`).
@@ -229,7 +229,7 @@ webhook port**, distinguished by path.
   config files every 2 s (`WATCH_INTERVAL_S`), a full rescan every 8 polls
   (`RESCAN_EVERY_POLLS`), with inode-aware stamping (`:92`). "A token pasted into a
   settings screen is a token this process is holding a poller for within a couple of
-  seconds" (`ethos/__main__.py:402-405`).
+  seconds" (`clio/__main__.py:402-405`).
 - **`plan()`** (`:264`): builds the desired door set (`_Plan`, fingerprinted by
   sha256 `:158`), resolving credentials exactly once.
 - **Reconciliation is close-before-open** (`:763,766`) — a changed door is closed,
@@ -255,18 +255,18 @@ The comms layer encodes three positions:
    configuration state in which "unset" means "everyone."
 3. **Honest failure.** No-RESUME message loss on Discord, no-expiry replay on LINE,
    and platform impossibilities are **documented in the adapter code** rather than
-   papered over — the same discipline as `ethos doctor`'s filesystem-reach report:
+   papered over — the same discipline as `clio doctor`'s filesystem-reach report:
    report the capability as it is, name the reason when it is absent
-   (`ethos/platform.py:1-35`).
+   (`clio/platform.py:1-35`).
 ## Part III — Observability: metrics, audit, logs
 
 The agent is a long-running resident, so its observability is designed for
-*forensics over time*, not dashboards alone. Sources: `ethos/observability/`.
+*forensics over time*, not dashboards alone. Sources: `clio/observability/`.
 
 ## 1. Metrics
 
-`ethos/observability/metrics.py:196` (Prometheus, core on port **9710**,
-`ethos/core/runner.py:325`; `start_metrics_server` never raises):
+`clio/observability/metrics.py:196` (Prometheus, core on port **9710**,
+`clio/core/runner.py:325`; `start_metrics_server` never raises):
 
 - **`MODEL_CALLS`** labelled by `purpose` — the plan-vs-step distinction
   (`:9-25`) exists because "one number" for model calls hides whether spend went to
@@ -283,20 +283,20 @@ The agent is a long-running resident, so its observability is designed for
 
 ## 2. The audit chain
 
-`ethos/observability/audit.py:202`:
+`clio/observability/audit.py:202`:
 
 - Hash-chained entries [D-33]: `GENESIS_HASH` = 32 zero bytes (`:17`), each entry
   covering the previous — tamper-evident by construction, not by policy.
 - Sinks: `DbAuditSink` (appends under Postgres advisory lock `918_273_645`, `:61`)
   and `FileAuditSink` (fsync, `:98`).
 - `verify_chain` (`:185`) re-walks the chain; the core **anchors** the chain every
-  600 s (`ethos/core/runner.py:279`) so even a gap can be bounded in time.
+  600 s (`clio/core/runner.py:279`) so even a gap can be bounded in time.
 - H1 makes the chain untouchable by the agent; the nightly integrity pass
-  (`ethos/guardian/integrity.py:13-72`) makes its intactness *observed*.
+  (`clio/guardian/integrity.py:13-72`) makes its intactness *observed*.
 
 ## 3. Exhaustive logging
 
-`ethos/observability/exhaustive.py:243`:
+`clio/observability/exhaustive.py:243`:
 
 - JSONL files under `~/.ethos/data/logs`, enabled by default
   (`ETHOS_EXHAUSTIVE_LOG`, `:50-54`).
@@ -311,7 +311,7 @@ post-mortems the codebase's own design comments are made of.
 
 ## 4. Secret redaction
 
-`ethos/observability/logger.py:166`:
+`clio/observability/logger.py:166`:
 
 - `_SECRET_PATTERNS` (`:26-30`) covers Telegram bot tokens
   (`\d{6,12}:[A-Za-z0-9_\-]{30,}`), JWTs (`eyJ…`), and `{{secret:KEY}}` patterns.
@@ -319,13 +319,13 @@ post-mortems the codebase's own design comments are made of.
   objects (query strings carry keys); `format_exc_info` is applied **before**
   redaction so tracebacks are covered too (`:59,142`).
 - Secrets at rest are pyrage-encrypted via the `secrets.*` tools with
-  `{{secret:KEY}}` interpolation (`ethos/gateway/secrets.py`) — the same notation
+  `{{secret:KEY}}` interpolation (`clio/gateway/secrets.py`) — the same notation
   the redactor looks for, so a secret that leaks into a log is caught by pattern
   wherever it came from.
 
 ## 5. Tracing
 
-`ethos/observability/tracing.py:22`: optional OpenTelemetry, enabled via
+`clio/observability/tracing.py:22`: optional OpenTelemetry, enabled via
 `ETHOS_TRACE_CONSOLE`. The default posture is: the JSONL flight recorder is always
 on; distributed tracing is opt-in.
 

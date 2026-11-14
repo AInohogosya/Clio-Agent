@@ -18,15 +18,15 @@ from typing import Any
 
 import pytest
 
-from ethos.bus import EventBus
-from ethos.guardian.gate import GuardianGate
-from ethos.guardian.journal import ActionJournal, DuplicateAction
-from ethos.guardian.trash import TrashStore
-from ethos.memory.continuity import ContinuityManager
-from ethos.schemas.gsl import SolverOutcome
-from ethos.schemas.tools import ToolErrorCode, ToolResult
-from ethos.subagents.base import STATUS_BLOCKED, STATUS_FAILED, SubAgentResult
-from ethos.toolhost.server import Tool, ToolContext, Toolhost
+from clio.bus import EventBus
+from clio.guardian.gate import GuardianGate
+from clio.guardian.journal import ActionJournal, DuplicateAction
+from clio.guardian.trash import TrashStore
+from clio.memory.continuity import ContinuityManager
+from clio.schemas.gsl import SolverOutcome
+from clio.schemas.tools import ToolErrorCode, ToolResult
+from clio.subagents.base import STATUS_BLOCKED, STATUS_FAILED, SubAgentResult
+from clio.toolhost.server import Tool, ToolContext, Toolhost
 from tests.conftest import (
     FakeRegistry,
     FakeVerifier,
@@ -52,7 +52,7 @@ class _CountingFoundry(Tool):
         self.calls = 0
 
     async def run(self, args: dict[str, Any], ctx: ToolContext, host: Toolhost) -> Any:
-        from ethos.subagents.tools import _as_result
+        from clio.subagents.tools import _as_result
 
         self.calls += 1
         return _as_result(self.result.to_dict())
@@ -292,7 +292,7 @@ async def test_an_in_determinate_attempt_is_not_released(db, tmp_path: Path):
 # ---- the journal's own rule -------------------------------------------------
 
 async def test_only_a_completed_success_is_replayable():
-    from ethos.guardian.journal import replayable
+    from clio.guardian.journal import replayable
 
     assert replayable({"status": "ok"}) is True
     for status in ("failed", "timeout", "rejected", "interrupted", "running", "", None):
@@ -301,7 +301,7 @@ async def test_only_a_completed_success_is_replayable():
 
 
 async def test_subagent_tools_carry_their_own_error_codes():
-    from ethos.subagents.tools import _as_result
+    from clio.subagents.tools import _as_result
 
     assert _as_result({"status": "done"}).ok is True
     assert _as_result({"status": "timeout", "agent": "foundry"}).error_code == ToolErrorCode.TIMEOUT

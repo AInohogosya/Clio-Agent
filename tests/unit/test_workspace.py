@@ -17,9 +17,9 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from ethos.engine.workspace import BLOCK_ORDER, STABLE_BLOCKS, WorkspaceAssembler
-from ethos.prompts.identity import build_identity_kernel
-from ethos.schemas.gsl import Focus
+from clio.engine.workspace import BLOCK_ORDER, STABLE_BLOCKS, WorkspaceAssembler
+from clio.prompts.identity import build_identity_kernel
+from clio.schemas.gsl import Focus
 
 
 def assemble(**overrides):

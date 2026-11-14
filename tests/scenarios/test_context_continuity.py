@@ -7,8 +7,8 @@ from typing import Any
 
 import pytest
 
-from ethos.memory.context import ContextLayer
-from ethos.schemas.context import NarrativeLine, TurnKind
+from clio.memory.context import ContextLayer
+from clio.schemas.context import NarrativeLine, TurnKind
 from tests.conftest import make_config
 from tests.scenarios.test_restart_continuity import build_life
 
@@ -102,9 +102,9 @@ async def test_gsl_step_receives_the_volatile_context(db, tmp_path: Path):
     `_execute_step` used to send only the cache-stable prefix, so six of nine
     blocks never reached the model however much work `Life` did assembling them.
     """
-    from ethos.gsl.loop import GeneralSolverLoop, _step_from
-    from ethos.gsl.verification import VerificationLadder
-    from ethos.schemas.gsl import Plan
+    from clio.gsl.loop import GeneralSolverLoop, _step_from
+    from clio.gsl.verification import VerificationLadder
+    from clio.schemas.gsl import Plan
     from tests.conftest import ScriptedGateway
 
     config = make_config(tmp_path / "gsl-ctx")
@@ -147,8 +147,8 @@ async def test_conversation_history_is_available_to_deliberation(db, tmp_path: P
     string, so every reply was written as though it were the first message ever
     received on that conversation.
     """
-    from ethos.schemas.messages import Message
-    from ethos.social.deliberation import SocialCognition
+    from clio.schemas.messages import Message
+    from clio.social.deliberation import SocialCognition
     from tests.conftest import ScriptedGateway
 
     config = make_config(tmp_path / "conv-history")
@@ -189,8 +189,8 @@ async def test_conversation_history_is_available_to_deliberation(db, tmp_path: P
 
 async def test_open_commitments_reach_deliberation(db, tmp_path: Path):
     """Saying yes to something already owed is how an agent double-books itself."""
-    from ethos.schemas.messages import Message
-    from ethos.social.deliberation import SocialCognition
+    from clio.schemas.messages import Message
+    from clio.social.deliberation import SocialCognition
     from tests.conftest import ScriptedGateway
 
     config = make_config(tmp_path / "commitments-ctx")
@@ -251,7 +251,7 @@ async def test_context_rolls_into_narrative_during_a_life(db, tmp_path: Path):
 async def test_focus_change_writes_down_what_was_being_worked_on(db, tmp_path: Path):
     """A change of focus is the natural seam: the work just finished, so it gets
     written down now rather than whenever the buffer happens to fill."""
-    from ethos.schemas.gsl import Focus
+    from clio.schemas.gsl import Focus
 
     life, deps = await build_life(db, tmp_path, "focus-roll")
     life.context.cfg.narrate_every = 1
@@ -272,7 +272,7 @@ async def test_silence_is_kept_as_a_choice(db, tmp_path: Path):
     message that never arrived."""
     from uuid import uuid4
 
-    from ethos.schemas.messages import IgnoreReason, Message, SocialAction, SocialDecision
+    from clio.schemas.messages import IgnoreReason, Message, SocialAction, SocialDecision
 
     life, deps = await build_life(db, tmp_path, "silence")
     message = Message(

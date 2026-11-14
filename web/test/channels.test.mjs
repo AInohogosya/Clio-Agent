@@ -61,13 +61,13 @@ function writePeople(text) {
 }
 
 before(async () => {
-  home = mkdtempSync(join(tmpdir(), 'ethos-channels-'));
+  home = mkdtempSync(join(tmpdir(), 'clio-channels-'));
   // The bridge reads `config/` relative to its own repository, so the config is
   // copied into a temp tree and pointed at by the environment — the same way a
   // deployment would point at its own.
   const configDir = join(home, 'config');
   mkdirSync(configDir, { recursive: true });
-  for (const name of ['ethos.yaml', 'channels.yaml', 'models.yaml', 'permissions.yaml', 'people.yaml']) {
+  for (const name of ['clio.yaml', 'channels.yaml', 'models.yaml', 'permissions.yaml', 'people.yaml']) {
     copyFileSync(resolve(HERE, '..', '..', 'config', name), join(configDir, name));
   }
   channelsPath = join(configDir, 'channels.yaml');
@@ -78,17 +78,17 @@ before(async () => {
   child = spawn(process.execPath, [SERVER], {
     env: {
       ...process.env,
-      ETHOS_HOME: home,
-      ETHOS_CONFIG_DIR: configDir,
-      ETHOS_WEB_PORT: String(port),
+      CLIO_HOME: home,
+      CLIO_CONFIG_DIR: configDir,
+      CLIO_WEB_PORT: String(port),
       // Pointed away from any database on purpose. Both routes here are computed
       // from the config files, and `/api/message` must answer without one — so
       // the suite runs with the database unreachable and every write it attempts
-      // fails the same way. Inheriting the ambient `ETHOS_DSN` instead would let
+      // fails the same way. Inheriting the ambient `CLIO_DSN` instead would let
       // these tests write into the agent's own transcript whenever a developer
       // happened to be running Postgres, which is the one thing a test about
       // refusing to fabricate a conversation must not do.
-      ETHOS_DSN: 'postgresql://ethos:ethos@127.0.0.1:1/ethos',
+      CLIO_DSN: "postgresql://ethos:ethos@127.0.0.1:1/ethos",
     },
     stdio: 'ignore',
   });
@@ -117,7 +117,7 @@ beforeEach(() => {
       'web:',
       '  enabled: true',
       '  http_port: 8720',
-      '  auth_token_env: ETHOS_WEB_TOKEN',
+      '  auth_token_env: CLIO_WEB_TOKEN',
       'telegram:',
       '  enabled: false',
       '  token_env: TELEGRAM_BOT_TOKEN',
@@ -378,8 +378,8 @@ test('a token written from a page is where the agent will look for it, and only 
   assert.equal(response.status, 200);
   const stored = readFileSync(join(home, 'channels.yaml'), 'utf8');
   // Written as an overlay in the agent's own home, and merged over the shipped
-  // file rather than replacing it: the same document `ethos.config.load_config`
-  // reads, so what a form writes and what `ethos-comms` runs cannot disagree.
+  // file rather than replacing it: the same document `clio.config.load_config`
+  // reads, so what a form writes and what `clio-comms` runs cannot disagree.
   assert.match(stored, /telegram:/);
   assert.match(stored, /123456:from-the-settings-screen/);
   // A credential in a file other accounts can read is not a credential.
@@ -600,10 +600,10 @@ test('a credential in the environment is reported as present, and without its va
   const other = spawn(process.execPath, [SERVER], {
     env: {
       ...process.env,
-      ETHOS_HOME: home,
-      ETHOS_CONFIG_DIR: join(home, 'config'),
-      ETHOS_WEB_PORT: String(port),
-      ETHOS_DSN: 'postgresql://ethos:ethos@127.0.0.1:1/ethos',
+      CLIO_HOME: home,
+      CLIO_CONFIG_DIR: join(home, 'config'),
+      CLIO_WEB_PORT: String(port),
+      CLIO_DSN: "postgresql://ethos:ethos@127.0.0.1:1/ethos",
       TELEGRAM_BOT_TOKEN: 'from-the-environment',
     },
     stdio: 'ignore',

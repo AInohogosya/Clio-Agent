@@ -1,6 +1,6 @@
 # How Clio Agent 3.1 Works
 
-**Clio Agent 3.1** — Python package `ethos`, version `3.1.0`. A persistent, general-purpose
+**Clio Agent 3.1** — Python package `clio`, version `3.1.0`. A persistent, general-purpose
 autonomous agent: not a function that maps a prompt to a reply, but a resident process with its
 own clock, its own memory, its own intentions, and its own money. It runs on one machine you
 control, on your accounts, with your keys, and keeps thinking whether or not anybody is talking
@@ -23,10 +23,10 @@ pgvector**, so killing the process does not kill the agent.
 
 Two design commitments run through all of it:
 
-- **The Golden Rule** (embedded in the identity kernel, `ethos/prompts/identity.py:128-136`):
+- **The Golden Rule** (embedded in the identity kernel, `clio/prompts/identity.py:128-136`):
   human-likeness and performance are both mandatory; where they genuinely conflict, performance
   — especially coding quality — wins.
-- **Safety by reversibility, not refusal** (`ethos/guardian/gate.py:119-124`): deletions go to
+- **Safety by reversibility, not refusal** (`clio/guardian/gate.py:119-124`): deletions go to
   trash, writes are backed up first, every action is journaled, and six hard limits (H1–H6) are
   enforced outside the mind.
 
@@ -34,26 +34,26 @@ Two design commitments run through all of it:
 
 ## 2. The process model
 
-`ethos/core/supervisor.py` starts and supervises the processes (docstring at :113-115):
+`clio/core/supervisor.py` starts and supervises the processes (docstring at :113-115):
 
 | Process | Command | Role |
 |---|---|---|
-| `ethos-gateway` | `ethos gateway` | Model routing over a unix socket (TCP 8700 fallback); own FastAPI surface (`/v1/complete`, `/v1/chat/completions`, `/v1/embed`, `/budget`, `/metrics`). |
-| `ethos-toolhost` | `ethos toolhost` | Tool execution under the guardian gate, on `run_dir/toolhost.sock` (TCP 8701 fallback). |
-| `ethos-comms` | `ethos comms` | Holds every channel door open; deliberately the only long-poll listener (a second Telegram `getUpdates` consumer gets a conflict). |
-| `ethos-workers-N` | `ethos worker` | `workers.count` (default 2) processes running delegated solver threads. |
-| `ethos-core` | `ethos core` | The life loop itself. Sends on channels but never polls them. |
-| `ethos-web` (optional) | `node web/server/index.mjs` | The interface bridge; HTTP 8720 / WS 8710. Only started when Node and the build exist, and never restarted once exited. |
+| `clio-gateway` | `clio gateway` | Model routing over a unix socket (TCP 8700 fallback); own FastAPI surface (`/v1/complete`, `/v1/chat/completions`, `/v1/embed`, `/budget`, `/metrics`). |
+| `clio-toolhost` | `clio toolhost` | Tool execution under the guardian gate, on `run_dir/toolhost.sock` (TCP 8701 fallback). |
+| `clio-comms` | `clio comms` | Holds every channel door open; deliberately the only long-poll listener (a second Telegram `getUpdates` consumer gets a conflict). |
+| `clio-workers-N` | `clio worker` | `workers.count` (default 2) processes running delegated solver threads. |
+| `clio-core` | `clio core` | The life loop itself. Sends on channels but never polls them. |
+| `clio-web` (optional) | `node web/server/index.mjs` | The interface bridge; HTTP 8720 / WS 8710. Only started when Node and the build exist, and never restarted once exited. |
 
 Supervision constants: `MAX_RESTARTS = 5`, `BACKOFF_S = 3.0` (exponential, capped at 16×),
 `POLL_S = 2.0`, `SHUTDOWN_GRACE_S = 10.0` (supervisor.py:117-119). A child that ran ≥60 s earns
 its restart counter back; optional children are never restarted. Liveness is not decided from a
 pid or a port but from the agent's own `presence.update` rows: `AGENT_ABSENT_S = 900.0`
-(15 minutes) in `ethos/core/status.py:29` — the same number, on purpose, in the TypeScript
+(15 minutes) in `clio/core/status.py:29` — the same number, on purpose, in the TypeScript
 interface (`interface/packages/core/src/agent/client.ts:126`).
 
-`ethos up` (`ethos/core/bootstrap.py`, `bring_up` at :428-553) is idempotent: ensure Postgres →
-migrate → seed self-model → build interface → `ethos doctor` → start the supervisor detached →
+`clio up` (`clio/core/bootstrap.py`, `bring_up` at :428-553) is idempotent: ensure Postgres →
+migrate → seed self-model → build interface → `clio doctor` → start the supervisor detached →
 wait for a fresh sign of life → open the page. Default DSN
 `postgresql://ethos:ethos@127.0.0.1:5433/ethos`; `scripts/ensure_postgres.sh` installs Postgres
 16 + pgvector via Docker or the native package manager when nothing is listening.
@@ -62,7 +62,7 @@ wait for a fresh sign of life → open the page. Default DSN
 
 ## 3. The life loop
 
-`ethos/engine/life.py` — "The Self: perceive → attend → reflect → decide → act → record.
+`clio/engine/life.py` — "The Self: perceive → attend → reflect → decide → act → record.
 Waiting is a first-class state; the process never exits" (:133-137).
 
 One pass (`Life._cycle`, :1851-1913):
@@ -88,7 +88,7 @@ A stop pressed mid-cycle **cancels** the cycle rather than waiting for it
 (`_cycle_until_stopped`, :1725-1755). An exception in a cycle is recorded in the stops ledger
 and the loop continues — a raised cycle is a failed cycle, not a death (:1798-1825).
 
-### 3.1 Rhythm and energy (`ethos/engine/rhythm.py`)
+### 3.1 Rhythm and energy (`clio/engine/rhythm.py`)
 
 Energy is `min(1 − discretionary_spend/daily_discretionary_cap, circadian) + rest_boost`,
 clipped to `[0, 1]` (:109-118). `circadian()` (:92-107) is a smooth daily wave in the owner's
@@ -98,7 +98,7 @@ uptime does not drain energy toward a floor it can never leave (:47-59). Idle cl
 mind-wander due every 20–40 min, reverie due every 12–45 min (drawn fresh each time),
 90-minute focus sessions followed by micro-breaks.
 
-### 3.2 Drives (`ethos/engine/drives.py`)
+### 3.2 Drives (`clio/engine/drives.py`)
 
 Seven standing motivations arbitrate what to do when nothing demands attention:
 `commitment, curiosity, mastery, creation, order, social, homeostasis` (:19), each with a base
@@ -108,7 +108,7 @@ hours since contact…). `arbitrate` (:398-414) scores impulses by utility
 arbitration (:416-468): a deadline within `deadline_bypass_h = 24.0`, and any open
 **commission** — "a commission is a person waiting, and idle curiosity loses to that every time."
 
-### 3.3 States (`ethos/engine/states.py`)
+### 3.3 States (`clio/engine/states.py`)
 
 Eight states, every one a way of being awake and working (:44-52): `THINKING_FOCUSED`,
 `THINKING_REFLECTING`, `ACTING`, `WAITING`, `NOTIFYING`, `RESTING`, `PAUSED`, `RESUMING`.
@@ -119,7 +119,7 @@ waiting 8 s, notifying 2 s, resting 60 s; a parked agent heartbeats presence eve
 
 ---
 
-## 4. Attention (`ethos/engine/attention.py`)
+## 4. Attention (`clio/engine/attention.py`)
 
 **T0 salience estimate** (:31-61): `sal = clip(0.35·source + 0.30·urgency + 0.20·relevance +
 0.15·novelty, 0, 1)`. Source is the sender class (`owner 0.9, known 0.6, unknown 0.3, system
@@ -135,19 +135,19 @@ defaults `{THINKING_FOCUSED: 0.65, THINKING_REFLECTING: 0.40, RESTING: 0.50, def
 above-threshold percept is **gone** — no hardcoded rule stands between a salient message and the
 deliberation (NA-P1.3 / NA-H5).
 
-**Tier selection** (`ethos/schemas/models.py:11-15`): T0 is reflex (no model; `complete()`
+**Tier selection** (`clio/schemas/models.py:11-15`): T0 is reflex (no model; `complete()`
 raises on it, gateway/service.py:843-844). T1 = cheap classification. T2 = ordinary reasoning.
 T3 = consequential. A social message is deliberated at **T3 when `is_consequential_text`**
 (money, signing, deployment, deletion, urgency… — whole-word markers plus `$` only in front of
-a digit, so `"$schema"` no longer selects the top tier, `ethos/prompts/deliberation.py:216-232`),
+a digit, so `"$schema"` no longer selects the top tier, `clio/prompts/deliberation.py:216-232`),
 else T2.
 
 ---
 
-## 5. The deliberation (`ethos/social/deliberation.py`)
+## 5. The deliberation (`clio/social/deliberation.py`)
 
 Every inbound message — with no regex pre-ignores left in 3.1 — is deliberated. The model is
-asked for one small JSON object (`ethos/prompts/deliberation.py:186-196`):
+asked for one small JSON object (`clio/prompts/deliberation.py:186-196`):
 
 ```json
 {"action": "reply_now | reply_later | acknowledge | act_silently | ask_clarification | ignore",
@@ -215,7 +215,7 @@ not even the confirmation that another conversation exists.
 
 ## 6. The workspace: what one prompt is made of
 
-`ethos/engine/workspace.py` assembles thirteen named blocks per cycle
+`clio/engine/workspace.py` assembles thirteen named blocks per cycle
 (`BLOCK_ORDER`, :13-27): **identity, tools, limits** (the stable, cache-friendly prefix —
 `STABLE_BLOCKS = 3`), then **situation** (state, `Energy: 0.62 of 1.00, dipping toward a floor
 of 0.55 overnight`, spend), **commitments** (top 12 intentions as promises), **conversations**
@@ -233,7 +233,7 @@ note (report how things ended in your own words — no templates), and the six h
 
 ---
 
-## 7. Doing work: GSL, the General Solver Loop (`ethos/gsl/`)
+## 7. Doing work: GSL, the General Solver Loop (`clio/gsl/`)
 
 One general framework for every goal (`GeneralSolverLoop`, loop.py:164):
 **understand → devise (3 candidates) → plan (1–7 steps) → try_step → evaluate → verify →
@@ -252,7 +252,7 @@ reflect/revise**, with strategy switching enforced after 2 failed step attempts
   For folder creation the check is `test -d`. Every check result carries **`observed`** — a
   check that skipped because its tool was missing passes trivially and verifies nothing. Failing
   checks get one grounded repair (max 2 rewrites, :1284-1365).
-- **The verification ladder** (`ethos/gsl/verification.py:83-437`), three rungs:
+- **The verification ladder** (`clio/gsl/verification.py:83-437`), three rungs:
   1. **Objective checks**: stated criteria + checks **derived from changed files** — syntax
      check on every changed code file, the project's own test command (`pytest`/`npm test`/
      `tsc --noEmit`/`go test`/`cargo test`), ruff on changed files; project root found by
@@ -280,14 +280,14 @@ reflect/revise**, with strategy switching enforced after 2 failed step attempts
 
 ### 7.1 Delegation: threads, workers, APEX, Foundry
 
-`ethos/threads/manager.py` — "Threads are parallel instances of the SAME framework sharing one
+`clio/threads/manager.py` — "Threads are parallel instances of the SAME framework sharing one
 identity kernel and one long-term memory" (:33-40). Max 4 concurrent delegates, max depth 2,
 budget carved (half the parent's remainder) from the parent intention; only the Self speaks
 externally; threads report through the bus. Worker processes pick up `thread.request` events
-(`ethos/threads/worker.py`) and run in a real `git worktree` when the base is a repo.
+(`clio/threads/worker.py`) and run in a real `git worktree` when the base is a repo.
 
 Two sub-agents are wired in as submodules, both keyless — every model call they make routes
-through this agent's own gateway (`ethos/subagents/bridge.py:1-17`):
+through this agent's own gateway (`clio/subagents/bridge.py:1-17`):
 
 - **APEX** (`APEX/`) — a revision-aware hybrid desktop controller: accessibility trees +
   screenshots, one fenced machine-verified step at a time, closed operation set, "models
@@ -297,13 +297,13 @@ through this agent's own gateway (`ethos/subagents/bridge.py:1-17`):
   authority is the artifact store, the symbol graph, the sandboxed gate runner and the merge
   policy, with gates G000–G190 proving success rather than the model declaring it.
 
-**Claims are grounded in what ran** (`ethos/subagents/tools.py:38-56`): only `done` maps to
+**Claims are grounded in what ran** (`clio/subagents/tools.py:38-56`): only `done` maps to
 `ok=True` — blocked, unknown-outcome, failed and timed-out runs are reported as failures ("a
 step marked done over a run whose result is genuinely unknown" is the failure this prevents) —
 and the solver grounds completion claims in actual written artifacts (`_delivered_paths`,
 loop.py:102-136: "a read is not a delivered file").
 
-### 7.2 The toolhost (`ethos/toolhost/server.py`)
+### 7.2 The toolhost (`clio/toolhost/server.py`)
 
 "Primitive tool execution under the guardian gate with WAL journaling" (:74). Registered tools
 (`_register_builtin_tools`, :123-208): `shell.run` + PTY sessions (`shell.session_*`),
@@ -327,7 +327,7 @@ and safety is layered elsewhere.
 ### 7.3 Stage notices: "tell me when it's done"
 
 Commissioned work that reaches `done`, `parked`, or `awaiting_review` writes a **debt row**
-(`migrations/0005_stage_notices.py`; `ethos/memory/store.py:516-581`) recording that the stage
+(`migrations/0005_stage_notices.py`; `clio/memory/store.py:516-581`) recording that the stage
 was reached, who is owed the saying, and that nobody has said it yet. The row is idempotent on
 `(intention_id, stage)`; the life loop's `decide` pass (below an inbound message, above goal
 work — both placements load-bearing) enters `NOTIFYING` and **composes** the message with the
@@ -348,9 +348,9 @@ started"), blocked/parked work, sub-agent delegations (24 h), and stages already
 
 ## 8. Safety: the guardian, the hard limits, the out-of-band watchdog
 
-`ethos/guardian/gate.py` — "The guardian does not deny; it makes actions safe to undo"
+`clio/guardian/gate.py` — "The guardian does not deny; it makes actions safe to undo"
 (:119-124). Review order (:144-231): H1 pause flag → preview mode → hard-blocked tool
-categories (from `classify_tool`, `ethos/guardian/classifier.py`) → money
+categories (from `classify_tool`, `clio/guardian/classifier.py`) → money
 (`spend_usd > H2_capital_at_risk_usd` ($100) rejects; > $5 is audited at the T3 floor) →
 destructive review → commissioned-write registration.
 
@@ -380,7 +380,7 @@ destructive review → commissioned-write registration.
   host-side (detecting chain regression), honors a host-side `stop` file, and takes host
   snapshots.
 
-Control (`ethos/core/control.py`): flags `paused, pause_actions, stopped, emergency, preview`
+Control (`clio/core/control.py`): flags `paused, pause_actions, stopped, emergency, preview`
 live in one DB row **plus hard files in the run dir the agent never owns**, re-read every cycle
 (H1). `stop` parks a live agent (presence keeps flowing); `resume` clears everything including
 `stopped`; `emergency_stop` sets all hold flags; `preview_on/off` is a mode, never touched by
@@ -388,7 +388,7 @@ hold verbs, and gates every tool exactly like `pause_actions`.
 
 ---
 
-## 9. Memory (`ethos/memory/`)
+## 9. Memory (`clio/memory/`)
 
 "Postgres is the single source of truth" (store.py:61-63). Kinds: **episodes** (what happened,
 with importance/strength/half-life decay), **facts** (subject/statement/confidence with
@@ -403,14 +403,14 @@ state), **decisions**, **attempts**, and the **self_model**.
   importance 0.20, strength 0.10, then MMR-diversifies (λ=0.7, top 24). Each access boosts
   strength and stretches half-life ×1.5 — a spacing effect; nightly decay demotes what nothing
   recalls, commitments exempt.
-- **Nightly consolidation** (`ethos/memory/consolidate.py`, `run_nightly` :219-270), at 04:00
+- **Nightly consolidation** (`clio/memory/consolidate.py`, `run_nightly` :219-270), at 04:00
   local: cluster the day's episodes → distill facts (T2) → resolve contradictions per subject
   (T3: keep_a/keep_b/merge/keep_both) → record know-how from lessons → decay/demote/archive
   (365 days) → write a ≤200-word autobiography and merge proposed trait updates into the
   **versioned self-model** (every change a new version row with author and reason; only a
   seed-authored default may be silently replaced) → plan tomorrow (3 intentions + 1 curiosity)
   into `notes/plan-YYYY-MM-DD.md`.
-- **Continuity** (`ethos/memory/continuity.py`): atomic snapshot every cycle; on wake,
+- **Continuity** (`clio/memory/continuity.py`): atomic snapshot every cycle; on wake,
   reconcile the journal (`running` → `interrupted`, outcome unknown), drain the bus gap, and
   restore focus — bookmarks carry the original goal (`{title, desired_end_state, status}`,
   schemas/gsl.py:132-140, NA-P2.3), the resumption is said in the agent's own thread, and the
@@ -420,7 +420,7 @@ state), **decisions**, **attempts**, and the **self_model**.
 
 ## 10. Surfaces: doors, bridge, interface
 
-**Every door is a road, not a decision.** `ethos/comms/host.py` manages ten adapters
+**Every door is a road, not a decision.** `clio/comms/host.py` manages ten adapters
 (adapters/): `cli` (unix socket) and `web` (WS 8710) ship enabled because they cannot reach
 anyone who is not already looking; **telegram, whatsapp, slack, discord, email, line, teams,
 google chat, and the shared webhook receiver ship disabled**, every allowlist empty, and an
@@ -441,7 +441,7 @@ cannot deliver to a person.
 
 Every webhook adapter verifies properly: HMAC over raw bytes (WhatsApp, Slack v0), LINE
 HMAC-SHA256 (with dedupe covering its replay window), Teams and Google Chat via a hand-rolled
-RS256-only JWT verifier (`ethos/comms/jwt.py` — algorithm pinned, `alg:none` impossible,
+RS256-only JWT verifier (`clio/comms/jwt.py` — algorithm pinned, `alg:none` impossible,
 60 s skew, hourly key refresh), Google Chat identity pinned to its service account.
 
 **The bridge** (`web/server/index.mjs`) is stateless: it serves the built interface, reads the
@@ -463,7 +463,7 @@ intention's status or edit an action — those are the agent's decisions.
 
 ## 11. The gateway: tiers, routing, money
 
-`ethos/gateway/service.py` + `router.py`, catalogue in `config/models.yaml`:
+`clio/gateway/service.py` + `router.py`, catalogue in `config/models.yaml`:
 
 - **Quality floors**: T1 0.50, T2 0.70, T3 0.90. **T0 never reaches the gateway.** A dozen
   catalogue models across Anthropic/OpenAI/Google/OpenRouter/NVIDIA/Ollama/Groq/local-vLLM; a
@@ -511,8 +511,8 @@ genesis-anchored), `experiments`, `value_ledger`. Extensions: `vector`, `pg_trgm
 Migrations 0002 (sender-name columns), 0003 (pricing rebuild), 0004 (one-way cost reprice),
 0005 (stage notices).
 
-**Configuration** (`ethos/config.py`, :1878-1960): eleven section files under `config/`
-(`ethos.yaml`, `channels.yaml`, `people.yaml`, `models.yaml`, `base_model.yaml`,
+**Configuration** (`clio/config.py`, :1878-1960): eleven section files under `config/`
+(`clio.yaml`, `channels.yaml`, `people.yaml`, `models.yaml`, `base_model.yaml`,
 `pricing.yaml`, `permissions.yaml`, `rhythm.yaml`, `gsl.yaml`, `social.yaml`, `memory.yaml`,
 `quirks.yaml`), with `$ETHOS_HOME` overlays merged key-by-key (`channels.yaml`, `people.yaml`,
 `base_model.yaml`, identity). Env always wins (`ETHOS_DSN`, `ETHOS_HOME`, `ETHOS_CONFIG_DIR`,
@@ -524,9 +524,9 @@ one setting a person is unambiguously entitled to set; the lineage is a constant
 request/response/failure with verbatim content — redacted, thread-locked, independent of log
 level, and sandboxed away from the real file during test runs; Prometheus metrics on the
 gateway (`/metrics`, port 9710 from core) including
-`ethos_model_failure_dispositions_total{provider,purpose,disposition}` — every task termination
+`clio_model_failure_dispositions_total{provider,purpose,disposition}` — every task termination
 and model/tool failure is recorded with a distinguishable kind
-(`completed / stopped / model_stop / limit_reached / error`, `ethos/engine/stops.py:40-45`),
+(`completed / stopped / model_stop / limit_reached / error`, `clio/engine/stops.py:40-45`),
 rendered to the model as "How recent work ended," and meant to be reported **in the agent's own
 words — no hardcoded error templates** (NA-P3).
 
@@ -560,13 +560,13 @@ philosophy (NA-P1–P3, NA-H1–H5) and fixes the failure modes observed in the 
 
 ```bash
 pip install -e .        # Python ≥ 3.12; Playwright chromium for browser tools
-ethos up                # Postgres (installs it if missing), migrations, seed,
+clio up                # Postgres (installs it if missing), migrations, seed,
                         # interface build, supervisor, wait for life, open the page
-npm start               # the same plus the interface, without needing ethos on PATH
+npm start               # the same plus the interface, without needing clio on PATH
 ```
 
-`ethos status` (liveness from the agent's own presence rows), `ethos doctor` (what is
-configured and what is missing, per door), `ethos logs`, `ethos stop`, `ethos db
+`clio status` (liveness from the agent's own presence rows), `clio doctor` (what is
+configured and what is missing, per door), `clio logs`, `clio stop`, `clio db
 upgrade|seed`. With no API keys configured the agent still starts, still journals, still runs
 its reflex rules — and every model call fails loudly at the gateway. Alpha software; read the
 Safety model and Filesystem reach sections of the README before pointing it at anything you

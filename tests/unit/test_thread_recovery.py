@@ -22,9 +22,9 @@ from typing import Any
 
 import pytest
 
-from ethos.threads import worker as worker_module
-from ethos.threads.manager import ThreadManager
-from ethos.threads.worker import _pursue, run_thread
+from clio.threads import worker as worker_module
+from clio.threads.manager import ThreadManager
+from clio.threads.worker import _pursue, run_thread
 
 
 class _RateLimited(Exception):
@@ -243,9 +243,9 @@ async def test_a_successful_thread_is_still_closed_done(config):
 
 
 def test_the_failure_envelope_vocabulary_is_shared():
-    """The in-process manager and the deployed `ethos worker` process both read
+    """The in-process manager and the deployed `clio worker` process both read
     this envelope; the helpers are one definition so the two cannot drift."""
-    from ethos.threads.manager import failure_reason, is_failed_result
+    from clio.threads.manager import failure_reason, is_failed_result
 
     for status in ("failed", "unavailable", "blocked", "timeout", "no-gateway", "missing-intention"):
         assert is_failed_result({"status": status}), status
@@ -304,7 +304,7 @@ async def test_a_crashing_subagent_is_retried(config, monkeypatch: pytest.Monkey
     """A sub-agent that crashes once gets a second attempt before the thread
     reports the crash."""
     config.threads.subagent_attempts = 2
-    from ethos.subagents.base import SubAgentResult
+    from clio.subagents.base import SubAgentResult
 
     runs = {"count": 0}
 
@@ -325,7 +325,7 @@ async def test_a_crashing_subagent_is_retried(config, monkeypatch: pytest.Monkey
         def describe(self) -> list[str]:
             return []
 
-    monkeypatch.setattr("ethos.subagents.SubagentRegistry", _FakeRegistry)
+    monkeypatch.setattr("clio.subagents.SubagentRegistry", _FakeRegistry)
 
     result = await run_thread(
         {"id": "thread-sub", "goal": "build it", "role": "foundry",
@@ -356,7 +356,7 @@ async def test_a_subagent_that_always_crashes_reports_the_crash(config, monkeypa
         def describe(self) -> list[str]:
             return []
 
-    monkeypatch.setattr("ethos.subagents.SubagentRegistry", _FakeRegistry)
+    monkeypatch.setattr("clio.subagents.SubagentRegistry", _FakeRegistry)
 
     result = await run_thread(
         {"id": "thread-sub", "goal": "build it", "role": "foundry",

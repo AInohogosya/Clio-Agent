@@ -5,11 +5,11 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from ethos.config import load_config
-from ethos.engine.rhythm import RhythmController
-from ethos.gateway.embeddings import HashingEmbedder
-from ethos.memory.consolidate import hdbscan_like_cluster
-from ethos.memory.retrieval import (
+from clio.config import load_config
+from clio.engine.rhythm import RhythmController
+from clio.gateway.embeddings import HashingEmbedder
+from clio.memory.consolidate import hdbscan_like_cluster
+from clio.memory.retrieval import (
     HybridRetriever,
     bm25_scores,
     cosine,
@@ -18,7 +18,7 @@ from ethos.memory.retrieval import (
     score_memory,
     tokenize,
 )
-from ethos.schemas.memory import MemoryHit
+from clio.schemas.memory import MemoryHit
 
 
 @pytest.fixture()
@@ -37,8 +37,8 @@ def test_cosine_identical_and_orthogonal():
 
 
 def test_bm25_ranks_relevant_doc_higher():
-    query = ["ethos", "memory"]
-    docs = [tokenize("ethos keeps its memory alive across restarts"),
+    query = ["clio", "memory"]
+    docs = [tokenize("clio keeps its memory alive across restarts"),
             tokenize("the quick brown fox jumps over the lazy dog")]
     scores = bm25_scores(query, docs)
     assert scores[0] > scores[1]
@@ -190,8 +190,8 @@ async def test_a_bookmark_merges_into_the_resume_state_rather_than_replacing_it(
     import json as _json
     from uuid import uuid4
 
-    from ethos.memory.store import MemoryStore
-    from ethos.schemas.gsl import Bookmark
+    from clio.memory.store import MemoryStore
+    from clio.schemas.gsl import Bookmark
 
     db = _RecordingDB()
     store = MemoryStore(db, HashingEmbedder(1024), load_config("config"))
@@ -261,8 +261,8 @@ async def test_next_open_commission_names_the_work_somebody_is_waiting_on(memory
     replies said it was being worked on. This is the same selection, callable
     every cycle: open commissioned work only, most urgent first.
     """
-    from ethos.gateway.embeddings import HashingEmbedder
-    from ethos.memory.store import MemoryStore
+    from clio.gateway.embeddings import HashingEmbedder
+    from clio.memory.store import MemoryStore
 
     db = _RowsDB([_intention_row()])
     store = MemoryStore(db, HashingEmbedder(1024), load_config("config"))
@@ -277,8 +277,8 @@ async def test_next_open_commission_names_the_work_somebody_is_waiting_on(memory
 
 
 async def test_next_open_commission_is_none_when_only_self_set_work_is_open(memory_config):
-    from ethos.gateway.embeddings import HashingEmbedder
-    from ethos.memory.store import MemoryStore
+    from clio.gateway.embeddings import HashingEmbedder
+    from clio.memory.store import MemoryStore
 
     db = _RowsDB([_intention_row(origin="impulse", kind="task",
                                  title="advance_commitment",
@@ -390,9 +390,9 @@ def test_rhythm_energy_rest_boost(config):
 
 
 def test_rhythm_energy_rest_boost_uncapped_contribution():
-    from ethos.config import EthosConfig
+    from clio.config import ClioConfig
 
-    cfg = EthosConfig()
+    cfg = ClioConfig()
     cfg.rhythm.energy.cap = 2.0
     rhythm = _at_the_peak(cfg)
     rhythm.mark_awake()

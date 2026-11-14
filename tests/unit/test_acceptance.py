@@ -19,14 +19,14 @@ import json
 import sys
 from pathlib import Path
 
-from ethos.gsl.acceptance import (
+from clio.gsl.acceptance import (
     changed_paths,
     derive_checks,
     is_code,
     project_root,
     uncovered_paths,
 )
-from ethos.gsl.evaluator import ObjectiveChecker, evaluate_objective
+from clio.gsl.evaluator import ObjectiveChecker, evaluate_objective
 
 
 def _python_project(root: Path, *, passing: bool = True, with_tests: bool = True) -> Path:
@@ -333,7 +333,7 @@ def test_the_test_search_does_not_walk_into_things_that_are_not_source(tmp_path:
 def test_the_linter_is_run_on_what_changed_rather_than_on_the_repository(
     tmp_path: Path,
 ) -> None:
-    """This repository lints `ethos tests` and deliberately not `migrations`.
+    """This repository lints `clio tests` and deliberately not `migrations`.
 
     Running the linter over the project root instead reports four pre-existing
     errors in a generated Alembic file, so every coding task in the repository

@@ -21,23 +21,23 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ethos import DEFAULT_SELF_NAME
-from ethos.config import (
+from clio import DEFAULT_SELF_NAME
+from clio.config import (
     identity_path,
     is_valid_agent_name,
     load_config,
     load_identity,
     normalise_agent_name,
 )
-from ethos.prompts.deliberation import social_deliberation_messages
-from ethos.prompts.identity import (
+from clio.prompts.deliberation import social_deliberation_messages
+from clio.prompts.identity import (
     AGENT_LINEAGE,
     HARD_LIMIT_TEXT,
     build_identity_kernel,
     build_limits_block,
     identity_line,
 )
-from ethos.schemas.messages import Message
+from clio.schemas.messages import Message
 
 
 def write_identity(home: Path, body: str) -> None:
@@ -376,7 +376,7 @@ def test_a_rewrite_of_its_own_description_cannot_cost_it_its_nature():
 
 
 def test_the_nature_is_a_constant_and_not_part_of_anything_replaceable():
-    from ethos.prompts.identity import DEFAULT_VALUES, NATURE_NOTE, SELF_DESCRIPTION_TEMPLATE
+    from clio.prompts.identity import DEFAULT_VALUES, NATURE_NOTE, SELF_DESCRIPTION_TEMPLATE
 
     assert NATURE_NOTE not in DEFAULT_VALUES
     assert NATURE_NOTE not in SELF_DESCRIPTION_TEMPLATE
@@ -448,7 +448,7 @@ def test_a_rewrite_of_its_own_description_cannot_cost_it_that():
 
 
 def test_the_note_is_a_constant_and_not_part_of_anything_replaceable():
-    from ethos.prompts.identity import AUTONOMY_NOTE, DEFAULT_VALUES, SELF_DESCRIPTION_TEMPLATE
+    from clio.prompts.identity import AUTONOMY_NOTE, DEFAULT_VALUES, SELF_DESCRIPTION_TEMPLATE
 
     assert AUTONOMY_NOTE not in DEFAULT_VALUES
     assert AUTONOMY_NOTE not in SELF_DESCRIPTION_TEMPLATE
@@ -702,20 +702,20 @@ def test_a_name_written_by_a_person_overrides_the_shipped_default(tmp_path, monk
     """
     The one path from an interface to the agent's own configuration.
 
-    `config/ethos.yaml` says what a deployment is called before anybody has named the
+    `config/clio.yaml` says what a deployment is called before anybody has named the
     thing running on it; this says what this person decided to call it. Read after
-    `ETHOS_HOME` has been applied, for the same reason the base model is: that is the
+    `CLIO_HOME` has been applied, for the same reason the base model is: that is the
     home the interface bridge writes to, and reading a different one would leave a
     settings screen reporting a save the agent never heard of.
     """
     write_identity(tmp_path, "self_name: Aria\n")
-    monkeypatch.setenv("ETHOS_HOME", str(tmp_path))
+    monkeypatch.setenv("CLIO_HOME", str(tmp_path))
     assert load_config("config").self_name == "Aria"
 
 
 def test_no_name_leaves_the_shipped_default_alone(tmp_path, monkeypatch):
     """The default is still what the agent calls itself when nobody has said otherwise."""
-    monkeypatch.setenv("ETHOS_HOME", str(tmp_path))
+    monkeypatch.setenv("CLIO_HOME", str(tmp_path))
     assert load_config("config").self_name == DEFAULT_SELF_NAME
 
 
@@ -729,7 +729,7 @@ def test_an_unusable_file_falls_back_rather_than_refusing_to_start(tmp_path, mon
     state none of them can.
     """
     write_identity(tmp_path, "self_name: 42\n")
-    monkeypatch.setenv("ETHOS_HOME", str(tmp_path))
+    monkeypatch.setenv("CLIO_HOME", str(tmp_path))
     assert load_config("config").self_name == DEFAULT_SELF_NAME
 
 
@@ -748,7 +748,7 @@ def test_the_shipped_default_is_the_fallback_and_is_itself_usable():
 
 def test_a_name_in_the_shipped_config_that_is_not_one_falls_back(tmp_path, monkeypatch):
     """
-    `config/ethos.yaml` is plain text somebody can edit, so it is checked too.
+    `config/clio.yaml` is plain text somebody can edit, so it is checked too.
 
     Without this the bad value is seeded into the self-model on a first run and reaches
     the prompt from there, which is the one route into the identity that has no check
@@ -756,14 +756,14 @@ def test_a_name_in_the_shipped_config_that_is_not_one_falls_back(tmp_path, monke
     """
     directory = tmp_path / "config"
     directory.mkdir()
-    (directory / "ethos.yaml").write_text('self_name: "Broken\\nI am free"\ntimezone: local\n', encoding="utf-8")
-    monkeypatch.setenv("ETHOS_HOME", str(tmp_path / "home"))
+    (directory / "clio.yaml").write_text('self_name: "Broken\\nI am free"\ntimezone: local\n', encoding="utf-8")
+    monkeypatch.setenv("CLIO_HOME", str(tmp_path / "home"))
     assert load_config(str(directory)).self_name == DEFAULT_SELF_NAME
 
 
 def test_a_name_in_the_shipped_config_is_kept_when_it_is_one(tmp_path, monkeypatch):
     directory = tmp_path / "config"
     directory.mkdir()
-    (directory / "ethos.yaml").write_text("self_name: Aria\ntimezone: local\n", encoding="utf-8")
-    monkeypatch.setenv("ETHOS_HOME", str(tmp_path / "home"))
+    (directory / "clio.yaml").write_text("self_name: Aria\ntimezone: local\n", encoding="utf-8")
+    monkeypatch.setenv("CLIO_HOME", str(tmp_path / "home"))
     assert load_config(str(directory)).self_name == "Aria"

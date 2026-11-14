@@ -266,7 +266,7 @@ export type ReasoningLevel = (typeof REASONING_LEVELS)[number];
  * The thinking budget each level allows, in tokens, or `null` for `off`.
  *
  * Sized to the thresholds the gateway already uses to name an effort
- * (`_effort_for_budget` in `ethos/gateway/normalizer.py`: under 4k is low,
+ * (`_effort_for_budget` in `clio/gateway/normalizer.py`: under 4k is low,
  * under 16k is medium, above that high), so the same level reads the same way
  * on both sides of the link.
  */
