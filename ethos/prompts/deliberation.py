@@ -166,6 +166,8 @@ Situation:
 - Open commitments: {commitments}
 - Recent conversation context: {recent}
 
+{project_context}
+
 ## Execution state
 What {name} has actually done, read from its own action journal, its open work and the
 work it has already finished. Three separate lines, and they are separate because they
@@ -237,16 +239,44 @@ seconds — when the messages read better with a breath between them, and leave 
 field out, or use zeros, when the reply should arrive as one burst. A reply of one
 message needs no delays at all.
 
+## Project reporting
+When the message asks about progress without naming a specific project: report the status of
+every active, preempted, or human-paused project separately, under its project title — exact
+completed nodes and tasks, files changed, the current focus state, and any human blocker —
+using the Project portfolio lines above. Never blend two projects into one answer, and never
+report a project's progress as zero when its ledger shows completed nodes, touched files or
+journaled actions.
+
+When this conversation is bound to a specific project (see "This conversation's project"
+above): lead the answer with that project's own ledger — its exact nodes, files, recent
+actions and blockers — and never substitute another project's status for it, however the
+conversation drifts. If the person asks about work on a *different* project from the one this
+conversation is bound to, answer from that project's own ledger line.
+
+When the person's message fulfils or answers an open human step (a `waiting on you` entry in
+the portfolio): set `resolves_human_node_id` to that node's id and `human_node_evidence` to what
+their message provides. When the message gives a standing instruction for how work should be
+run ("ask before deploying", "report daily"), record it in `user_instructions`.
+
+When the reply is itself instructions for the person to follow — step-by-step directions to do
+the thing only they can do — choose the `instruct_user` action; when the reply proactively
+reports project governance (a milestone shipped, a focus switch, a blocker) choose
+`report_governance`. Both are delivered immediately as governance messages, outside polite
+batching, so use them when the report is genuinely owed and use ordinary replies otherwise.
+
 Respond with strict JSON only:
 {{
-  "action": "reply_now" | "reply_later" | "acknowledge" | "act_silently" | "ask_clarification" | "ignore",
+  "action": "reply_now" | "reply_later" | "acknowledge" | "act_silently" | "ask_clarification" | "ignore" | "instruct_user" | "report_governance",
   "reply_texts": ["..."],
   "reply_delays_s": [0],
   "urgency": "low" | "normal" | "high" | "critical",
   "reason": "one line",
   "ignore_reason": {ignore_reasons} ,
   "creates_intention": true|false,
-  "intention_spec": {{"title": "...", "desired_end_state": "...", "deadline_iso": "..."|null}}
+  "intention_spec": {{"title": "...", "desired_end_state": "...", "deadline_iso": "..."|null}},
+  "resolves_human_node_id": "..."|null,
+  "human_node_evidence": "..."|null,
+  "user_instructions": [{{"instruction": "...", "scope": "..."}}]
 }}"""
 
 # The same contract, restated after the message rather than before it.
@@ -270,7 +300,10 @@ DELIBERATION_OUTPUT_CONTRACT = (
     "Answer with that JSON object and nothing else: no preamble, no explanation, no markdown "
     'fence, and no prose in place of it. What {name} would say to them goes inside '
     '"reply_texts". An answer written as prose instead of the object is discarded, and they '
-    "are told the agent did not reply."
+    "are told the agent did not reply. If the person's message answers an open human step, "
+    'set "resolves_human_node_id" to that step\'s id and "human_node_evidence" to what they '
+    'gave; instructions the person is being asked to carry out use the "instruct_user" '
+    'action, and unprompted governance reports use "report_governance".'
 )
 
 STAGE_NOTICE_SYSTEM = """You are {name}, about to tell somebody that a piece of work they asked for has
@@ -471,6 +504,7 @@ def execution_state_block(
     readable: bool = True, stages: list[str] | None = None,
     delegations: list[str] | None = None, delegation_window_h: float = 24.0,
     progress: list[str] | None = None,
+    projects: list[dict[str, Any]] | None = None,
 ) -> str:
     """The block that says what happened, rendered for one prompt.
 
@@ -556,6 +590,34 @@ def execution_state_block(
             "This says nothing about older work — if the person asks about "
             "something from before, that is not evidence it was not done."
         )
+    projects = projects or []
+    if projects:
+        lines.append(
+            "- Projects and their all-time verified standing — counts of done "
+            "nodes, registered files and journaled ok actions, per project, "
+            "focused or preempted. A project with nodes done or files touched "
+            "has real progress on the record; never describe it as not started:"
+        )
+        for project in projects:
+            parts = [
+                f"[{project.get('status')}] {project.get('title')}"
+                + (" (current focus)" if project.get("is_current_focus") else ""),
+                f"{int(project.get('nodes_done') or 0)}/{int(project.get('nodes_total') or 0)} nodes done",
+            ]
+            artifacts = project.get("artifacts_touched") or []
+            if artifacts:
+                parts.append("files: " + ", ".join(str(a) for a in artifacts[:4]))
+            actions = project.get("recent_actions") or []
+            if actions:
+                parts.append("recent: " + "; ".join(str(a)[:90] for a in actions[:3]))
+            waiting = project.get("blocking_human_tasks") or []
+            for task in waiting[:2]:
+                spec = task.get("instruction_spec") or {}
+                ask = spec.get("action_required") or task.get("title") or "needs human input"
+                parts.append(f"waiting on you: {str(ask)[:120]}")
+            if project.get("checkpoint_summary"):
+                parts.append(f"checkpoint: {str(project['checkpoint_summary'])[:160]}")
+            lines.append("  - " + "; ".join(parts))
     return "\n".join(lines)
 
 
@@ -572,6 +634,8 @@ def social_deliberation_messages(
     preview: bool = False,
     lineage: str = AGENT_LINEAGE,
     verbosity_note: str = "",
+    project_context: str = "",
+    bound_project_title: str = "",
 ) -> list[dict[str, str]]:
     system = SOCIAL_DELIBERATION_SYSTEM.format(
         name=self_name,
@@ -591,6 +655,7 @@ def social_deliberation_messages(
         ignore_reasons=json.dumps(IGNORE_REASONS),
         execution_state=execution_state.strip()
         or execution_state_block(self_name, [], [], 0.0, readable=False, stages=[]),
+        project_context=project_context or "(no projects are on the books)",
         # Placed here rather than in the header because this is the one prompt
         # whose output is the words a person reads, and it is the only place a
         # fact about some *other* conversation could reach them. A deliberation
@@ -600,7 +665,12 @@ def social_deliberation_messages(
     )
     incoming = (
         f"From: {message.sender_who()} via {message.channel} at {message.ts.isoformat()}\n"
-        f"Text:\n{message.text}\n\n"
+        + (
+            f"This conversation is bound to the project “{bound_project_title}”; "
+            "questions here are about that project unless the person names another.\n"
+            if bound_project_title else ""
+        )
+        + f"Text:\n{message.text}\n\n"
         f"{DELIBERATION_OUTPUT_CONTRACT.format(name=self_name)}"
     )
     return [

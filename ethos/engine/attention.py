@@ -28,6 +28,36 @@ def jaccard(a: Sequence[str], b: Sequence[str]) -> float:
     return len(sa & sb) / len(sa | sb)
 
 
+def project_preemption_allowed(
+    candidate_project_id: str | None,
+    active_project_id: str | None,
+    candidate_salience: float,
+    *,
+    lock_active: bool,
+    current_salience: float,
+    margin: float,
+    priority_override: bool = False,
+) -> bool:
+    """Whether a stimulus from another project may take the pass, purely.
+
+    The focus-quantum rule: while a project is `active` and inside its
+    minimum focus quantum, work belonging to a *different* project does not
+    steal focus — unless it clears the challenger margin over the current
+    focus's salience, or the deliberation flagged an explicit priority
+    override. Same-project stimuli are never blocked: continuing the
+    project's own work is what the lock is protecting.
+    """
+    if not lock_active:
+        return True
+    if not candidate_project_id or not active_project_id:
+        return True
+    if str(candidate_project_id) == str(active_project_id):
+        return True
+    if priority_override:
+        return True
+    return float(candidate_salience) >= float(current_salience) + float(margin)
+
+
 def estimate_salience(
     percept: Percept,
     focus: Focus | None,
@@ -167,6 +197,9 @@ class Attention:
         recent_centroid: list[float] | None = None,
         thresholds_by_state: dict[str, float] | None = None,
         state_name: str | None = None,
+        *,
+        active_project_id: str | None = None,
+        project_lock_active: bool = False,
     ) -> Appraisal:
         percepts = self.dedupe(percepts)
         if not percepts:
@@ -207,6 +240,38 @@ class Attention:
         # interrupt, whatever kind it is, because a hardcoded list of interrupt
         # kinds was the program's judgment standing in for the agent's.
         interrupt = top.salience >= threshold
+        # The focus-quantum guard sits after the threshold, not before it: the
+        # threshold decides whether the stimulus is pressing at all, and the
+        # quantum decides whether *another project's* pressing stimulus may
+        # take the pass. Inside the lock, a different project's percept must
+        # clear the state threshold *plus* the switch margin — the margin is
+        # what makes preemption a decision rather than a tie — unless the
+        # deliberation marked it priority_override.
+        if interrupt and project_lock_active:
+            allowed = project_preemption_allowed(
+                percept_project_id(top.percept),
+                active_project_id,
+                top.salience,
+                lock_active=True,
+                current_salience=threshold,
+                margin=self.config.projects.project_switch_margin,
+                priority_override=bool(
+                    (top.percept.payload or {}).get("priority_override", False)
+                ),
+            )
+            if not allowed:
+                logger.info(
+                    "attention.project_quantum_held",
+                    active_project=active_project_id,
+                    candidate_project=percept_project_id(top.percept),
+                    salience=round(top.salience, 3),
+                )
+                return Appraisal(
+                    interrupt=False,
+                    new_focus=None,
+                    top=scored,
+                    refined=refined > 0,
+                )
         appraisal = Appraisal(
             interrupt=interrupt,
             new_focus=None,
@@ -257,6 +322,18 @@ def percept_sender(percept: Percept) -> str:
         percept.payload.get("sender_username"),
         percept.sender_person,
     )
+
+
+def percept_project_id(percept: Percept) -> str | None:
+    """Which project a percept belongs to, when anything said so.
+
+    A percept carries `project_id` in its payload when the event that made it
+    was attributed to a project — a thread result from a project's worker, a
+    journal action, a message whose conversation is bound to one. `None` means
+    the percept is not project work and the quantum never blocks it.
+    """
+    value = (percept.payload or {}).get("project_id")
+    return str(value) if value else None
 
 
 def focus_from_percept(percept: Percept) -> Focus:

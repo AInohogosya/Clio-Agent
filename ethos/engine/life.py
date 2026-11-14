@@ -5,6 +5,7 @@ import re
 import time
 from collections import deque
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import Any
 from uuid import UUID
 
@@ -142,6 +143,7 @@ class LifeDeps:
         context: Any = None,
         reverie: Any = None,
         thread_id: str = "self",
+        leases: Any = None,
     ):
         self.config = config
         self.control = control
@@ -163,6 +165,10 @@ class LifeDeps:
         self.context = context
         self.reverie = reverie
         self.thread_id = thread_id
+        # The workspace lease manager, when the deployment has one: project
+        # containers take their isolation from it and their evergreen
+        # milestones commit through it.
+        self.leases = leases
 
 
 class Life:
@@ -232,6 +238,16 @@ class Life:
         self._inbound_deferrals: int = 0
         self._last_park_sweep: float = 0.0
         self._last_zombie_sweep: float = 0.0
+        # Clio Agent 3.3 project leadership: which project currently holds the
+        # execution focus, and when that quantum began. Both are state, not
+        # cache — the anti-thrashing guard and the switch protocol read them,
+        # and a restart that lost them would re-open the lock and thrash.
+        self.active_project_id: str | None = None
+        self.project_focus_started_at: float | None = None
+        # The governance notices `decide` chose to dispatch this pass; `act`
+        # settles exactly these, so the decision and the delivery can never be
+        # about two different sets of news.
+        self._governance_batch: list[Any] = []
 
     @property
     def _suspended_focus(self) -> Focus | None:
@@ -273,6 +289,23 @@ class Life:
         # as starting over. The narrative survives in the snapshot; the raw turns
         # are the newest few, which is what resuming mid-thought needs.
         self.context.restore(snapshot.get("context"))
+        project_state = snapshot.get("projects") or {}
+        if isinstance(project_state, dict):
+            self.active_project_id = project_state.get("active_project_id") or None
+            started = project_state.get("project_focus_started_at")
+            try:
+                candidate = float(started) if started is not None else None
+            except (TypeError, ValueError):
+                candidate = None
+            # `time.monotonic()` is process- and boot-relative, so a value
+            # written before a restart is only meaningful inside a sane window:
+            # a stamp from the future (a different boot) or one older than a
+            # day is discarded, which re-opens the quantum rather than pinning
+            # it open or shut for reasons nobody can see.
+            if candidate is not None and 0.0 <= time.monotonic() - candidate <= 86400.0:
+                self.project_focus_started_at = candidate
+            else:
+                self.project_focus_started_at = None
         self.deps.rhythm.mark_awake()
         self.states.transition(State.THINKING_REFLECTING, "wake")
         await self.deps.audit.append(
@@ -486,7 +519,15 @@ class Life:
         # commissioned deadline below the cut and hide it completely, and the
         # drives then weigh only the work they can see. See
         # `MemoryStore.list_attentionable_intentions`.
-        intentions = await self.memory.list_attentionable_intentions(limit=50)
+        intentions = list(await self.memory.list_attentionable_intentions(limit=50))
+        # Evergreen projects whose cooldown has elapsed present themselves to
+        # the drives as work: an `evolve_project` impulse resolves to the
+        # project's root, and advancing that root proposes the next cycle.
+        try:
+            proposals = await self._evolution_candidates()
+        except Exception:
+            proposals = []
+        intentions.extend(proposals)
         questions = await self.memory.open_questions(limit=50)
         attempts_failed = 0
         if self.focus is not None and self.focus.intention_id is not None:
@@ -520,6 +561,7 @@ class Life:
             open_questions=len(questions),
             failed_recent=attempts_failed,
             active_ventures=sum(1 for i in intentions if i.kind == "venture"),
+            evolving_projects=len(proposals),
             unread_events=len(percepts),
             last_contact_age_h=last_contact_age_h,
             energy=self.deps.rhythm.energy(self.spent_discretionary_session),
@@ -529,6 +571,44 @@ class Life:
             leaf_verification_failures=leaf_failures,
             anomalous_outcomes=leaf_failures,
         )
+
+    # ------------------------------------------- project focus (3.3)
+    #
+    # One project holds the execution focus at a time, and holds it for a
+    # minimum quantum. The lock is the anti-thrashing core: a second
+    # conversation assigning a new project queues that project (with its own
+    # plan and its own kickoff report) instead of silently yanking the agent
+    # off the first one, and a switch that does happen checkpoints the old
+    # project and says so.
+
+    async def _project_lock_active(self, project: dict[str, Any] | None = None) -> bool:
+        """Whether the active project is inside its minimum focus quantum."""
+        if self.active_project_id is None or self.project_focus_started_at is None:
+            return False
+        project = project or await self._get_project(self.active_project_id)
+        if project is None or str(project.get("status") or "") != "active":
+            return False
+        elapsed = time.monotonic() - float(self.project_focus_started_at)
+        return elapsed < float(self.config.projects.project_min_focus_s)
+
+    async def _get_project(self, project_id: str | None) -> dict[str, Any] | None:
+        if not project_id or not hasattr(self.memory, "get_project"):
+            return None
+        try:
+            return await self.memory.get_project(project_id)
+        except Exception:
+            return None
+
+    async def _intention_project_id(self, intention_id: Any) -> str | None:
+        if intention_id is None:
+            return None
+        try:
+            intention = await self.memory.get_intention(intention_id)
+        except Exception:
+            return None
+        if intention is None:
+            return None
+        return str(intention.project_id) if intention.project_id else None
 
     async def _choose_focus(self, percepts: list[Percept]) -> Focus | None:
         inputs = await self._drive_inputs(percepts)
@@ -540,7 +620,442 @@ class Life:
             inputs, self.deps.rhythm.energy(self.spent_discretionary_session),
             create_intention_fn=_create,
         )
+        if focus is None or focus.intention_id is None:
+            return focus
+        # The preemption guard: inside the active project's quantum, an impulse
+        # (or a drive-proposed commitment) belonging to a *different* project
+        # does not take the pass. The agent keeps working the project that
+        # holds focus — its own next ready node — and the challenger waits for
+        # the rotation to hand it a turn.
+        if await self._project_lock_active():
+            candidate_project = await self._intention_project_id(focus.intention_id)
+            override = bool((focus.bookmark or {}).get("priority_override", False))
+            if candidate_project and candidate_project != self.active_project_id and not override:
+                logger.info(
+                    "life.project_quantum_held",
+                    active_project=self.active_project_id,
+                    candidate_project=candidate_project,
+                    candidate_title=focus.title[:80],
+                )
+                return await self._focus_for_active_project()
         return focus
+
+    async def _focus_for_active_project(self) -> Focus | None:
+        """The active project's own next ready node, as the held focus."""
+        try:
+            ready = await self.memory.get_ready_intentions(limit=25)
+        except Exception:
+            return None
+        for node in ready:
+            if node.project_id and str(node.project_id) == str(self.active_project_id):
+                return Focus(
+                    intention_id=node.id,
+                    title=node.title or "project work",
+                    kind=node.kind or "task",
+                    why="the project holding focus has ready work",
+                )
+        return None
+
+    async def _switch_project_focus(
+        self, old_project_id: str | None, new_project_id: str, reason: str,
+    ) -> None:
+        """The mandatory protocol for every change of project focus.
+
+        Nothing assigns `self.active_project_id` directly: every change goes
+        through here, because a switch without a checkpoint is a loss — the
+        old project's standing (what was done, which node was live, which
+        files moved) exists only in this moment and nowhere durable. Three
+        things happen to the old project — a structured checkpoint into
+        `projects.checkpoint_json`, a status of `preempted` (unless a human
+        already paused it), and a governance notice to its owner saying what
+        was completed, why the switch happened, and what resumes it — and two
+        to the new one: `active` and a fresh quantum clock.
+        """
+        now = datetime.now(UTC)
+        ledger = None
+        if old_project_id and old_project_id != new_project_id:
+            old_project = await self._get_project(old_project_id)
+            if old_project is not None and str(old_project.get("status")) not in (
+                "done", "evolving_cooldown",
+            ):
+                try:
+                    ledgers = await self.memory.get_project_progress_ledger(
+                        project_id=old_project_id,
+                        current_focus_project_id=old_project_id,
+                    )
+                    ledger = ledgers[0] if ledgers else None
+                except Exception:
+                    ledger = None
+                current_intention_id = None
+                if self.focus is not None and self.focus.intention_id is not None:
+                    current_intention_id = str(self.focus.intention_id)
+                next_ready_title = ""
+                try:
+                    ready = await self.memory.get_ready_intentions(limit=25)
+                    for node in ready:
+                        if node.project_id and str(node.project_id) == old_project_id:
+                            next_ready_title = node.title or ""
+                            break
+                except Exception:
+                    next_ready_title = ""
+                checkpoint = {
+                    "switched_at": now.isoformat(),
+                    "reason": reason[:300],
+                    "completed_nodes": ledger.nodes_done if ledger else 0,
+                    "total_nodes": ledger.nodes_total if ledger else 0,
+                    "active_node_id": current_intention_id,
+                    "modified_files": (
+                        ledger.artifacts_touched[-10:] if ledger else []
+                    ),
+                    "recent_actions": (
+                        ledger.recent_actions if ledger else []
+                    ),
+                    "next_planned_step": next_ready_title,
+                }
+                elapsed_s = 0.0
+                if self.project_focus_started_at is not None:
+                    elapsed_s = max(0.0, time.monotonic() - float(self.project_focus_started_at))
+                accumulated = float(old_project.get("focus_seconds_accumulated") or 0.0)
+                new_status = (
+                    "paused_for_human"
+                    if str(old_project.get("status")) == "paused_for_human"
+                    else "preempted"
+                )
+                await self.memory.update_project(
+                    old_project_id,
+                    status=new_status,
+                    checkpoint_json=checkpoint,
+                    focus_seconds_accumulated=accumulated + elapsed_s,
+                )
+                checkpoint_summary = self.memory.format_checkpoint_summary(checkpoint)
+                await self._emit_governance_notice(
+                    "focus_switched",
+                    project_id=old_project_id,
+                    payload={
+                        "project_title": old_project.get("title") or old_project_id,
+                        "old_title": old_project.get("title") or old_project_id,
+                        "new_title": (await self._get_project(new_project_id) or {}).get("title")
+                        or new_project_id,
+                        "reason": reason,
+                        "checkpoint_summary": checkpoint_summary,
+                        "person_id": old_project.get("owner_principal_id"),
+                        "resume_condition": (
+                            f"Project rotates back to “{old_project.get('title')}” when its "
+                            "score wins the fair rotation, or when you ask for it by name."
+                        ),
+                    },
+                    dedupe_key=f"focus_switched:{old_project_id}:{new_project_id}:{int(now.timestamp()) // 900}",
+                )
+                logger.info(
+                    "life.project_checkpointed", project=old_project_id,
+                    completed=checkpoint["completed_nodes"],
+                    total=checkpoint["total_nodes"],
+                )
+        new_project = await self._get_project(new_project_id)
+        if new_project is not None:
+            await self.memory.update_project(
+                new_project_id, status="active", last_active_at=now,
+            )
+        self.active_project_id = new_project_id
+        self.project_focus_started_at = time.monotonic()
+
+    async def _maybe_rotate_project_focus(self) -> None:
+        """The fair multi-project rotation, run when a quantum or session ends.
+
+        Score = (expected_value / max(estimated_cost_usd, 0.01))
+                * max(1.0, idle_seconds / 600.0)
+
+        Value per dollar times an idle multiplier: a cheap project that has
+        been waiting all afternoon earns its turn against an expensive one
+        that was worked a minute ago. The winner takes the focus through the
+        switch protocol; the loser keeps its checkpoint.
+        """
+        if not self.active_project_id:
+            return
+        quantum_expired = (
+            self.project_focus_started_at is not None
+            and (time.monotonic() - float(self.project_focus_started_at))
+            >= float(self.config.projects.project_min_focus_s)
+        )
+        session_expired = self.deps.rhythm.focus_session_expired()
+        if not (quantum_expired or session_expired):
+            return
+        try:
+            candidates = await self.memory.list_projects(
+                statuses=["active", "preempted"],
+            )
+        except Exception:
+            logger.warning("life.project_rotation_read_failed")
+            return
+        if not candidates:
+            return
+        scored: list[tuple[float, dict[str, Any]]] = []
+        now = datetime.now(UTC)
+        for project in candidates:
+            stats = await self._project_value_estimate(str(project.get("project_id")))
+            expected_value = stats.get("expected_value", 0.5)
+            cost = max(float(stats.get("estimated_cost_usd", 0.05)), 0.01)
+            last_active = project.get("last_active_at")
+            idle_s = 0.0
+            if last_active is not None:
+                try:
+                    idle_s = max(0.0, (now - last_active).total_seconds())
+                except (TypeError, ValueError):
+                    idle_s = 0.0
+            score = (expected_value / cost) * max(1.0, idle_s / 600.0)
+            scored.append((score, project))
+        if not scored:
+            return
+        best_score, best = max(scored, key=lambda pair: pair[0])
+        best_id = str(best.get("project_id"))
+        if best_id == str(self.active_project_id):
+            # The current focus won again: restart its quantum so the next
+            # check is a full interval away, not one every cycle.
+            self.project_focus_started_at = time.monotonic()
+            return
+        await self._switch_project_focus(
+            self.active_project_id, best_id,
+            reason=(
+                f"fair rotation: “{best.get('title')}” scored highest "
+                f"({best_score:.2f}) after the focus quantum expired"
+            ),
+        )
+        # Follow the switch with the new project's own work, so the rotation
+        # is visible in what the agent is doing on the very next pass.
+        follow = await self._focus_for_active_project()
+        if follow is not None:
+            self.focus = follow
+
+    async def _project_value_estimate(self, project_id: str) -> dict[str, float]:
+        """A project's expected value and estimated remaining cost, from rows."""
+        try:
+            row = await self.memory.db.fetchrow(
+                "SELECT COALESCE(SUM(COALESCE(expected_value, 0.5)), 0) AS ev, "
+                "COALESCE(SUM(GREATEST(COALESCE(budget_allocated_usd, budget_usd, 0) "
+                "- COALESCE(budget_spent_usd, 0), 0.05)), 0.05) AS cost "
+                "FROM intentions WHERE project_id = $1::uuid "
+                "AND status NOT IN ('done','cancelled')",
+                project_id,
+            )
+            if row is None:
+                return {"expected_value": 0.5, "estimated_cost_usd": 0.05}
+            return {
+                "expected_value": float(row["ev"] or 0.5),
+                "estimated_cost_usd": max(float(row["cost"] or 0.05), 0.01),
+            }
+        except Exception:
+            return {"expected_value": 0.5, "estimated_cost_usd": 0.05}
+
+    async def _emit_governance_notice(
+        self,
+        event_type: str,
+        project_id: str | None = None,
+        payload: dict[str, Any] | None = None,
+        dedupe_key: str = "",
+    ) -> Any:
+        """One proactive project report, into the shared outbox.
+
+        Shared with the solver loop on purpose: `_switch_project_focus` emits
+        `focus_switched` where the switch happens, and `decide` drains the same
+        queue the solver writes its kickoffs, human asks, blockers and
+        milestones into — one queue, one dedupe table, one delivery path.
+        """
+        payload = dict(payload or {})
+        outbox = getattr(self.deps.gsl, "governance", None)
+        if outbox is not None and hasattr(outbox, "emit"):
+            return outbox.emit(
+                event_type, payload,
+                dedupe_key=dedupe_key or f"{event_type}:{project_id}",
+                person_id=payload.get("person_id"), project_id=project_id,
+            )
+        return None
+
+    async def _due_governance_notices(self, limit: int = 2) -> list[Any]:
+        """The pending notices this pass may deliver, oldest first.
+
+        Only notices with an address are returned: a governance report with
+        nobody to deliver to would spend a pass discovering that. The rows
+        stay in the outbox until `act` settles them, so a cycle that fails to
+        compose them does not lose them.
+        """
+        outbox = getattr(self.deps.gsl, "governance", None)
+        # A deployment (or a test double) whose solver loop has no outbox has
+        # nothing to dispatch; the attribute is duck-checked rather than
+        # assumed, because a missing governance layer must not cost a cycle.
+        if outbox is None or not hasattr(outbox, "peek"):
+            return []
+        due: list[Any] = []
+        for notice in outbox.peek(limit=limit + 5):
+            person_id = notice.person_id or (notice.payload or {}).get("person_id")
+            if not person_id:
+                continue
+            due.append(notice)
+            if len(due) >= limit:
+                break
+        return due
+
+    async def _deliver_governance_notice(self, notice: Any) -> bool:
+        """Deliver one governance notice, model-composed when possible.
+
+        The composition is a stage-notice write (the model choosing the
+        words); a model that cannot answer falls back to the notice's own
+        rendered facts, because a blocker or an ask that only exists as a
+        queued object is the silent-lead failure this whole path exists to
+        remove. Delivery goes through the outbound pipeline's governance
+        category: immediate, deduped, and budgeted separately from casual
+        conversation.
+        """
+        person_id = notice.person_id or (notice.payload or {}).get("person_id")
+        if not person_id or self.deps.comms_out is None:
+            return False
+        text = None
+        composer = getattr(self.deps.social, "compose_stage_notice", None)
+        if composer is not None:
+            try:
+                text = await composer(SimpleNamespace(
+                    stage=notice.event_type,
+                    title=(notice.payload or {}).get("project_title")
+                    or (notice.payload or {}).get("title") or "",
+                    detail=notice.render_text(),
+                    person_id=person_id,
+                ), preview=self._preview())
+            except Exception:
+                logger.warning("life.governance_compose_failed", event_type=notice.event_type)
+                text = None
+        text = text or notice.render_text()
+        if not text:
+            return False
+        channel = await self._channel_for(person_id)
+        try:
+            result = await self.deps.comms_out.send(
+                person_id=person_id,
+                channel=channel,
+                text=text,
+                urgency=(
+                    "high" if notice.event_type == "critical_risk_or_blocker" else "normal"
+                ),
+                conversation_key=None,
+                in_reply_to=None,
+                intention_id=(notice.payload or {}).get("intention_id"),
+                category="governance",
+                event_type=notice.event_type,
+                dedupe_key=notice.dedupe_key,
+            )
+        except TypeError:
+            # A deployment whose pipeline predates the governance category
+            # still gets the message, without the fast-path knobs.
+            try:
+                result = await self.deps.comms_out.send(
+                    person_id=person_id, channel=channel, text=text,
+                    urgency="normal", conversation_key=None, in_reply_to=None,
+                )
+            except Exception as exc:
+                logger.warning("life.governance_send_failed", error=str(exc)[:200])
+                return False
+        except Exception as exc:
+            logger.warning("life.governance_send_failed", error=str(exc)[:200])
+            return False
+        status = str((result or {}).get("status") or "")
+        delivered = status in ("sent", "queued")
+        if delivered:
+            await self._record_outbound_notice_turn(
+                {
+                    "title": (notice.payload or {}).get("project_title")
+                    or (notice.payload or {}).get("title") or "",
+                    "person_id": person_id,
+                    "stage": notice.event_type,
+                    "channel": channel,
+                    "intention_id": (notice.payload or {}).get("intention_id"),
+                    "conversation_key": None,
+                },
+                text,
+            )
+        logger.info(
+            "life.governance_dispatched", event_type=notice.event_type,
+            person=person_id, status=status or "unknown",
+        )
+        return delivered
+
+    async def _channel_for(self, person_id: str) -> str:
+        """Where to reach a person, from their newest inbound row."""
+        db = getattr(self.memory, "db", None)
+        if db is not None:
+            try:
+                row = await db.fetchrow(
+                    "SELECT channel FROM messages WHERE direction = 'inbound' "
+                    "AND person_id = $1 ORDER BY ts DESC LIMIT 1",
+                    person_id,
+                )
+                if row is not None and row["channel"]:
+                    return str(row["channel"])
+            except Exception:
+                pass
+        return "web"
+
+    async def _deliberation_project_context(
+        self, message: Any,
+    ) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+        """The bound project and the full portfolio, for the reply prompt.
+
+        The bound project is what this conversation assigned; the portfolio is
+        every project's ledger. Both go into the deliberation so a question
+        about progress is answered from the project's own numbers — never
+        substituted with whichever project happens to hold the focus.
+        """
+        bound: dict[str, Any] | None = None
+        ledgers: list[dict[str, Any]] = []
+        conversation_key = str(getattr(message, "conversation_key", "") or "")
+        if conversation_key and hasattr(self.memory, "get_conversation_project"):
+            try:
+                bound = await self.memory.get_conversation_project(conversation_key)
+            except Exception:
+                bound = None
+        if hasattr(self.memory, "get_project_progress_ledger"):
+            try:
+                rows = await self.memory.get_project_progress_ledger(
+                    current_focus_project_id=self.active_project_id,
+                )
+                ledgers = [ledger.as_dict() for ledger in rows]
+            except Exception:
+                ledgers = []
+        return bound, ledgers
+
+    async def _evolution_candidates(self) -> list[dict[str, Any]]:
+        """Evergreen projects whose cooldown has elapsed, as drive-visible work.
+
+        Each entry is shaped like an intention projection (`from_intentions`
+        reads id/title/kind/priority/deadline) except its kind is `project` and
+        its id is the project's root intention, so `resolve_impulse_target`
+        for `evolve_project` returns it and the resulting focus points at
+        something `_advance_goal` can evolve.
+        """
+        if not hasattr(self.memory, "list_projects"):
+            return []
+        projects = await self.memory.list_projects(statuses=["evolving_cooldown"])
+        now = datetime.now(UTC)
+        out: list[dict[str, Any]] = []
+        for project in projects:
+            due_at = project.get("next_evolution_at")
+            if due_at is not None:
+                if getattr(due_at, "tzinfo", None) is None:
+                    due_at = due_at.replace(tzinfo=UTC)
+                if due_at > now:
+                    continue
+            root = project.get("root_intention_id")
+            if not root:
+                continue
+            out.append({
+                "id": str(root),
+                "title": f"Evolve: {project.get('title') or 'project'}",
+                "kind": "project",
+                "status": "active",
+                "priority": 0.55,
+                "origin": "evolution",
+                "deadline": None,
+                "created_at": None,
+                "project_id": str(project.get("project_id")),
+            })
+        return out
 
     async def _roll_on_focus_change(self, before: Focus | None, after: Focus | None) -> None:
         """When the agent switches what it is working on, say so.
@@ -596,6 +1111,18 @@ class Life:
                 "budget_burn_usd": 0.0, "ready_count": 0,
             }
         commitments = await self.memory.list_intentions(limit=12)
+        # The portfolio: every non-done project with its verified standing, so
+        # the workspace — and therefore every reply written from it — can name
+        # a project that lost the focus an hour ago with its real numbers.
+        project_ledger: list[dict[str, Any]] = []
+        if hasattr(self.memory, "get_project_progress_ledger"):
+            try:
+                ledgers = await self.memory.get_project_progress_ledger(
+                    current_focus_project_id=self.active_project_id,
+                )
+                project_ledger = [ledger.as_dict() for ledger in ledgers]
+            except Exception:
+                project_ledger = []
         memories = []
         query = self.focus.title if self.focus else "recent context"
         try:
@@ -630,6 +1157,7 @@ class Life:
             recent=recent,
             conversations=conversations,
             stops=self.stops.render(),
+            project_ledger=project_ledger,
             now=datetime.now(UTC),
         )
 
@@ -723,16 +1251,37 @@ class Life:
                 await self.bookmark(self.focus)
                 self._push_suspended(self.focus)
             tier = "T3" if self._message_is_consequential(inbound[0]) else "T2"
+            bound_project, all_ledgers = await self._deliberation_project_context(inbound[0])
             social_decision = await self.deps.social.deliberate(
                 message=inbound[0],
                 energy=self.deps.rhythm.energy(self.spent_discretionary_session),
                 focus_title=self.focus.title if self.focus else None,
                 tools=self._tool_names(),
                 preview=self._preview(),
+                bound_project=bound_project,
+                project_ledgers=all_ledgers,
             )
             return Decision(
                 kind="social", tier=tier, social=social_decision.model_dump(mode="json"),
                 rationale=f"social deliberation for {inbound[0].person_id}: immediate (attention gate removed)",
+            )
+
+        # Priority 2: pending governance notices. A project lead reports
+        # kickoffs, human asks, blockers, milestones and focus switches without
+        # waiting to be asked — right after the person who just wrote, and
+        # before the agent's own held goal, because a human ask that waits
+        # behind an hour of solver work is a person idling for that hour.
+        governance = await self._due_governance_notices(limit=2)
+        if governance:
+            self._governance_batch = list(governance)
+            self.states.transition(State.NOTIFYING, "governance notice owed")
+            return Decision(
+                kind="governance", tier="T2",
+                stage={"notices": len(governance)},
+                rationale=(
+                    "governance: "
+                    + ", ".join(str(n.event_type) for n in governance[:3])
+                ),
             )
 
         progress = await self._proactive_progress_due()
@@ -953,6 +1502,18 @@ class Life:
             outcome.commission = commissioned
         elif decision.kind == "notify" and decision.stage is not None:
             outcome.ok = await self._notify_stage(decision.stage)
+        elif decision.kind == "governance":
+            batch = self._governance_batch
+            self._governance_batch = []
+            outbox = getattr(self.deps.gsl, "governance", None)
+            delivered_any = False
+            for notice in batch:
+                delivered = await self._deliver_governance_notice(notice)
+                if outbox is not None and hasattr(outbox, "remove"):
+                    outbox.remove(notice)
+                delivered_any = delivered_any or delivered
+            outcome.ok = delivered_any if batch else True
+            outcome.results.append({"kind": "governance", "notices": len(batch)})
         elif decision.kind == "progress" and decision.stage is not None:
             outcome.ok = await self._report_progress(decision.stage)
         elif decision.kind == "mind_wander":
@@ -987,6 +1548,22 @@ class Life:
 
             return SolverResult(outcome=SolverOutcome.goal_failed,
                                  thoughts=["intention vanished"])
+        # An evergreen project resting in its cooldown, advanced because the
+        # drives proposed it, does not run its (already done) root intention
+        # again — it proposes the next evolution cycle.
+        project = await self._get_project(
+            str(intention.project_id) if intention.project_id else None
+        )
+        if project is not None and str(project.get("status") or "") == "evolving_cooldown":
+            due_at = project.get("next_evolution_at")
+            if due_at is None:
+                due = True
+            else:
+                if getattr(due_at, "tzinfo", None) is None:
+                    due_at = due_at.replace(tzinfo=UTC)
+                due = due_at <= datetime.now(UTC)
+            if due:
+                return await self.deps.gsl.propose_next_evolution(project)
         if intention.status in ("done", "cancelled", "failed", "parked"):
             from ethos.schemas.gsl import SolverResult
 
@@ -1272,6 +1849,7 @@ class Life:
                     urgency=decision.urgency,
                     conversation_key=message.conversation_key,
                     in_reply_to=message.id,
+                    category="casual",
                 )
                 await self._record_outbound_turn(message, override)
                 await self.deps.audit.append(
@@ -1313,6 +1891,13 @@ class Life:
                     deadline=_deadline_from_spec(spec.get("deadline_iso")),
                 )
                 commission = {"intention_id": str(intention_id), "title": title}
+                # A commission big enough to decompose is a project: it gets
+                # its own container, its own isolated workspace lease, and its
+                # own conversation binding. Two projects assigned from two
+                # conversations therefore never share a file or a ledger.
+                await self._maybe_create_project(
+                    intention_id, title, spec, message,
+                )
                 # A follow-up that sequences the new work behind the work in
                 # hand ("once that is finished, review X") is recorded as a
                 # dependency, not just promised in prose: the edge is what
@@ -1341,6 +1926,10 @@ class Life:
                                     prior=str(prior.intention_id),
                                     commission=str(intention_id),
                                 )
+        # A reply that answers an open human node closes it: the intention is
+        # marked done with the person's evidence, and the nodes that depended
+        # on it become ready — the project resumes on its own.
+        await self._resolve_human_node(decision, message)
         # What this turn has to say, one message per text.
         #
         # A deliberation writes its reply as a list of short texts, and the list
@@ -1405,6 +1994,14 @@ class Life:
                 await self._announce_decline(message, decision)
             return commission
         gap_ceiling = max(0.0, float(self.config.social.reply_gap_max_s))
+        # `instruct_user` and `report_governance` are project-lead speech: they
+        # go out through the governance fast-path (immediate, deduped, their
+        # own daily cap) rather than the casual digest and etiquette queue.
+        category = (
+            "governance"
+            if decision.action.value in ("instruct_user", "report_governance")
+            else "casual"
+        )
         for index, (text, delay) in enumerate(pairs):
             if index and delay > 0:
                 waited = min(delay, gap_ceiling)
@@ -1417,10 +2014,153 @@ class Life:
                 urgency=decision.urgency,
                 conversation_key=message.conversation_key,
                 in_reply_to=message.id,
+                category=category,
             )
             await self._record_outbound_turn(message, text)
         await self.deps.social.mark_handled(message, decided)
         return commission
+
+    async def _maybe_create_project(
+        self,
+        intention_id: Any,
+        title: str,
+        spec: dict[str, Any],
+        message: Any,
+    ) -> dict[str, Any] | None:
+        """Give a big enough commission its own project container.
+
+        Two conversations assigning two projects used to overwrite one focus
+        slot with no record of which was which. A project fixes that from the
+        bottom up: the root intention carries `project_id`, the container
+        carries its own workspace lease (git worktree inside a repo, an
+        isolated snapshot directory otherwise), and the conversation gets a
+        binding — so Project 1 and Project 2 are separate by construction.
+
+        A second project assigned while the first is inside its focus quantum
+        is created `preempted`: it has a plan and a kickoff report, and it
+        waits its turn rather than taking focus.
+        """
+        if not hasattr(self.memory, "create_project"):
+            return None
+        from ethos.gsl.planner import classify_lifecycle_mode, needs_decomposition
+
+        desired = str(spec.get("desired_end_state", "") or "")
+        lifecycle = classify_lifecycle_mode(title, desired)
+        placeholder = SimpleNamespace(
+            title=title, desired_end_state=desired, kind="commitment",
+            commissioned_by=message.person_id,
+            success_criteria=list(spec.get("success_criteria") or []),
+        )
+        if not needs_decomposition(placeholder):
+            return None
+        lock_active = await self._project_lock_active()
+        # Inside another project's locked quantum the new project is queued
+        # (`preempted`); outside it, the new assignment may take the focus.
+        status = "preempted" if (lock_active and self.active_project_id is not None) else "active"
+        project = await self.memory.create_project(
+            title=title,
+            owner_principal_id=str(message.person_id or "owner"),
+            root_intention_id=intention_id,
+            lifecycle_mode=lifecycle,
+            status=status,
+            leases=getattr(self.deps, "leases", None),
+        )
+        conversation_key = str(getattr(message, "conversation_key", "") or "")
+        if conversation_key:
+            try:
+                await self.memory.bind_conversation_project(
+                    conversation_key, project["project_id"],
+                )
+            except Exception:
+                logger.warning("life.project_bind_failed", project=project["project_id"])
+        # Initial decomposition, now rather than at first advance: the new
+        # project gets a concrete DAG immediately, its `human` nodes are
+        # created as asks, and the kickoff report presents the plan in
+        # conversation B — including the fact that this project is queued
+        # behind the one currently executing, when it is.
+        try:
+            gsl = getattr(self.deps, "gsl", None)
+            decomposer = getattr(gsl, "_maybe_decompose", None)
+            root = await self.memory.get_intention(intention_id)
+            if decomposer is not None and root is not None:
+                # The container exists because this commission was judged
+                # project-sized, so the decomposition is forced: difficulty is
+                # the switch `needs_decomposition` reads for exactly this.
+                resume = dict(root.resume_state or {})
+                resume["difficulty"] = max(0.8, float(resume.get("difficulty") or 0.0))
+                await decomposer(root, resume)
+        except Exception:
+            logger.exception("life.project_decompose_failed", project=project["project_id"])
+        logger.info(
+            "life.project_assigned", project=project["project_id"], title=title[:120],
+            status=status, lease=project.get("workspace_lease_id"),
+            conversation=conversation_key or None,
+        )
+        # A new project never silently takes the execution focus: if the lock
+        # is held, the project is queued with its plan and its kickoff report
+        # says so — the first project keeps its quantum. Outside the lock
+        # (and for the first project of all), the switch is explicit and
+        # checkpointed like every other one.
+        if status == "active" and str(self.active_project_id or "") != project["project_id"]:
+            await self._switch_project_focus(
+                self.active_project_id, project["project_id"],
+                reason=f"new project “{title}” assigned",
+            )
+        return project
+
+    async def _resolve_human_node(self, decision: Any, message: Any) -> bool:
+        """Close an `awaiting_human` node the person's reply just answered.
+
+        The deliberation reports `resolves_human_node_id` with the evidence
+        when the message fulfills an open human ask. Closing the node is the
+        unlock: `get_ready_intentions` treats done predecessors as satisfied,
+        so every node that depended on it becomes ready on the next cycle, and
+        the project — paused only because nothing agent-executable remained —
+        is set back to `active`.
+        """
+        node_id = getattr(decision, "resolves_human_node_id", None)
+        if not node_id:
+            return False
+        try:
+            node_uuid = UUID(str(node_id))
+        except (TypeError, ValueError):
+            logger.warning("life.human_node_unreadable", node=str(node_id)[:60])
+            return False
+        evidence = getattr(decision, "human_node_evidence", None) or {}
+        try:
+            node = await self.memory.get_intention(node_uuid)
+            if node is None:
+                return False
+            if node.status == "done":
+                return False
+            await self.memory.update_intention(
+                node_uuid,
+                status="done",
+                closed_reason="resolved by the owner's reply",
+                instruction_spec={
+                    **(node.instruction_spec or {}),
+                    "evidence": evidence,
+                    "resolved_by": str(getattr(message, "person_id", "") or ""),
+                },
+            )
+            await self.memory.record_episode(
+                kind="goal_done",
+                summary=f"human step resolved: {node.title}",
+                intention_id=node_uuid,
+                importance=0.7,
+            )
+        except Exception:
+            logger.exception("life.human_node_resolve_failed", node=str(node_uuid))
+            return False
+        if node.project_id is not None:
+            try:
+                await self.memory.update_project(
+                    str(node.project_id), status="active", last_active_at=datetime.now(UTC),
+                )
+            except Exception:
+                logger.warning("life.human_node_project_resume_failed", node=str(node_uuid))
+        logger.info("life.human_node_resolved", node=str(node_uuid), evidence=bool(evidence))
+        return True
 
     async def _already_commissioned(self, title: str, commissioned_by: str | None) -> Any | None:
         """The open row for this same work, when the owner is asking for it again.
@@ -2239,6 +2979,14 @@ class Life:
             "focus": _focus_json(self.focus),
             "energy": self.deps.rhythm.energy(self.spent_discretionary_session),
             "spent_session": self.spent_discretionary_session,
+            # Which project holds the execution focus, and when its quantum
+            # began. Without these a restart re-opens the preemption lock and
+            # the rotation treats two projects as equally idle, which is how
+            # multi-project work thrashes.
+            "projects": {
+                "active_project_id": self.active_project_id,
+                "project_focus_started_at": self.project_focus_started_at,
+            },
             # Continuity is state, not transcript [P3]: the thread as written,
             # plus the newest raw turns so a restart resumes mid-thought rather
             # than mid-sentence.
@@ -2626,6 +3374,10 @@ class Life:
             "thread_id": self.deps.thread_id,
             "state": "stopped",
             "focus": _focus_json(self.focus),
+            "projects": {
+                "active_project_id": self.active_project_id,
+                "project_focus_started_at": self.project_focus_started_at,
+            },
             # The thread has to be here too. This snapshot replaces the last
             # per-cycle one, so leaving the context out makes shutting down the
             # one thing that reliably erases it -- the agent's final act on its
@@ -2658,6 +3410,8 @@ class Life:
             recent_centroid=None,
             thresholds_by_state=self.config.rhythm.attention.interrupt_thresholds,
             state_name=self.states.state.value,
+            active_project_id=self.active_project_id,
+            project_lock_active=await self._project_lock_active(),
         )
         previous_focus = self.focus
         if appraisal.interrupt:
@@ -2695,6 +3449,14 @@ class Life:
         if settled is not self.focus:
             await self._roll_on_focus_change(self.focus, settled)
         self.focus = settled
+        # The fair rotation, checked at the seam where a focus quantum can end:
+        # a project that has held the pass for its full interval (or a full
+        # 90-minute session) may hand it to the best-scoring project waiting
+        # behind it — through the switch protocol, never by silent reassignment.
+        try:
+            await self._maybe_rotate_project_focus()
+        except Exception:
+            logger.exception("life.project_rotation_failed")
 
         if self.focus is None and self.states.state != State.WAITING:
             self.states.transition(State.WAITING, "no focus")

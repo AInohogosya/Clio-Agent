@@ -20,6 +20,14 @@ from ethos.social.conversation import conversation_key as key_for
 
 logger = get_logger("ethos.social.etiquette")
 
+# Governance events delivered even inside quiet hours: somebody is blocked or
+# something is at risk, and holding the report until morning is the agent
+# deciding to sit on it. Everything else governance-shaped waits for 08:00.
+GOVERNANCE_IMMEDIATE_EVENTS = frozenset({
+    "human_action_required",
+    "critical_risk_or_blocker",
+})
+
 
 def _parse_hhmm(value: str):
     hh, mm = value.strip().split(":")
@@ -62,6 +70,12 @@ class OutboundPipeline:
         self.now_fn = now_fn
         self.digests: dict[str, dict[str, Any]] = {}
         self.window_s = config.permissions.interruption.digest_window_min * 60
+        # Governance fast-path bookkeeping. `_governance_seen` replaces the
+        # 24-hour subject repeat window with a 15-minute dedupe on the notice
+        # key; `_governance_morning` holds the good-news reports that arrived
+        # inside quiet hours, for their 08:00 delivery.
+        self._governance_seen: dict[str, float] = {}
+        self._governance_morning: list[dict[str, Any]] = []
 
     def daily_budget(self, relation: str | None) -> int:
         budgets = self.config.permissions.interruption.daily_budgets
@@ -189,10 +203,21 @@ class OutboundPipeline:
         conversation_key: str | None = None,
         in_reply_to: Any = None,
         intention_id: Any = None,
+        category: str = "casual",
+        event_type: str | None = None,
+        dedupe_key: str | None = None,
     ) -> dict[str, Any]:
         if urgency not in (u.value for u in Urgency):
             urgency = Urgency.normal.value
         key = conversation_key or key_for(channel, person_id)
+        # Clio Agent 3.3 governance fast-path: a project lead's reports —
+        # kickoffs, human asks, blockers, milestones, focus switches — are not
+        # casual conversation and do not queue like it.
+        if category == "governance":
+            return await self._send_governance(
+                person_id, channel, text, urgency, conversation_key, in_reply_to,
+                intention_id, event_type=event_type, dedupe_key=dedupe_key,
+            )
         # Clio 3.2 resident fast-path: structured JSON over the EventBus,
         # immediately. No quiet hours, no digest, no daily budget.
         if person_id is not None and (await self.is_resident_address(person_id)):
@@ -240,6 +265,152 @@ class OutboundPipeline:
         return await self._deliver(
             person_id, channel, text, urgency, conversation_key, in_reply_to, intention_id,
         )
+
+    async def _governance_count_today(self) -> int:
+        """How many governance messages went out today, across all recipients.
+
+        Separate from the per-person casual budget on purpose: the daily cap
+        on governance is about the machine not becoming a notification fire
+        hose, and 24 reports a day across every project is already generous.
+        """
+        if self.db is None:
+            return 0
+        local = self.now_fn().astimezone(clock_timezone(self.config.timezone))
+        start = datetime.combine(local.date(), datetime.min.time(), tzinfo=local.tzinfo)
+        try:
+            count = await self.db.fetchval(
+                "SELECT COUNT(*) FROM messages WHERE direction = 'outbound' "
+                "AND ts >= $1 AND (delivery->>'status') = 'sent' "
+                "AND (delivery->>'category') = 'governance'",
+                start,
+            )
+            return int(count or 0)
+        except Exception:
+            return 0
+
+    async def _send_governance(
+        self, person_id: str | None, channel: str, text: str, urgency: str,
+        conversation_key: str | None, in_reply_to: Any, intention_id: Any,
+        *, event_type: str | None = None, dedupe_key: str | None = None,
+    ) -> dict[str, Any]:
+        """Deliver one governance report by the project-lead rules.
+
+        Six departures from casual etiquette, each with a reason:
+
+        * the 120-minute digest queue is bypassed — a milestone batched for
+          two hours is the agent sitting on its own news;
+        * the 12-hour awaiting-reply suppression is bypassed — a report about
+          work somebody entrusted to the agent is not an unsolicited opener,
+          and the agent's own "on it" must never silence its "done";
+        * the 24-hour subject repeat window becomes a 15-minute `dedupe_key`
+          check — the same notice twice in a quarter hour is a bug, the same
+          words tomorrow are not;
+        * a dedicated daily cap (`governance_daily_cap`, 24) replaces the
+          6/3/1 casual budgets, which stay in force for casual messages;
+        * during quiet hours, `human_action_required` and
+          `critical_risk_or_blocker` go out immediately — someone is blocked —
+          while `milestone_completed` and `focus_switched` are queued for
+          08:00, so good news keeps the person's night their own;
+        * residents still take their own fast-path first.
+        """
+        inter = self.config.permissions.interruption
+        window_s = float(inter.governance_dedupe_window_min) * 60.0
+        key = dedupe_key or conversation_key or key_for(channel, person_id)
+        now_monotonic = time.monotonic()
+        seen = self._governance_seen.get(key)
+        if seen is not None and now_monotonic - seen < window_s:
+            await self._record(
+                person_id, channel, text, urgency, conversation_key, in_reply_to,
+                intention_id, status="deduped",
+                detail="governance dedupe window", category="governance",
+            )
+            return {"status": "deduped", "reason": "already sent inside the governance dedupe window"}
+        if person_id is not None and (await self.is_resident_address(person_id)):
+            return await self._deliver_resident(
+                person_id, channel, text, urgency,
+                conversation_key or key_for(channel, person_id), intention_id,
+            )
+        used = await self._governance_count_today()
+        if used >= int(inter.governance_daily_cap):
+            await self._record(
+                person_id, channel, text, urgency, conversation_key, in_reply_to,
+                intention_id, status="suppressed",
+                detail=f"governance daily cap exhausted ({used}/{inter.governance_daily_cap})",
+                category="governance",
+            )
+            return {
+                "status": "suppressed",
+                "reason": f"governance daily cap exhausted ({used})",
+            }
+        local_now = self.now_fn().astimezone(clock_timezone(self.config.timezone))
+        quiet = in_quiet_hours(local_now, inter.quiet_hours["start"], inter.quiet_hours["end"])
+        if quiet and event_type not in GOVERNANCE_IMMEDIATE_EVENTS:
+            # Held for the morning: recorded as queued so the row exists, and
+            # delivered by `flush_governance_queue` at the end of quiet hours.
+            self._governance_morning.append({
+                "person_id": person_id, "channel": channel, "text": text,
+                "urgency": urgency, "conversation_key": conversation_key,
+                "intention_id": intention_id, "event_type": event_type, "key": key,
+                "queued_at": now_monotonic,
+            })
+            await self._record(
+                person_id, channel, text, urgency, conversation_key, in_reply_to,
+                intention_id, status="queued",
+                detail="quiet hours: governance queued for 08:00",
+                category="governance",
+            )
+            return {"status": "queued", "reason": "quiet hours; delivers at the end of them"}
+        self._governance_seen[key] = now_monotonic
+        if len(self._governance_seen) > 1024:
+            cutoff = now_monotonic - window_s
+            self._governance_seen = {
+                k: v for k, v in self._governance_seen.items() if v >= cutoff
+            }
+        result = await self._deliver(
+            person_id, channel, text, urgency, conversation_key, in_reply_to,
+            intention_id, category="governance",
+        )
+        if self.audit is not None:
+            await self.audit.append(
+                actor="self", category="social",
+                summary=f"governance message sent: {event_type or 'report'}",
+                details={
+                    "person_id": person_id, "event_type": event_type,
+                    "status": (result or {}).get("status"),
+                },
+            )
+        return result
+
+    async def flush_governance_queue(self) -> int:
+        """Deliver the good-news reports held through quiet hours.
+
+        Called from `flush_due_digests`, so the same pass that drains the
+        digest drains these: the end of quiet hours is when the person can be
+        told about shipped milestones and focus switches without it costing
+        their night.
+        """
+        if not self._governance_morning:
+            return 0
+        local_now = self.now_fn().astimezone(clock_timezone(self.config.timezone))
+        inter = self.config.permissions.interruption
+        quiet = in_quiet_hours(local_now, inter.quiet_hours["start"], inter.quiet_hours["end"])
+        if quiet:
+            return 0
+        sent = 0
+        pending, self._governance_morning = self._governance_morning, []
+        for entry in pending:
+            person_id = entry.get("person_id")
+            if person_id is not None and (await self.is_resident_address(person_id)):
+                continue
+            self._governance_seen[entry["key"]] = time.monotonic()
+            result = await self._deliver(
+                person_id, entry["channel"], entry["text"], entry["urgency"],
+                entry["conversation_key"], None, entry["intention_id"],
+                category="governance",
+            )
+            if str((result or {}).get("status")) in ("sent", "queued"):
+                sent += 1
+        return sent
 
     async def _send_midtask(self, person_id: str, key: str, channel: str, text: str, urgency: str,
                             intention_id: Any) -> dict[str, Any]:
@@ -341,6 +512,9 @@ class OutboundPipeline:
 
     async def flush_due_digests(self) -> int:
         sent = 0
+        # Governance reports held through quiet hours ride the same flush: the
+        # end of quiet hours is when the person can be told about the good news.
+        sent += await self.flush_governance_queue()
         now = time.monotonic()
         for person_id, entry in list(self.digests.items()):
             if now - entry["queued_at"] < self.window_s and len(entry["texts"]) < 4:
@@ -439,7 +613,8 @@ class OutboundPipeline:
         return {"status": detail.get("status", "sent"), "message_id": record, "detail": detail}
 
     async def _deliver(self, person_id: str | None, channel: str, text: str, urgency: str,
-                       conversation_key: str | None, in_reply_to: Any, intention_id: Any) -> dict[str, Any]:
+                       conversation_key: str | None, in_reply_to: Any, intention_id: Any,
+                       category: str = "casual") -> dict[str, Any]:
         detail = None
         status = "sent"
         if self.sender is not None:
@@ -455,7 +630,7 @@ class OutboundPipeline:
                 status, detail = "failed", {"error": str(exc)}
         record = await self._record(
             person_id, channel, text, urgency, conversation_key, in_reply_to, intention_id,
-            status=status, detail=detail,
+            status=status, detail=detail, category=category,
         )
         if self.relationships is not None and person_id:
             await self.relationships.note_contact(person_id, direction="outbound")
@@ -463,9 +638,9 @@ class OutboundPipeline:
 
     async def _record(self, person_id: str | None, channel: str, text: str, urgency: str,
                       conversation_key: str | None, in_reply_to: Any, intention_id: Any,
-                      status: str, detail: Any = None) -> str:
+                      status: str, detail: Any = None, category: str = "casual") -> str:
         message_id = uuid4()
-        delivery = {"status": status, "urgency": urgency}
+        delivery = {"status": status, "urgency": urgency, "category": category}
         if detail:
             delivery["detail"] = detail
         # One timestamp, written to the row and published with the event, rather

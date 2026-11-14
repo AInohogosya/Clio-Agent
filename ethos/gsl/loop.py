@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import re
 import time
+from collections import deque
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from ethos.config import EthosConfig
 from ethos.engine.rhythm import backoff_seconds
@@ -57,6 +60,185 @@ logger = get_logger("ethos.gsl")
 # recovery action, not a stop; how many approaches a goal may burn through
 # is `gsl.max_strategies` (0 = no ceiling).
 STEP_FAILURES_BEFORE_SWITCH = 2
+
+# The five governance events a project lead owes its owner unprompted, and the
+# window a `dedupe_key` stays claimed. A second emission of the same key inside
+# the window is the same news, and is dropped rather than delivered twice.
+GOVERNANCE_EVENTS = frozenset({
+    "project_kickoff",
+    "human_action_required",
+    "critical_risk_or_blocker",
+    "milestone_completed",
+    "focus_switched",
+})
+GOVERNANCE_DEDUPE_WINDOW_S = 15 * 60.0
+GOVERNANCE_QUIET_DELIVER_EVENTS = frozenset({
+    # Delivered even inside quiet hours: someone is blocked, or something is
+    # at risk, and waiting until morning is the agent deciding to sit on it.
+    "human_action_required",
+    "critical_risk_or_blocker",
+})
+GOVERNANCE_QUIET_QUEUE_EVENTS = frozenset({
+    # Held for 08:00 during quiet hours: good news and bookkeeping keep
+    # the person's nights their own.
+    "milestone_completed",
+    "focus_switched",
+})
+
+
+@dataclass
+class GovernanceNotice:
+    """One proactive project report, waiting to be dispatched by the life loop.
+
+    The solver loop writes these where the events happen; `Life.decide` pays
+    them at priority 2 through the governance fast-path of the outbound
+    pipeline. `person_id` is who the report is owed to (the project's owner,
+    usually), and `dedupe_key` is what makes a re-entered emission cheap.
+    """
+
+    event_type: str
+    project_id: str | None
+    payload: dict[str, Any] = field(default_factory=dict)
+    dedupe_key: str = ""
+    person_id: str | None = None
+    created_at: float = field(default_factory=time.monotonic)
+
+    def render_text(self) -> str:
+        """The facts, as one plain message. Composed here, not invented there."""
+        payload = self.payload
+        title = str(payload.get("project_title") or payload.get("title") or "the project")
+        if self.event_type == "project_kickoff":
+            plan = payload.get("plan") or []
+            lines = [f"Kicking off “{title}”. Plan:"]
+            lines += [f"- {str(step)[:160]}" for step in plan[:7]]
+            humans = payload.get("human_tasks") or []
+            if humans:
+                lines.append("Needs from you: " + "; ".join(str(h)[:140] for h in humans[:3]))
+            if payload.get("queued"):
+                lines.append(
+                    "Another project is currently in its active execution block, so "
+                    "this one is queued next — it starts when that block ends, or "
+                    "sooner if you ask for it directly."
+                )
+            return "\n".join(lines)
+        if self.event_type == "human_action_required":
+            spec = payload.get("instruction_spec") or {}
+            steps = spec.get("exact_steps") or []
+            lines = [f"“{title}” needs something only you can do:"]
+            if spec.get("action_required"):
+                lines.append(str(spec["action_required"])[:200])
+            lines += [f"{i}. {str(s)[:160]}" for i, s in enumerate(steps[:4], 1)]
+            if spec.get("acceptance_evidence"):
+                lines.append(f"When done: {str(spec['acceptance_evidence'])[:160]}")
+            return "\n".join(lines)
+        if self.event_type == "critical_risk_or_blocker":
+            return (
+                f"Blocker on “{title}”: {str(payload.get('detail') or 'work has stopped moving')[:300]}"
+            )
+        if self.event_type == "milestone_completed":
+            return (
+                f"Milestone shipped on “{title}”: {str(payload.get('summary') or '')[:240]}"
+                + (f" ({payload.get('version_tag')})" if payload.get("version_tag") else "")
+            )
+        if self.event_type == "focus_switched":
+            old_title = payload.get("old_title") or payload.get("project_title") or "previous work"
+            new_title = payload.get("new_title") or payload.get("title") or "another project"
+            lines = [
+                f"Switching focus from “{old_title}” to “{new_title}”.",
+                f"Why: {str(payload.get('reason') or 'the focus quantum ended')[:200]}",
+                "Where the old project stands: "
+                + str(payload.get("checkpoint_summary") or "checkpoint saved")[:240],
+            ]
+            if payload.get("resume_condition"):
+                lines.append(str(payload["resume_condition"])[:240])
+            return "\n".join(lines)
+        return str(payload.get("detail") or payload.get("summary") or title)[:400]
+
+
+class GovernanceOutbox:
+    """The pending queue of governance notices, idempotent on `dedupe_key`.
+
+    Emissions are claimed for the dedupe window in memory: a solver loop that
+    reaches the same event on two paths (a re-entered finish, a repeated
+    ready-check) writes one notice, not one per path. Notices survive until
+    dispatched; the life loop drains them at priority 2 so proactive reports
+    go out within a cycle of the event rather than waiting for idle passes.
+    """
+
+    def __init__(self, dedupe_window_s: float = GOVERNANCE_DEDUPE_WINDOW_S):
+        self.pending: deque[GovernanceNotice] = deque(maxlen=200)
+        self._seen: dict[str, float] = {}
+        self.dedupe_window_s = dedupe_window_s
+
+    def emit(
+        self,
+        event_type: str,
+        payload: dict[str, Any] | None = None,
+        *,
+        dedupe_key: str,
+        person_id: str | None = None,
+        project_id: str | None = None,
+    ) -> GovernanceNotice | None:
+        if event_type not in GOVERNANCE_EVENTS:
+            logger.warning("gsl.governance_unknown_event", event_type=event_type)
+            return None
+        now = time.monotonic()
+        claimed = self._seen.get(dedupe_key)
+        if claimed is not None and now - claimed < self.dedupe_window_s:
+            logger.info(
+                "gsl.governance_deduped", event_type=event_type, key=dedupe_key[:120],
+            )
+            return None
+        self._seen[dedupe_key] = now
+        # Bounded bookkeeping: keys older than the window cannot dedupe anything.
+        if len(self._seen) > 512:
+            cutoff = now - self.dedupe_window_s
+            self._seen = {k: v for k, v in self._seen.items() if v >= cutoff}
+        notice = GovernanceNotice(
+            event_type=event_type, project_id=project_id,
+            payload=dict(payload or {}), dedupe_key=dedupe_key, person_id=person_id,
+        )
+        self.pending.append(notice)
+        logger.info(
+            "gsl.governance_emitted", event_type=event_type, key=dedupe_key[:120],
+            project=project_id,
+        )
+        return notice
+
+    def peek(self, limit: int = 3) -> list[GovernanceNotice]:
+        """The next notices without consuming them, oldest first.
+
+        Peek rather than pop because two passes ask: `decide` chooses to
+        dispatch and `act` does the dispatching, and an event popped in one
+        and never delivered by the other would be a report somebody was owed
+        that vanished between two methods.
+        """
+        return list(self.pending)[: max(0, limit)]
+
+    def due(self, limit: int = 3) -> list[GovernanceNotice]:
+        """The next notices to dispatch, consuming them — oldest first."""
+        out: list[GovernanceNotice] = []
+        while len(out) < limit and self.pending:
+            out.append(self.pending.popleft())
+        return out
+
+    def remove(self, notice: GovernanceNotice) -> None:
+        """Drop a delivered notice, leaving everything else in order."""
+        try:
+            self.pending.remove(notice)
+        except ValueError:
+            pass
+
+
+def _project_spend_ratio(project: dict[str, Any] | None) -> float:
+    """Fraction of the project's allocated budget spent, 0.0 when unbounded."""
+    if not project:
+        return 0.0
+    allocated = float(project.get("budget_allocated_usd") or 0.0)
+    if allocated <= 0:
+        return 0.0
+    spent = float(project.get("budget_spent_usd") or 0.0)
+    return spent / allocated
 
 # The check kinds a step will be failed on. A policy, not a capability list:
 # `ObjectiveChecker` implements more, and the ones left out are the ones whose
@@ -211,6 +393,7 @@ class GeneralSolverLoop:
         context: Any = None,
         thread_id: str = "self",
         rhythm: Any = None,
+        leases: Any = None,
     ):
         self.config = config
         self.memory = memory
@@ -227,6 +410,80 @@ class GeneralSolverLoop:
         # that paces everything else; when it is not, from the same function
         # that controller calls. There is no second curve.
         self.rhythm = rhythm
+        # Governance notices the solver emits where the events happen; the life
+        # loop drains and delivers them through the governance fast-path.
+        self.governance = GovernanceOutbox(
+            dedupe_window_s=float(
+                getattr(getattr(config, "permissions", None), "interruption", None)
+                and getattr(config.permissions.interruption, "governance_dedupe_window_min", 15.0)
+                * 60.0
+                or GOVERNANCE_DEDUPE_WINDOW_S
+            ),
+        )
+        # The lease manager, when the deployment has one — evergreen milestone
+        # commits integrate the project's worktree through it. Optional: a loop
+        # without one records the milestone without the commit.
+        self._leases = leases
+
+    # ------------------------------------------------------------ governance
+
+    async def _emit_governance_notice(
+        self,
+        project_id: str | None,
+        event_type: str,
+        payload: dict[str, Any] | None = None,
+        dedupe_key: str = "",
+    ) -> GovernanceNotice | None:
+        """Write down one proactive project report, idempotent on `dedupe_key`.
+
+        The five events a lead reports unprompted: kickoff, a human ask, a
+        blocker, a milestone, a focus switch. Delivery is the life loop's job
+        (priority 2 in `decide`, through the governance fast-path), so this
+        only claims the key and queues the facts.
+        """
+        payload = dict(payload or {})
+        person_id = payload.get("person_id")
+        if not person_id and project_id and self.memory is not None:
+            try:
+                project = await self.memory.get_project(project_id)
+                person_id = (project or {}).get("owner_principal_id")
+                payload.setdefault("project_title", (project or {}).get("title"))
+            except Exception:
+                logger.warning("gsl.governance_owner_lookup_failed", project=str(project_id))
+        return self.governance.emit(
+            event_type, payload,
+            dedupe_key=dedupe_key or f"{event_type}:{project_id}:{payload.get('intention_id', '')}",
+            person_id=person_id, project_id=project_id,
+        )
+
+    async def _project_of(self, intention: Any) -> dict[str, Any] | None:
+        """The project container a node belongs to, when it has one."""
+        project_id = getattr(intention, "project_id", None)
+        if not project_id or self.memory is None:
+            return None
+        try:
+            return await self.memory.get_project(project_id)
+        except Exception:
+            return None
+
+    async def _project_context(self, intention: Any) -> dict[str, Any]:
+        """The attribution every tool call of this node carries.
+
+        `workspace_lease_id` is the isolation: the gate fences the call against
+        this project's lease specifically, so two projects never collide on a
+        write path even when both are running in the same process.
+        """
+        project_id = getattr(intention, "project_id", None)
+        project = await self._project_of(intention)
+        lease_id = (project or {}).get("workspace_lease_id")
+        if not lease_id and project_id and self.memory is not None and hasattr(self.memory, "get_project"):
+            # Fall through: the lease rides the project row only.
+            lease_id = None
+        return {
+            "project_id": str(project_id) if project_id else None,
+            "root_intention_id": str(getattr(intention, "root_intention_id", None) or "") or None,
+            "workspace_lease_id": lease_id,
+        }
 
     async def _recall(self, query: str, k: int) -> list[Any]:
         """Memories for a step, and no failure if there are none to be had.
@@ -518,6 +775,15 @@ class GeneralSolverLoop:
                 cost_usd=cost,
             )
 
+        # Project governance runs before the loop's own state machine: human
+        # asks are raised the moment they become ready (never held for a later
+        # cycle), independent agent branches are claimed so parallel work keeps
+        # moving, and a project whose every open path runs through a person is
+        # paused rather than left spinning.
+        project = await self._project_of(intention)
+        if project is not None:
+            await self._advance_project_governance(intention, project)
+
         if intention.status == IntentionStatus.proposed.value:
             await self.memory.update_intention(intention.id, status=IntentionStatus.active.value)
             intention.status = IntentionStatus.active.value
@@ -629,6 +895,16 @@ class GeneralSolverLoop:
         step_attempts = dict(resume.get("step_attempts", {}))
         failures = int(step_attempts.get(step.id, 0))
         if failures >= STEP_FAILURES_BEFORE_SWITCH:
+            # A step that keeps failing under two approaches is a real risk to
+            # the project's schedule, not a private retry: the owner is told.
+            await self._maybe_emit_project_risk(
+                intention,
+                detail=(
+                    f"step {step.id} ({step.description[:120]}) has failed "
+                    f"{failures} time(s); switching to a fresh approach"
+                ),
+                dedupe_key=f"risk:{intention.project_id}:{intention.id}:{step.id}",
+            )
             strategy_number = int(resume.get("strategy_number", 1)) + 1
             max_strategies = self._max_strategies()
             if max_strategies > 0 and strategy_number > max_strategies:
@@ -1129,6 +1405,7 @@ class GeneralSolverLoop:
         # without anybody parsing the prose back out of the thoughts.
         step_failures: list[dict[str, Any]] = []
         all_ok = True
+        project_ctx = await self._project_context(intention)
         for action in (data.get("actions") or [])[:6]:
             if not isinstance(action, dict) or not action.get("tool"):
                 continue
@@ -1150,6 +1427,9 @@ class GeneralSolverLoop:
                     f"{intention.id}:{plan.strategy_number}:{step.id}:"
                     f"{attempt_index}:{len(executed)}"
                 ),
+                project_id=project_ctx["project_id"],
+                root_intention_id=project_ctx["root_intention_id"],
+                workspace_lease_id=project_ctx["workspace_lease_id"],
             )
             # A tool is asked for its opinion on whether it worked, and it
             # answers with `ok=False` and an error. A tool that *raises* is a
@@ -1570,7 +1850,227 @@ class GeneralSolverLoop:
         if children:
             resume["decomposed"] = True
             await self._save_resume(intention, resume)
+            # Phase 6.1: an open-ended mandate understood as evergreen upgrades
+            # its container's lifecycle, so the project ships-and-rests rather
+            # than closing at v1.
+            if str(resume.get("lifecycle_mode") or "") == "evergreen":
+                project = await self._project_of(intention)
+                if project is not None and str(project.get("lifecycle_mode")) != "evergreen":
+                    try:
+                        await self.memory.update_project(
+                            str(project.get("project_id")), lifecycle_mode="evergreen",
+                        )
+                    except Exception:
+                        logger.warning(
+                            "gsl.evergreen_upgrade_failed",
+                            project=str(project.get("project_id")),
+                        )
+            # Phase 5.2 event 1: the moment the project has a concrete DAG, the
+            # owner gets the plan — roadmap, who executes what, and any human
+            # instruction that already blocks the front of it.
+            await self._emit_project_kickoff(intention, children)
         return children
+
+    async def _emit_project_kickoff(self, intention: Any, children: list[Any]) -> None:
+        """The kickoff report: roadmap, assignments, and immediate human asks."""
+        project = await self._project_of(intention)
+        project_id = (project or {}).get("project_id") or (
+            str(intention.project_id) if intention.project_id else None
+        )
+        roadmap = [
+            f"{getattr(child, 'title', str(child))}"
+            + (
+                f" [you: {((getattr(child, 'instruction_spec', None) or {}).get('action_required') or '')[:100]}]"
+                if getattr(child, "executor_kind", None) == "human"
+                else ""
+            )
+            for child in children
+        ]
+        human_tasks = [
+            ((getattr(child, "instruction_spec", None) or {}).get("action_required")
+             or getattr(child, "title", ""))
+            for child in children
+            if getattr(child, "executor_kind", None) == "human"
+        ]
+        await self._emit_governance_notice(
+            project_id, "project_kickoff",
+            {
+                "project_title": (project or {}).get("title") or intention.title,
+                "plan": roadmap,
+                "human_tasks": human_tasks,
+                "intention_id": str(intention.id),
+                "lifecycle_mode": (project or {}).get("lifecycle_mode"),
+                # A project created behind a locked focus was queued on purpose:
+                # the kickoff says so, so its owner knows the plan exists and
+                # exactly why work has not started yet.
+                "queued": str((project or {}).get("status") or "") == "preempted",
+            },
+            dedupe_key=f"kickoff:{project_id or intention.id}",
+        )
+
+    async def _advance_project_governance(self, intention: Any, project: dict[str, Any]) -> None:
+        """Raise human asks, claim parallel branches, pause and resume the project.
+
+        This is the loop's standing duty to the project it is advancing, run
+        once per advance on any node of the project:
+
+        * A `human` node whose predecessors are all done becomes
+          `awaiting_human` and raises `human_action_required` — exactly once,
+          via the outbox dedupe.
+        * Independent agent-executable branches are claimed (marked `active`)
+          so they keep executing while this node runs.
+        * When nothing agent-executable is ready or running and at least one
+          node is `awaiting_human`, the project pauses for the person; when
+          work becomes available again it resumes on its own.
+        * Spend at or over 75% of the project's allocated budget raises
+          `critical_risk_or_blocker`.
+        """
+        project_id = str(project.get("project_id"))
+        owner = project.get("owner_principal_id")
+        project_title = project.get("title") or ""
+        try:
+            human_ready = await self.memory.get_ready_human_intentions(limit=25)
+        except Exception:
+            logger.warning("gsl.governance_human_read_failed", project=project_id)
+            human_ready = []
+        for node in human_ready:
+            if str(node.project_id or "") != project_id:
+                continue
+            if node.status == IntentionStatus.awaiting_human.value:
+                continue
+            spec = node.instruction_spec or {}
+            await self.memory.update_intention(
+                node.id, status=IntentionStatus.awaiting_human.value,
+            )
+            await self._emit_governance_notice(
+                project_id, "human_action_required",
+                {
+                    "person_id": owner,
+                    "project_title": project_title,
+                    "intention_id": str(node.id),
+                    "title": node.title,
+                    "instruction_spec": spec,
+                },
+                dedupe_key=f"human:{node.id}",
+            )
+        try:
+            agent_ready = await self.memory.get_ready_intentions(limit=25)
+            claimed = await self.spawn_ready_branches(project_id)
+        except Exception:
+            logger.warning("gsl.governance_branch_read_failed", project=project_id)
+            agent_ready, claimed = [], []
+        awaiting = sum(
+            1 for n in human_ready
+            if str(n.project_id or "") == project_id
+            or n.status == IntentionStatus.awaiting_human.value
+        )
+        running_rows = await self._project_running_count(project_id)
+        idle_for_human = awaiting > 0 and not agent_ready and not claimed and running_rows == 0
+        current_status = str(project.get("status") or "active")
+        if idle_for_human and current_status not in ("paused_for_human", "done", "evolving_cooldown"):
+            await self.memory.update_project(
+                project_id, status="paused_for_human", last_active_at=datetime.now(UTC),
+            )
+            logger.info(
+                "gsl.project_paused_for_human", project=project_id,
+                awaiting=awaiting,
+            )
+        elif current_status == "paused_for_human" and (agent_ready or claimed or running_rows):
+            await self.memory.update_project(
+                project_id, status="active", last_active_at=datetime.now(UTC),
+            )
+            logger.info("gsl.project_resumed", project=project_id)
+        # Spend at or over 75% of the allocation is a risk the owner hears
+        # about; deduped per project so it is one notice, not one per cycle.
+        spent, allocated = await self._project_budget(project_id)
+        if allocated > 0 and spent / allocated >= 0.75:
+            await self._maybe_emit_project_risk(
+                intention,
+                detail=(
+                    f"project spend ${spent:.2f} is at {spent / allocated:.0%} of the "
+                    f"${allocated:.2f} allocated"
+                ),
+                dedupe_key=f"spend:{project_id}",
+            )
+
+    async def _project_budget(self, project_id: str) -> tuple[float, float]:
+        """(spent, allocated) across a project's intentions, from the ledger."""
+        try:
+            row = await self.memory.db.fetchrow(
+                "SELECT COALESCE(SUM(COALESCE(budget_spent_usd, spent_usd, 0)), 0) AS spent, "
+                "COALESCE(SUM(COALESCE(budget_allocated_usd, budget_usd, 0)), 0) AS allocated "
+                "FROM intentions WHERE project_id = $1::uuid",
+                project_id,
+            )
+            if row is None:
+                return 0.0, 0.0
+            return float(row["spent"] or 0.0), float(row["allocated"] or 0.0)
+        except Exception:
+            return 0.0, 0.0
+
+    async def _project_running_count(self, project_id: str) -> int:
+        """How many of the project's nodes are actively being worked."""
+        try:
+            rows = await self.memory.db.fetch(
+                "SELECT COUNT(*) AS n FROM intentions "
+                "WHERE project_id = $1::uuid AND status IN ('in_progress','active') "
+                "AND COALESCE(executor_kind, 'self') <> 'human'",
+                project_id,
+            )
+            return int(rows[0]["n"] or 0) if rows else 0
+        except Exception:
+            return 0
+
+    async def spawn_ready_branches(self, project_id: str | None, limit: int = 3) -> list[Any]:
+        """Claim independent agent-executable branches of a project.
+
+        Claiming marks them `active` so the life loop's advance path picks them
+        up on following cycles while the current node keeps its own pass — the
+        parallelism a DAG promises and a single-focus loop used to lose. Human
+        nodes are never claimed: they are asks, not work.
+        """
+        if not project_id:
+            return []
+        try:
+            ready = await self.memory.get_ready_intentions(limit=25)
+        except Exception:
+            return []
+        claimed: list[Any] = []
+        for node in ready:
+            if len(claimed) >= limit:
+                break
+            if str(node.project_id or "") != str(project_id):
+                continue
+            if getattr(node, "executor_kind", "self") == "human":
+                continue
+            if node.status == IntentionStatus.active.value:
+                claimed.append(node)
+                continue
+            await self.memory.update_intention(node.id, status=IntentionStatus.active.value)
+            claimed.append(node)
+        if claimed:
+            logger.info(
+                "gsl.branches_claimed", project=str(project_id), count=len(claimed),
+            )
+        return claimed
+
+    async def _maybe_emit_project_risk(
+        self, intention: Any, *, detail: str, dedupe_key: str,
+    ) -> None:
+        """A blocker or budget risk, raised for the project this node belongs to."""
+        project = await self._project_of(intention)
+        if project is None:
+            return
+        await self._emit_governance_notice(
+            str(project.get("project_id")), "critical_risk_or_blocker",
+            {
+                "person_id": project.get("owner_principal_id"),
+                "project_title": project.get("title") or intention.title,
+                "intention_id": str(intention.id),
+                "detail": detail,
+            },
+            dedupe_key=dedupe_key,
+        )
 
     async def _finish_goal(self, intention: IntentionRecord, resume: dict[str, Any],
                            plan: Plan) -> tuple[SolverResult, float]:
@@ -1647,6 +2147,15 @@ class GeneralSolverLoop:
                 kind="goal_done", summary=f"completed: {intention.title}",
                 intention_id=intention.id, importance=0.8,
             )
+            # Phase 5.2 event 4 / Phase 6.2: a branch that passed the ladder is
+            # a milestone somebody can be told about; and when it was the last
+            # open node of the project, the project itself ships or rests.
+            try:
+                project = await self._project_of(intention)
+                if project is not None:
+                    await self._on_project_node_done(intention, project, verification)
+            except Exception:
+                logger.exception("gsl.project_node_done_failed", intention=str(intention.id))
             # The completion is a fact about the work, and it is already
             # recorded as one: the intention is closed, and the episode log has
             # it. What used to also go out was a line composed here — "Done:
@@ -1681,6 +2190,17 @@ class GeneralSolverLoop:
                 cost_usd=cost,
             ), cost
         await self.memory.update_intention(intention.id, status=IntentionStatus.in_progress.value)
+        # Verification that keeps failing is a schedule risk, and the owner of
+        # a project hears about it once per intention rather than every cycle.
+        await self._maybe_emit_project_risk(
+            intention,
+            detail=(
+                "verification did not pass"
+                + (f": {'; '.join(str(i) for i in (verification.issues or [])[:2])[:220]}"
+                   if verification.issues else "")
+            ),
+            dedupe_key=f"verify_fail:{intention.id}",
+        )
         # Why it did not pass, in the thoughts. A verification that fails and
         # replans without saying so leaves the next cycle with a strategy number
         # and no reason, and the loop's own state machine will then try three
@@ -1731,6 +2251,239 @@ class GeneralSolverLoop:
             thoughts=[f"verification failed; switching to strategy #{strategy_number}"],
             cost_usd=cost,
         ), cost
+
+    async def _on_project_node_done(
+        self, intention: Any, project: dict[str, Any], verification: Any,
+    ) -> None:
+        """A verified branch is a milestone; the last one ships the project.
+
+        Finite projects close at `done` when their last node verifies.
+        Evergreen projects never close: the work is committed through the
+        lease, a `project_milestones` row records the shipped version, the
+        owner is told, and the project rests in `evolving_cooldown` until
+        `next_evolution_at` — when `propose_next_evolution` opens the next
+        cycle. `done` is a stop state for a finite promise, not for a
+        standing one.
+        """
+        project_id = str(project.get("project_id"))
+        rung = getattr(verification, "rung_reached", 0) or 0
+        await self._emit_governance_notice(
+            project_id, "milestone_completed",
+            {
+                "person_id": project.get("owner_principal_id"),
+                "project_title": project.get("title") or intention.title,
+                "intention_id": str(intention.id),
+                "summary": f"verified “{intention.title}” at rung {rung}",
+            },
+            dedupe_key=f"branch_done:{intention.id}",
+        )
+        remaining = await self.memory.db.fetchval(
+            "SELECT COUNT(*) FROM intentions "
+            "WHERE project_id = $1::uuid AND status NOT IN ('done','cancelled')",
+            project_id,
+        )
+        if int(remaining or 0) > 0:
+            return
+        lifecycle = str(project.get("lifecycle_mode") or "finite")
+        now = datetime.now(UTC)
+        if lifecycle != "evergreen":
+            await self.memory.update_project(
+                project_id, status="done", last_active_at=now,
+            )
+            logger.info("gsl.project_done", project=project_id)
+            return
+        # Ship: commit the lease, record the version, rest.
+        lease_id = project.get("workspace_lease_id")
+        lease_result: dict[str, Any] = {}
+        leases = getattr(self, "_leases", None)
+        if lease_id and leases is not None:
+            try:
+                lease_result = leases.commit_lease(str(lease_id)) or {}
+            except Exception:
+                logger.exception("gsl.lease_commit_failed", lease=lease_id)
+        previous = await self.memory.list_project_milestones(project_id)
+        version_tag = f"v{len(previous) + 1}"
+        commit_sha = None
+        try:
+            import subprocess
+
+            root = (lease_result or {}).get("target") or project.get("workspace_root") or ""
+            if root:
+                sha = subprocess.run(
+                    ["git", "-C", str(root), "rev-parse", "HEAD"],
+                    capture_output=True, text=True, timeout=10,
+                )
+                if sha.returncode == 0:
+                    commit_sha = sha.stdout.strip()[:40] or None
+        except Exception:
+            commit_sha = None
+        await self.memory.record_project_milestone(
+            project_id,
+            version_tag=version_tag,
+            summary=f"shipped: {intention.title}"[:400],
+            metrics={
+                "verified_intention_id": str(intention.id),
+                "rung_reached": rung,
+                "lease_commit": (lease_result or {}).get("status"),
+            },
+            git_commit_sha=commit_sha,
+        )
+        interval_s = float(self.config.projects.evolution_interval_s)
+        await self.memory.update_project(
+            project_id,
+            status="evolving_cooldown",
+            last_active_at=now,
+            next_evolution_at=now + timedelta(seconds=interval_s),
+        )
+        await self._emit_governance_notice(
+            project_id, "milestone_completed",
+            {
+                "person_id": project.get("owner_principal_id"),
+                "project_title": project.get("title") or intention.title,
+                "summary": (
+                    f"{version_tag} shipped; the project rests until "
+                    f"{(now + timedelta(seconds=interval_s)).isoformat(timespec='minutes')} "
+                    "and then proposes its next evolution"
+                ),
+                "version_tag": version_tag,
+            },
+            dedupe_key=f"ship:{project_id}:{version_tag}",
+        )
+        logger.info(
+            "gsl.evergreen_shipped", project=project_id, version=version_tag,
+            next_evolution_s=interval_s,
+        )
+
+    async def propose_next_evolution(self, project: dict[str, Any]) -> SolverResult:
+        """Open the next evolution cycle of an evergreen project.
+
+        Reads what the last cycle left behind — journal failures, derived
+        checks, open questions — devises three approaches, decomposes the
+        chosen one into at most `MAX_LEAF_STEPS`-step leaves, and reopens the
+        project as `active` with a fresh kickoff report. Breaking or
+        high-cost architectural changes come back as `human` approval nodes:
+        the agent proposes, the person authorizes.
+        """
+        project_id = str(project.get("project_id"))
+        title = str(project.get("title") or "evergreen project")
+        root_id = project.get("root_intention_id")
+        root = None
+        if root_id:
+            try:
+                root = await self.memory.get_intention(UUID(str(root_id)))
+            except Exception:
+                root = None
+        failures: list[str] = []
+        questions: list[str] = []
+        try:
+            rows = await self.memory.db.fetch(
+                "SELECT COALESCE(result_digest->>'error', result_digest->>'summary', '') AS d "
+                "FROM action_journal WHERE project_id = $1::uuid AND status IN ('failed','timeout') "
+                "ORDER BY ts_start DESC LIMIT 5",
+                project_id,
+            )
+            failures = [str(r["d"])[:200] for r in rows if r["d"]]
+        except Exception:
+            failures = []
+        try:
+            questions = [
+                str(q.get("text", ""))[:200]
+                for q in await self.memory.open_questions(limit=5)
+            ]
+        except Exception:
+            questions = []
+        evidence = " ; ".join(failures + questions) or "no recorded failures or open questions"
+        approach = {
+            "summary": f"Next evolution of {title}, informed by: {evidence[:400]}",
+            "expected_value": 0.7,
+        }
+        synthetic = SimpleNamespace(
+            id=root.id if root is not None else uuid4(),
+            title=f"Evolve: {title}"[:200],
+            desired_end_state=str(project.get("evolution_config_json", {}).get("mandate") or title),
+            commissioned_by=project.get("owner_principal_id"),
+            project_id=project_id,
+            root_intention_id=root_id,
+            kind="task",
+            origin="evolution",
+            resume_state={},
+            success_criteria=[],
+            constraints={},
+        )
+        try:
+            children = await decompose_and_persist(self.memory, synthetic, approach)
+        except Exception:
+            logger.exception("gsl.evolution_decompose_failed", project=project_id)
+            return SolverResult(
+                outcome=SolverOutcome.step_failed,
+                thoughts=[f"could not plan the next evolution of {title}"],
+            )
+        await self._mark_evolution_approvals(children)
+        now = datetime.now(UTC)
+        await self.memory.update_project(
+            project_id, status="active", last_active_at=now, next_evolution_at=None,
+        )
+        await self._emit_project_kickoff(synthetic, children)
+        logger.info(
+            "gsl.evolution_opened", project=project_id, children=len(children),
+        )
+        return SolverResult(
+            outcome=SolverOutcome.step_done,
+            thoughts=[
+                f"opened evolution cycle for {title}: {len(children)} node(s)",
+                f"informed by: {evidence[:200]}",
+            ],
+        )
+
+    # An evolution cycle may propose a change that is breaking or expensive;
+    # those are the mandate's to authorize, not the agent's.
+    _EVOLUTION_APPROVAL_MARKERS = (
+        "breaking", "architecture", "architectural", "schema migration",
+        "data migration", "core refactor", "rewrite", "high-cost", "high cost",
+        "expensive", "irreversible", "drop table", "delete data",
+    )
+
+    async def _mark_evolution_approvals(self, children: list[Any]) -> None:
+        """Promote breaking/high-cost evolution nodes to human approval asks.
+
+        `decompose_and_persist` already classifies credential-shaped work as
+        `human`; this adds the second class an evolution cycle needs — changes
+        the architecture or spends real money — so the next version of the
+        project is authorized by its owner before it is built.
+        """
+        for child in children:
+            node_id = getattr(child, "id", None)
+            if node_id is None:
+                continue
+            text = f"{getattr(child, 'title', '')} {getattr(child, 'desired_end_state', '')}".lower()
+            if not any(marker in text for marker in self._EVOLUTION_APPROVAL_MARKERS):
+                continue
+            if str(getattr(child, "executor_kind", "self")) == "human":
+                continue
+            spec = {
+                "action_required": (
+                    f"Approve this evolution step before it runs: "
+                    f"{str(getattr(child, 'title', ''))[:160]}"
+                ),
+                "rationale": (
+                    "This step is breaking or high-cost, so it changes the project's "
+                    "architecture or spends real budget; the owner authorizes it."
+                ),
+                "exact_steps": [
+                    "Read the proposed change and its blast radius.",
+                    "Reply approving it, or reply with the constraint to apply instead.",
+                ],
+                "acceptance_evidence": "A short approval or a constraint in your own words.",
+            }
+            try:
+                await self.memory.update_intention(
+                    node_id, executor_kind="human", instruction_spec=spec,
+                )
+                if child is not None:
+                    child.executor_kind = "human"
+                    child.instruction_spec = spec
+            except Exception:
+                logger.exception("gsl.evolution_approval_mark_failed", node=str(node_id))
 
     async def _pace_strategy_switch(
         self, intention: IntentionRecord, resume: dict[str, Any], strategy_number: int,

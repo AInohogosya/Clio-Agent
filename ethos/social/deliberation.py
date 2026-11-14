@@ -275,14 +275,15 @@ class _ExecutionState:
 
     __slots__ = (
         "readable", "journaled", "blocked", "stages", "window_min",
-        "delegations", "delegation_names", "progress",
+        "delegations", "delegation_names", "progress", "projects",
     )
 
     def __init__(self, readable: bool, journaled: list[str], blocked: list[str],
                  window_min: float, stages: list[str] | None = None,
                  delegations: list[str] | None = None,
                  delegation_names: set[str] | None = None,
-                 progress: list[str] | None = None):
+                 progress: list[str] | None = None,
+                 projects: list[dict[str, Any]] | None = None):
         self.readable = readable
         self.journaled = journaled
         self.blocked = blocked
@@ -294,6 +295,11 @@ class _ExecutionState:
         # claim about a named sub-agent has to be a member of.
         self.delegation_names = delegation_names or set()
         self.progress = progress or []
+        # Project standing, one dict per project: the all-time verified facts
+        # (`nodes_done`, `artifacts_touched`, `recent_actions`,
+        # `blocking_human_tasks`) that make a progress claim about *any*
+        # project checkable, focused or not.
+        self.projects = projects or []
 
     @property
     def something_happened(self) -> bool:
@@ -303,12 +309,22 @@ class _ExecutionState:
     def something_finished(self) -> bool:
         return bool(self.stages)
 
+    @property
+    def has_project_evidence(self) -> bool:
+        """Whether any project has verified progress on the all-time record."""
+        return any(
+            int(p.get("nodes_done") or 0) > 0
+            or bool(p.get("artifacts_touched"))
+            or bool(p.get("recent_actions"))
+            for p in self.projects
+        )
+
     def block(self, self_name: str, delegation_window_h: float = 24.0) -> str:
         return execution_state_block(
             self_name, self.journaled, self.blocked, self.window_min,
             readable=self.readable, stages=self.stages,
             delegations=self.delegations, delegation_window_h=delegation_window_h,
-            progress=self.progress,
+            progress=self.progress, projects=self.projects,
         )
 
 
@@ -517,6 +533,8 @@ class SocialCognition:
         focus_title: str | None = None,
         tools: list[dict[str, Any]] | None = None,
         preview: bool = False,
+        bound_project: dict[str, Any] | None = None,
+        project_ledgers: list[dict[str, Any]] | None = None,
     ) -> SocialDecision:
         # No T0 rules sit in front of the model any more. v3.0 declined empty
         # messages and unsolicited link-only mail from strangers by regex, before
@@ -555,7 +573,12 @@ class SocialCognition:
         # can contradict it.
         recent = await self._recent_conversation(message)
         commitments = await self._open_commitments()
-        state = await self._execution_state(focus_title)
+        state = await self._execution_state(focus_title, project_ledgers=project_ledgers)
+        # The conversation's own project, and the whole portfolio. The bound
+        # project leads the reporting (a question asked here is about this
+        # project); the portfolio is what makes "how is everything going"
+        # answerable per project rather than as one blended number.
+        project_context = self._project_context_block(bound_project, project_ledgers)
         # Communication verbosity: a person's own instruction ("report more",
         # "don't report so much") is a standing preference, persisted
         # per-person and rendered into the prompt. Freedom is kept — the
@@ -582,6 +605,8 @@ class SocialCognition:
             ),
             preview=preview,
             verbosity_note=verbosity_note(verbosity_level),
+            project_context=project_context,
+            bound_project_title=str((bound_project or {}).get("title") or ""),
         )
         data, cut_off, ceiling, failure, user_action = await self._ask(prompt_messages, tier, consequential)
         if failure is not None:
@@ -637,6 +662,21 @@ class SocialCognition:
         reply_texts, reply_delays = _reply_texts_and_delays(
             data.get("reply_texts"), data.get("reply_delays_s"),
         )
+        resolves_node = data.get("resolves_human_node_id")
+        if not isinstance(resolves_node, str) or not resolves_node.strip():
+            resolves_node = None
+        evidence = data.get("human_node_evidence")
+        if not isinstance(evidence, str) or not evidence.strip():
+            evidence = None
+        instructions = data.get("user_instructions")
+        if not isinstance(instructions, list):
+            instructions = []
+        cleansed_instructions = [
+            {"instruction": str(i.get("instruction", ""))[:300],
+             "scope": str(i.get("scope", ""))[:120]}
+            for i in instructions[:5]
+            if isinstance(i, dict) and str(i.get("instruction") or "").strip()
+        ]
         decision = SocialDecision(
             action=action,
             reply_texts=reply_texts,
@@ -646,8 +686,32 @@ class SocialCognition:
             ignore_reason=ignore_reason,
             creates_intention=bool(data.get("creates_intention", False)),
             intention_spec=data.get("intention_spec") if isinstance(data.get("intention_spec"), dict) else None,
+            resolves_human_node_id=resolves_node.strip() if resolves_node else None,
+            human_node_evidence=evidence.strip()[:600] if evidence else None,
+            user_instructions=cleansed_instructions,
             tier_used=str(tier.value),
         )
+        if decision.user_instructions and message.person_id:
+            # Standing instructions ("report daily", "ask before deploying")
+            # are preferences that outlive the turn: they are persisted against
+            # the person where a preference store exists, so later cycles and
+            # later projects honour them without being told again.
+            setter = getattr(self.relationships, "set_preference", None) if self.relationships else None
+            if setter is not None:
+                try:
+                    existing = None
+                    getter = getattr(self.relationships, "get_preference", None)
+                    if getter is not None:
+                        existing = await getter(message.person_id, "standing_instructions", [])
+                    merged = list(existing or [])
+                    merged.extend(decision.user_instructions)
+                    await setter(message.person_id, "standing_instructions", merged[-10:])
+                except Exception:
+                    logger.warning("social.user_instruction_record_failed")
+            logger.info(
+                "social.user_instructions", person=message.person_id,
+                count=len(decision.user_instructions),
+            )
         if cut_off:
             # The record says what happened, so a decision read back later is not
             # taken for a whole one. The fields the cut removed are bookkeeping
@@ -658,6 +722,10 @@ class SocialCognition:
         if not decision.reply_texts and action in (
             SocialAction.reply_now, SocialAction.reply_later, SocialAction.acknowledge,
             SocialAction.ask_clarification,
+            # Governance speech is speech: `instruct_user` with no instructions
+            # and `report_governance` with no report are promises of words the
+            # agent never wrote, and are re-asked like any other blank answer.
+            SocialAction.instruct_user, SocialAction.report_governance,
         ):
             # An action that promises the person words, arrived at without any.
             # Whichever way it happened -- the model chose silence and named an
@@ -687,7 +755,11 @@ class SocialCognition:
 
     # ---------------------------------------------------------- honesty
 
-    async def _execution_state(self, focus_title: str | None) -> _ExecutionState:
+    async def _execution_state(
+        self,
+        focus_title: str | None,
+        project_ledgers: list[dict[str, Any]] | None = None,
+    ) -> _ExecutionState:
         """What has actually happened, read from the records rather than recalled.
 
         Four queries, and the order of the fields in the result is the point of
@@ -717,7 +789,9 @@ class SocialCognition:
         """
         window = max(0.0, float(self.config.social.execution_state_window_min))
         if self.db is None:
-            return _ExecutionState(False, [], [], window)
+            return _ExecutionState(
+                False, [], [], window, projects=list(project_ledgers or []),
+            )
         since = datetime.now(UTC) - timedelta(minutes=window)
         try:
             rows = await self.db.fetch(
@@ -727,7 +801,7 @@ class SocialCognition:
             )
         except Exception:
             logger.warning("social.execution_state_journal_failed")
-            return _ExecutionState(False, [], [], window)
+            return _ExecutionState(False, [], [], window, projects=list(project_ledgers or []))
         journaled = [
             f"{row['tool'] or 'unknown'} -> {row['status'] or 'unknown'}" for row in rows
         ]
@@ -735,10 +809,132 @@ class SocialCognition:
         blocked = await self._blocked_work(focus_title)
         stages = await self._finished_work()
         progress = await self._open_work_progress(focus_title)
+        projects = list(project_ledgers or [])
+        if not projects:
+            projects = await self._project_evidence()
         return _ExecutionState(
             True, journaled, blocked, window, stages, delegations, delegation_names,
-            progress,
+            progress, projects,
         )
+
+    async def _project_evidence(self) -> list[dict[str, Any]]:
+        """All-time verified per-project facts, read straight from rows.
+
+        This is what keeps a *preempted* project's progress on the record the
+        reply is written from: the journal window above is fifteen minutes,
+        and partial work on a queued project is almost never inside it — so
+        without this, "how far did you get on Project 2" was answerable only
+        from an empty window and a claim of zero progress was the honest
+        reading of it. Counts, paths and journal summaries, all-time, one
+        query set per project, no model call.
+        """
+        try:
+            rows = await self.db.fetch(
+                "SELECT project_id::text AS pid, "
+                "COUNT(*) AS total, "
+                "COUNT(*) FILTER (WHERE status = 'done') AS done "
+                "FROM intentions WHERE project_id IS NOT NULL "
+                "GROUP BY project_id",
+            )
+        except Exception:
+            return []
+        out: list[dict[str, Any]] = []
+        for row in rows or []:
+            pid = str(row["pid"])
+            artifacts: list[str] = []
+            actions: list[str] = []
+            try:
+                artifact_rows = await self.db.fetch(
+                    "SELECT DISTINCT uri FROM artifacts WHERE project_id = $1::uuid "
+                    "ORDER BY uri LIMIT 10",
+                    pid,
+                )
+                artifacts = [str(r["uri"]) for r in artifact_rows]
+            except Exception:
+                artifacts = []
+            try:
+                action_rows = await self.db.fetch(
+                    "SELECT tool, status FROM action_journal "
+                    "WHERE project_id = $1::uuid AND status = 'ok' "
+                    "ORDER BY ts_start DESC LIMIT 5",
+                    pid,
+                )
+                actions = [
+                    f"{r['tool']} -> {r['status']}" for r in action_rows
+                ]
+            except Exception:
+                actions = []
+            out.append({
+                "project_id": pid,
+                "nodes_done": int(row["done"] or 0),
+                "nodes_total": int(row["total"] or 0),
+                "artifacts_touched": artifacts,
+                "recent_actions": actions,
+            })
+        return out
+
+    def _project_context_block(
+        self,
+        bound_project: dict[str, Any] | None,
+        project_ledgers: list[dict[str, Any]] | None,
+    ) -> str:
+        """The projects this turn may be asked about, with their real numbers.
+
+        Two facts, and the order is the instruction: the conversation's bound
+        project first (a question asked here is about *this* project and must
+        never be answered with another one's status), then every project in the
+        portfolio (a question asked in general is answered per project, under
+        its own title, with its own completed tasks, files and blockers).
+        """
+        lines: list[str] = []
+        if bound_project:
+            lines.append(
+                "## This conversation's project\n"
+                f"- {bound_project.get('title')} "
+                f"[{bound_project.get('status')}] "
+                f"({bound_project.get('lifecycle_mode') or 'finite'})"
+            )
+            ledger = next(
+                (
+                    p for p in (project_ledgers or [])
+                    if str(p.get("project_id")) == str(bound_project.get("project_id"))
+                ),
+                None,
+            )
+            if ledger is not None:
+                lines.append(self._ledger_line(ledger))
+        if project_ledgers:
+            lines.append(
+                "## Project portfolio — report each project separately, under its own "
+                "title, with its exact numbers; never substitute one project's status "
+                "for another's"
+            )
+            for ledger in project_ledgers:
+                lines.append(self._ledger_line(ledger))
+        return "\n".join(lines)
+
+    @staticmethod
+    def _ledger_line(ledger: dict[str, Any]) -> str:
+        """One project ledger as the prompt line that renders it."""
+        parts = [
+            f"[{ledger.get('status')}] {ledger.get('title')}"
+            + (" (current focus)" if ledger.get("is_current_focus") else ""),
+            f"{int(ledger.get('nodes_done') or 0)}/{int(ledger.get('nodes_total') or 0)} nodes done",
+        ]
+        artifacts = ledger.get("artifacts_touched") or []
+        if artifacts:
+            parts.append("files: " + ", ".join(str(a) for a in artifacts[:4]))
+        actions = ledger.get("recent_actions") or []
+        if actions:
+            parts.append("recent: " + "; ".join(str(a)[:90] for a in actions[:3]))
+        waiting = ledger.get("blocking_human_tasks") or []
+        for task in waiting[:2]:
+            spec = task.get("instruction_spec") or {}
+            ask = spec.get("action_required") or task.get("title") or "needs human input"
+            parts.append(f"waiting on you: {str(ask)[:120]}")
+        if ledger.get("checkpoint_summary"):
+            parts.append(f"checkpoint: {str(ledger['checkpoint_summary'])[:160]}")
+        return "- " + "; ".join(parts)
 
     async def _open_work_progress(self, focus_title: str | None = None) -> list[str]:
         """Open work with its last recorded action, not just the last 15 minutes.
@@ -1147,7 +1343,14 @@ class SocialCognition:
                     return False
                 withheld_named += 1
                 return True
-            if state.something_happened:
+            # The all-time project record is evidence for any project, focused
+            # or not: a claim about work on a preempted project whose ledger
+            # shows completed nodes, touched files or ok actions is grounded in
+            # rows, and stripping it here is what made real partial progress
+            # read as zero. A project named in the claim is matched against
+            # its own ledger; a general claim is blessed by any project
+            # standing that exists.
+            if state.something_happened or state.has_project_evidence:
                 return False
             withheld_general += 1
             return True

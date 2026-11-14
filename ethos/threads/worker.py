@@ -493,6 +493,23 @@ async def _pursue(
                 thoughts.append(str(thought)[:200])
             if toolhost is not None:
                 from ethos.toolhost.server import ToolContext
+                project_id = (
+                    str(getattr(intention, "project_id", None))
+                    if intention is not None and getattr(intention, "project_id", None)
+                    else None
+                )
+                root_intention_id = (
+                    str(getattr(intention, "root_intention_id", None))
+                    if intention is not None and getattr(intention, "root_intention_id", None)
+                    else None
+                )
+                workspace_lease_id = None
+                if project_id is not None and memory is not None:
+                    try:
+                        project = await memory.get_project(project_id)
+                        workspace_lease_id = (project or {}).get("workspace_lease_id")
+                    except Exception:
+                        workspace_lease_id = None
                 for action in (step_data_out.get("actions") or [])[:6]:
                     if not isinstance(action, dict) or not action.get("tool"):
                         continue
@@ -503,6 +520,9 @@ async def _pursue(
                         commissioned_by=getattr(intention, "commissioned_by", None),
                         idempotency_key=f"{spec.get('id')}:{step_id}:{len(thoughts)}",
                         inside_subagent=(str(spec.get("role") or "") if str(spec.get("role") or "") in ("foundry", "apex", "axiom") else None),
+                        project_id=project_id,
+                        root_intention_id=root_intention_id,
+                        workspace_lease_id=workspace_lease_id,
                     )
                     try:
                         result = await toolhost.execute(str(action["tool"]), dict(action.get("args") or {}), ctx)

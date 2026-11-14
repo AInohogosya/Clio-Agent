@@ -55,6 +55,13 @@ class ToolContext(BaseModel):
     cwd: str | None = None
     timeout_s: float | None = None
     inside_subagent: str | None = None
+    # Clio Agent 3.3 project leadership: which container this call belongs to.
+    # `project_id` is stamped onto the journal row and onto auto-registered
+    # artifacts, and `workspace_lease_id` is the fence the gate enforces the
+    # call against — two projects never share a write path.
+    project_id: str | None = None
+    root_intention_id: str | None = None
+    workspace_lease_id: str | None = None
 
 
 class ExecuteRequest(BaseModel):
@@ -232,6 +239,7 @@ class Toolhost:
                     args_redacted=_redacted_args(name, args), reason=ctx.reason,
                     idempotency_key=ctx.idempotency_key,
                     side_effects=sorted(classify_tool(name, args).categories),
+                    project_id=ctx.project_id, root_intention_id=ctx.root_intention_id,
                 )
             except DuplicateAction as exc:
                 return self._replay(name, exc.prior, started)
@@ -241,6 +249,7 @@ class Toolhost:
                 args_redacted=_redacted_args(name, args), reason=ctx.reason,
                 idempotency_key=None,
                 side_effects=sorted(classify_tool(name, args).categories),
+                project_id=ctx.project_id, root_intention_id=ctx.root_intention_id,
             )
         try:
             decision = await self.gate.review(
@@ -250,6 +259,8 @@ class Toolhost:
                 commissioned_by=ctx.commissioned_by,
                 thread_id=ctx.thread_id,
                 inside_subagent=ctx.inside_subagent,
+                project_id=ctx.project_id,
+                workspace_lease_id=ctx.workspace_lease_id,
             )
             if not decision.allowed:
                 await self._finish(journal_id, "rejected", {"reason": decision.reason}, None)
@@ -414,6 +425,7 @@ class Toolhost:
         try:
             await registry.auto_register_write(
                 target, commissioned_by=ctx.commissioned_by, intention_id=ctx.intention_id,
+                project_id=ctx.project_id,
             )
         except Exception:
             logger.exception("toolhost.auto_register_failed")

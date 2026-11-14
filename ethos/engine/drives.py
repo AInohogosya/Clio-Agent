@@ -68,6 +68,9 @@ class DriveInputs(BaseModel):
     dag_budget_burn_usd: float = 0.0
     leaf_verification_failures: int = 0
     anomalous_outcomes: int = 0
+    # Clio 3.3: evergreen projects whose cooldown elapsed and whose next
+    # evolution cycle is owed. Feeds the `evolve_project` impulse.
+    evolving_projects: int = 0
 
     @classmethod
     def from_intentions(cls, intentions: Sequence[IntentionRecord], **kwargs: Any) -> DriveInputs:
@@ -266,7 +269,7 @@ def propose_impulses(p: dict[str, float], inputs: DriveInputs, threshold: float)
         ("homeostasis", "maintenance", 0.9, 0.5, 0.02,
          "Environment maintenance: verify health, prune trash, check disk and schedules."),
     )
-    return [
+    impulses = [
         Impulse(
             name=name, drive=drive, relevance=relevance,
             value_hat=value_hat, cost_hat=cost_hat, description=description,
@@ -274,6 +277,24 @@ def propose_impulses(p: dict[str, float], inputs: DriveInputs, threshold: float)
         for drive, name, relevance, value_hat, cost_hat, description in candidates
         if p[drive] > threshold
     ]
+    # The eighth impulse is a composition rather than a table row: an evergreen
+    # project due for its next cycle is pushed by creation (make the thing
+    # better), mastery (extend what already works) and curiosity (what does the
+    # record say is worth trying next) — any of the three wanting to talk, with
+    # the project actually waiting, is enough.
+    if (
+        (inputs.evolving_projects or 0) > 0
+        and any(p.get(drive, 0.0) > threshold for drive in ("creation", "mastery", "curiosity"))
+    ):
+        impulses.append(Impulse(
+            name="evolve_project", drive="creation", relevance=0.9,
+            value_hat=0.75, cost_hat=0.15,
+            description=(
+                "Take the evergreen project whose cooldown elapsed and propose "
+                "its next evolution cycle."
+            ),
+        ))
+    return impulses
 
 
 def utility(
@@ -375,6 +396,11 @@ def _created_rank(item: dict[str, Any]) -> float:
 IMPULSE_TARGETS: dict[str, str] = {
     "advance_commitment": "commitment",
     "push_venture": "venture",
+    # `evolve_project` resolves to a project container rather than an
+    # intention: the life loop constructs these entries from
+    # `MemoryStore.list_projects` on projects whose cooldown elapsed, with
+    # `kind == "project"` and the root intention as the id.
+    "evolve_project": "project",
 }
 
 

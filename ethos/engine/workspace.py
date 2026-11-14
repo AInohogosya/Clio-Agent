@@ -69,38 +69,102 @@ def summarize_dag(
     return summary, focus_detail
 
 
+def render_project_ledger(ledgers: list[dict[str, Any]]) -> str:
+    """Every project's compact standing block, focused one first.
+
+    The portfolio line exists because the workspace used to show only the
+    focus project's DAG: a second project, queued behind the focus quantum,
+    was invisible in the very prompt that decides what to report — so a reply
+    asked about it could not name its nodes, files or blockers, and a progress
+    report read as zero. These are facts from rows (counts, paths, journal
+    summaries, human asks), not intentions.
+    """
+    if not ledgers:
+        return ""
+    ordered = sorted(
+        ledgers,
+        key=lambda ledger: (
+            0 if ledger.get("is_current_focus") else 1,
+            str(ledger.get("title") or ""),
+        ),
+    )
+    lines = ["## Project Portfolio Ledger"]
+    for ledger in ordered:
+        title = str(ledger.get("title") or "?")
+        status = str(ledger.get("status") or "?")
+        focus_flag = " (current focus)" if ledger.get("is_current_focus") else ""
+        mode = str(ledger.get("lifecycle_mode") or "finite")
+        header = (
+            f"- {title} [{status}{focus_flag}] id={str(ledger.get('project_id') or '')[:8]}"
+            f" ({mode})"
+        )
+        lines.append(header)
+        lines.append(
+            f"  - nodes {int(ledger.get('nodes_done') or 0)}/{int(ledger.get('nodes_total') or 0)}"
+            f" done; budget spent ${float(ledger.get('budget_spent_usd') or 0.0):.2f}"
+        )
+        artifacts = ledger.get("artifacts_touched") or []
+        if artifacts:
+            lines.append(f"  - files: {', '.join(str(a) for a in artifacts[:5])}")
+        actions = ledger.get("recent_actions") or []
+        if actions:
+            lines.append(f"  - recent: {'; '.join(str(a)[:100] for a in actions[:3])}")
+        waiting = ledger.get("blocking_human_tasks") or []
+        if waiting:
+            for task in waiting[:3]:
+                spec = task.get("instruction_spec") or {}
+                ask = spec.get("action_required") or task.get("title") or "human input"
+                lines.append(f"  - waiting on you: {str(ask)[:140]}")
+        checkpoint = str(ledger.get("checkpoint_summary") or "")
+        if checkpoint:
+            lines.append(f"  - checkpoint: {checkpoint[:200]}")
+    return "\n".join(lines)
+
+
 def render_commitments(
     commitments: list[dict[str, Any]],
     *,
     focus_title: str | None = None,
+    project_ledger: list[dict[str, Any]] | None = None,
 ) -> str:
-    """The commitments block: (a) DAG summaries, (b) focus detail."""
-    if not commitments:
+    """The commitments block: (a) DAG summaries, (b) focus detail, (c) portfolio.
+
+    The focus project keeps its full DAG expansion. Immediately below it, the
+    portfolio ledger renders a compact status block for every other project —
+    active, preempted, paused-for-human or resting — so the agent can answer
+    about all of them from its own working memory.
+    """
+    if not commitments and not project_ledger:
         return "## Commitments\n(none — nothing is owed)"
-    summary, focus_detail = summarize_dag(commitments, focus_title=focus_title)
-    lines = ["## Commitments (promises, in hand)", "### Intention DAGs (compressed)"]
-    lines.extend(f"- {line}" for line in summary)
-    lines.append("### Focus detail")
-    rows = focus_detail or commitments[:1]
-    for c in rows:
-        author = c.get("commissioned_by")
-        if not author or author == "self":
-            detail = "taken on by me"
-        else:
-            detail = f"asked for by {author}"
-        if c.get("deadline"):
-            detail += f", due {c['deadline']}"
-        else:
-            detail += ", no deadline"
-        telemetry = c.get("telemetry") or {}
-        extra = ""
-        if telemetry:
-            extra = (
-                f" [ratio={telemetry.get('completion_ratio', 0):.0%},"
-                f" blocked={telemetry.get('blocked_edges', 0)},"
-                f" ready={telemetry.get('ready_count', 0)}]"
-            )
-        lines.append(f"- {c.get('title', '?')} — {detail} [{c.get('status', '?')}]{extra}")
+    lines: list[str] = ["## Commitments (promises, in hand)"]
+    if commitments:
+        summary, focus_detail = summarize_dag(commitments, focus_title=focus_title)
+        lines.append("### Intention DAGs (compressed)")
+        lines.extend(f"- {line}" for line in summary)
+        lines.append("### Focus detail")
+        rows = focus_detail or commitments[:1]
+        for c in rows:
+            author = c.get("commissioned_by")
+            if not author or author == "self":
+                detail = "taken on by me"
+            else:
+                detail = f"asked for by {author}"
+            if c.get("deadline"):
+                detail += f", due {c['deadline']}"
+            else:
+                detail += ", no deadline"
+            telemetry = c.get("telemetry") or {}
+            extra = ""
+            if telemetry:
+                extra = (
+                    f" [ratio={telemetry.get('completion_ratio', 0):.0%},"
+                    f" blocked={telemetry.get('blocked_edges', 0)},"
+                    f" ready={telemetry.get('ready_count', 0)}]"
+                )
+            lines.append(f"- {c.get('title', '?')} — {detail} [{c.get('status', '?')}]{extra}")
+    portfolio = render_project_ledger(project_ledger or [])
+    if portfolio:
+        lines.append(portfolio)
     return "\n".join(lines)
 
 
@@ -170,6 +234,7 @@ class WorkspaceAssembler:
         conversations: str = "",
         guardian_summary: str = "guardian operational",
         stops: str = "",
+        project_ledger: list[dict[str, Any]] | None = None,
         now: datetime | None = None,
     ) -> Workspace:
         """
@@ -199,11 +264,13 @@ class WorkspaceAssembler:
         )
         blocks.append(Block("situation", situation))
 
-        if commitments:
-            focus_title = getattr(focus, "title", None) if focus else None
-            blocks.append(Block("commitments", render_commitments(commitments, focus_title=focus_title)))
-        else:
-            blocks.append(Block("commitments", "## Commitments\n(none — nothing is owed)"))
+        focus_title = getattr(focus, "title", None) if focus else None
+        blocks.append(Block(
+            "commitments",
+            render_commitments(
+                commitments, focus_title=focus_title, project_ledger=project_ledger,
+            ),
+        ))
 
         blocks.append(
             Block("conversations", conversations or "## Conversations\n(none open)")

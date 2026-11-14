@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 from collections.abc import Sequence
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -32,7 +34,7 @@ logger = get_logger("ethos.memory")
 _OPEN_INTENTION_STATUSES = (
     IntentionStatus.proposed.value, IntentionStatus.active.value,
     IntentionStatus.in_progress.value, IntentionStatus.waiting.value,
-    IntentionStatus.awaiting_review.value,
+    IntentionStatus.awaiting_review.value, IntentionStatus.awaiting_human.value,
 )
 
 # How far along a goal each open status means, lowest first. Used only to pick
@@ -43,6 +45,7 @@ _INTENTION_PROGRESS = {
     IntentionStatus.active.value: 1,
     IntentionStatus.waiting.value: 2,
     IntentionStatus.awaiting_review.value: 2,
+    IntentionStatus.awaiting_human.value: 2,
     IntentionStatus.in_progress.value: 3,
 }
 
@@ -60,6 +63,18 @@ def _new_id() -> UUID:
     return uuid4()
 
 
+def _opt_uuid(value: Any) -> UUID | None:
+    """A caller's id as a UUID, or None for anything that is not one."""
+    if value is None:
+        return None
+    if isinstance(value, UUID):
+        return value
+    try:
+        return UUID(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
 MEMORY_SCOPES = frozenset({"private", "project", "org"})
 
 
@@ -68,6 +83,54 @@ def _check_scope(scope: str) -> str:
     if scope not in MEMORY_SCOPES:
         raise ValueError(f"unknown memory scope: {scope!r}")
     return scope
+
+
+PROJECT_STATUSES = frozenset({
+    "active", "paused_for_human", "preempted", "evolving_cooldown", "done",
+})
+PROJECT_LIFECYCLE_MODES = frozenset({"finite", "evergreen"})
+
+
+@dataclass
+class ProjectProgressLedger:
+    """One project's verified standing, read all-time from Postgres.
+
+    Every field here is a fact from a row, not an intention: nodes are counted
+    intentions, artifacts are registered paths, actions are journal rows. A
+    reply that reports progress is answerable from this alone, which is the
+    point — a project that lost the focus an hour ago keeps its exact record.
+    """
+
+    project_id: str
+    title: str
+    lifecycle_mode: str
+    status: str
+    is_current_focus: bool
+    nodes_done: int
+    nodes_total: int
+    verified_checks_passed: int
+    artifacts_touched: list[str] = field(default_factory=list)
+    recent_actions: list[str] = field(default_factory=list)
+    blocking_human_tasks: list[dict] = field(default_factory=list)
+    checkpoint_summary: str = ""
+    budget_spent_usd: float = 0.0
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "project_id": self.project_id,
+            "title": self.title,
+            "lifecycle_mode": self.lifecycle_mode,
+            "status": self.status,
+            "is_current_focus": self.is_current_focus,
+            "nodes_done": self.nodes_done,
+            "nodes_total": self.nodes_total,
+            "verified_checks_passed": self.verified_checks_passed,
+            "artifacts_touched": list(self.artifacts_touched),
+            "recent_actions": list(self.recent_actions),
+            "blocking_human_tasks": [dict(t) for t in self.blocking_human_tasks],
+            "checkpoint_summary": self.checkpoint_summary,
+            "budget_spent_usd": self.budget_spent_usd,
+        }
 
 
 def _check_edge_type(edge_type: str) -> str:
@@ -459,18 +522,25 @@ class MemoryStore:
         expected_value: float | None = None,
         assigned_principal_id: str | None = None,
         lease_id: str | None = None,
+        project_id: UUID | str | None = None,
+        root_intention_id: UUID | str | None = None,
+        executor_kind: str = "self",
+        instruction_spec: dict[str, Any] | None = None,
     ) -> UUID:
         intent_id = _new_id()
         await self.db.execute(
             "INSERT INTO intentions (id, parent_id, kind, title, desired_end_state, success_criteria, "
             "constraints, origin, commissioned_by, status, priority, deadline, budget_usd, spent_usd, "
-            "expected_value, lease_id, assigned_principal_id, "
+            "expected_value, lease_id, assigned_principal_id, project_id, root_intention_id, "
+            "executor_kind, instruction_spec, "
             "created_at, updated_at) "
-            "VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9, 'proposed', $10, $11, $12, 0, $13, $14, $15, now(), now())",
+            "VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9, 'proposed', $10, $11, $12, 0, $13, $14, $15, $16, $17, $18, $19::jsonb, now(), now())",
             intent_id, parent_id, kind, title, desired_end_state,
             json.dumps(success_criteria or []), json.dumps(constraints or {}),
             origin, commissioned_by, float(priority), deadline, budget_usd,
             expected_value, lease_id, assigned_principal_id,
+            _opt_uuid(project_id), _opt_uuid(root_intention_id),
+            executor_kind or "self", json.dumps(instruction_spec) if instruction_spec else None,
         )
         if self.bus is not None:
             await self.bus.publish(EventKind.INTENTION_UPDATE, {
@@ -478,6 +548,8 @@ class MemoryStore:
                 "kind": kind, "commissioned_by": commissioned_by, "priority": priority,
                 "deadline": deadline.isoformat() if deadline else None,
                 "budget_usd": budget_usd, "parent_id": str(parent_id) if parent_id else None,
+                "project_id": str(project_id) if project_id else None,
+                "executor_kind": executor_kind or "self",
             })
         return intent_id
 
@@ -511,6 +583,25 @@ class MemoryStore:
             except (KeyError, TypeError):
                 return None
             return str(value) if value is not None else None
+
+        def _opt_uuid(key: str) -> UUID | None:
+            try:
+                value = row[key]
+            except (KeyError, TypeError):
+                return None
+            if value is None:
+                return None
+            try:
+                return UUID(str(value))
+            except ValueError:
+                return None
+
+        def _opt_json(key: str) -> dict[str, Any] | None:
+            try:
+                value = decode_json_value(row[key])
+            except (KeyError, TypeError):
+                return None
+            return dict(value) if isinstance(value, dict) else None
         return IntentionRecord(
             id=row["id"], parent_id=row["parent_id"], kind=row["kind"], title=row["title"],
             desired_end_state=row["desired_end_state"] or "", success_criteria=list(criteria or []),
@@ -524,6 +615,10 @@ class MemoryStore:
             expected_value=expected_value,
             lease_id=_opt_text("lease_id"),
             assigned_principal_id=_opt_text("assigned_principal_id"),
+            project_id=_opt_uuid("project_id"),
+            root_intention_id=_opt_uuid("root_intention_id"),
+            executor_kind=_opt_text("executor_kind") or "self",
+            instruction_spec=_opt_json("instruction_spec"),
             resume_state=dict(resume or {}), hypothesis=hypothesis,
             created_at=row["created_at"], updated_at=row["updated_at"],
             closed_reason=row["closed_reason"],
@@ -888,6 +983,7 @@ class MemoryStore:
             "hypothesis", "title", "desired_end_state", "closed_reason", "success_criteria", "constraints",
             "budget_allocated_usd", "budget_spent_usd", "expected_value",
             "lease_id", "assigned_principal_id",
+            "project_id", "root_intention_id", "executor_kind", "instruction_spec",
         }
         sets: list[str] = []
         args: list[Any] = []
@@ -895,9 +991,12 @@ class MemoryStore:
             if key not in allowed:
                 continue
             idx = len(args) + 1
-            if key in ("resume_state", "hypothesis", "success_criteria", "constraints"):
+            if key in ("resume_state", "hypothesis", "success_criteria", "constraints", "instruction_spec"):
                 sets.append(f"{key} = ${idx}::jsonb")
                 args.append(json.dumps(value))
+            elif key in ("project_id", "root_intention_id"):
+                sets.append(f"{key} = ${idx}")
+                args.append(_opt_uuid(value))
             else:
                 sets.append(f"{key} = ${idx}")
                 args.append(value)
@@ -1103,9 +1202,36 @@ class MemoryStore:
     async def get_ready_intentions(
         self, limit: int = 50,
     ) -> list[IntentionRecord]:
-        """Active/proposed intentions whose `depends_on` predecessors are done."""
+        """Agent-executable intentions whose `depends_on` predecessors are done.
+
+        `executor_kind = 'human'` rows are excluded on purpose: a node only a
+        person can complete must never take a solver pass — it waits in
+        `get_ready_human_intentions` for the reply that closes it.
+        """
         rows = await self.db.fetch(
             "SELECT * FROM intentions i WHERE i.status IN ('active','proposed','in_progress','waiting') "
+            "AND COALESCE(i.executor_kind, 'self') <> 'human' "
+            "AND NOT EXISTS ("
+            "  SELECT 1 FROM intention_edges e JOIN intentions pred ON pred.id = e.parent_id "
+            "  WHERE e.child_id = i.id AND e.edge_type = 'depends_on' "
+            "  AND pred.status <> 'done'"
+            ") ORDER BY i.priority DESC, i.created_at ASC LIMIT $1",
+            limit,
+        )
+        return [self._row_to_intention(r) for r in rows]
+
+    async def get_ready_human_intentions(
+        self, limit: int = 50,
+    ) -> list[IntentionRecord]:
+        """Human-executable nodes whose predecessors are all done.
+
+        These are the asks: the moment one lands here, someone is being asked
+        to do something only they can do, and the project it belongs to runs
+        on their reply rather than on the solver.
+        """
+        rows = await self.db.fetch(
+            "SELECT * FROM intentions i WHERE i.status IN ('active','proposed','in_progress','waiting') "
+            "AND COALESCE(i.executor_kind, 'self') = 'human' "
             "AND NOT EXISTS ("
             "  SELECT 1 FROM intention_edges e JOIN intentions pred ON pred.id = e.parent_id "
             "  WHERE e.child_id = i.id AND e.edge_type = 'depends_on' "
@@ -1175,4 +1301,320 @@ class MemoryStore:
             "ready_count": len(ready),
             "root_id": str(root_id) if root_id else None,
         }
+
+    # ------------------------------------------------------------- projects
+
+    async def create_project(
+        self,
+        title: str,
+        owner_principal_id: str,
+        root_intention_id: UUID | str | None = None,
+        *,
+        lifecycle_mode: str = "finite",
+        status: str = "active",
+        leases: Any = None,
+        db: Any = None,
+    ) -> dict[str, Any]:
+        """One project container: its row, its root intention's attribution,
+        and its own isolated workspace lease.
+
+        The lease is the isolation guarantee: two projects assigned from two
+        conversations get two lease roots, so Project 1 and Project 2 never
+        write into each other's files. A git repository gets its own worktree;
+        anything else gets a snapshot directory under `~/work/.projects/<id>/`.
+
+        Returns the project row as a dict, with `project_id` and
+        `workspace_lease_id` set — the caller binds its conversation to it.
+        """
+        lifecycle_mode = (lifecycle_mode or "finite").lower()
+        if lifecycle_mode not in PROJECT_LIFECYCLE_MODES:
+            lifecycle_mode = "finite"
+        status = (status or "active").lower()
+        if status not in PROJECT_STATUSES:
+            status = "active"
+        project_id = _new_id()
+        root_uuid = _opt_uuid(root_intention_id)
+        lease_id: str | None = None
+        lease_root: str | None = None
+        if leases is not None:
+            try:
+                projects_root = self.config.paths.work / ".projects" / str(project_id)
+                projects_root.mkdir(parents=True, exist_ok=True)
+                base = Path(str(self.config.paths.workspace)).expanduser()
+                is_git = (base / ".git").exists() or (base / ".git").is_file()
+                if is_git:
+                    # A real git worktree: the project's work integrates
+                    # through a commit and two projects never share one.
+                    lease = leases.acquire(
+                        intention_id=root_uuid, target_path=base, kind="git_worktree",
+                        allowed_paths=[],
+                    )
+                else:
+                    # No repository to branch: the project gets its own
+                    # isolated directory under ~/work/.projects/<project_id>/,
+                    # which is both its workspace and its fence.
+                    lease = leases.acquire(
+                        intention_id=root_uuid, target_path=projects_root,
+                        kind="snapshot", allowed_paths=[],
+                    )
+                    lease.root_path = projects_root
+                lease_id = lease.id
+                lease_root = str(lease.root_path)
+                persist = getattr(leases, "persist_lease", None)
+                if persist is not None:
+                    await persist(lease, db if db is not None else self.db)
+            except Exception:
+                logger.exception("memory.project_lease_failed", project=str(project_id))
+                lease_id = None
+        await self.db.execute(
+            "INSERT INTO projects (project_id, title, owner_principal_id, root_intention_id, "
+            "workspace_lease_id, lifecycle_mode, status, focus_seconds_accumulated, "
+            "checkpoint_json, evolution_config_json, last_active_at, created_at) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7, 0.0, '{}'::jsonb, '{}'::jsonb, now(), now())",
+            project_id, title, owner_principal_id, root_uuid, lease_id,
+            lifecycle_mode, status,
+        )
+        if root_uuid is not None:
+            # `root_intention_id` is the *root intention's own id* — the anchor
+            # every descendant's attribution points back to; `project_id` is
+            # the container. They are two different columns precisely so a
+            # journal row can name both.
+            await self.db.execute(
+                "UPDATE intentions SET project_id = $2, root_intention_id = $1, updated_at = now() "
+                "WHERE id = $1 AND project_id IS NULL",
+                root_uuid, project_id,
+            )
+        logger.info(
+            "memory.project_created", project=str(project_id), title=title[:120],
+            lease=lease_id, lease_root=lease_root, status=status,
+        )
+        return {
+            "project_id": str(project_id),
+            "title": title,
+            "owner_principal_id": owner_principal_id,
+            "root_intention_id": str(root_uuid) if root_uuid else None,
+            "workspace_lease_id": lease_id,
+            "workspace_root": lease_root,
+            "lifecycle_mode": lifecycle_mode,
+            "status": status,
+        }
+
+    async def get_project(self, project_id: UUID | str) -> dict[str, Any] | None:
+        row = await self.db.fetchrow("SELECT * FROM projects WHERE project_id = $1", _opt_uuid(project_id))
+        return self._project_row_to_dict(row) if row is not None else None
+
+    async def update_project(self, project_id: UUID | str, **fields: Any) -> None:
+        allowed = {
+            "status", "lifecycle_mode", "checkpoint_json", "evolution_config_json",
+            "focus_seconds_accumulated", "next_evolution_at", "last_active_at",
+            "workspace_lease_id", "title",
+        }
+        sets: list[str] = []
+        args: list[Any] = []
+        for key, value in fields.items():
+            if key not in allowed:
+                continue
+            idx = len(args) + 1
+            if key in ("checkpoint_json", "evolution_config_json"):
+                sets.append(f"{key} = ${idx}::jsonb")
+                args.append(json.dumps(value or {}))
+            else:
+                sets.append(f"{key} = ${idx}")
+                args.append(value)
+        if not sets:
+            return
+        args.append(_opt_uuid(project_id))
+        await self.db.execute(
+            f"UPDATE projects SET {', '.join(sets)} WHERE project_id = ${len(args)}",
+            *args,
+        )
+
+    async def list_projects(self, statuses: Sequence[str] | None = None) -> list[dict[str, Any]]:
+        if statuses:
+            rows = await self.db.fetch(
+                "SELECT * FROM projects WHERE status = ANY($1::text[]) ORDER BY last_active_at DESC",
+                list(statuses),
+            )
+        else:
+            rows = await self.db.fetch("SELECT * FROM projects ORDER BY last_active_at DESC")
+        return [self._project_row_to_dict(r) for r in rows]
+
+    @staticmethod
+    def _project_row_to_dict(row: Any) -> dict[str, Any]:
+        def _uuid_text(key: str) -> str | None:
+            value = row[key] if key in row.keys() else None
+            return str(value) if value is not None else None
+        checkpoint = decode_json_value(row["checkpoint_json"], {}) or {}
+        evolution = decode_json_value(row["evolution_config_json"], {}) or {}
+        return {
+            "project_id": str(row["project_id"]),
+            "title": row["title"],
+            "owner_principal_id": row["owner_principal_id"],
+            "root_intention_id": _uuid_text("root_intention_id"),
+            "workspace_lease_id": _uuid_text("workspace_lease_id"),
+            "lifecycle_mode": row["lifecycle_mode"],
+            "status": row["status"],
+            "focus_seconds_accumulated": float(row["focus_seconds_accumulated"] or 0.0),
+            "checkpoint_json": dict(checkpoint),
+            "evolution_config_json": dict(evolution),
+            "last_active_at": row["last_active_at"],
+            "next_evolution_at": row["next_evolution_at"],
+            "created_at": row["created_at"],
+        }
+
+    async def bind_conversation_project(self, conversation_key: str, project_id: str | None) -> None:
+        """Upsert the conversation -> project binding (`channel:person_id` key)."""
+        await self.db.execute(
+            "INSERT INTO conversation_project_bindings (conversation_key, active_project_id, updated_at) "
+            "VALUES ($1, $2, now()) "
+            "ON CONFLICT (conversation_key) DO UPDATE SET "
+            "active_project_id = EXCLUDED.active_project_id, updated_at = now()",
+            conversation_key, _opt_uuid(project_id),
+        )
+
+    async def get_conversation_project(self, conversation_key: str) -> dict[str, Any] | None:
+        """The project a conversation is bound to, or None."""
+        row = await self.db.fetchrow(
+            "SELECT p.* FROM conversation_project_bindings b "
+            "JOIN projects p ON p.project_id = b.active_project_id "
+            "WHERE b.conversation_key = $1",
+            conversation_key,
+        )
+        return self._project_row_to_dict(row) if row is not None else None
+
+    async def get_project_progress_ledger(
+        self,
+        project_id: str | None = None,
+        current_focus_project_id: str | None = None,
+    ) -> list[ProjectProgressLedger]:
+        """Every project's verified standing, read straight from Postgres.
+
+        No model call anywhere in here — this is the record the reply prompt
+        and the workspace ledger render from. One `project_id` answers for
+        that project alone; `None` answers for every project that is not
+        `done`, plus recently completed ones, so "what is the status of
+        everything" is one query set rather than one per project.
+        """
+        if project_id is not None:
+            rows = await self.db.fetch(
+                "SELECT * FROM projects WHERE project_id = $1", _opt_uuid(project_id),
+            )
+        else:
+            rows = await self.db.fetch(
+                "SELECT * FROM projects WHERE status <> 'done' "
+                "OR (status = 'done' AND last_active_at >= now() - interval '24 hours') "
+                "ORDER BY last_active_at DESC",
+            )
+        ledgers: list[ProjectProgressLedger] = []
+        for row in rows:
+            pid = str(row["project_id"])
+            nodes = await self.db.fetchrow(
+                "SELECT COUNT(*) AS total, COUNT(*) FILTER (WHERE status = 'done') AS done, "
+                "COALESCE(SUM(COALESCE(budget_spent_usd, spent_usd, 0)), 0) AS spent "
+                "FROM intentions WHERE project_id = $1",
+                _opt_uuid(pid),
+            )
+            artifact_rows = await self.db.fetch(
+                "SELECT DISTINCT uri FROM artifacts WHERE project_id = $1 ORDER BY uri LIMIT 20",
+                _opt_uuid(pid),
+            )
+            action_rows = await self.db.fetch(
+                "SELECT tool, status, COALESCE(result_digest->>'summary', '') AS summary "
+                "FROM action_journal WHERE project_id = $1 AND status = 'ok' "
+                "ORDER BY ts_start DESC LIMIT 5",
+                _opt_uuid(pid),
+            )
+            human_rows = await self.db.fetch(
+                "SELECT id::text, title, instruction_spec FROM intentions "
+                "WHERE project_id = $1 AND executor_kind = 'human' "
+                "AND status NOT IN ('done','cancelled') ORDER BY created_at ASC",
+                _opt_uuid(pid),
+            )
+            checkpoint = decode_json_value(row["checkpoint_json"], {}) or {}
+            ledgers.append(ProjectProgressLedger(
+                project_id=pid,
+                title=row["title"],
+                lifecycle_mode=row["lifecycle_mode"],
+                status=row["status"],
+                is_current_focus=(
+                    current_focus_project_id is not None and pid == str(current_focus_project_id)
+                ),
+                nodes_done=int(nodes["done"] or 0) if nodes else 0,
+                nodes_total=int(nodes["total"] or 0) if nodes else 0,
+                verified_checks_passed=int(nodes["done"] or 0) if nodes else 0,
+                artifacts_touched=[str(r["uri"]) for r in artifact_rows],
+                recent_actions=[
+                    f"{r['tool']} -> {r['status']}: {' '.join(str(r['summary'] or '').split())[:140]}"
+                    for r in action_rows
+                ],
+                blocking_human_tasks=[
+                    {
+                        "id": str(r["id"]),
+                        "title": r["title"],
+                        "instruction_spec": decode_json_value(r["instruction_spec"], {}) or {},
+                    }
+                    for r in human_rows
+                ],
+                checkpoint_summary=self.format_checkpoint_summary(checkpoint),
+                budget_spent_usd=float(nodes["spent"] or 0) if nodes else 0.0,
+            ))
+        return ledgers
+
+    @staticmethod
+    def format_checkpoint_summary(checkpoint: dict[str, Any]) -> str:
+        """A checkpoint dict as the one line a ledger or a reply needs."""
+        if not checkpoint:
+            return ""
+        parts: list[str] = []
+        if checkpoint.get("completed_nodes") is not None:
+            parts.append(
+                f"{checkpoint.get('completed_nodes')}/{checkpoint.get('total_nodes', '?')} nodes done"
+            )
+        if checkpoint.get("active_node_id"):
+            parts.append(f"paused at node {str(checkpoint['active_node_id'])[:8]}")
+        files = checkpoint.get("modified_files") or []
+        if files:
+            parts.append(f"files: {', '.join(str(f) for f in files[:3])}")
+        if checkpoint.get("next_planned_step"):
+            parts.append(f"next: {str(checkpoint['next_planned_step'])[:120]}")
+        if checkpoint.get("reason"):
+            parts.append(f"why paused: {str(checkpoint['reason'])[:120]}")
+        return "; ".join(parts)
+
+    async def record_project_milestone(
+        self,
+        project_id: UUID | str,
+        *,
+        version_tag: str,
+        summary: str,
+        metrics: dict[str, Any] | None = None,
+        git_commit_sha: str | None = None,
+    ) -> str:
+        milestone_id = _new_id()
+        await self.db.execute(
+            "INSERT INTO project_milestones (milestone_id, project_id, version_tag, summary, "
+            "metrics_json, git_commit_sha, created_at) "
+            "VALUES ($1, $2, $3, $4, $5::jsonb, $6, now())",
+            milestone_id, _opt_uuid(project_id), version_tag, summary,
+            json.dumps(metrics or {}), git_commit_sha,
+        )
+        return str(milestone_id)
+
+    async def list_project_milestones(self, project_id: UUID | str) -> list[dict[str, Any]]:
+        rows = await self.db.fetch(
+            "SELECT * FROM project_milestones WHERE project_id = $1 ORDER BY created_at ASC",
+            _opt_uuid(project_id),
+        )
+        return [
+            {
+                "milestone_id": str(r["milestone_id"]),
+                "project_id": str(r["project_id"]),
+                "version_tag": r["version_tag"],
+                "summary": r["summary"],
+                "metrics": decode_json_value(r["metrics_json"], {}) or {},
+                "git_commit_sha": r["git_commit_sha"],
+                "created_at": r["created_at"],
+            }
+            for r in rows
+        ]
 

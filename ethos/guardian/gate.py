@@ -151,20 +151,45 @@ class GuardianGate:
         self.approvals = approvals
 
     def _lease_for(self, intention_id: str | None) -> Any | None:
-        if self.leases is None or not intention_id:
+        if self.leases is None:
             return None
-        try:
-            for lease in getattr(self.leases, "leases", {}).values():
-                if str(getattr(lease, "intention_id", "") or "") == str(intention_id):
-                    return lease
-        except Exception:
-            return None
-        # The manager may be a plain dict of leases.
-        try:
-            if isinstance(self.leases, dict):
-                for lease in self.leases.values():
+        if intention_id:
+            try:
+                for lease in getattr(self.leases, "leases", {}).values():
                     if str(getattr(lease, "intention_id", "") or "") == str(intention_id):
                         return lease
+            except Exception:
+                pass
+            # The manager may be a plain dict of leases.
+            try:
+                if isinstance(self.leases, dict):
+                    for lease in self.leases.values():
+                        if str(getattr(lease, "intention_id", "") or "") == str(intention_id):
+                            return lease
+            except Exception:
+                pass
+        return None
+
+    def _project_lease(self, workspace_lease_id: str | None) -> Any | None:
+        """The lease a project's calls are fenced by, looked up by id.
+
+        Projects own their leases (one per project, never shared), so the id is
+        the direct key: a `WorkspaceLeaseManager.get`, a dict, or a bare mapping
+        all answer the same question.
+        """
+        if not workspace_lease_id or self.leases is None:
+            return None
+        getter = getattr(self.leases, "get", None)
+        if callable(getter):
+            try:
+                lease = getter(workspace_lease_id)
+                if lease is not None:
+                    return lease
+            except Exception:
+                return None
+        try:
+            if isinstance(self.leases, dict):
+                return self.leases.get(workspace_lease_id)
         except Exception:
             return None
         return None
@@ -173,9 +198,10 @@ class GuardianGate:
         self, tool: str, args: dict[str, Any],
         intention_id: str | None, thread_id: str,
         *, manifest: dict[str, Any] | None = None,
+        workspace_lease_id: str | None = None,
     ) -> GateDecision | None:
         """Lease allowed_paths + budget_limit and tool-manifest enforcement."""
-        lease = self._lease_for(intention_id)
+        lease = self._project_lease(workspace_lease_id) or self._lease_for(intention_id)
         if lease is not None:
             from ethos.guardian.classifier import extract_paths
 
@@ -273,6 +299,8 @@ class GuardianGate:
         commissioned_by: str | None = None,
         thread_id: str = "self",
         inside_subagent: str | None = None,
+        project_id: str | None = None,
+        workspace_lease_id: str | None = None,
     ) -> GateDecision:
         """
         There is no `home_dir` here, and its absence is the policy.
@@ -386,7 +414,10 @@ class GuardianGate:
                     manifest = get(tool) if callable(get) else None
             except Exception:
                 manifest = None
-        lease_decision = await self._review_lease(tool, args, intention_id, thread_id, manifest=manifest)
+        lease_decision = await self._review_lease(
+            tool, args, intention_id, thread_id, manifest=manifest,
+            workspace_lease_id=workspace_lease_id,
+        )
         if lease_decision is not None:
             return lease_decision
 
@@ -431,6 +462,7 @@ class GuardianGate:
                 if target and commissioned_by:
                     await self.registry.auto_register_write(
                         target, commissioned_by=commissioned_by, intention_id=intention_id,
+                        project_id=project_id,
                     )
             except Exception:
                 logger.exception("gate.auto_register_failed")
@@ -714,7 +746,8 @@ class GuardianGate:
 class RegistryLike(Protocol):
     async def is_protected(self, path: str | Path) -> dict[str, Any] | None: ...
     async def auto_register_write(self, path: str | Path, *, commissioned_by: str | None,
-                                  intention_id: str | None, kind: str = "file") -> str | None: ...
+                                  intention_id: str | None, kind: str = "file",
+                                  project_id: str | None = None) -> str | None: ...
 
 
 def _redacted(args: dict[str, Any]) -> dict[str, Any]:

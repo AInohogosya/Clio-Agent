@@ -14,10 +14,21 @@ class IntentionStatus(str, Enum):
     in_progress = "in_progress"
     waiting = "waiting"
     awaiting_review = "awaiting_review"
+    # A leaf whose `depends_on` predecessors are all done and whose executor is
+    # a person: the work is ready, and the thing it is waiting on is a reply.
+    # Not terminal and not open-to-the-agent — `get_ready_intentions` filters it
+    # out so the solver never picks it up; the reply path closes it.
+    awaiting_human = "awaiting_human"
     done = "done"
     parked = "parked"
     failed = "failed"
     cancelled = "cancelled"
+
+
+# How a node of a DAG is executed. `self` is the agent's own solver loop; the
+# others name who actually does the work, and `human` is the one the agent
+# cannot do for itself — it can only ask, wait, and check the answer.
+EXECUTOR_KINDS = frozenset({"self", "thread", "subagent", "resident", "human"})
 
 
 class IntentionEdgeRecord(BaseModel):
@@ -95,6 +106,14 @@ class IntentionRecord(BaseModel):
     expected_value: float | None = None
     lease_id: str | None = None
     assigned_principal_id: str | None = None
+    # Clio Agent 3.3 project leadership: which container this node belongs to,
+    # which root it hangs from, and who is supposed to execute it. `project_id`
+    # is what every journal row, artifact and progress report is attributed
+    # by; `executor_kind == "human"` marks work only a person can do.
+    project_id: UUID | None = None
+    root_intention_id: UUID | None = None
+    executor_kind: str = "self"
+    instruction_spec: dict[str, Any] | None = None
     resume_state: dict[str, Any] = Field(default_factory=dict)
     hypothesis: dict[str, Any] | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
@@ -111,6 +130,7 @@ class IntentionRecord(BaseModel):
             IntentionStatus.in_progress.value,
             IntentionStatus.waiting.value,
             IntentionStatus.awaiting_review.value,
+            IntentionStatus.awaiting_human.value,
         )
 
 

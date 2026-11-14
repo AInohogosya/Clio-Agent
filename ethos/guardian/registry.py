@@ -61,6 +61,7 @@ class ArtifactRegistry:
         intention_id: str | None = None,
         protection: str = "internal",
         notes: str | None = None,
+        project_id: str | None = None,
     ) -> str:
         artifact_id = uuid.uuid4()
         path = Path(uri).expanduser()
@@ -69,10 +70,13 @@ class ArtifactRegistry:
             fingerprint = fingerprint_file(path)
         await self.db.execute(
             "INSERT INTO artifacts (id, uri, kind, origin, commissioned_by, intention_id, "
-            "protection, fingerprint, created_at, last_seen_at, notes) "
-            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now(), now(), $9)",
+            "protection, fingerprint, created_at, last_seen_at, notes, project_id, "
+            "root_intention_id) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now(), now(), $9, "
+            "COALESCE($10::uuid, (SELECT project_id FROM intentions WHERE id = $6)), "
+            "(SELECT root_intention_id FROM intentions WHERE id = $6))",
             artifact_id, str(path), kind, origin, commissioned_by, intention_id,
-            protection, fingerprint, notes,
+            protection, fingerprint, notes, project_id,
         )
         return str(artifact_id)
 
@@ -98,6 +102,7 @@ class ArtifactRegistry:
         commissioned_by: str | None,
         intention_id: str | None,
         kind: str = "file",
+        project_id: str | None = None,
     ) -> str | None:
         if commissioned_by is None:
             return None
@@ -119,7 +124,7 @@ class ArtifactRegistry:
         return await self.register(
             str(target), kind=kind, origin="commission_work",
             commissioned_by=commissioned_by, intention_id=intention_id,
-            protection="commissioned",
+            protection="commissioned", project_id=project_id,
         )
 
     async def touch(self, path: str | Path) -> None:

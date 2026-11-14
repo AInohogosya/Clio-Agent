@@ -180,11 +180,17 @@ async def understand(
     ))
     difficulty = clip(float(data.get("difficulty", 0.5)), 0.0, 1.0)
     consequential = bool(data.get("consequential", consequential_hint)) or consequential_hint
+    model_mode = str(data.get("lifecycle_mode", "") or "").strip().lower()
+    lifecycle_mode = (
+        model_mode if model_mode in ("finite", "evergreen")
+        else classify_lifecycle_mode(str(intention.title), str(intention.desired_end_state or ""))
+    )
     return {
         "understanding": str(data.get("understanding", ""))[:2000],
         "unknowns": [str(u) for u in data.get("unknowns", [])][:10],
         "difficulty": difficulty,
         "consequential": consequential,
+        "lifecycle_mode": lifecycle_mode,
         "questions": [str(q) for q in data.get("questions", [])][:5],
     }
 
@@ -271,15 +277,18 @@ def decompose_into_children(
     *,
     approach_summary: str = "",
     expected_value: float = 0.8,
+    lifecycle_mode: str = "finite",
 ) -> list[dict[str, Any]]:
     """Split a complex goal into child-intention specs linked by RIG edges.
 
     The decomposition is generic: understand -> work -> verify -> synthesize.
-    Leaf children each plan at most 7 steps. Pure function for testability;
-    the caller persists the children and edges.
+    Leaf children each plan at most 7 steps. Each spec also carries
+    `executor_kind` — who can actually do the work — and, for `human` nodes,
+    an `instruction_spec` the user is asked with. Pure function for
+    testability; the caller persists the children and edges.
     """
     base = approach_summary or goal
-    return [
+    specs = [
         {
             "title": f"Understand: {goal}"[:200],
             "desired_end_state": f"Understand what {goal} requires",
@@ -309,12 +318,89 @@ def decompose_into_children(
             "edge_to_parent": "synthesizes",
         },
     ]
+    for spec in specs:
+        executor_kind, instruction = classify_executor(spec["title"], spec["desired_end_state"])
+        spec["executor_kind"] = executor_kind
+        spec["instruction_spec"] = instruction
+    return specs
+
+
+# What says a step is a person's to do, not the agent's. These are matched
+# against the step's own words because the classification is made at plan time,
+# from what the plan says the step is: a step naming credentials, accounts,
+# billing, sign-off or production deployment is a step the agent can prepare
+# and ask for, and cannot complete.
+_HUMAN_EXECUTOR_MARKERS = (
+    "api key", "apikey", "api_key", "credential", "credentials", "password",
+    "secret key", "access token", "billing", "payment method", "subscription",
+    "account setup", "sign up", "sign-off", "sign off", "signoff", "approval",
+    "legal", "architectural sign-off", "review and approve", "production deploy",
+    "deploy to production", "production credentials", "dns", "registrar",
+    "two-factor", "2fa", "otp", "identity verification",
+)
+
+
+def classify_executor(title: str, description: str = "") -> tuple[str, dict[str, Any] | None]:
+    """Who executes this step: the agent, or a person only.
+
+    Returns `(executor_kind, instruction_spec)`. `instruction_spec` is None
+    for anything the agent can do itself; for a `human` node it is the
+    structured ask the governance path delivers:
+    `{action_required, rationale, exact_steps, acceptance_evidence}`.
+    """
+    text = f"{title} {description}".lower()
+    if not any(marker in text for marker in _HUMAN_EXECUTOR_MARKERS):
+        return "self", None
+    subject = " ".join(str(title or "").split())
+    first_line = " ".join(str(description or "").split())
+    return "human", {
+        "action_required": f"{subject}".strip()[:200] or "Complete this step yourself",
+        "rationale": (
+            "This step needs credentials, an account, a decision or an approval "
+            "that only you hold; the agent cannot obtain them on your behalf. "
+            "Completing it unblocks the rest of the plan."
+        ),
+        "exact_steps": [
+            first_line[:200] or subject[:200],
+            "Reply here with the confirmation (or paste the requested value's name, never the secret itself).",
+        ],
+        "acceptance_evidence": (
+            "A short reply saying it is done — or the named evidence the step "
+            "describes — so the plan can verify and continue."
+        ),
+    }
+
+
+# What says a mandate is open-ended rather than finite. An evergreen project
+# never closes at v1: each verified milestone ships, rests, and proposes its
+# own next iteration.
+_EVERGREEN_MARKERS = (
+    "ongoing", "continuously", "continuous", "keep improving", "keep it",
+    "self-improving", "self improving", "maintain", "maintenance", "upkeep",
+    "always be", "in perpetuity", "on an ongoing basis", "optimization",
+    "optimisation", "optimise", "optimize", "tune over time", "long-term",
+    "long term", "steward", "evergreen",
+)
+
+
+def classify_lifecycle_mode(title: str, desired_end_state: str = "") -> str:
+    """`evergreen` for open-ended mandates, `finite` otherwise."""
+    text = f"{title} {desired_end_state}".lower()
+    return "evergreen" if any(marker in text for marker in _EVERGREEN_MARKERS) else "finite"
 
 
 async def decompose_and_persist(
     memory: Any, intention: Any, approach: dict[str, Any],
 ) -> list[Any]:
-    """Create child intentions and link them; return the child records."""
+    """Create child intentions and link them; return the child records.
+
+    Every child inherits its parent's `project_id` and `root_intention_id`:
+    attribution is set once at the container and flows down the whole DAG, so
+    a journal row or an artifact written three levels deep still names the
+    project it belongs to. A child may carry its own `executor_kind` and
+    `instruction_spec` out of the spec — a `human` node is created as one, so
+    the solver never picks it up and the governance path asks instead.
+    """
     specs = decompose_into_children(
         str(intention.title), approach_summary=str(approach.get("summary", "")),
         expected_value=float(approach.get("expected_value", 0.8)),
@@ -322,6 +408,7 @@ async def decompose_and_persist(
     children: list[Any] = []
     previous = None
     for spec in specs:
+        root_intention = getattr(intention, "root_intention_id", None) or getattr(intention, "id", None)
         child_id = await memory.create_intention(
             title=spec["title"],
             desired_end_state=spec["desired_end_state"],
@@ -330,6 +417,10 @@ async def decompose_and_persist(
             origin="decomposition",
             priority=0.6,
             expected_value=spec["expected_value"],
+            project_id=getattr(intention, "project_id", None),
+            root_intention_id=root_intention,
+            executor_kind=str(spec.get("executor_kind") or "self"),
+            instruction_spec=spec.get("instruction_spec"),
         )
         child = await memory.get_intention(child_id) if hasattr(memory, "get_intention") else None
         children.append(child if child is not None else child_id)

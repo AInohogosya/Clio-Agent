@@ -117,10 +117,19 @@ class CoreRuntime:
         self.approvals = ApprovalManager(
             default_timeout_s=float(getattr(config.permissions, "approval_timeout_s", 300.0) or 300.0)
         )
+        # One lease manager for the whole core process: project containers take
+        # their isolated workspaces from it (`create_project`), the guardian
+        # enforces each call against the project's lease, and evergreen
+        # milestones commit through it.
+        from ethos.threads.context import WorkspaceLeaseManager
+
+        self.leases = WorkspaceLeaseManager(
+            config, snapshots=self.snapshots, trash=self.trash,
+        )
         self.guardian = GuardianGate(
             config, registry=self.registry, trash=self.trash, snapshots=self.snapshots,
             audit=self.audit, verifier=self.verifier, control=self.control,
-            approvals=self.approvals,
+            approvals=self.approvals, leases=self.leases,
         )
 
         self.relationships = RelationshipStore(config, db=db)
@@ -186,6 +195,9 @@ class CoreRuntime:
             # backoff that stops a frozen goal is decided in the same place as
             # every other decision about when this agent does something.
             rhythm=self.rhythm,
+            # Evergreen milestones commit the project's workspace lease through
+            # this manager; without it a milestone would ship without the work.
+            leases=self.leases,
         )
         from ethos.memory.continuity import ContinuityManager
 
@@ -202,7 +214,7 @@ class CoreRuntime:
             comms_out=self.comms_out, toolhost=self.toolhost, audit=self.audit,
             continuity=self.continuity, consolidation=self.consolidation,
             context=self.context, embedder=self.embedder, thread_id="self",
-            reverie=self.reverie,
+            reverie=self.reverie, leases=self.leases,
         )
         self.life = Life(self.deps)
         self.life.attach_queue(self.percept_queue)

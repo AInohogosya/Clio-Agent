@@ -159,6 +159,8 @@ class ActionJournal:
         reason: str,
         idempotency_key: str | None,
         side_effects: list[str],
+        project_id: str | None = None,
+        root_intention_id: str | None = None,
     ) -> str:
         action_id = uuid.uuid4().hex[:20]
         if idempotency_key:
@@ -182,10 +184,13 @@ class ActionJournal:
         if self.db is not None:
             await self.db.execute(
                 "INSERT INTO action_journal (id, ts_start, thread_id, intention_id, tool, "
-                "args_redacted, reason, idempotency_key, side_effects, status) "
-                "VALUES ($1, now(), $2, $3, $4, $5::jsonb, $6, $7, $8, 'running')",
+                "args_redacted, reason, idempotency_key, side_effects, status, project_id, root_intention_id) "
+                "VALUES ($1, now(), $2, $3, $4, $5::jsonb, $6, $7, $8, 'running', "
+                "COALESCE($9::uuid, (SELECT project_id FROM intentions WHERE id = $3)), "
+                "COALESCE($10::uuid, (SELECT root_intention_id FROM intentions WHERE id = $3)))",
                 action_id, thread_id, intention_id, tool,
                 json.dumps(args_redacted, default=str), reason, idempotency_key, side_effects,
+                project_id, root_intention_id,
             )
         else:
             await self._file_append({
@@ -202,6 +207,8 @@ class ActionJournal:
                 "status": "running",
                 "result_digest": None,
                 "undo_ref": None,
+                "project_id": project_id,
+                "root_intention_id": root_intention_id,
             })
         return action_id
 

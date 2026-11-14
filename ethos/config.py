@@ -1177,6 +1177,14 @@ class InterruptionConfig(BaseModel):
     # updates back in the digest like any other unsolicited message; quiet hours,
     # the daily budget, and the repeat window are not affected either way.
     midtask_sends_immediate: bool = True
+    # Governance messages are the agent's own reports about work somebody
+    # entrusted to it: kickoffs, human asks, blockers, milestones, focus
+    # switches. They get their own budget rather than the 6/3/1 casual one,
+    # because a project lead who stays silent is the failure — and their own
+    # repeat window, because the same notice twice in a quarter hour is a bug
+    # while the same notice twice in a day can be genuine news.
+    governance_daily_cap: int = 24
+    governance_dedupe_window_min: float = 15.0
 
 
 class GuardianConfig(BaseModel):
@@ -1873,6 +1881,28 @@ class SubagentsConfig(BaseModel):
         return [entry for entry in self.agents if entry.enabled]
 
 
+class ProjectConfig(BaseModel):
+    """How the agent holds and switches focus across the projects it leads.
+
+    A project is a container with its own workspace lease, its own ledger and
+    its own lifecycle, and these three numbers are the anti-thrashing core:
+    how long a project holds the execution focus once it has it, how much
+    better a challenger has to be to take it, and how long an evergreen
+    project rests between evolution cycles.
+    """
+
+    # The minimum uninterrupted focus quantum per project, in seconds. A project
+    # that is `active` and inside its quantum cannot have its execution focus
+    # taken by another project's work unless the challenger clears the margin
+    # below or the inbound message carries an explicit priority override.
+    project_min_focus_s: float = 1800.0
+    # The salience margin a challenger must clear to preempt a locked project:
+    # candidate_salience >= current_salience + margin.
+    project_switch_margin: float = 0.20
+    # The cooldown between evolution cycles of an evergreen project.
+    evolution_interval_s: float = 21600.0
+
+
 class EthosConfig(BaseModel):
     self_name: str = DEFAULT_SELF_NAME
     timezone: str = "local"
@@ -1892,6 +1922,7 @@ class EthosConfig(BaseModel):
     channels: ChannelsConfig = ChannelsConfig()
     people: PeopleConfig = PeopleConfig()
     subagents: SubagentsConfig = SubagentsConfig()
+    projects: ProjectConfig = ProjectConfig()
 
 
 def _read_yaml(path: Path) -> dict[str, Any]:
@@ -2187,7 +2218,33 @@ def load_config(config_dir_override: str | Path | None = None) -> EthosConfig:
     # `assert_model_dim` rather than quietly filling the store with vectors
     # Postgres will not take.
     _apply_embedding_env(cfg)
+    _apply_project_env(cfg)
     return cfg
+
+
+def _apply_project_env(cfg: EthosConfig) -> None:
+    """Environment overrides for the project-focus scheduler.
+
+    The same pattern as `_apply_embedding_env`: these are deployment knobs an
+    operator reaches for without editing a file, so they are read from the
+    environment where a container gets its settings.
+    """
+    proj = cfg.projects
+    if raw := os.environ.get("ETHOS_PROJECT_MIN_FOCUS_S"):
+        try:
+            proj.project_min_focus_s = max(0.0, float(raw))
+        except ValueError:
+            pass
+    if raw := os.environ.get("ETHOS_PROJECT_SWITCH_MARGIN"):
+        try:
+            proj.project_switch_margin = max(0.0, float(raw))
+        except ValueError:
+            pass
+    if raw := os.environ.get("ETHOS_EVOLUTION_INTERVAL_S"):
+        try:
+            proj.evolution_interval_s = max(0.0, float(raw))
+        except ValueError:
+            pass
 
 
 def _apply_embedding_env(cfg: EthosConfig) -> None:

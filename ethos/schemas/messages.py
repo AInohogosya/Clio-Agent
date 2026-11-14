@@ -136,6 +136,13 @@ class SocialAction(str, Enum):
     act_silently = "act_silently"
     ask_clarification = "ask_clarification"
     ignore = "ignore"
+    # Clio Agent 3.3 project-lead speech. `instruct_user` carries step-by-step
+    # directions the person must follow to unblock a project; both it and
+    # `report_governance` are delivered through the governance fast-path
+    # (immediate, deduped on the notice key, their own daily cap) rather than
+    # the casual digest and etiquette queue.
+    instruct_user = "instruct_user"
+    report_governance = "report_governance"
 
 
 class IgnoreReason(str, Enum):
@@ -167,6 +174,17 @@ class SocialDecision(BaseModel):
     ignore_reason: str | None = None
     creates_intention: bool = False
     intention_spec: dict[str, Any] | None = None
+    # Which open `awaiting_human` node this message answers, and the evidence
+    # the person gave. When set, the life loop marks that node done, records
+    # the evidence, unlocks its `depends_on` successors, and resumes the
+    # project — the person completing their step is the project moving.
+    resolves_human_node_id: str | None = None
+    human_node_evidence: str | None = None
+    # Standing instructions the person gave this turn ("always ask before
+    # deploying", "report daily"), as
+    # `{"instruction": str, "scope": str}` entries. Recorded against the
+    # project/owner so later cycles can honour them.
+    user_instructions: list[dict[str, Any]] = Field(default_factory=list)
     tier_used: str = "T2"
     # Whether the agent formed an opinion about this message at all.
     #
