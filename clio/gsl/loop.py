@@ -1314,6 +1314,14 @@ class GeneralSolverLoop:
         situation = ws.volatile_text() if ws is not None else ""
         if steering_batch:
             situation = f"{steering_batch.rendered}\n\n{situation}"
+        # Stage 1 of the two-stage narrowing: the top-k tools for THIS step,
+        # rendered with full schemas into the step context (below the cache
+        # breakpoint, so the prefix stays stable). Stage 2 — `tools.search` —
+        # is pinned in the prefix; the sheet names it as the way back.
+        step_text = f"{intention.title} {step.description} {situation[:2000]}"
+        tool_sheet = self._narrowed_tool_sheet(step_text)
+        if tool_sheet:
+            situation = f"{tool_sheet}\n\n{situation}"
         memories = await self._recall(f"{intention.title} {step.description}", k=6)
         plan_state = [
             {"id": s.id, "description": s.description, "status": s.status}
@@ -1838,24 +1846,55 @@ class GeneralSolverLoop:
         return check
 
     async def _tool_catalog(self) -> str:
-        """Where the tool catalog is, which is not in this prompt.
+        """Where the tool schemas are, under the two-stage narrowed catalog.
 
         This used to render a second copy of the catalog into `STEP_PROMPT`, one
         list entry per tool and no parameters at all — so a step was shown the full
         registry twice, once properly in the cached stable prefix and once here,
-        uncached and worse, after the cache breakpoint. The agent could act on either.
+        uncached and worse, after the cache breakpoint.
 
-        It is a pointer now. The rendered catalog is the second block of the stable
-        prefix this same request already carries, with every parameter, its type and
-        whether it is required, so there is nothing for a second copy to add; and a
-        tool registered after this request was built cannot appear in it either way.
-        The only case that ever reached here without one is the thread worker, which
-        passes its own line and executes nothing.
+        It is a pointer now, and the registry behind it is narrowed in two
+        stages: the pinned `tools.search` meta-tool sits in the cached prefix
+        (`[2. tools]`), this step's sheet of up to twelve fully-rendered tools
+        sits in the step context above (rendered by `_narrowed_tool_sheet`),
+        and anything past the sheet is one `tools.search` call away. Call only
+        names and arguments the sheet or a search result showed.
         """
         return (
-            "In the `## Tools` block of my context above: every tool, its parameters, "
-            "their types and which are required. Call only names and arguments listed there."
+            "In the `## Tools for this step` block of my context: this step's "
+            "callable tools, with their full schemas. The cached `## Tools` block "
+            "above pins `tools.search`; call it for any tool the sheet does not "
+            "show and use the schemas it returns. Call only names and arguments "
+            "listed in one of those two places."
         )
+
+    def _narrowed_tool_sheet(self, step_text: str) -> str:
+        """Stage 1 of the narrowing, for this step's context sheet.
+
+        A lightweight router (no model call) picks the top twelve catalog
+        entries against the step's own text; `tools.search` is pinned first.
+        When there is no registry to narrow — the thread-worker case that has
+        never executed anything — the sheet is empty and the prompt carries
+        no sheet at all.
+        """
+        host = self.toolhost
+        if host is None or not hasattr(host, "catalog"):
+            return ""
+        try:
+            raw = list(host.catalog())
+        except Exception:
+            logger.exception("gsl.tool_catalog_unavailable")
+            return ""
+        if not raw:
+            return ""
+        from clio.tools.catalog import ToolCatalog, entry_from_tool_spec
+
+        catalog = ToolCatalog()
+        for entry in raw:
+            catalog.register(entry_from_tool_spec(entry))
+        from clio.tools.catalog import narrowed_step_tools
+
+        return narrowed_step_tools(catalog, step_text)
 
     def _delegation_note(self, intention: Any) -> str:
         from clio.guardian.safety import effective_level

@@ -666,7 +666,7 @@ def _render_signature(schema: dict[str, Any]) -> str:
 
 
 def build_tool_catalog_block(tools: list[dict[str, Any]]) -> str:
-    """Stable prefix block 2: every tool, with the arguments it actually takes.
+    """The full tool sheet, with the arguments each tool actually takes.
 
     This used to render each tool as its description and a bare list of parameter
     names, on the stated grounds that the details "live in tool-call plumbing". They
@@ -679,12 +679,6 @@ def build_tool_catalog_block(tools: list[dict[str, Any]]) -> str:
     are. None of that is recoverable by inference: `fs.write(path, content, append,
     binary_b64)` reads as four scalars, and the call that guessed wrong came back with
     a type error attributed to a field the agent had been told was a flag.
-
-    The whole registry is rendered, in full, once. Roughly three thousand tokens in
-    the cached prefix buys every call being well formed on the first attempt, which is
-    the trade this block exists to make: the cache is read at a fraction of input price
-    on every subsequent turn of every thread, and a rejected call costs a whole
-    round trip to discover something the prompt already knew.
 
     Types are rendered as expressions rather than dumped as JSON, and the nesting is
     spelled out recursively, so an array of objects and a free-form object stay
@@ -705,6 +699,29 @@ def build_tool_catalog_block(tools: list[dict[str, Any]]) -> str:
         head = f"- `{tool['name']}`({signature})"
         lines.append(f"{head} — {description}" if description else head)
     return "\n".join(lines)
+
+
+def build_pinned_tools_block(tools: list[dict[str, Any]], total: int) -> str:
+    """Stable prefix block 2 under two-stage narrowing: the pinned meta-tool.
+
+    The whole registry used to be rendered here — roughly three thousand
+    tokens bought once and cache-read forever, which was the right trade until
+    the registry grew past what a step could read. Two-stage narrowing is the
+    trade now: this block pins `tools.search` (byte-stable, so the cache
+    survives) and states the registry's size; the active step's sheet of up to
+    twelve fully-rendered tools arrives below the cache breakpoint, chosen for
+    that step, and everything else is one `tools.search` call away with its
+    complete schema.
+    """
+    pinned = build_tool_catalog_block(tools)
+    note = (
+        f"\n\nThe registry holds {total} tools in all. The step's own tool sheet — "
+        "up to twelve chosen for the work at hand, with full schemas — follows in the "
+        "step context. Any other tool is reachable right now through `tools.search`: "
+        "call it with a few words and it returns the complete schemas. Never guess a "
+        "tool name or a parameter."
+    )
+    return pinned + note
 
 
 HARD_LIMIT_TEXT = [

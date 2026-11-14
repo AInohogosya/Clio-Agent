@@ -101,6 +101,7 @@ async def run_model_verifier(
     purpose: str,
     thread_id: str | None = None,
     model_hint: str | None = None,
+    extra_messages: list[str] | None = None,
 ) -> dict[str, Any]:
     """The rung-2 judge, as one model call shared by every path that reaches it.
 
@@ -111,7 +112,20 @@ async def run_model_verifier(
     family. One implementation is the fix for that class of drift: same prompt,
     same tier, same parse, and the same refusal to guess — a verifier that
     cannot be asked answers `needs_human`, never a verdict it did not hear.
+
+    `artifact_text` arrives whole — chunking and coverage are the caller's
+    contract (`clio.gsl.verifier_inspect`), and this function truncates
+    nothing. `extra_messages` is the chunk framing the map pass hands its
+    judges: goal restated for the chunk, the place this chunk holds in the
+    whole, and the rule that an unreadable chunk is `needs_human`.
     """
+    system = VERIFIER_PROMPT.format(
+        goal=goal,
+        criteria=dumps(criteria),
+        artifact=artifact_text,
+    )
+    if extra_messages:
+        system = system + "\n\n" + "\n".join(extra_messages)
     request = ModelRequest(
         tier=Tier.T3,
         purpose=purpose,
@@ -119,11 +133,7 @@ async def run_model_verifier(
         provider_hint=diverse_provider_hint(config, producer_family),
         model_hint=model_hint,
         messages=[
-            ModelMessage(role=Role.system, content=VERIFIER_PROMPT.format(
-                goal=goal,
-                criteria=dumps(criteria),
-                artifact=artifact_text,
-            )),
+            ModelMessage(role=Role.system, content=system),
             ModelMessage(role=Role.user, content="Judge the artifact."),
         ],
         max_tokens=1200,
@@ -409,40 +419,66 @@ class VerificationLadder:
         self, intention: Any, criteria: list[dict[str, Any]], artifact: Any,
         producer_family: str | None,
     ) -> dict[str, Any]:
-        """Rung 2: a Thread with the same identity but a different model family."""
-        if self.threads is not None:
-            try:
-                handle = await self.threads.spawn_spec({
-                    "goal": (
-                        f"Verify artifact for intention '{intention.title}'. "
-                        f"Return JSON verdict pass|fail|needs_human with issues."
-                    ),
-                    "framing": "independent verifier: judge only goal and artifact",
-                    "role": "verifier",
-                    "parent_intention_id": str(intention.id),
-                    "verify_payload": {
-                        "goal": intention.desired_end_state or intention.title,
-                        "criteria": criteria,
-                        "artifact": _artifact_text(artifact),
-                        "producer_family": producer_family,
-                    },
-                    "depth": 1,
-                    "spawner_thread_id": "gsl",
-                })
-                result = await self.threads.wait(handle, timeout_s=240)
-                if isinstance(result, dict) and result.get("verdict"):
-                    return result
-            except Exception:
-                logger.exception("verification.thread_failed")
-        return await run_model_verifier(
-            self.gateway, self.config,
-            goal=intention.desired_end_state or intention.title,
-            criteria=criteria,
-            artifact_text=_artifact_text(artifact),
-            producer_family=producer_family,
-            purpose="gsl.verify",
-            model_hint=self.config.gsl.model_hint or None,
+        """Rung 2: an independent judge, and it reads all of the work.
+
+        Every artifact goes through `verifier_inspect.inspect_artifacts`: the
+        map pass chunks the deliverable so a judge call sees a whole-covering
+        slice (never a fixed truncation), each chunk is judged by a model from
+        a different diversity family than the producer's, and the reduce merges
+        the chunk verdicts under a rule no chunk can bargain with. The single-
+        call judge is the special case of one chunk. The verifier-thread path
+        stays for the small-artifact case — a whole artifact that fits in one
+        chunk still rides the thread for its process isolation, and the reduce
+        holds the same rule either way.
+        """
+        from clio.gsl.verifier_inspect import (
+            chunk_artifacts,
+            inspect_artifacts,
+            normalize_artifact_files,
         )
+
+        goal = intention.desired_end_state or intention.title
+        # A whole artifact that fits one chunk rides the verifier thread, whose
+        # process isolation is worth keeping for the common case; anything that
+        # takes a map goes through the chunked inspection.
+        try:
+            files = normalize_artifact_files(artifact)
+            chunks = chunk_artifacts(files)
+            if len(chunks) <= 1 and self.threads is not None:
+                try:
+                    handle = await self.threads.spawn_spec({
+                        "goal": (
+                            f"Verify artifact for intention '{intention.title}'. "
+                            f"Return JSON verdict pass|fail|needs_human with issues."
+                        ),
+                        "framing": "independent verifier: judge only goal and artifact",
+                        "role": "verifier",
+                        "parent_intention_id": str(intention.id),
+                        "verify_payload": {
+                            "goal": goal,
+                            "criteria": criteria,
+                            "artifact": _artifact_text(artifact),
+                            "producer_family": producer_family,
+                        },
+                        "depth": 1,
+                        "spawner_thread_id": "gsl",
+                    })
+                    result = await self.threads.wait(handle, timeout_s=240)
+                    if isinstance(result, dict) and result.get("verdict"):
+                        return result
+                except Exception:
+                    logger.exception("verification.thread_failed")
+            return await inspect_artifacts(
+                self.gateway, self.config,
+                goal=goal,
+                criteria=criteria,
+                artifact=artifact,
+                producer_family=producer_family,
+                purpose="gsl.verify",
+            )
+        except Exception:
+            logger.exception("verification.inspect_failed")
+        return {"verdict": "needs_human", "issues": ["verifier call failed"], "confidence": 0.0}
 
     async def _record_human_review_pending(
         self, intention: Any, criteria: list[dict[str, Any]], artifact: Any,
@@ -485,11 +521,21 @@ class VerificationLadder:
 
 
 def _artifact_text(artifact: Any) -> str:
+    """The artifact whole — the ladder no longer truncates what its judge reads.
+
+    Fixed windows (`artifact[:16000]`) verified a deliverable on its opening
+    pages and said nothing about the pages past the edge. Coverage is now the
+    chunker's contract: `_independent_verifier` routes every artifact through
+    `verifier_inspect.inspect_artifacts`, whose map pass judges all of it and
+    whose reduce never lets a silent slice decide. This helper stays for the
+    one caller that shows a human a preview, and it truncates nothing either —
+    what a person reads is their own screen's problem, not this file's.
+    """
     if artifact is None:
         return "(no artifact)"
     if isinstance(artifact, str):
-        return artifact[:16000]
+        return artifact
     try:
-        return json.dumps(artifact, default=str)[:16000]
+        return json.dumps(artifact, default=str)
     except (TypeError, ValueError):
-        return str(artifact)[:16000]
+        return str(artifact)

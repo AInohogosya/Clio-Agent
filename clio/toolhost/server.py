@@ -185,6 +185,7 @@ class Toolhost:
             ScheduleCancelTool,
             ScheduleEveryTool,
         )
+        from clio.toolhost.tools.search_tools import SearchToolsTool
         from clio.toolhost.tools.secrets import SecretsGetTool, SecretsListTool, SecretsSetTool
         from clio.toolhost.tools.shell import (
             ShellJobTool,
@@ -198,6 +199,7 @@ class Toolhost:
         from clio.toolhost.tools.toolshed import ToolsListTool, ToolsRegisterTool, ToolsRunTool
 
         for tool in (
+            SearchToolsTool(),
             ShellRunTool(), ShellJobTool(),
             ShellSessionOpenTool(), ShellSessionWriteTool(), ShellSessionReadTool(),
             ShellSessionCloseTool(),

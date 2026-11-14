@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from clio.config import ClioConfig
-from clio.prompts.identity import build_limits_block, build_tool_catalog_block
+from clio.prompts.identity import build_limits_block, build_pinned_tools_block, build_tool_catalog_block
 from clio.schemas.events import Percept
 from clio.schemas.gsl import Focus
 from clio.schemas.memory import MemoryHit
@@ -252,7 +252,20 @@ class WorkspaceAssembler:
         blocks: list[Block] = []
 
         blocks.append(Block("identity", identity_doc))
-        blocks.append(Block("tools", build_tool_catalog_block(tools)))
+        # Block 2 under two-stage narrowing: the pinned `tools.search` meta-tool
+        # and the registry's size — byte-stable across steps, which is what the
+        # cache needs. The per-step narrowed sheet of up to twelve tools is
+        # rendered below the cache breakpoint, in the step's own context.
+        from clio.tools.catalog import SEARCH_TOOLS_SPEC, pinned_prefix_tools
+
+        if any(str(t.get("name")) == SEARCH_TOOLS_SPEC["name"] for t in tools):
+            tools_block = build_pinned_tools_block(pinned_prefix_tools(), len(tools))
+        else:
+            # A caller without the pinned meta-tool (a thread worker with its
+            # own list) keeps the full sheet: its registry is small and its
+            # prompt is one-shot.
+            tools_block = build_tool_catalog_block(tools)
+        blocks.append(Block("tools", tools_block))
         blocks.append(Block("limits", build_limits_block(guardian_summary)))
 
         situation = (
