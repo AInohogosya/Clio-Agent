@@ -429,9 +429,10 @@ def worker() -> None:
     from clio.bus import EventBus
     from clio.config import load_config
     from clio.core.runner import connect_database
-    from clio.observability.logger import configure_logging
+    from clio.observability.logger import configure_logging, get_logger
 
     install_fast_loop()
+    logger = get_logger("clio.worker")
 
     async def _run() -> None:
         config = load_config()
@@ -464,11 +465,71 @@ def worker() -> None:
         await gateway_service.probe_local_endpoints()
         gateway = DirectGateway(gateway_service)
 
+        # This worker's liveness identity and its run leases. The heartbeat
+        # file is what the supervisor's fast window reads — a wedged worker is
+        # recycled within `FAST_HEARTBEAT_S`, and the leases it held are
+        # transferred to its replacement with the fence bumped, so any late
+        # write from the dead process is refused at the row.
+        import os as _os
+
+        from clio.core.leases import ActivityLeaseManager
+        from clio.core.supervisor import FAST_HEARTBEAT_S
+
+        process_name = env("PROCESS_NAME", "") or f"clio-worker-{_os.getpid()}"
+        worker_owner = f"{process_name}:{_os.getpid()}"
+        leases = ActivityLeaseManager(db)
+        held: dict[str, int] = {}       # lease_key -> fence this owner holds
+        heartbeat_file = config.paths.run_dir / f"{process_name}.heartbeat"
+
+        async def liveness_loop() -> None:
+            interval = max(1.0, FAST_HEARTBEAT_S / 2.0)
+            while True:
+                try:
+                    heartbeat_file.parent.mkdir(parents=True, exist_ok=True)
+                    heartbeat_file.touch()
+                    for lease_key, fence in list(held.items()):
+                        await leases.heartbeat(lease_key, worker_owner, fence)
+                except Exception:
+                    pass
+                await asyncio.sleep(interval)
+
+        async def guarded_close(intention_id: str, status: str, reason: str) -> None:
+            """Close the intention only while this worker still owns the run.
+
+            `guarded_write` verifies the lease fence first; after a recycle
+            the fence has moved on, the answer is false, and this worker
+            writes nothing — which is exactly the split-brain write the fence
+            exists to refuse.
+            """
+            fence = held.get(f"thread:{intention_id}")
+            if fence is None:
+                return
+            ok = await leases.guarded_write(
+                f"thread:{intention_id}", worker_owner, fence,
+                "UPDATE intentions SET status = $2, closed_reason = $3, updated_at = now() "
+                "WHERE id = $1",
+                UUID(str(intention_id)),
+                status, reason,
+            )
+            if ok:
+                await leases.finish(f"thread:{intention_id}", worker_owner, fence)
+                held.pop(f"thread:{intention_id}", None)
+            else:
+                logger.warning(
+                    "worker.lease_lost_write_refused", intention=intention_id,
+                )
+
         async def handle(event) -> None:
             if event.kind != "thread.request":
                 return
             spec = dict(event.payload)
             thread_id = spec.get("id", "unknown")
+            intention_id = spec.get("intention_id")
+            if intention_id:
+                held[f"thread:{intention_id}"] = await leases.claim(
+                    f"thread:{intention_id}", worker_owner,
+                    payload={"thread_id": thread_id, "goal": spec.get("goal")},
+                )
             try:
                 result = await run_thread(spec, config, memory, gateway)
                 if is_failed_result(result):
@@ -484,11 +545,10 @@ def worker() -> None:
                     status, error = "done", None
             except Exception as exc:
                 result, status, error = None, "failed", str(exc)
-            intention_id = spec.get("intention_id")
             if intention_id:
                 try:
-                    await memory.close_intention(
-                        UUID(str(intention_id)),
+                    await guarded_close(
+                        str(intention_id),
                         IntentionStatus.done.value if status == "done" else IntentionStatus.parked.value,
                         "worker completed" if status == "done" else f"worker failed: {error}",
                     )
@@ -504,9 +564,11 @@ def worker() -> None:
             })
 
         bus.subscribe("thread.request", handle)
+        liveness = asyncio.create_task(liveness_loop())
         try:
             await asyncio.Event().wait()
         finally:
+            liveness.cancel()
             await bus.stop()
             await gateway_service.aclose()
             await db.close()

@@ -253,6 +253,26 @@ def upgrade() -> None:
     op.create_index("ix_events_lane_unconsumed", "events", ["lane"],
                     postgresql_where=sa.text("lane IS NOT NULL"))
 
+    # ---- activity leases (fencing for runs and workers) --------------------------
+    # Every long run claims a lease; a wedged owner is recycled and the lease
+    # transferred with a monotonically-incremented fence, so a zombie's state
+    # commit (`WHERE lease_owner = $o AND lease_fence = $f`) is refused rather
+    # than interleaved. `leases` was a reserved word to nobody; the table is
+    # `activity_leases` so "the lease" always means one row.
+    op.create_table(
+        "activity_leases",
+        sa.Column("lease_key", sa.Text(), nullable=False),
+        sa.Column("lease_owner", sa.Text(), nullable=False),
+        sa.Column("lease_fence", sa.BigInteger(), nullable=False, server_default="1"),
+        sa.Column("status", sa.Text(), nullable=False, server_default="active"),
+        sa.Column("heartbeat_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.Column("claimed_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.Column("payload_json", postgresql.JSONB(), nullable=False, server_default="{}"),
+        sa.PrimaryKeyConstraint("lease_key"),
+        sa.CheckConstraint("status IN ('active', 'done', 'transferred')", name="ck_activity_lease_status"),
+    )
+    op.create_index("ix_activity_leases_owner", "activity_leases", ["lease_owner"])
+
     # ---- sealed payloads (envelope encryption at rest) ---------------------------
     # When an envelope is configured, the sensitive payload of each row moves
     # into `sealed_payload` and the plaintext column keeps a `{"sealed": true}`
@@ -263,6 +283,8 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    op.drop_index("ix_activity_leases_owner", table_name="activity_leases")
+    op.drop_table("activity_leases")
     for table in ("episodes", "facts", "action_journal", "checkpoints"):
         op.drop_column(table, "sealed_payload")
     op.drop_index("ix_events_lane_unconsumed", table_name="events")

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import shutil
 import signal
@@ -8,6 +9,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 from clio.config import ClioConfig, load_config
 from clio.engine.rhythm import backoff_seconds
@@ -65,14 +67,32 @@ Only read when it exists, so a supervisor running an older core (or a
 core whose run dir it cannot read) never kills a child for being quiet.
 """
 
-CORE_HEARTBEAT_STALE_S = float(env("CORE_HEARTBEAT_STALE_S", "1800"))
-"""How old the heartbeat may be before the core is presumed wedged.
+FAST_HEARTBEAT_S = float(env("FAST_HEARTBEAT_S", "15"))
+"""The dual-tier liveness window, tier one: how old the heartbeat may be
+before a child is presumed wedged, in seconds.
 
-Generous on purpose: a cycle is a whole deliberation whose model calls can
-each sit out a provider's rate-limit window, and a core that is legitimately
-grinding through an outage must not be killed for it. Half an hour with no
-cycle at all — not one tick, no parked heartbeat — is the silence that
-means wedged, not busy.
+The core touches its heartbeat file from a background task at least every
+`FAST_HEARTBEAT_S / 2`, so a file this old means the *process* stopped
+making progress, not that its current cycle is slow — a long model call no
+longer counts as silence, because the heartbeat task keeps running while
+the cycle awaits. A child wedged past this window is terminated and the next
+sweep restarts it, and the activity leases it held are transferred to the
+replacement (fences bumped) so its stale writes are refused.
+
+15 is the value the architecture names: long enough that scheduling noise
+never trips it, short enough that a wedged worker is out of the way before
+anyone notices the work stalled."""
+
+CORE_HEARTBEAT_STALE_S = float(env("CORE_HEARTBEAT_STALE_S", "1800"))
+"""Tier two: the hard ceiling. How old the heartbeat may be before the core
+is presumed gone beyond question.
+
+Even with the fast tier mis-configured or its file misplaced, no live core
+goes half an hour without touching *anything*; the ceiling is the backstop
+that survives a broken fast signal, and it is deliberately the old,
+generous number — a cycle is a whole deliberation whose model calls can each
+sit out a provider's rate-limit window, and the ceiling must never kill a
+core that is legitimately grinding through an outage.
 """
 
 
@@ -145,13 +165,21 @@ class Supervisor:
     BACKOFF_S = 3.0
     POLL_S = 2.0
 
-    def __init__(self, config: ClioConfig):
+    def __init__(self, config: ClioConfig, db: Any = None):
         self.config = config
         self.log_dir = config.paths.data_dir / "logs"
         self.log_dir.mkdir(parents=True, exist_ok=True)
         self.specs: list[ProcessSpec] = []
         self._stopping = False
         self._shut_down = False
+        # Optional, and best-effort: with a database connection the supervisor
+        # transfers a recycled child's activity leases to its replacement
+        # (fence +1, so the dead owner's late writes are refused). Without
+        # one — or when the transfer fails — the recycle still happens and the
+        # leases simply stay stale until their owner's writes are fenced by
+        # the next claimant.
+        self._db = db
+        self._pending_fenced_owner: dict[str, str] = {}
 
     @property
     def pid_file(self) -> Path:
@@ -254,6 +282,9 @@ class Supervisor:
         try:
             spec.proc = subprocess.Popen(
                 spec.argv, stdout=fh, stderr=fh, cwd=Path.cwd(),
+                # The child's own name, so its fast-heartbeat task knows which
+                # `<name>.heartbeat` file this supervisor is watching.
+                env={**os.environ, "CLIO_PROCESS_NAME": spec.name},
             )
         except (OSError, ValueError) as exc:
             logger.error(
@@ -289,7 +320,37 @@ class Supervisor:
                     "supervisor.heartbeat_baseline_failed", reason=str(exc)
                 )
         logger.info("supervisor.started", process=spec.name, pid=spec.proc.pid)
+        # The recycle's second half: a lease the wedged predecessor held moves
+        # to this replacement, fence incremented. Done here because only now
+        # does the new owner exist to name.
+        self._transfer_fenced_leases(spec)
         return True
+
+    def _transfer_fenced_leases(self, spec: ProcessSpec) -> None:
+        old_owner = self._pending_fenced_owner.pop(spec.name, None)
+        if old_owner is None or self._db is None or spec.proc is None:
+            return
+        new_owner = f"{spec.name}:{spec.proc.pid}"
+
+        async def _transfer() -> None:
+            from clio.core.leases import ActivityLeaseManager
+
+            moved = await ActivityLeaseManager(self._db).transfer_all_from(old_owner, new_owner)
+            if moved:
+                logger.warning(
+                    "supervisor.leases_transferred", process=spec.name,
+                    old=old_owner, new=new_owner, count=moved,
+                )
+
+        try:
+            # `_sweep` (and so `_open`) runs inside the supervisor's own event
+            # loop; the transfer is one short statement pair and rides it as a
+            # task so a slow database never stalls the sweep.
+            asyncio.get_running_loop().create_task(_transfer())
+        except RuntimeError:
+            asyncio.run(_transfer())
+        except Exception:
+            logger.exception("supervisor.lease_transfer_failed", process=spec.name)
 
     def _should_restart(self, spec: ProcessSpec) -> bool:
         if self._stopping or spec.optional:
@@ -327,12 +388,44 @@ class Supervisor:
     def core_heartbeat_file(self) -> Path:
         return self.config.paths.run_dir / CORE_HEARTBEAT_FILE
 
-    def _core_heartbeat_age_s(self) -> float | None:
-        """Seconds since the core last touched its heartbeat, or `None`.
+    def _terminate_and_fence(self, spec: ProcessSpec) -> None:
+        """Terminate a wedged child and schedule the transfer of its leases.
 
-        `None` means "do not judge" — no file yet, or a run dir that cannot
-        be read — and is treated exactly like a young heartbeat.
+        The fence transfer happens after the replacement is spawned — a later
+        sweep does it, when the new pid exists — but the *record* of what the
+        dead owner held is taken now, because the child's pid is still knowable
+        in this sweep and gone by the next one. A transferred lease's fence is
+        incremented, so the dead process, if it wakes mid-write, finds its
+        writes refused at the row.
         """
+        pid = spec.proc.pid if spec.proc is not None else None
+        try:
+            if spec.proc is not None:
+                spec.proc.terminate()
+        except OSError:
+            logger.exception("supervisor.terminate_failed", process=spec.name)
+        if pid is not None:
+            self._pending_fenced_owner[spec.name] = f"{spec.name}:{pid}"
+
+    def _heartbeat_age_s(self, spec: ProcessSpec) -> float | None:
+        """Seconds since a child last touched its heartbeat, or `None`.
+
+        The core's file is the bare `heartbeat` the life loop has always
+        touched; every other child that opts in writes
+        `<spec-name>.heartbeat`, the name the supervisor exported to it as
+        `CLIO_PROCESS_NAME`. `None` means "do not judge" — no file, or a run
+        dir that cannot be read — and is treated exactly like a young
+        heartbeat, so a child that never adopted the protocol is never killed
+        for not using it.
+        """
+        path = (self.core_heartbeat_file if spec.name == "clio-core"
+                else self.config.paths.run_dir / f"{spec.name}.heartbeat")
+        try:
+            return time.time() - path.stat().st_mtime
+        except OSError:
+            return None
+
+    def _core_heartbeat_age_s(self) -> float | None:
         try:
             return time.time() - self.core_heartbeat_file.stat().st_mtime
         except OSError:
@@ -351,19 +444,34 @@ class Supervisor:
                 # parked for half an hour is wedged, and a wedged core is the
                 # one failure process-death polling cannot see. Terminated
                 # here, restarted by the next sweep like any other death.
-                if spec.name == "clio-core":
-                    age = self._core_heartbeat_age_s()
-                    if age is not None and age > CORE_HEARTBEAT_STALE_S:
-                        logger.error(
-                            "supervisor.core_wedged",
-                            heartbeat_age_s=round(age, 1),
-                            stale_after_s=CORE_HEARTBEAT_STALE_S,
-                            action="terminating; next sweep restarts it",
-                        )
-                        try:
-                            spec.proc.terminate()
-                        except OSError:
-                            logger.exception("supervisor.core_terminate_failed")
+                # Dual-tier liveness, for every child that says it is alive:
+                # the fast window catches a wedged process (the heartbeat task
+                # keeps running while a cycle awaits, so staleness means the
+                # process stopped, not that the work is slow) and the ceiling
+                # is the backstop that survives a broken fast signal.
+                age = self._heartbeat_age_s(spec)
+                if age is None:
+                    continue
+                if age > CORE_HEARTBEAT_STALE_S:
+                    logger.error(
+                        "supervisor.child_wedged",
+                        process=spec.name,
+                        heartbeat_age_s=round(age, 1),
+                        stale_after_s=CORE_HEARTBEAT_STALE_S,
+                        tier="ceiling",
+                        action="terminating; next sweep restarts it",
+                    )
+                    self._terminate_and_fence(spec)
+                elif age > FAST_HEARTBEAT_S:
+                    logger.error(
+                        "supervisor.child_wedged_fast",
+                        process=spec.name,
+                        heartbeat_age_s=round(age, 1),
+                        stale_after_s=FAST_HEARTBEAT_S,
+                        tier="fast",
+                        action="terminating; next sweep restarts it",
+                    )
+                    self._terminate_and_fence(spec)
                 continue
             rc = spec.proc.returncode if spec.proc is not None else None
             if spec.proc is not None:
@@ -556,5 +664,21 @@ async def run_supervisor(config: ClioConfig | None = None) -> None:
     config = config or load_config()
     configure_logging(level=env("LOG_LEVEL", "DEBUG"))
     config.paths.ensure()
-    supervisor = Supervisor(config)
-    await supervisor.run()
+    # The database is optional and deliberately best-effort: it is needed only
+    # to transfer a recycled child's activity leases (fence +1). A supervisor
+    # that cannot reach the database still supervises; the stale owner's
+    # writes are fenced by the next claimant either way.
+    db = None
+    try:
+        from clio.core.runner import connect_database
+
+        db = await connect_database(config)
+    except Exception:
+        logger.warning("supervisor.db_unavailable", hint="lease transfer disabled until it answers")
+    try:
+        supervisor = Supervisor(config, db=db)
+        await supervisor.run()
+    finally:
+        if db is not None:
+            with contextlib.suppress(Exception):
+                await db.close()

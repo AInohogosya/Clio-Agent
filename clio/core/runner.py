@@ -292,6 +292,20 @@ class CoreRuntime:
 
         self.bus.subscribe(None, on_event)
 
+    async def _fast_heartbeat_loop(self) -> None:
+        """Touch the heartbeat file well inside the supervisor's fast window."""
+        from clio.core.supervisor import FAST_HEARTBEAT_S
+
+        interval = max(1.0, FAST_HEARTBEAT_S / 2.0)
+        heartbeat = self.config.paths.run_dir / "heartbeat"
+        while True:
+            try:
+                heartbeat.parent.mkdir(parents=True, exist_ok=True)
+                heartbeat.touch()
+            except Exception:
+                logger.exception("core.fast_heartbeat_failed")
+            await asyncio.sleep(interval)
+
     async def _handle_undo(self, payload: dict[str, Any]) -> None:
 
         action_id = payload.get("action_id") or payload.get("undo_ref")
@@ -401,6 +415,14 @@ class CoreRuntime:
         # a degraded catalog entry, never a core that will not start.
         with contextlib.suppress(Exception):
             await self.mcp_pool.start()
+        # The fast heartbeat tier: a background touch every few seconds, so
+        # the file's age measures whether this PROCESS is making progress,
+        # not whether the current cycle is long. Without it, a legitimate
+        # 40-second model call would look like silence to a 15-second window;
+        # with it, a wedged core is visibly wedged while its cycle sits stuck.
+        self._fast_heartbeat_task: asyncio.Task[None] | None = asyncio.create_task(
+            self._fast_heartbeat_loop()
+        )
         self._wire_bus()
         self.control.install_signal_handlers()
         await self.scheduler.start()
@@ -429,7 +451,8 @@ class CoreRuntime:
         logger.info("core.started", tier_floor=Tier.T3.value)
 
     async def stop(self) -> None:
-        for task in (self._audit_anchor_task, self._digest_task, self._channels_task):
+        for task in (self._audit_anchor_task, self._digest_task, self._channels_task,
+                     self._fast_heartbeat_task):
             if task is not None:
                 task.cancel()
         await self.scheduler.stop()
