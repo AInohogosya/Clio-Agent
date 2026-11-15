@@ -173,6 +173,23 @@ class CoreRuntime:
         from clio.gsl.steering import SteeringQueue
 
         self.steering = SteeringQueue(db, bus=self.bus)
+        # Live screen takeover (clio/sandbox/computer.py): the Action Barrier
+        # lives here, with the virtual computers; clio-api replicas ask for it
+        # over the control lane.
+        from clio.sandbox.computer import TakeoverController
+
+        self.takeover = TakeoverController()
+        # The OAuth connector broker (clio/toolhost/connectors.py), shared by
+        # the toolhost's imported tools and clio-api's callback endpoint.
+        from clio.toolhost.connectors import ConnectorBroker, providers_from_config
+
+        self.connectors = None
+        if self.envelope is not None:
+            self.connectors = ConnectorBroker(
+                db, self.envelope,
+                providers=providers_from_config(config),
+                redirect_base=config.connectors.redirect_base,
+            )
         from clio.guardian.policy import PolicyEngine
 
         self.policy_engine = PolicyEngine(db, listener=db)
@@ -290,9 +307,14 @@ class CoreRuntime:
             # that reads as obeyed and is not [H1]. The same shadowing swallowed
             # `guardian.undo`, so an undo asked for on the interface never ran.
             if event.kind == EventKind.CONTROL_UPDATE:
-                await self.control.apply_command(
-                    event.payload.get("action", ""), event.payload.get("by", "bus"),
-                )
+                action = str(event.payload.get("action", ""))
+                if action in ("sandbox_take", "sandbox_handback"):
+                    # Screen-takeover verbs from a stateless clio-api replica:
+                    # the Action Barrier lives here, so the ask is answered
+                    # here and the grant travels back on the same lane.
+                    await self._handle_sandbox_control(event.payload)
+                else:
+                    await self.control.apply_command(action, event.payload.get("by", "bus"))
             elif event.kind == EventKind.GUARDIAN_UNDO:
                 await self._handle_undo(event.payload)
             elif event.kind == EventKind.STEERING_INJECT:
@@ -357,6 +379,25 @@ class CoreRuntime:
                 )
         except Exception:
             logger.exception("core.undo_failed")
+
+    async def _handle_sandbox_control(self, payload: dict[str, Any]) -> None:
+        """Answer a takeover ask from another replica: granted or refused."""
+        action = str(payload.get("action") or "")
+        request_id = payload.get("request_id")
+        sandbox_id = str(payload.get("sandbox_id") or "")
+        reply: dict[str, Any] = {"request_id": request_id, "action": action,
+                                 "sandbox_id": sandbox_id, "granted": False}
+        try:
+            if action == "sandbox_take":
+                session = await self.takeover.take(sandbox_id, str(payload.get("requester") or "owner"))
+                reply.update(granted=True, token=session.token,
+                             drained_events=session.drained_events)
+            else:
+                ok = await self.takeover.hand_back(sandbox_id, str(payload.get("token") or ""))
+                reply.update(granted=ok, reason=None if ok else "this token does not hold the sandbox")
+        except Exception as exc:
+            reply["reason"] = str(exc)
+        await self.bus.publish("sandbox.control", reply)
 
     async def _handle_steering(self, event: Any) -> None:
         """A `steering.inject` event that did not already become a row.

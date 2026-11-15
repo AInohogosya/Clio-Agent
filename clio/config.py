@@ -1938,6 +1938,14 @@ class MCPConfig(BaseModel):
     serve: bool = False
 
 
+class ApiConfig(BaseModel):
+    """clio-api: the REST/WebSocket control plane (clio/api/app.py)."""
+
+    host: str = "127.0.0.1"
+    port: int = 8721
+    enabled: bool = True
+
+
 class ConnectorConfig(BaseModel):
     """OAuth connector broker: provider registrations (clio/toolhost/connectors.py)."""
 
@@ -1967,6 +1975,7 @@ class ClioConfig(BaseModel):
     projects: ProjectConfig = ProjectConfig()
     mcp: MCPConfig = MCPConfig()
     connectors: ConnectorConfig = ConnectorConfig()
+    api: ApiConfig = ApiConfig()
 
 
 def _read_yaml(path: Path) -> dict[str, Any]:

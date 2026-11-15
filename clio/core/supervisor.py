@@ -224,6 +224,11 @@ class Supervisor:
         ]
         for i in range(self.config.workers.count):
             self.specs.append(ProcessSpec(f"clio-workers-{i+1}", entry + ["worker"]))
+        if getattr(self.config, "api", None) is not None and self.config.api.enabled:
+            # The control plane's own process: stateless replicas of it can
+            # multiply behind a load balancer, and the one the supervisor
+            # starts here is the first.
+            self.specs.append(ProcessSpec("clio-api", entry + ["api"]))
         # No `--listen-channels` here, and its absence is the point. `clio-comms`
         # is in the list above and is the process that holds every channel door
         # open; a core that opened them too would put a second `getUpdates`

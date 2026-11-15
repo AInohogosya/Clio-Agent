@@ -376,6 +376,44 @@ async def _serve_toolhost(config) -> None:
 
 
 @app.command()
+def api() -> None:
+    """Run clio-api: the REST/WebSocket control plane on the configured port.
+
+    Stateless: every answer comes from PostgreSQL or from the core over the
+    out-of-band control lane, so any number of replicas can serve this behind
+    a load balancer, and none of them holds a tool or a token.
+    """
+    import uvicorn
+
+    from clio.api.app import ControlPlaneFacade, create_app
+    from clio.bus import EventBus
+    from clio.config import load_config
+    from clio.core.runner import connect_database
+    from clio.observability.logger import configure_logging
+
+    install_fast_loop()
+
+    async def _serve() -> None:
+        config = load_config()
+        configure_logging()
+        db = await connect_database(config)
+        bus = EventBus(db, source="api")
+        await bus.start()
+        facade = ControlPlaneFacade(db=db, config=config, bus=bus)
+        application = create_app(facade)
+        server = uvicorn.Server(uvicorn.Config(
+            application, host=config.api.host, port=config.api.port, log_level="warning",
+        ))
+        try:
+            await server.serve()
+        finally:
+            await bus.stop()
+            await db.close()
+
+    asyncio.run(_serve())
+
+
+@app.command()
 def comms() -> None:
     """Run clio-comms: channel adapters (cli, web ws, telegram, whatsapp, email).
 
