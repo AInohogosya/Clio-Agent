@@ -208,6 +208,7 @@ class MemoryStore:
         config: ClioConfig,
         bus: EventBus | None = None,
         envelope: Any = None,
+        contradiction: Any = None,
     ):
         self.db = db
         self.embedder = embedder
@@ -217,6 +218,11 @@ class MemoryStore:
         # sensitive payloads of memory at rest (episode bodies, fact
         # provenance). `None` is the plaintext mode everything ran in before.
         self.envelope = envelope
+        # Speed-1 contradiction resolution (clio/memory/contradiction.py):
+        # every newly recorded fact checks its semantic neighbors and applies
+        # the fast verdicts, so a mid-day correction takes effect immediately
+        # rather than at the next nightly pass.
+        self.contradiction = contradiction
         self.retriever = HybridRetriever(db, embedder, config.memory)
 
     # ---- envelope sealing ---------------------------------------------------
@@ -392,7 +398,66 @@ class MemoryStore:
                             "WHERE id = $2",
                             fact_id, row["id"],
                         )
+                if self.contradiction is not None:
+                    await self._resolve_contradictions(
+                        conn, fact_id, subject, statement, vec,
+                    )
         return fact_id
+
+    async def _resolve_contradictions(
+        self, conn: Any, fact_id: UUID, subject: str, statement: str, vec: Any,
+    ) -> None:
+        """Speed-1: read the new fact's neighbors and apply the fast verdicts.
+
+        The neighbor query is the same cosine the retriever uses, bounded and
+        admitted at the resolver's own threshold; the verdicts are applied in
+        the same transaction as the insert, so a reader never sees the new
+        fact and the old one it was recorded to correct both standing — the
+        window in which the stale fact could win a retrieval is closed before
+        the insert commits.
+        """
+        from clio.memory.contradiction import Neighbor
+
+        try:
+            rows = await conn.fetch(
+                "SELECT id::text AS id, subject, statement, "
+                "1 - (embedding <=> $1::vector) AS cosine FROM facts "
+                "WHERE superseded_by IS NULL AND valid_to IS NULL AND id <> $2 "
+                "AND embedding IS NOT NULL "
+                "ORDER BY embedding <=> $1::vector LIMIT $3",
+                to_pgvector(vec), fact_id, int(getattr(self.contradiction, "limit", 5)),
+            )
+        except Exception:
+            logger.exception("memory.contradiction_neighbors_failed")
+            return
+        neighbors = [
+            Neighbor(id=str(r["id"]), subject=str(r["subject"]),
+                     statement=str(r["statement"]), cosine=float(r["cosine"] or 0.0))
+            for r in rows
+        ]
+        if not neighbors:
+            return
+        new_fact = {"id": str(fact_id), "subject": subject, "statement": statement}
+        verdicts = await self.contradiction.resolve(new_fact, neighbors)
+        for verdict in verdicts:
+            if verdict.verdict == "supersede_old":
+                await conn.execute(
+                    "UPDATE facts SET superseded_by = $1, valid_to = now(), updated_at = now() "
+                    "WHERE id = $2",
+                    fact_id, verdict.neighbor_id,
+                )
+            elif verdict.verdict == "merge" and verdict.merged_statement:
+                await conn.execute(
+                    "UPDATE facts SET statement = $1, updated_at = now() WHERE id = $2",
+                    verdict.merged_statement, fact_id,
+                )
+                await conn.execute(
+                    "UPDATE facts SET superseded_by = $1, valid_to = now(), updated_at = now() "
+                    "WHERE id = $2",
+                    fact_id, verdict.neighbor_id,
+                )
+            # `keep_new`: both stand — the neighbor is a refinement's sibling,
+            # not a correction, and the nightly pass gets the last look.
 
     async def facts_about(self, subject: str, limit: int = 20) -> list[dict[str, Any]]:
         rows = await self.db.fetch(

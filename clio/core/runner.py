@@ -87,14 +87,25 @@ class CoreRuntime:
         # paid on the agent's critical path to save a session it then mostly sits
         # on. Everything that only needs a vector occasionally does not.
         self.embedder = build_role_embedder("core", config)
+        from clio.memory.contradiction import build_resolver
         from clio.memory.store import MemoryStore
 
-        self.memory = MemoryStore(db, self.embedder, config, bus=self.bus)
+        # The envelope, when the deployment configured a master key: memory
+        # payloads, journal arguments and continuity checkpoints are sealed at
+        # rest under the space's DEK (clio/security/envelope.py).
+        from clio.security.envelope import build_envelope
+
+        self.envelope = build_envelope(db, config)
+        self.memory = MemoryStore(db, self.embedder, config, bus=self.bus,
+                                  envelope=self.envelope)
         from clio.memory.self_model import SelfModel
 
         self.self_model = SelfModel(db, bus=self.bus)
         self.gateway_service = GatewayService(config, db=db, embedder=self.embedder)
         self.gateway = DirectGateway(self.gateway_service)
+        # Speed-1 contradictions ride the gateway the moment it exists; the
+        # memory store was built before it, so the resolver attaches here.
+        self.memory.contradiction = build_resolver(self.gateway, config)
         self.vault = SecretVault(
             keyfile=config.paths.data_dir / "keys" / "age.key",
             store_path=config.paths.data_dir / "secrets.age",
@@ -116,7 +127,7 @@ class CoreRuntime:
             due_retention_days=config.permissions.guardian.due_process_retention_days,
         )
         self.snapshots = SnapshotManager(config, db=db)
-        self.journal = ActionJournal(db=db)
+        self.journal = ActionJournal(db=db, envelope=self.envelope)
         self.verifier = ModelDueProcessVerifier(self.gateway, config.self_name)
         from clio.guardian.approval import ApprovalManager
 
@@ -243,7 +254,8 @@ class CoreRuntime:
         )
         from clio.memory.continuity import ContinuityManager
 
-        self.continuity = ContinuityManager(config, db=db, bus=self.bus)
+        self.continuity = ContinuityManager(config, db=db, bus=self.bus,
+                                            envelope=self.envelope)
         from clio.memory.consolidate import ConsolidationDAG
 
         self.consolidation = ConsolidationDAG(self.memory, self.self_model, self.gateway, config, bus=self.bus)
