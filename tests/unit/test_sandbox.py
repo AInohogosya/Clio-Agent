@@ -245,7 +245,15 @@ async def test_the_proxy_refuses_a_disallowed_connect():
         reader, writer = await asyncio.open_connection("127.0.0.1", proxy.port)
         writer.write(b"CONNECT metadata.example:443 HTTP/1.1\r\nHost: metadata.example:443\r\n\r\n")
         await writer.drain()
-        response = (await asyncio.wait_for(reader.read(4096), timeout=5)).decode()
+        # Read to EOF: the status line and the body are separate TCP segments
+        # often enough that a single read() sees only the first one.
+        chunks: list[bytes] = []
+        while True:
+            chunk = await asyncio.wait_for(reader.read(4096), timeout=5)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        response = b"".join(chunks).decode()
         assert response.startswith("HTTP/1.1 403")
         assert "allowlist" in response
         writer.close()

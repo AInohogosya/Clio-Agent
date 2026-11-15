@@ -28,6 +28,7 @@ a packet capture.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import ipaddress
 import socket
 from dataclasses import dataclass, field
@@ -285,6 +286,16 @@ class EgressProxy:
                 await self._handle_connect(target, reader, writer)
             else:
                 await self._handle_forward(method, target, reader, writer)
+            # Consume whatever of the request the handler did not read before
+            # the socket closes. A close with unread bytes in the receive
+            # buffer sends TCP RST, and an RST discards the refusal the client
+            # has not read yet — so the caller sees a connection error instead
+            # of the 403 that explains it. The short timeout is the linger:
+            # buffered bytes arrive instantly, and a client holding the socket
+            # open costs 50ms, not a stalled proxy.
+            with contextlib.suppress(Exception):
+                while await asyncio.wait_for(reader.read(65536), timeout=0.05):
+                    pass
         except TimeoutError:
             pass
         except Exception:
