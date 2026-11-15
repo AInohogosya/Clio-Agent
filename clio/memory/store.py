@@ -1374,6 +1374,7 @@ class MemoryStore:
         root_uuid = _opt_uuid(root_intention_id)
         lease_id: str | None = None
         lease_root: str | None = None
+        sandbox_id: str | None = None
         if leases is not None:
             try:
                 projects_root = self.config.paths.work / ".projects" / str(project_id)
@@ -1398,6 +1399,17 @@ class MemoryStore:
                     lease.root_path = projects_root
                 lease_id = lease.id
                 lease_root = str(lease.root_path)
+                # The container: the lease's root goes inside a sandbox
+                # mounted at /workspace, one sandbox per project. A runtime
+                # without a sandbox manager provisions nothing here and the
+                # lease root remains the boundary.
+                provision = getattr(leases, "provision_sandbox", None)
+                if provision is not None:
+                    try:
+                        report = await provision(lease, str(project_id))
+                        sandbox_id = report.get("sandbox_id")
+                    except Exception:
+                        logger.exception("memory.project_sandbox_failed", project=str(project_id))
                 persist = getattr(leases, "persist_lease", None)
                 if persist is not None:
                     await persist(lease, db if db is not None else self.db)
@@ -1406,10 +1418,10 @@ class MemoryStore:
                 lease_id = None
         await self.db.execute(
             "INSERT INTO projects (project_id, title, owner_principal_id, root_intention_id, "
-            "workspace_lease_id, lifecycle_mode, status, focus_seconds_accumulated, "
+            "workspace_lease_id, sandbox_id, lifecycle_mode, status, focus_seconds_accumulated, "
             "checkpoint_json, evolution_config_json, last_active_at, created_at) "
-            "VALUES ($1, $2, $3, $4, $5, $6, $7, 0.0, '{}'::jsonb, '{}'::jsonb, now(), now())",
-            project_id, title, owner_principal_id, root_uuid, lease_id,
+            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 0.0, '{}'::jsonb, '{}'::jsonb, now(), now())",
+            project_id, title, owner_principal_id, root_uuid, lease_id, sandbox_id,
             lifecycle_mode, status,
         )
         if root_uuid is not None:
@@ -1424,7 +1436,7 @@ class MemoryStore:
             )
         logger.info(
             "memory.project_created", project=str(project_id), title=title[:120],
-            lease=lease_id, lease_root=lease_root, status=status,
+            lease=lease_id, lease_root=lease_root, sandbox=sandbox_id, status=status,
         )
         return {
             "project_id": str(project_id),
@@ -1433,6 +1445,7 @@ class MemoryStore:
             "root_intention_id": str(root_uuid) if root_uuid else None,
             "workspace_lease_id": lease_id,
             "workspace_root": lease_root,
+            "sandbox_id": sandbox_id,
             "lifecycle_mode": lifecycle_mode,
             "status": status,
         }
@@ -1445,7 +1458,7 @@ class MemoryStore:
         allowed = {
             "status", "lifecycle_mode", "checkpoint_json", "evolution_config_json",
             "focus_seconds_accumulated", "next_evolution_at", "last_active_at",
-            "workspace_lease_id", "title",
+            "workspace_lease_id", "sandbox_id", "title",
         }
         sets: list[str] = []
         args: list[Any] = []

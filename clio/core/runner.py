@@ -127,10 +127,25 @@ class CoreRuntime:
         # their isolated workspaces from it (`create_project`), the guardian
         # enforces each call against the project's lease, and evergreen
         # milestones commit through it.
+        # The containment: every project's lease root is provisioned inside a
+        # sandbox (`clio/sandbox/provider.py`), one sandbox per project,
+        # mounted at /workspace. The provider is selected by capability — the
+        # strongest runtime this machine actually has, ending at the
+        # filesystem baseline — and a deployment that names a backend it does
+        # not have is refused loudly rather than silently degraded.
+        from clio.sandbox.provider import SandboxManager, select_provider
         from clio.threads.context import WorkspaceLeaseManager
 
+        self.sandbox_provider = None
+        self.sandbox_manager = None
+        try:
+            self.sandbox_provider = select_provider(config)
+            self.sandbox_manager = SandboxManager(db, self.sandbox_provider)
+        except Exception:
+            logger.exception("core.sandbox_provider_unavailable")
         self.leases = WorkspaceLeaseManager(
             config, snapshots=self.snapshots, trash=self.trash,
+            sandbox_manager=self.sandbox_manager, db=db,
         )
         # Live mid-turn steering (clio/gsl/steering.py): the queue the solver
         # loop claims at step boundaries, and the out-of-band lane inbound

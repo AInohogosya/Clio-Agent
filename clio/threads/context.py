@@ -51,7 +51,14 @@ LEASE_STATUSES = frozenset({"active", "committed", "rolled_back"})
 
 @dataclass
 class WorkspaceLease:
-    """One transactional lease: an isolated worktree/snapshot plus fences."""
+    """One transactional lease: an isolated worktree/snapshot plus fences.
+
+    `sandbox_id` is where the lease is *contained*: the sandbox mounts this
+    lease's root at `/workspace`, and every tool call a project's steps make
+    runs against that mount. A lease without a sandbox (a thread's worktree,
+    a deployment that opted out of containment) still carries the isolation
+    of its own root; the id is how the difference is visible in the record.
+    """
 
     id: str
     root_path: Path
@@ -62,6 +69,8 @@ class WorkspaceLease:
     budget_limit_usd: float | None = None
     allowed_paths: list[str] = field(default_factory=list)
     status: str = "active"
+    sandbox_id: str | None = None
+    sandbox_backend: str | None = None
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
 
@@ -73,6 +82,7 @@ class WorkspaceLease:
             "target_path": str(self.target_path) if self.target_path else None,
             "budget_limit_usd": self.budget_limit_usd,
             "allowed_paths": list(self.allowed_paths), "status": self.status,
+            "sandbox_id": self.sandbox_id, "sandbox_backend": self.sandbox_backend,
             "created_at": self.created_at, "updated_at": self.updated_at,
         }
 
@@ -103,13 +113,44 @@ class WorkspaceLeaseManager:
     lock; `rollback_lease` restores and trashes artifacts.
     """
 
-    def __init__(self, config: ClioConfig, snapshots: Any = None, trash: Any = None):
+    def __init__(self, config: ClioConfig, snapshots: Any = None, trash: Any = None,
+                 sandbox_manager: Any = None, db: Any = None):
         self.config = config
         self.snapshots = snapshots
         self.trash = trash
+        # The containment: when a sandbox manager is present, every project
+        # lease is provisioned inside a sandbox mounted at /workspace; when it
+        # is not (a thread's worktree, a stripped-down test), the lease root
+        # itself remains the boundary and the record says so.
+        self.sandbox_manager = sandbox_manager
+        self.db = db
         self.leases: dict[str, WorkspaceLease] = {}
         self._target_locks: dict[str, threading.Lock] = {}
         self._lock = threading.Lock()
+
+    async def provision_sandbox(self, lease: WorkspaceLease, project_id: str, *,
+                                space_id: str = "primary", tenant_id: str = "local",
+                                network: bool = True,
+                                egress_policy: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Put a project's lease inside a sandbox: one project, one sandbox.
+
+        The lease's root is what the sandbox mounts at `/workspace`; the
+        sandbox id is written back onto the lease and into `sandbox_registry`
+        so a caller holding either can find the other. A deployment without a
+        sandbox manager gets an empty report rather than an exception: the
+        lease is still isolated, and the absence of a sandbox is a fact in
+        its own record, not a failure of the project.
+        """
+        if self.sandbox_manager is None:
+            return {}
+        spec = await self.sandbox_manager.provision_for_project(
+            project_id, lease.root_path, space_id=space_id, tenant_id=tenant_id,
+            network=network, egress_policy=egress_policy,
+        )
+        lease.sandbox_id = spec.sandbox_id
+        lease.sandbox_backend = spec.backend
+        lease.updated_at = time.time()
+        return {"sandbox_id": spec.sandbox_id, "backend": spec.backend}
 
     def _lock_for(self, target: str) -> threading.Lock:
         with self._lock:
