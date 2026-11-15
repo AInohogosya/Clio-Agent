@@ -33,7 +33,7 @@ dependencies = [
     "aiosmtplib>=3.0",
     # JWT verification for the two doors whose inbound proof is a bearer token
     # rather than a body signature (Microsoft Teams, Google Chat), and signing for
-    # the Google Chat service account. Imported lazily by ethos.comms.jwt, so an
+    # the Google Chat service account. Imported lazily by clio.comms.jwt, so an
     # install with both doors off never loads it.
     "cryptography>=42",
     "pyyaml>=6.0",
@@ -53,7 +53,7 @@ dev = [
 ]
 
 [project.scripts]
-# `main`, not the Typer app object: the console script and `python -m ethos` then
+# `main`, not the Typer app object: the console script and `python -m clio` then
 # run the same function, so the `.env` file is read once on both paths and there
 # is one entry point to read rather than two that differ in a way nothing records.
 clio = "clio.__main__:main"

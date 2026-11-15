@@ -81,7 +81,7 @@ async def test_gsl_completes_commissioned_goal(db, config, tmp_path):
                 {"id": "s2", "description": "confirm the content",
                  "tool_hints": ["fs.read"],
                  "success_check": {"type": "file_contains", "path": str(tmp_path / "out.txt"),
-                                    "text": "ETHOS"},
+                                    "text": "CLIO-MARKER"},
                  "reversible": True},
                 {"id": "s3", "description": "close out",
                  "tool_hints": [], "success_check": {}, "reversible": True},
@@ -90,7 +90,7 @@ async def test_gsl_completes_commissioned_goal(db, config, tmp_path):
         _json({
             "thought": "writing the file now",
             "actions": [{"tool": "fs.write",
-                         "args": {"path": str(tmp_path / "out.txt"), "content": "ETHOS deliverable\n"}}],
+                         "args": {"path": str(tmp_path / "out.txt"), "content": "CLIO-MARKER deliverable\n"}}],
             "done": True,
         }),
         _json({
@@ -123,13 +123,13 @@ async def test_gsl_completes_commissioned_goal(db, config, tmp_path):
 
     intention_id = await memory.create_intention(
         title="Produce the deliverable file",
-        desired_end_state=f"{tmp_path / 'out.txt'} exists containing ETHOS",
+        desired_end_state=f"{tmp_path / 'out.txt'} exists containing CLIO-MARKER",
         kind="commitment",
         origin="commission",
         commissioned_by="owner",
         success_criteria=[
             {"type": "file_exists", "path": str(tmp_path / "out.txt")},
-            {"type": "file_contains", "path": str(tmp_path / "out.txt"), "text": "ETHOS"},
+            {"type": "file_contains", "path": str(tmp_path / "out.txt"), "text": "CLIO-MARKER"},
         ],
         budget_usd=2.0,
     )
@@ -145,7 +145,7 @@ async def test_gsl_completes_commissioned_goal(db, config, tmp_path):
         if result.outcome.value in ("goal_done", "parked", "awaiting_review", "goal_failed"):
             break
 
-    assert (tmp_path / "out.txt").read_text().startswith("ETHOS")
+    assert (tmp_path / "out.txt").read_text().startswith("CLIO-MARKER")
     final = await memory.get_intention(intention_id)
     assert final.status == "done", outcomes
     decisions = await db.fetch("SELECT * FROM decisions WHERE intention_id = $1", intention_id)
@@ -497,7 +497,7 @@ async def test_a_commission_is_still_delivered_when_memory_lookup_fails(db, conf
                           "reversible": True}]}),
         _json({"thought": "writing the file now",
                "actions": [{"tool": "fs.write",
-                            "args": {"path": str(out), "content": "ETHOS deliverable\n"}}],
+                            "args": {"path": str(out), "content": "CLIO-MARKER deliverable\n"}}],
                "done": True}),
         _json({"thought": "nothing left to do", "actions": [], "done": True}),
     ])
@@ -514,10 +514,10 @@ async def test_a_commission_is_still_delivered_when_memory_lookup_fails(db, conf
 
     intention_id = await memory.create_intention(
         title="Produce the deliverable file",
-        desired_end_state=f"{out} exists containing ETHOS",
+        desired_end_state=f"{out} exists containing CLIO-MARKER",
         kind="commitment", origin="commission", commissioned_by="owner",
         success_criteria=[{"type": "file_exists", "path": str(out)},
-                          {"type": "file_contains", "path": str(out), "text": "ETHOS"}],
+                          {"type": "file_contains", "path": str(out), "text": "CLIO-MARKER"}],
         budget_usd=2.0,
     )
 
@@ -529,7 +529,7 @@ async def test_a_commission_is_still_delivered_when_memory_lookup_fails(db, conf
         if result.outcome.value in ("goal_done", "parked", "awaiting_review", "goal_failed"):
             break
 
-    assert out.exists() and out.read_text().startswith("ETHOS"), (
+    assert out.exists() and out.read_text().startswith("CLIO-MARKER"), (
         f"a failed memory lookup must not cost the deliverable; outcomes={outcomes}"
     )
     final = await memory.get_intention(intention_id)
@@ -1951,7 +1951,7 @@ async def test_a_finished_goal_closes_the_attempt_it_opened(db, config, tmp_path
         _json({"thought": "writing it", "done": True,
                "actions": [{"tool": "fs.write",
                             "args": {"path": str(tmp_path / "closed.txt"),
-                                     "content": "ETHOS\n"}}]}),
+                                     "content": "CLIO-MARKER\n"}}]}),
     ])
     gsl = _solver(db, config, tmp_path, gateway, memory)
     intention_id = await memory.create_intention(
@@ -2018,7 +2018,7 @@ async def test_a_step_whose_check_observed_nothing_says_so(db, config, tmp_path)
         _json({"thought": "writing the file", "done": True,
                "actions": [{"tool": "fs.write",
                             "args": {"path": str(tmp_path / "unobserved.txt"),
-                                     "content": "ETHOS\n"}}]}),
+                                     "content": "CLIO-MARKER\n"}}]}),
     ])
     gsl = _solver(db, config, tmp_path, gateway, memory)
     intention_id = await memory.create_intention(

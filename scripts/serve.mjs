@@ -70,7 +70,7 @@ const WINDOWS = process.platform === "win32";
 const VENV = join(ROOT, ".venv");
 const VENV_BIN = join(VENV, WINDOWS ? "Scripts" : "bin");
 const PYTHON = join(VENV_BIN, WINDOWS ? "python.exe" : "python");
-const ETHOS = join(VENV_BIN, WINDOWS ? "clio.exe" : "clio");
+const CLIO_BIN = join(VENV_BIN, WINDOWS ? "clio.exe" : "clio");
 const INDEX_HTML = join(INTERFACE, "packages", "web", "dist", "index.html");
 const BRIDGE_ENTRY = join(WEB, "server", "index.mjs");
 
@@ -199,13 +199,13 @@ function preparePython() {
       step(`creating a virtualenv with ${system}`, [system, "-m", "venv", VENV]);
       step("installing the agent", [PYTHON, "-m", "pip", "install", "-e", ".[dev]"]);
     }
-  } else if (!existsSync(ETHOS)) {
+  } else if (!existsSync(CLIO_BIN)) {
     step("installing the agent", [PYTHON, "-m", "pip", "install", "-e", ".[dev]"]);
   }
   // The console script is what `clio stop` and `make` reach for, and this function's
   // whole purpose is that a person never has to activate anything to get one. An
   // install that "succeeded" without producing it has not finished.
-  if (!existsSync(ETHOS)) {
+  if (!existsSync(CLIO_BIN)) {
     die(
       "the agent is installed in .venv but there is no `clio` command in it.",
       `   Look in ${VENV_BIN}. If the project was installed somewhere else, remove .venv and run this again.`,

@@ -298,7 +298,7 @@ def test_apex_task_modes_map_to_the_status_vocabulary():
     assert failed.summary  # an outcome is always summarized, whatever it was
 
 
-def test_apex_subprocess_env_names_the_ethos_provider():
+def test_apex_subprocess_env_names_the_clio_provider():
     cfg = _config_with()
     cfg.gateway.port = 8700
     agent = ApexSubAgent(cfg, SubagentConfig(name="apex"), gateway=None)

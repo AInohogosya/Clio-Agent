@@ -7,10 +7,10 @@ from clio.observability.logger import get_logger
 logger = get_logger("clio.metrics")
 
 MODEL_CALLS = Counter(
-    "ethos_model_calls_total",
+    "clio_model_calls_total",
     "Model calls by provider/tier/purpose/status",
     # `purpose` is what makes this counter answer the question the outage raised.
-    # Without it, `ethos_model_calls_total{status="error", model="..."}` mixes
+    # Without it, `clio_model_calls_total{status="error", model="..."}` mixes
     # every kind of call the agent makes: the plan call, the step call, the
     # deliberation that writes somebody's reply. Those three fail for different
     # reasons, are retried by different levers, and are fixed by different people
@@ -25,7 +25,7 @@ MODEL_CALLS = Counter(
     ["provider", "model", "tier", "purpose", "status"],
 )
 MODEL_FAILURES = Counter(
-    "ethos_model_failures_total",
+    "clio_model_failures_total",
     "Failed model calls by scope, which is which lever moved",
     # `scope` is `request`, `model` or `provider`, and it is the label that says
     # whether a retry changed the request, excluded a model, or simply waited.
@@ -35,7 +35,7 @@ MODEL_FAILURES = Counter(
     ["provider", "model", "tier", "purpose", "scope"],
 )
 MODEL_FAILURE_DISPOSITIONS = Counter(
-    "ethos_model_failure_dispositions_total",
+    "clio_model_failure_dispositions_total",
     "Failed model calls by disposition: limit_reached, model_stop, error",
     # NA-P3.2. `scope` says whose problem it was; `disposition` says what kind
     # of ending it was, which is what a person asking "why did it stop" wants
@@ -44,7 +44,7 @@ MODEL_FAILURE_DISPOSITIONS = Counter(
     ["provider", "purpose", "disposition"],
 )
 MODEL_RETRIES = Counter(
-    "ethos_model_retries_total",
+    "clio_model_retries_total",
     "Retries by scope and whether the request was changed",
     # `changed_request` is the assertion that the retry was not a replay. A retry
     # that moved no lever is the incident; this is the counter that would have
@@ -52,26 +52,26 @@ MODEL_RETRIES = Counter(
     ["scope", "purpose", "changed_request", "changed_model"],
 )
 MODEL_COST = Counter(
-    "ethos_model_cost_usd_total",
+    "clio_model_cost_usd_total",
     "Accumulated model spend in USD",
     ["provider", "model", "bucket"],
 )
 # A free call has to leave a trace. `MODEL_COST.inc(0)` is a no-op on a
 # Prometheus counter by construction -- the series is only created when the
 # counter moves -- so a model the vendor bills at zero produced no
-# `ethos_model_cost_usd_total` series whatsoever. That reads identically to a
+# `clio_model_cost_usd_total` series whatsoever. That reads identically to a
 # model that was never called, which is the specific confusion that made free
 # traffic look like spend: there was nothing in the scrape to contradict it.
 # Observing the per-call cost in a histogram creates the series at 0.0, so
 # "free" and "unused" are distinguishable in a dashboard.
 MODEL_CALL_COST = Histogram(
-    "ethos_model_call_cost_usd",
+    "clio_model_call_cost_usd",
     "Cost of a single model call in USD",
     ["provider", "model", "bucket"],
     buckets=(0.0, 1e-6, 1e-5, 1e-4, 1e-3, 1e-2, 1e-1, 1.0, 10.0),
 )
 MODEL_COST_SOURCE = Counter(
-    "ethos_model_cost_source_total",
+    "clio_model_cost_source_total",
     "Model calls by where the price came from",
     # `source` is the answer to "is this number real". `provider` means the
     # vendor billed it and we recorded what it said; `config` means a checked-in
@@ -81,41 +81,41 @@ MODEL_COST_SOURCE = Counter(
     ["source", "provider"],
 )
 MODEL_LATENCY = Histogram(
-    "ethos_model_latency_seconds",
+    "clio_model_latency_seconds",
     "Model call latency",
     ["provider"],
     buckets=(0.25, 0.5, 1, 2, 5, 10, 20, 45, 90, 180),
 )
 ACTIONS = Counter(
-    "ethos_actions_total",
+    "clio_actions_total",
     "Tool actions by tool/status",
     ["tool", "status"],
 )
 BUS_EVENTS = Counter(
-    "ethos_bus_events_total",
+    "clio_bus_events_total",
     "Bus events published",
     ["kind"],
 )
 CYCLES = Counter(
-    "ethos_cycles_total",
+    "clio_cycles_total",
     "Life cycles by state",
     ["thread_id", "state"],
 )
 CYCLE_DURATION = Histogram(
-    "ethos_cycle_duration_seconds",
+    "clio_cycle_duration_seconds",
     "Life cycle duration",
     buckets=(0.1, 0.25, 0.5, 1, 2, 5, 10, 30, 60, 120),
 )
-SALIENCE_MAX = Gauge("ethos_salience_max", "Highest salience of current percepts")
-ENERGY = Gauge("ethos_energy", "Current energy level")
+SALIENCE_MAX = Gauge("clio_salience_max", "Highest salience of current percepts")
+ENERGY = Gauge("clio_energy", "Current energy level")
 GUARDIAN_DECISIONS = Counter(
-    "ethos_guardian_decisions_total",
+    "clio_guardian_decisions_total",
     "Guardian gate decisions",
     ["path", "verdict"],
 )
-THREADS_ACTIVE = Gauge("ethos_threads_active", "Currently running delegated threads")
+THREADS_ACTIVE = Gauge("clio_threads_active", "Currently running delegated threads")
 THREADS_FINISHED_KEPT = Gauge(
-    "ethos_threads_finished_kept",
+    "clio_threads_finished_kept",
     "Finished thread handles still resident in the bounded retention cache",
 )
 

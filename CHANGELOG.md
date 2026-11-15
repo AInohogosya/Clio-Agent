@@ -1,5 +1,80 @@
 # Clio Agent 3.1
 
+## v3.1.0-beta.17
+
+Containment, steering and policy: the upgrade that gives every project a
+sandbox, every mid-run message a path to the step in progress, and every tool
+call a fail-closed policy in front of it. The full architecture note is
+[docs/10-sandboxes-steering-and-policy.md](docs/10-sandboxes-steering-and-policy.md).
+
+- Package and identity: the whole repository now answers to **Clio Agent 3.1**
+  alone — the Python package is `clio`, the console script is `clio`, the
+  services are `clio-core`, `clio-gateway`, `clio-toolhost`, `clio-comms`,
+  `clio-workers-{1..N}`, `clio-api` and `clio-supervisor`, the UI namespace is
+  `ClioUI`, config is `config/clio.yaml`, and the event-bus channel and metric
+  names follow. Environment variables are `CLIO_*` with the legacy `ETHOS_*`
+  spellings read as fallback (`clio/env.py`), so a deployment configured
+  before the rename keeps answering the same database until its unit files are
+  edited. The two data locations this machine already held — the agent home
+  `~/.ethos` and the database name in the DSN — are kept deliberately: they
+  name user data, not the product, and renaming them would orphan it.
+- Project sandboxes: `MemoryStore.create_project` now provisions a sandbox
+  (`clio/sandbox/provider.py`) and mounts the project's `WorkspaceLease` at
+  `/workspace` — rootless Docker/Podman with `CapDrop: ALL`,
+  `no-new-privileges`, seccomp, `PidsLimit: 512` and optional gVisor; the
+  bubblewrap/Seatbelt OS-level sandboxes; the filesystem baseline, named
+  honestly. The `sandbox_registry` carries `lease_owner`/`lease_fence` and
+  commits are fence-guarded.
+- Egress: every sandbox connection passes a per-project proxy
+  (`clio/sandbox/egress.py`) with domain allowlists, address-level blocking of
+  the metadata service and the private ranges across every redirect hop and
+  CONNECT tunnel, and an audit row per decision.
+- The virtual computer (`clio/sandbox/computer.py`): per-project Xvfb display
+  and Chromium profile; server-issued `ariaSnapshot` references resolved
+  in-page at act time and refused with 409 semantics when stale;
+  `{{secret:KEY}}` substitution inside the sandbox so raw secrets never enter
+  model context; live screen takeover behind an Action Barrier that drains
+  in-flight agent input and masks password fields.
+- Steering: messages to the active project's conversation during a run land
+  in `steering_messages` and are claimed by
+  `GeneralSolverLoop.prepare_next_step` at every step boundary — read into the
+  step at high priority, `constraint:` lines merged into the plan, stale
+  claims handed back. `steering.inject`, `control.update` and `guardian.undo`
+  are formalized as the three out-of-band lanes. The fast-lane micro-slot
+  (`CLIO_FAST_LANE_BUDGET_S = 90`) answers quick secondary-conversation
+  questions during a locked focus quantum without touching the primary
+  project.
+- Guardian Layer 1: a real fail-closed CEL engine (`clio/guardian/policy.py`)
+  evaluated before every tool call — deny before allow, unparseable or
+  missing-attribute expressions deny, live reload over LISTEN/NOTIFY — plus
+  signed `runAssertion` tokens binding project/space/initiator/depth and
+  Pre-Execution Approval Cards for high-impact external side effects.
+- Verification: rung 2 reads whole artifacts through map-reduce chunk
+  inspection (`clio/gsl/verifier_inspect.py`) with structured diffs and
+  chunk-provenanced verdicts; no fixed truncation remains. The model judge
+  still cannot overturn a failing rung-1 check.
+- Tools: two-stage dynamic narrowing with the pinned `tools.search` meta-tool
+  (`clio/tools/catalog.py`); native MCP client/server over stdio, Streamable
+  HTTP and SSE with pooling, health checks and degraded stand-ins
+  (`clio/toolhost/mcp.py`); an OAuth connector broker with envelope-sealed
+  tokens and toolhost-side execution (`connectors.py`); OpenAPI/GraphQL
+  importers with recursive `$ref` resolution (`importers.py`).
+- Data: migration 0008 adds `(tenant_id, space_id)` and PostgreSQL RLS across
+  the project, memory, event, artifact and audit tables, fail-closed for an
+  unscoped session; envelope encryption (`clio/security/envelope.py`) seals
+  episode bodies, fact provenance, journal arguments, checkpoints and
+  portable workspace archives under per-space DEKs, and shredding a space's
+  DEK is cryptographic deletion; speed-1 inline contradiction resolution
+  (`clio/memory/contradiction.py`) applies mid-day corrections inside the
+  same write that records them.
+- Runtime: dual-tier liveness — the 15-second fast heartbeat and the
+  1800-second ceiling — with recycled children's activity leases transferred
+  under monotonically-incremented fences (`clio/core/leases.py`); `clio-api`
+  as a stateless control plane (`clio/api/app.py`) serving the control verbs,
+  ClioUI components, screen takeover and OAuth callbacks; the oob-guardian
+  now freezes sandboxes and revokes gateway tokens out of band; Kubernetes
+  manifests and a containerized compose profile ship under `deploy/`.
+
 ## v3.1.0-beta.14
 
 Field repair for the helmet search of 2026-11-02 (07:47–08:13 UTC): three `browser.visit` calls to Amazon Japan returned HTTP 200 — the site opened every time — yet the task ended with "every attempt to open Amazon Japan failed" reported to the person who asked for the helmet. The failure and the false report had the same root.

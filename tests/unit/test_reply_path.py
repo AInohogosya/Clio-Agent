@@ -1829,7 +1829,7 @@ def test_the_deliberation_asks_for_enough_room_to_finish() -> None:
 # Nothing anywhere composes a message to send
 
 
-def _ethos_sources() -> list[Path]:
+def _clio_sources() -> list[Path]:
     root = Path(__file__).resolve().parents[2] / "clio"
     return sorted(p for p in root.rglob("*.py") if "__pycache__" not in p.parts)
 
@@ -1880,7 +1880,7 @@ def test_no_module_anywhere_invents_a_message_to_send() -> None:
     it would arrive in the transcript reading as the agent having said it.
     """
     offenders: list[str] = []
-    for path in _ethos_sources():
+    for path in _clio_sources():
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
@@ -1913,7 +1913,7 @@ def test_the_stand_in_sentences_are_gone_from_the_code() -> None:
         "Due process complete",
     )
     present: list[str] = []
-    for path in _ethos_sources():
+    for path in _clio_sources():
         code = _without_comments(path)
         for phrase in removed:
             if phrase in code:
