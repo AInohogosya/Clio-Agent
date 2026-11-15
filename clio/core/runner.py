@@ -138,10 +138,13 @@ class CoreRuntime:
         from clio.gsl.steering import SteeringQueue
 
         self.steering = SteeringQueue(db, bus=self.bus)
+        from clio.guardian.policy import PolicyEngine
+
+        self.policy_engine = PolicyEngine(db, listener=db)
         self.guardian = GuardianGate(
             config, registry=self.registry, trash=self.trash, snapshots=self.snapshots,
             audit=self.audit, verifier=self.verifier, control=self.control,
-            approvals=self.approvals, leases=self.leases,
+            approvals=self.approvals, leases=self.leases, policy_engine=self.policy_engine,
         )
 
         self.relationships = RelationshipStore(config, db=db)
@@ -365,6 +368,10 @@ class CoreRuntime:
         await self.gateway_service.probe_local_endpoints()
         await self.bus.start()
         await self.control.load()
+        # Layer 1 policies: loaded before the first tool call can arrive, and
+        # reloaded live over LISTEN/NOTIFY when an operator edits the table.
+        with contextlib.suppress(Exception):
+            await self.guardian.policy_engine.start() if self.guardian.policy_engine else None
         self._wire_bus()
         self.control.install_signal_handlers()
         await self.scheduler.start()

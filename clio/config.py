@@ -1149,6 +1149,10 @@ class NetworkPolicy(BaseModel):
     allowed_hosts: list[str] = Field(default_factory=list)
     deny_private_ranges: bool = True
     max_response_bytes: int = 10485760
+    # The channels `comms.send` may use without a pre-execution approval
+    # card. A message over a channel not named here is a high-impact
+    # external side effect the person approves before it leaves.
+    approved_send_channels: list[str] = Field(default_factory=lambda: ["cli", "web"])
 
 
 class SecretsPolicy(BaseModel):

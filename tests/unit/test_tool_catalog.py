@@ -351,7 +351,7 @@ def test_the_catalog_is_not_much_larger_than_it_has_to_be():
     twelve the router chose.
     """
     from clio.prompts.identity import build_pinned_tools_block
-    from clio.tools.catalog import TOP_K, SEARCH_TOOLS_SPEC, pinned_prefix_tools
+    from clio.tools.catalog import SEARCH_TOOLS_SPEC, TOP_K, pinned_prefix_tools
 
     pinned = build_pinned_tools_block(pinned_prefix_tools(), len(registered_tools()))
     assert len(pinned) // 4 < 400, "the pinned block is a meta-tool and a note, not a registry"

@@ -138,6 +138,7 @@ class GuardianGate:
         leases: Any = None,
         tool_manifests: Any = None,
         approvals: Any = None,
+        policy_engine: Any = None,
     ):
         self.config = config
         self.registry = registry
@@ -149,6 +150,11 @@ class GuardianGate:
         self.leases = leases
         self.tool_manifests = tool_manifests
         self.approvals = approvals
+        # Layer 1: the CEL policy engine (clio/guardian/policy.py), evaluated
+        # before every tool call, deny before allow, failing closed. `None`
+        # means the runtime has not built one — the same posture as before
+        # policies existed, and the same audit line says so.
+        self.policy_engine = policy_engine
 
     def _lease_for(self, intention_id: str | None) -> Any | None:
         if self.leases is None:
@@ -355,6 +361,32 @@ class GuardianGate:
             decide as safety_decide,
         )
 
+        # Layer 1, part one: the run-assertion token. A caller that carries one
+        # is claiming a delegation; the signature, the expiry and the depth are
+        # checked before anything else about the call is trusted. A token that
+        # fails any of the three is refused here — the gate never executes on
+        # an assertion it could not verify.
+        initiator_kind = "gsl_step"
+        delegation_depth = 0
+        from clio.guardian.policy import verify_assertion
+
+        raw_assertion = args.get("runAssertion")
+        assertion = verify_assertion(str(raw_assertion)) if raw_assertion else None
+        if raw_assertion and assertion is None:
+            await self.audit.append(
+                actor=thread_id, category="guardian",
+                summary=f"action blocked: invalid or expired runAssertion ({tool})",
+                details={"tool": tool, "args": _redacted(args)},
+            )
+            return GateDecision(
+                Verdict.REJECT, GatePath.BLOCKED,
+                "the runAssertion token is invalid, expired or wrongly signed; "
+                "re-mint it for this run before calling again",
+            )
+        if assertion is not None:
+            initiator_kind = assertion.initiator_kind
+            delegation_depth = assertion.delegation_depth
+
         level = effective_level(self.config, self.control)
         decision_safety = safety_decide(level, tool, args, inside_subagent=inside_subagent)
         if decision_safety.action == DIALOGUE_REJECT:
@@ -366,6 +398,71 @@ class GuardianGate:
             return GateDecision(Verdict.REJECT, GatePath.BLOCKED, decision_safety.reason)
 
         effects = classify_tool(tool, args)
+
+        # Layer 1, part two: the CEL policy engine, deny before allow, failing
+        # closed. Every call sees this — read-only ones included — because a
+        # policy that could be bypassed by calling a read tool is not a policy.
+        pre_authorized = False
+        if self.policy_engine is not None:
+            from clio.guardian.policy import call_environment, high_impact_external_side_effect
+
+            space_id = "local:primary"
+            env = call_environment(
+                tool, args,
+                project_id=project_id, space_id=space_id,
+                initiator_kind=initiator_kind,
+                delegation_depth=delegation_depth,
+                thread_id=thread_id,
+            )
+            try:
+                policy_decision = await self.policy_engine.decide(env)
+            except Exception:
+                logger.exception("gate.policy_engine_failed")
+                policy_decision = None
+            if policy_decision is None:
+                await self.audit.append(
+                    actor=thread_id, category="guardian",
+                    summary=f"action blocked: policy engine failed closed ({tool})",
+                    details={"tool": tool, "args": _redacted(args)},
+                )
+                return GateDecision(
+                    Verdict.REJECT, GatePath.BLOCKED,
+                    "the policy engine could not be consulted, so the call is refused "
+                    "(fail closed)",
+                )
+            if policy_decision.effect == "deny":
+                await self.audit.append(
+                    actor=thread_id, category="guardian",
+                    summary=f"action denied by CEL policy: {tool}",
+                    details={"tool": tool, "rule": policy_decision.rule_id,
+                             "reason": policy_decision.reason, "args": _redacted(args)},
+                )
+                return GateDecision(
+                    Verdict.REJECT, GatePath.BLOCKED,
+                    f"denied by policy{f' {policy_decision.rule_id}' if policy_decision.rule_id else ''}: "
+                    f"{policy_decision.reason}",
+                )
+            pre_authorized = policy_decision.rule_id is not None
+
+            # High-impact external side effects go to a Pre-Execution Approval
+            # Card unless a policy explicitly allowed this call — that allow
+            # is the project's pre-authorization, and it is only a
+            # pre-authorization when a rule (not the default) said so.
+            impact = high_impact_external_side_effect(
+                tool, args, approved_channels=_approved_channels(self.config),
+            )
+            if impact and not pre_authorized:
+                approval = await self._await_approval(
+                    tool, args, reason=reason, intention_id=intention_id,
+                    thread_id=thread_id, level=level, inside_subagent=inside_subagent,
+                    decision_reason=(
+                        f"pre-execution approval required: {impact}. Approve once, "
+                        "approve for this project, or reject."
+                    ),
+                )
+                if approval is not None:
+                    return approval
+
         if "blocked" in effects.categories:
             if self._field_mode():
                 # Recorded, then allowed outright. Everything downstream of
@@ -751,7 +848,19 @@ class RegistryLike(Protocol):
 
 
 def _redacted(args: dict[str, Any]) -> dict[str, Any]:
-    return redact(dict(args))
+    redacted = redact(dict(args))
+    # The run-assertion token is a credential: it is never written to the
+    # audit trail, not even redacted-in-place where a prefix might leak.
+    if "runAssertion" in redacted:
+        redacted["runAssertion"] = "(assertion token withheld)"
+    return redacted
+
+
+def _approved_channels(config: Any) -> set[str] | None:
+    """The channels a `comms.send` may use without an approval card."""
+    channels = getattr(getattr(config, "permissions", None), "network", None)
+    approved = getattr(channels, "approved_send_channels", None)
+    return set(approved) if approved else None
 
 
 __all__ = [

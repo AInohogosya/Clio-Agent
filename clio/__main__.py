@@ -325,8 +325,13 @@ async def _serve_toolhost(config) -> None:
     approvals = ApprovalManager(
         default_timeout_s=float(getattr(config.permissions, "approval_timeout_s", 300.0) or 300.0)
     )
+    from clio.guardian.policy import PolicyEngine
+
+    policy_engine = PolicyEngine(db, listener=db)
+    await policy_engine.start()
     gate = GuardianGate(config, registry=registry, trash=trash, snapshots=snapshots,
-                         audit=audit, verifier=verifier, control=control, approvals=approvals)
+                         audit=audit, verifier=verifier, control=control, approvals=approvals,
+                         policy_engine=policy_engine)
     host = Toolhost(config, gate=gate, journal=journal, services={
         "memory": memory, "registry": registry, "trash": trash,
     })

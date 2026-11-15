@@ -1,8 +1,6 @@
 """Two-stage dynamic tool narrowing: route, sheet, and the pinned meta-tool."""
 from __future__ import annotations
 
-from typing import Any
-
 from clio.tools.catalog import (
     SEARCH_TOOLS_SPEC,
     TOP_K,
