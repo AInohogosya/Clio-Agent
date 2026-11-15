@@ -1915,6 +1915,36 @@ class ProjectConfig(BaseModel):
     fast_lane_budget_s: float = 90.0
 
 
+class MCPServerConfigRaw(BaseModel):
+    """One external MCP server, as written in `config/clio.yaml`."""
+
+    model_config = {"extra": "allow"}
+
+    transport: str = "stdio"
+    command: str = ""
+    args: list[str] = Field(default_factory=list)
+    url: str = ""
+    sse_url: str = ""
+    post_url: str = ""
+    headers: dict[str, str] = Field(default_factory=dict)
+
+
+class MCPConfig(BaseModel):
+    """External tool servers (clio/toolhost/mcp.py) and the local MCP face."""
+
+    servers: dict[str, MCPServerConfigRaw] = Field(default_factory=dict)
+    health_poll_s: float = 30.0
+    #: Whether the toolhost also serves its own catalog over MCP.
+    serve: bool = False
+
+
+class ConnectorConfig(BaseModel):
+    """OAuth connector broker: provider registrations (clio/toolhost/connectors.py)."""
+
+    providers: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    redirect_base: str = "http://127.0.0.1:8720"
+
+
 class ClioConfig(BaseModel):
     self_name: str = DEFAULT_SELF_NAME
     timezone: str = "local"
@@ -1935,6 +1965,8 @@ class ClioConfig(BaseModel):
     people: PeopleConfig = PeopleConfig()
     subagents: SubagentsConfig = SubagentsConfig()
     projects: ProjectConfig = ProjectConfig()
+    mcp: MCPConfig = MCPConfig()
+    connectors: ConnectorConfig = ConnectorConfig()
 
 
 def _read_yaml(path: Path) -> dict[str, Any]:

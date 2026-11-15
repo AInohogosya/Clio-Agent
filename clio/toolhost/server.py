@@ -89,12 +89,17 @@ class Toolhost:
         journal: ActionJournal,
         services: dict[str, Any] | None = None,
         bus: Any = None,
+        mcp_pool: Any = None,
     ):
         self.config = config
         self.gate = gate
         self.journal = journal
         self.services: dict[str, Any] = services or {}
         self.bus = bus
+        # External MCP servers, pooled and health-checked
+        # (clio/toolhost/mcp.py). Their tools appear in `catalog()` and
+        # execute through the same gate and journal as every built-in.
+        self.mcp_pool = mcp_pool
         self.tools: dict[str, Tool] = {}
         self.background_jobs: dict[str, dict[str, Any]] = {}
         from clio.toolhost.browser import BrowserPool
@@ -119,7 +124,7 @@ class Toolhost:
         level = effective_level(self.config, self.gate.control if hasattr(self.gate, "control") else None)
         names = [tool.name for tool in sorted(self.tools.values(), key=lambda t: t.name)]
         allowed = set(usable_tool_names(names, level))
-        return [
+        entries = [
             {
                 "name": tool.name,
                 "description": tool.description,
@@ -128,6 +133,14 @@ class Toolhost:
             for tool in sorted(self.tools.values(), key=lambda t: t.name)
             if tool.name in allowed
         ]
+        if self.mcp_pool is not None:
+            # External tools join the same catalog; a degraded server shows
+            # its stand-in descriptor rather than vanishing.
+            entries.extend(
+                entry for entry in self.mcp_pool.catalog_entries()
+                if entry["name"] in set(usable_tool_names([entry["name"]], level))
+            )
+        return entries
 
     def service(self, name: str) -> Any:
         if name not in self.services:
@@ -228,6 +241,15 @@ class Toolhost:
     async def execute(self, name: str, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         started = time.monotonic()
         tool = self.tools.get(name)
+        if tool is None and name.startswith("mcp.") and self.mcp_pool is not None:
+            # An external MCP tool: a shim stands in so the call still travels
+            # the journal → gate → execute → audit pipeline every built-in
+            # does. The gate sees a real tool name it can classify and deny.
+            from clio.toolhost.mcp import MCPProxyTool
+
+            found = self.mcp_pool.find(name)
+            tool = MCPProxyTool(name, self.mcp_pool, found[1] if found else None)
+            self.tools[name] = tool  # type: ignore[assignment]
         if tool is None:
             return ToolResult(
                 ok=False, error_code=ToolErrorCode.NOT_FOUND,

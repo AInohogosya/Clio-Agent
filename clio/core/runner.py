@@ -147,6 +147,15 @@ class CoreRuntime:
             config, snapshots=self.snapshots, trash=self.trash,
             sandbox_manager=self.sandbox_manager, db=db,
         )
+        # External MCP tool servers (clio/toolhost/mcp.py): pooled and
+        # health-checked in the background; their tools join the same catalog
+        # and travel the same gate as every built-in.
+        from clio.toolhost.mcp import MCPClientPool, servers_from_config
+
+        self.mcp_pool = MCPClientPool(
+            servers_from_config(config),
+            health_poll_s=float(getattr(config.mcp, "health_poll_s", 30.0) or 30.0),
+        )
         # Live mid-turn steering (clio/gsl/steering.py): the queue the solver
         # loop claims at step boundaries, and the out-of-band lane inbound
         # messages ride when they belong to the active project's conversation.
@@ -181,6 +190,7 @@ class CoreRuntime:
         self.subagents = SubagentRegistry(config, gateway=self.gateway)
         self.toolhost = Toolhost(
             config, gate=self.guardian, journal=self.journal, bus=self.bus,
+            mcp_pool=self.mcp_pool,
             services={
                 "memory": self.memory,
                 "vault": self.vault,
@@ -387,6 +397,10 @@ class CoreRuntime:
         # reloaded live over LISTEN/NOTIFY when an operator edits the table.
         with contextlib.suppress(Exception):
             await self.guardian.policy_engine.start() if self.guardian.policy_engine else None
+        # External tool servers dial after the bus so a handshake failure is
+        # a degraded catalog entry, never a core that will not start.
+        with contextlib.suppress(Exception):
+            await self.mcp_pool.start()
         self._wire_bus()
         self.control.install_signal_handlers()
         await self.scheduler.start()
@@ -419,6 +433,8 @@ class CoreRuntime:
             if task is not None:
                 task.cancel()
         await self.scheduler.stop()
+        with contextlib.suppress(Exception):
+            await self.mcp_pool.stop()
         await self.comms.stop()
         await self.toolhost.aclose()
         await self.bus.stop()
