@@ -2,7 +2,7 @@
   <img src="thumbnail.png" alt="Clio Agent 3.1" width="880">
 </p>
 
-<h1 align="center">Clio Agent 3.1</h1>
+
 
 <p align="center">
   <b>An agent that is there when you aren't.</b><br>
