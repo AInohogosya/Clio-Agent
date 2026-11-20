@@ -52,6 +52,52 @@ def test_pinned_entries_always_make_the_sheet():
     assert [e.name for e in sheet][:1] == ["memory.search"]
 
 
+def test_pinned_tool_hints_make_the_sheet():
+    """A plan step's `tool_hints` are a promise about what the step needs.
+    When the prose does not name the tool -- "open the downloads page" for
+    `subagent.apex` -- the hint is what puts it on the sheet."""
+    catalog = ToolCatalog()
+    catalog.register({
+        "name": "subagent.apex",
+        "description": "desktop automation agent for the real desktop",
+        "input_schema": {"type": "object", "properties": {"task": {"type": "string"}}},
+    })
+    catalog.register({
+        "name": "browser.visit",
+        "description": "visit a URL in a browser",
+        "input_schema": {"type": "object", "properties": {"url": {"type": "string"}}},
+    })
+    text = "In Safari, open the downloads page and clear the list"
+
+    assert "`subagent.apex`" not in narrowed_step_tools(catalog, text)
+    pinned = narrowed_step_tools(catalog, text, pinned=["subagent.apex"])
+    assert "`subagent.apex`" in pinned
+
+
+def test_the_solver_pins_the_step_tool_hints_onto_its_sheet():
+    """The loop, not only the catalog helper, has to carry `tool_hints`
+    through; a hint stored on the step and never passed is a dead field."""
+    from clio.gsl.loop import GeneralSolverLoop
+
+    class _Host:
+        def catalog(self):
+            return [
+                {"name": "subagent.apex", "description": "desktop automation",
+                 "input_schema": {"type": "object", "properties": {}}},
+                {"name": "browser.visit", "description": "visit a URL",
+                 "input_schema": {"type": "object", "properties": {}}},
+            ]
+
+    loop = object.__new__(GeneralSolverLoop)
+    loop.toolhost = _Host()
+    text = "In Safari, open the downloads page and clear the list"
+
+    assert "`subagent.apex`" not in loop._narrowed_tool_sheet(text)
+    assert "`subagent.apex`" in loop._narrowed_tool_sheet(
+        text, pinned=["subagent.apex"],
+    )
+
+
 def test_the_sheet_renders_full_schemas_and_names_the_meta_tool():
     catalog = _catalog(20)
     text = narrowed_step_tools(catalog, "edit the files")

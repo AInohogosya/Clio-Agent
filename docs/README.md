@@ -46,7 +46,7 @@ Two commitments run through everything:
   `[D-xx]`, `[H1..H6]`, `[P1..P7]`), those markers are the code's own discipline tags
   for design decisions; the code carries the rationale at the definition site.
 - **Numbers are defaults.** Nearly every constant is overridable via environment
-  (`ETHOS_*`), config YAML in `config/`, or the live control plane; the values quoted
+  (`CLIO_*`), config YAML in `config/`, or the live control plane; the values quoted
   here are what the code ships with.
 - **No invented behaviour.** If a mechanism is not in this checkout yet (e.g. parts of
   the 3.2 direction), the document says so explicitly rather than describing it as

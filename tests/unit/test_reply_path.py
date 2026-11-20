@@ -2454,6 +2454,62 @@ def test_the_deliberation_is_told_that_answering_is_not_doing() -> None:
         "or every greeting becomes a task"
 
 
+def test_deliberation_separates_shared_conversation_from_private_work() -> None:
+    """Knowing something is not the same as the person having been told it.
+
+    An autonomous agent can develop options, change its plan and do work between
+    messages. A reply that refers to those as though they were already in the
+    transcript leaves the person answering a message they never received. The
+    reply prompt must distinguish the two records and make the missing context
+    part of the reply.
+    """
+    prompts = social_deliberation_messages(
+        self_name="Clio",
+        message=Message(
+            person_id="owner", channel="web", conversation_key="web:owner",
+            text="Which one did you choose?",
+        ),
+        focus="choose a project name", now="2026-01-01T00:00:00+00:00", energy=0.8,
+        commitments="(none)", recent="owner: choose a project name",
+    )
+    system = " ".join(prompts[0]["content"].split())
+    user = " ".join(prompts[1]["content"].split())
+
+    assert "Read the whole Recent conversation context together with the current message" in system
+    assert "An explicit correction supersedes the earlier reading" in system
+    assert "ask a short, specific clarifying question" in system
+    assert "private records" in system
+    assert "autonomous decisions are likewise not shared" in system
+    assert "include the actual options, plan or result in the reply" in system
+    assert "briefly supply that context as new information" in user, (
+        "the rule is repeated after the message, where the reply is written"
+    )
+
+
+def test_recent_conversation_contains_only_messages_the_person_received() -> None:
+    """A held or suppressed outbound row is an attempt, not shared history."""
+
+    class _HistoryDb:
+        def __init__(self) -> None:
+            self.queries: list[tuple[str, tuple[Any, ...]]] = []
+
+        async def fetch(self, query: str, *args: Any) -> list[dict[str, Any]]:
+            self.queries.append((query, args))
+            return []
+
+    config = make_config(Path("/tmp/clio-test-shared-history"))
+    db = _HistoryDb()
+    social = SocialCognition(config=config, db=db)
+    message = _question("what did you decide?")
+
+    history = asyncio.run(social._recent_conversation(message))
+
+    assert history == ""
+    query, args = db.queries[0]
+    assert "COALESCE(delivery->>'status', 'sent') = 'sent'" in query
+    assert args[:2] == (message.conversation_key, message.id)
+
+
 # --------------------------------------------------------------------------
 # Finding the answer in an answer
 

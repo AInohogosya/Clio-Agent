@@ -88,9 +88,21 @@ class SubAgent(ABC):
     def repo_root(self, workdir: str | None = None) -> Path:
         """The directory the sub-agent should work on. Foundry's target
         repository, or a thread's isolated worktree — never this checkout
-        by accident."""
+        by accident.
+
+        A delegation with no explicit target falls back to this agent's own
+        workspace, not to the sub-agent program's checkout. The program's
+        directory is where its code lives, not a place it should edit; handing
+        it `self.root` means a plain `subagent.foundry` call from the main loop
+        (whose ToolContext carries no cwd) rewrites Foundry's own source tree.
+        """
         raw = self.settings.repo_root or workdir
-        return Path(raw).expanduser().resolve() if raw else self.root
+        if raw:
+            return Path(raw).expanduser().resolve()
+        workspace = getattr(getattr(self.config, "paths", None), "workspace", None)
+        if workspace:
+            return Path(workspace).expanduser().resolve()
+        return Path.cwd().resolve()
 
     # ---- the gateway, as sub-agents reach it -----------------------------
 

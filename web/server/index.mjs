@@ -2773,7 +2773,6 @@ const AGENT_CONFIG_FIELDS = [
   { id: "permissions.guardian.mode", file: "permissions.yaml", path: "guardian.mode", type: "select", options: ["field", "normal"] },
   { id: "permissions.network.deny_private_ranges", file: "permissions.yaml", path: "network.deny_private_ranges", type: "boolean" },
   { id: "clio.subagents.tier", file: "clio.yaml", path: "subagents.tier", type: "select", options: ["T1", "T2", "T3"] },
-  { id: "clio.subagents.model_name", file: "clio.yaml", path: "subagents.model_name", type: "text" },
 ];
 const AGENT_CONFIG_MAP = new Map(AGENT_CONFIG_FIELDS.map((f) => [f.id, f]));
 

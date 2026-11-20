@@ -2477,7 +2477,12 @@ class Life:
                 resume = {}
         plan = resume.get("plan") or {}
         steps = plan.get("steps") or []
-        done = sum(1 for step in steps if isinstance(step, dict) and step.get("status") == "done")
+        done_steps = [
+            step for step in steps
+            if isinstance(step, dict) and step.get("status") == "done"
+        ]
+        done = len(done_steps)
+        verified = sum(1 for step in done_steps if step.get("verified") is True)
         artifacts = resume.get("artifacts") or []
         delivered = [
             str(action.get("args", {}).get("path") or "")
@@ -2492,9 +2497,34 @@ class Life:
                 break
         parts: list[str] = []
         if steps:
-            parts.append(f"{done} of {len(steps)} plan steps verified done")
+            # "Done" is what the loop did; "verified" is what the step's own
+            # check observed. They are not the same sentence, and the old one
+            # said "N of M plan steps verified done" from the status alone --
+            # which is how a folder of stale files was reported finished twice
+            # on 2026-11-19, an hour before the work parked with a failed
+            # verification.
+            if done == len(steps) and verified == done:
+                parts.append(f"all {len(steps)} plan steps done and verified")
+            elif done == len(steps):
+                parts.append(
+                    f"all {len(steps)} plan steps done, "
+                    + (f"{verified} verified" if verified else "none verified")
+                )
+            elif done:
+                parts.append(
+                    f"{done} of {len(steps)} plan steps done, "
+                    + (f"{verified} verified" if verified else "none verified")
+                )
+            else:
+                parts.append(f"0 of {len(steps)} plan steps done")
         elif fresh_actions:
             parts.append(f"{fresh_actions} new actions journaled")
+        last_verification = resume.get("last_verification") or {}
+        if isinstance(last_verification, dict) and last_verification.get("passed") is False:
+            issue = str((last_verification.get("issues") or [""])[0])[:140]
+            parts.append(
+                "final verification did not pass" + (f": {issue}" if issue else "")
+            )
         if delivered:
             parts.append("files written: " + ", ".join(delivered))
         if current:

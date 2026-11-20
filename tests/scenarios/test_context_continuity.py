@@ -187,6 +187,48 @@ async def test_conversation_history_is_available_to_deliberation(db, tmp_path: P
         "deliberation must carry the conversation it is answering into"
 
 
+async def test_undelivered_messages_are_not_shared_conversation_history(db, tmp_path: Path):
+    """The reply must not assume the person saw a message the pipeline held."""
+    from clio.schemas.messages import Message
+    from clio.social.deliberation import SocialCognition
+
+    config = make_config(tmp_path / "conv-history-delivered")
+    social = SocialCognition(config, db=db)
+    key = "web:delivered-history"
+    await _seed_messages(db, key, [
+        ("inbound", -30, "choose a project name"),
+        ("outbound", -29, "I privately chose Helio"),
+        ("outbound", -28, "I privately chose Clio"),
+        ("outbound", -27, "I narrowed it to Clio and Helio"),
+        ("inbound", -26, "which one did you choose?"),
+    ])
+    await db.execute(
+        "UPDATE messages SET delivery = '{\"status\":\"held\"}'::jsonb "
+        "WHERE conversation_key = $1 AND text = 'I privately chose Helio'",
+        key,
+    )
+    await db.execute(
+        "UPDATE messages SET delivery = '{\"status\":\"duplicate\"}'::jsonb "
+        "WHERE conversation_key = $1 AND text = 'I privately chose Clio'",
+        key,
+    )
+    latest = await db.fetchrow(
+        "SELECT id FROM messages WHERE conversation_key = $1 ORDER BY ts DESC LIMIT 1",
+        key,
+    )
+    message = Message(
+        id=latest["id"], channel="web", conversation_key=key, person_id="owner",
+        text="which one did you choose?",
+    )
+
+    history = await social._recent_conversation(message)
+
+    assert "choose a project name" in history
+    assert "I narrowed it to Clio and Helio" in history
+    assert "I privately chose Helio" not in history
+    assert "I privately chose Clio" not in history
+
+
 async def test_open_commitments_reach_deliberation(db, tmp_path: Path):
     """Saying yes to something already owed is how an agent double-books itself."""
     from clio.schemas.messages import Message

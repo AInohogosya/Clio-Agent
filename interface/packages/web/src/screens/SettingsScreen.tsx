@@ -737,6 +737,10 @@ function DoorCard({
         })} variant="primary">
           {t('save')}
         </Button>
+        <span className="mt-1 inline-flex items-center gap-1 text-[0.64rem] text-[var(--ink-faint)]">
+          <Icon name="activity" size={11} />
+          {t('appliesImmediately')}
+        </span>
       </div>
     </div>
   );
@@ -786,6 +790,10 @@ function PreviewModeCard({
       {!unreachable && !saving ? (
         <p className="mt-3 text-[0.72rem] leading-relaxed text-[var(--ink-faint)]">{t('previewModeHint')}</p>
       ) : null}
+      <span className="mt-2 inline-flex items-center gap-1 text-[0.64rem] text-[var(--ink-faint)]">
+        <Icon name="activity" size={11} />
+        {t('appliesImmediately')}
+      </span>
     </div>
   );
 }
@@ -851,6 +859,10 @@ function SafetyLevelCard({
       <p className="mt-2 text-[0.68rem] leading-5 text-[var(--ink-faint)]">
         {saving ? t('previewModeSaving') : configured ? t('safetyLevelUnset') : t('safetyLevelActive', { level: String(safetyLevel) })}
       </p>
+      <span className="mt-2 inline-flex items-center gap-1 text-[0.64rem] text-[var(--ink-faint)]">
+        <Icon name="activity" size={11} />
+        {t('appliesImmediately')}
+      </span>
     </div>
   );
 }
@@ -1744,14 +1756,13 @@ export function SettingsScreen({
     setBaseSaving(false);
   };
 
-  const close = () => {
-    // A quiet close must never write half a save: persisting the shared file
-    // here while the agent's base model still holds the old vendor is exactly
-    // the split that re-seeds the draft from the agent file on the next open
-    // and reads as "NVIDIA reverted to OpenRouter". Base-model edits are only
-    // persisted by Save (which writes the agent file first); closing with one
-    // pending simply discards the draft, and non-base edits still autosave.
-    if (canSave && dirty && !(agentMode && baseTouched)) onUpdate(commitDraftSettings({ ...draft, reasoningLevel: effectiveLevel }));
+  const close = async () => {
+    // Close must save every pending change first: discarding a base-model edit
+    // here leaves the shared file and the agent file disagreeing, and the next
+    // open re-seeds the draft from the agent file reading as a mysterious
+    // revert. Save handles both stores in the right order (agent first, then
+    // shared), so close reuses it and only then leaves the screen.
+    if (dirty) await save();
     onClose();
   };
 
@@ -2189,6 +2200,11 @@ export function SettingsScreen({
               {baseSaving ? t('agentBaseModelSaving') : t('save')}
             </Button>
           </div>
+          <p className="mt-4 text-[0.66rem] leading-5 text-[var(--ink-faint)]">
+            {t('saveSavesShared')}
+            {agentMode ? ` ${t('saveAgentConfigNeedsRestart')}` : ''}
+            {t('immediateSettings')}
+          </p>
         </div>
       </div>
     </div>

@@ -28,6 +28,7 @@ from clio.schemas.messages import (
     sender_label,
 )
 from clio.schemas.models import ModelMessage, ModelRequest, Role, Tier
+from clio.social.conversation import DELIVERED
 from clio.social.verbosity import (
     DEFAULT_VERBOSITY,
     detect_verbosity_request,
@@ -1684,6 +1685,11 @@ class SocialCognition:
         which one this message is in. The message being answered is excluded --
         it is already in the prompt as the thing to respond to, and repeating it
         would let a long message crowd out the history that explains it.
+
+        Only delivered rows belong here. The outbound pipeline also records text
+        it held, suppressed or recognised as a repeat; reading those rows as
+        conversation tells the reply model that a person saw words they never
+        received, which is not shared context and must never be treated as such.
         """
         if self.db is None or not message.conversation_key:
             return ""
@@ -1692,6 +1698,7 @@ class SocialCognition:
                 "SELECT direction, person_id, sender_name, sender_username, text, channel "
                 "FROM messages "
                 "WHERE conversation_key = $1 AND id <> $2 "
+                f"AND {DELIVERED} "
                 "ORDER BY ts DESC LIMIT $3",
                 message.conversation_key, message.id,
                 self.config.memory.context.history_turns,

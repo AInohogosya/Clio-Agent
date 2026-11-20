@@ -1,6 +1,6 @@
 # Clio Agent 3 Architecture
 
-*This description is based on the codebase located at `/Users/sasakikousei/Desktop/Clio-Agent/clio` (Python package `clio`, version derived from `pyproject.toml`).*
+*This description is based on this repository's codebase (Python package `clio`, version derived from `pyproject.toml`).*
 
 ## 1. Overview
 

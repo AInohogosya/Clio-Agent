@@ -5,6 +5,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from clio.config import (
     ClioConfig,
     SubagentConfig,
@@ -269,6 +271,59 @@ def test_foundry_health_reports_the_import_path():
     assert health["available"] is True
 
 
+def test_a_delegation_without_a_target_works_in_the_agent_workspace():
+    """No workdir and no configured repo_root is the main loop's ordinary
+    `subagent.foundry` call. The fallback must be this agent's workspace, not
+    `Foundry/` itself: delegating to a factory must not edit the factory."""
+    cfg = _config_with()
+    agent = FoundrySubAgent(cfg, SubagentConfig(name="foundry"), gateway=None)
+
+    assert agent.repo_root(None) == cfg.paths.workspace.resolve()
+    assert agent.repo_root("/tmp/target-repo") == Path("/tmp/target-repo").resolve()
+
+    configured = SubagentConfig(name="foundry", repo_root="/tmp/configured")
+    assert FoundrySubAgent(cfg, configured).repo_root(None) == Path("/tmp/configured").resolve()
+
+
+async def test_a_run_tool_passes_the_callers_cwd_as_the_workdir():
+    """`workdir` absent from the args means "wherever the caller is working":
+    the tool hands the ToolContext's cwd to the registry, which is the
+    thread worktree inside a thread and the agent workspace in the main loop."""
+    from clio.subagents.tools import AxiomRunTool, FoundryRunTool
+    from clio.toolhost.server import ToolContext
+
+    seen: dict[str, Any] = {}
+
+    class _Registry:
+        def has(self, name: str) -> bool:
+            return True
+
+        async def run(self, name: str, task: str, **kwargs: Any) -> dict[str, Any]:
+            seen[name] = kwargs
+            return {"agent": name, "status": "done", "summary": "ok"}
+
+    class _Host:
+        def service(self, name: str) -> Any:
+            return _Registry()
+
+    for tool in (FoundryRunTool(), AxiomRunTool()):
+        result = await tool.run(
+            {"task": "do the thing"},
+            ToolContext(cwd="/tmp/thread-worktree"),
+            _Host(),
+        )
+        assert result.ok
+        assert seen[tool.name.split(".")[-1]]["workdir"] == "/tmp/thread-worktree"
+
+    explicit = await FoundryRunTool().run(
+        {"task": "do the thing", "workdir": "/tmp/explicit"},
+        ToolContext(cwd="/tmp/thread-worktree"),
+        _Host(),
+    )
+    assert explicit.ok
+    assert seen["foundry"]["workdir"] == "/tmp/explicit"
+
+
 # ---- apex adapter -----------------------------------------------------------
 
 class _FakeAction:
@@ -296,6 +351,136 @@ def test_apex_task_modes_map_to_the_status_vocabulary():
     failed = agent._result_from_snapshot(_FakeSnapshot("FAILED"), "inprocess")
     assert failed.status == STATUS_FAILED
     assert failed.summary  # an outcome is always summarized, whatever it was
+
+
+def test_apex_uses_the_hidden_surface_unless_visible_is_explicit():
+    settings = SubagentConfig(name="apex")
+    agent = ApexSubAgent(_config_with(), settings, gateway=None)
+
+    assert agent._screen_mode(None) == "hidden"
+    assert agent._screen_mode("visible") == "visible"
+
+    configured = ApexSubAgent(
+        _config_with(),
+        SubagentConfig(name="apex", env={"APEX_MODE": "visible"}),
+        gateway=None,
+    )
+    assert configured._screen_mode(None) == "visible"
+    assert configured._screen_mode("hidden") == "hidden"
+
+    with pytest.raises(ValueError, match="hidden.*visible"):
+        agent._screen_mode("foreground")
+
+
+def test_apex_subprocess_propagates_the_selected_screen_mode(monkeypatch):
+    agent = ApexSubAgent(_config_with(), SubagentConfig(name="apex"), gateway=None)
+
+    async def fake_child_python(started):
+        return Path("/some/venv/python")
+
+    seen: dict[str, Any] = {}
+
+    async def fake_run_command(argv, *, env=None, **kwargs):
+        seen["argv"] = argv
+        seen["env"] = env or {}
+        return 0, "Task completed with verified effects.", ""
+
+    monkeypatch.setattr(agent, "_child_python", fake_child_python)
+    monkeypatch.setattr(agent, "run_command", fake_run_command)
+    for requested in ("hidden", "visible"):
+        result = asyncio.run(agent._run_subprocess("goal", requested, 5, 0.0))
+        assert result.status == STATUS_DONE
+        assert seen["env"]["APEX_MODE"] == requested
+        mode_index = seen["argv"].index("--mode")
+        assert seen["argv"][mode_index + 1] == requested
+        assert result.detail["screen_mode"] == requested
+
+
+def test_apex_inprocess_builds_the_selected_screen_mode(monkeypatch):
+    class FakeScreenMode:
+        def __init__(self, value: str) -> None:
+            self.value = value
+
+    class FakeRuntimeConfig:
+        def __init__(self, **kwargs: Any) -> None:
+            self.__dict__.update(kwargs)
+
+    class FakeSafety:
+        STRICT = "strict"
+
+    class FakePlanner:
+        def __init__(self, *args: Any) -> None:
+            self.config = args[0] if args else None
+
+        async def aclose(self) -> None:
+            return None
+
+    class FakePlane:
+        def __init__(self, **kwargs: Any) -> None:
+            self.kwargs = kwargs
+
+        async def start(self) -> None:
+            return None
+
+        async def create_task(self, task: str) -> _FakeSnapshot:
+            return _FakeSnapshot("COMPLETED")
+
+        async def run_task(self, task_id: str) -> None:
+            return None
+
+        async def wait_for_task(self, task_id: str) -> _FakeSnapshot:
+            return _FakeSnapshot("COMPLETED")
+
+        async def aclose(self) -> None:
+            return None
+
+    class FakeRelay:
+        created: list[str] = []
+
+        @classmethod
+        def attach(cls, plane: Any, *, goal: str, screen_mode: str) -> FakeRelay:
+            cls.created.append(screen_mode)
+            return cls()
+
+        port: int | None = None
+
+        def set_task(self, task_id: str) -> None:
+            return None
+
+        def close(self) -> None:
+            return None
+
+    created_modes: list[str] = []
+
+    def fake_create_screen_controller(screen_mode: FakeScreenMode) -> Any:
+        created_modes.append(screen_mode.value)
+        return object()
+
+    agent = ApexSubAgent(_config_with(), SubagentConfig(name="apex"), gateway=object())
+    monkeypatch.setattr(
+        "clio.subagents.bridge.apex_planner_config", lambda *args: object(),
+    )
+    monkeypatch.setattr("clio.subagents.apex.ApexScreenRelay", FakeRelay)
+
+    def fake_import_plane():
+        return (
+            FakePlanner,
+            object(),
+            FakeRuntimeConfig,
+            FakeSafety,
+            FakeScreenMode,
+            FakePlane,
+            fake_create_screen_controller,
+        )
+
+    monkeypatch.setattr(agent, "_import_plane", fake_import_plane)
+    for requested in ("hidden", "visible"):
+        result = asyncio.run(agent._run_inprocess("goal", requested, 5, 0.0))
+        assert result.status == STATUS_DONE
+        assert result.detail["screen_mode"] == requested
+
+    assert created_modes == ["hidden", "visible"]
+    assert FakeRelay.created == ["hidden", "visible"]
 
 
 def test_apex_subprocess_env_names_the_clio_provider():

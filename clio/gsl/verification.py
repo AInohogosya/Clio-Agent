@@ -136,7 +136,15 @@ async def run_model_verifier(
             ModelMessage(role=Role.system, content=system),
             ModelMessage(role=Role.user, content="Judge the artifact."),
         ],
-        max_tokens=1200,
+        # The judge reasons inside its own ceiling: on the base model a
+        # verdict needs 300-1100 thinking tokens before the first word of it,
+        # so a 1200 ceiling was spent on thinking alone -- "reasoned without
+        # answering" on every other call, and a `needs_human` the loop read
+        # as a failed verification. Named budget and a ceiling with room for
+        # both: the gateway halves the budget on retry rather than re-asking
+        # the identical request.
+        reasoning_budget=1500,
+        max_tokens=4000,
     )
     try:
         response = await gateway.complete(request)

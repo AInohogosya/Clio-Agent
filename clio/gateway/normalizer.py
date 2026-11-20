@@ -18,6 +18,12 @@ from clio.schemas.tools import ToolCall, ToolSpec
 
 _NAME_RE = re.compile(r"[^a-zA-Z0-9_-]")
 
+# Answer room the OpenAI-compat reasoning budget always leaves unspent. On
+# these endpoints `max_tokens` is the whole budget and reasoning is spent out
+# of it, so a thinking budget sized to the ceiling returns an empty body every
+# time; a reserve this small is invisible next to any real answer.
+_REASONING_ANSWER_ROOM_TOKENS = 256
+
 
 # ------------------------------------------------------- usage accounting
 #
@@ -706,7 +712,24 @@ def messages_to_openai_compat(request: ModelRequest, entry_model: str, quirks: P
         # OpenAI-compatible endpoint may not know: `OpenAICompatProvider` drops
         # it after a rejection rather than letting an endpoint's ignorance break
         # the request.
-        payload["reasoning"] = {"max_tokens": int(request.reasoning_budget)}
+        #
+        # A budget at or over `max_tokens` is the one shape that guarantees the
+        # empty-body failure this parameter exists to prevent, and it used to
+        # arrive exactly that way: the gateway fills an unnamed budget from the
+        # base model's reasoning level -- 8192 at `medium` -- so a caller with
+        # a small ceiling of its own (the verification judge at 1200, the
+        # reverie's chooser at 400) was handed a thinking budget four to twenty
+        # times its answer room and lost the answer on every attempt. Bounded
+        # here, at the one wire that knows reasoning is billed inside the
+        # ceiling: the budget never exceeds the room an answer needs.
+        budget = min(
+            int(request.reasoning_budget),
+            max(
+                _REASONING_ANSWER_ROOM_TOKENS,
+                request.max_tokens - _REASONING_ANSWER_ROOM_TOKENS,
+            ),
+        )
+        payload["reasoning"] = {"max_tokens": budget}
     tools = _truncate_tools(request.tools, int(_quirk(quirks, "max_tools", 128)))
     if tools:
         payload["tools"] = [

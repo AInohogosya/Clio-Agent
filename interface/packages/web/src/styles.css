@@ -26,6 +26,8 @@
   --ok-line: color-mix(in srgb, var(--ok) 32%, transparent);
   --warn: #fbbf24;
   --warn-dot: #fbbf24;
+  --warn-soft: color-mix(in srgb, var(--warn) 12%, transparent);
+  --warn-line: color-mix(in srgb, var(--warn) 36%, transparent);
   --danger: #fb7185;
   --danger-dot: #fb7185;
   --danger-soft: color-mix(in srgb, var(--danger) 12%, transparent);
@@ -64,6 +66,8 @@
   --ok-line: color-mix(in srgb, var(--ok) 36%, transparent);
   --warn: #b45309;
   --warn-dot: #d97706;
+  --warn-soft: color-mix(in srgb, var(--warn) 8%, transparent);
+  --warn-line: color-mix(in srgb, var(--warn) 42%, transparent);
   --danger: #be123c;
   --danger-dot: #e11d48;
   --danger-soft: color-mix(in srgb, var(--danger) 8%, transparent);

@@ -20,8 +20,13 @@ logger = get_logger("clio.threads.manager")
 # that ended in `{"status": "failed"}` was closed as `done, "thread completed"`
 # in the intention store, with the error still sitting in the result nobody
 # reconciled. These are the statuses the worker's own vocabulary uses.
+# `unknown` belongs here even though it is not a clean failure: a sub-agent
+# that stopped without being able to verify what it did may or may not have
+# changed the machine, and closing that intention as `done` is exactly the
+# optimistic ending the status vocabulary exists to prevent.
 _FAILED_RESULT_STATUSES = frozenset({
-    "failed", "unavailable", "blocked", "timeout", "no-gateway", "missing-intention",
+    "failed", "unavailable", "blocked", "unknown", "timeout",
+    "no-gateway", "missing-intention",
 })
 
 

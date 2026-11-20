@@ -20,7 +20,7 @@ app = typer.Typer(
 )
 db_app = typer.Typer(help="Database operations.")
 app.add_typer(db_app, name="db")
-safety_app = typer.Typer(help="Four-level safety system. Levels: 1 dialogue-only, 2 every command on approval, 3 internet commands on approval, 4 no approval.")
+safety_app = typer.Typer(help="Four-level safety system. Levels: 1 dialogue-only, 2 every command on approval, 3 internet commands on approval, 4 no approval (not recommended — prefer 3).")
 app.add_typer(safety_app, name="safety")
 approvals_app = typer.Typer(help="Manual approvals waiting on the owner.")
 app.add_typer(approvals_app, name="approvals")

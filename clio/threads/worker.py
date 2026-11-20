@@ -519,6 +519,13 @@ async def _pursue(
                         reason=f"thread step {step_id}: {step.get('description', '')[:120]}",
                         commissioned_by=getattr(intention, "commissioned_by", None),
                         idempotency_key=f"{spec.get('id')}:{step_id}:{len(thoughts)}",
+                        # The thread's own worktree: a `subagent.foundry` /
+                        # `subagent.axiom` call made from inside this thread
+                        # defaults to it (the tools' documented "thread's
+                        # workdir"), so nested delegation stays inside the
+                        # isolation this thread was spawned with instead of
+                        # falling back to a global default.
+                        cwd=str(workdir),
                         inside_subagent=(str(spec.get("role") or "") if str(spec.get("role") or "") in ("foundry", "apex", "axiom") else None),
                         project_id=project_id,
                         root_intention_id=root_intention_id,

@@ -776,7 +776,7 @@ bridge + their docs.
 
 ---
 
-*Rewritten from a full read of `/Users/sasakikousei/Desktop/Helium`
+*Rewritten from a full read of this repository
 (`clio/`, `config/*.yaml`, `migrations/`, `interface/`, `web/`,
 `deploy/`, `README.md`, `pyproject.toml`). Prior Japanese record:
 `clio-agent-3-architecture.md`.*

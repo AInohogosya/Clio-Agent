@@ -34,7 +34,7 @@ WS `8710` (`config.py:1202-1205`); webhook receiver `127.0.0.1:8730`
   restarted.
 - Restart counts reset after **60 s stable**.
 - **Wedged-core detection**: the core must touch `run_dir/heartbeat`; stale beyond
-  `ETHOS_CORE_HEARTBEAT_STALE_S` (default 1800 s) → terminate and restart. A core
+  `CLIO_CORE_HEARTBEAT_STALE_S` (default 1800 s) → terminate and restart. A core
   that hangs without raising still gets caught.
 - Shutdown: reverse-order `terminate()` → `10.0 s` grace (`SHUTDOWN_GRACE_S`) →
   `kill()`.
@@ -130,9 +130,9 @@ into two kinds (`:1-35`):
 
 ## 7. Env and configuration loading
 
-`__main__.py:1257-1340`: env files load in order `$ETHOS_ENV_FILE` → `./.env` →
+`__main__.py:1257-1340`: env files load in order `$CLIO_ENV_FILE` → `./.env` →
 checkout `.env`, **the real environment always wins**, guarded by
-`ETHOS_ENV_LOADED=1`. The parser is a deliberate 20-line KEY=value reader — "the
+`CLIO_ENV_LOADED=1`. The parser is a deliberate 20-line KEY=value reader — "the
 whole of what a .env has to be." `--config-dir` is validated as an existing
 directory at startup (`:97-105`): "a named directory that is not there is a typo…
 every later answer would be confidently wrong."
@@ -299,7 +299,7 @@ The agent is a long-running resident, so its observability is designed for
 `clio/observability/exhaustive.py:243`:
 
 - JSONL files under `~/.ethos/data/logs`, enabled by default
-  (`ETHOS_EXHAUSTIVE_LOG`, `:50-54`).
+  (`CLIO_EXHAUSTIVE_LOG`, `:50-54`).
 - Kinds: `user.action`, `settings.change`, `model.request`, `model.response`
   (including `cot`, `cot_exposed`, usage pairs), `model.failure`.
 - `record` **never raises** (`:66`) — the flight recorder must not itself become the
@@ -326,7 +326,7 @@ post-mortems the codebase's own design comments are made of.
 ## 5. Tracing
 
 `clio/observability/tracing.py:22`: optional OpenTelemetry, enabled via
-`ETHOS_TRACE_CONSOLE`. The default posture is: the JSONL flight recorder is always
+`CLIO_TRACE_CONSOLE`. The default posture is: the JSONL flight recorder is always
 on; distributed tracing is opt-in.
 
 ## 6. Theory: observability as honesty infrastructure

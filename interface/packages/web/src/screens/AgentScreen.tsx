@@ -4,6 +4,7 @@ import {
   createTranslator,
   flattenIntentions,
   toChatMessages,
+  type AgentApproval,
   type AgentControlAction,
   type AgentConversation,
   type AgentDoor,
@@ -232,6 +233,7 @@ export function AgentScreen({
           historyLoading={historyLoading}
           historyQuery={historyQuery}
           language={language}
+          onDecideApproval={onDecideApproval}
           onDraft={setDraft}
           onInterrupt={onInterrupt}
           onLoadOlderHistory={onLoadOlderHistory}
@@ -239,6 +241,7 @@ export function AgentScreen({
           onSelectChannel={selectChannel}
           onSelectConversation={onSelectConversation}
           onSubmit={submit}
+          approvals={view.approvals}
           snapshot={snapshot}
           t={t}
         />
@@ -456,6 +459,7 @@ function TimelinePane({
   snapshot, draft, language, t, onDraft, onSubmit, onInterrupt,
   conversations, doors, closedChannels, conversation, onSelectChannel, onSelectConversation,
   history, historyLoading, onLoadOlderHistory, historyQuery, onSearchHistory,
+  approvals, onDecideApproval,
 }: {
   snapshot: ClientSnapshot;
   draft: string;
@@ -475,7 +479,20 @@ function TimelinePane({
   onLoadOlderHistory: () => void;
   historyQuery: string | null;
   onSearchHistory: (query: string) => void;
+  /** Commands the guardian is holding for the person's decision. */
+  approvals: readonly AgentApproval[];
+  /** Approves or denies one held command. */
+  onDecideApproval: (id: string, verb: 'approve' | 'deny') => void;
 }) {
+  const [busy, setBusy] = useState<string | null>(null);
+  const decide = (id: string, verb: 'approve' | 'deny') => {
+    setBusy(id);
+    try {
+      onDecideApproval(id, verb);
+    } finally {
+      setBusy(null);
+    }
+  };
   /**
    * What this pane shows: one conversation, narrowed by the person named above
    * it.
@@ -697,6 +714,37 @@ function TimelinePane({
         <div className="flex shrink-0 items-start gap-2 border-t border-[var(--danger-line)] bg-[var(--danger-soft)] px-4 py-2.5 text-xs leading-5 text-[var(--danger)]" role="alert">
           <Icon className="mt-0.5 shrink-0" name="close" size={14} />
           <span>{snapshot.lastError}</span>
+        </div>
+      ) : null}
+
+      {approvals.length > 0 ? (
+        <div className="mb-2 flex shrink-0 items-start gap-2 rounded-xl border border-[var(--warn-line)] bg-[var(--warn-soft)] px-3 py-2.5 text-xs leading-5 text-[var(--warn)]" role="alert">
+          <Icon className="mt-0.5 shrink-0" name="shield" size={14} />
+          <span className="flex-1 min-w-0">
+            <span className="font-semibold leading-5">{t('approvalsAwaiting', { count: approvals.length })}</span>
+          </span>
+          <div className="flex shrink-0 gap-1 flex-wrap">
+            {approvals.map((approval) => (
+              <div key={approval.id} className="flex items-center gap-1">
+                <Button
+                  disabled={busy === approval.id}
+                  variant="primary"
+                  className="text-[0.65rem] px-2 py-1.5"
+                  onClick={() => decide(approval.id, 'approve')}
+                >
+                  {t('approvalApprove')}
+                </Button>
+                <Button
+                  disabled={busy === approval.id}
+                  variant="outline"
+                  className="text-[0.65rem] px-2 py-1.5"
+                  onClick={() => decide(approval.id, 'deny')}
+                >
+                  {t('approvalDeny')}
+                </Button>
+              </div>
+            ))}
+          </div>
         </div>
       ) : null}
 

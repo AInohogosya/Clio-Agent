@@ -12,7 +12,7 @@
 <p align="center">
   <code>3.1.0</code> · <code>released 2026-10-03 JST</code> · <code>Python ≥ 3.12</code> ·
   <code>PostgreSQL 16 + pgvector</code> · <code>Linux / macOS / Windows</code> ·
-  <code>no license yet — all rights reserved</code>
+  <code>MIT licensed</code>
 </p>
 
 ---
@@ -68,6 +68,12 @@ otherwise have written for itself.
 
 > **Golden rule:** human-likeness and performance are both mandatory. Neither is sacrificed for
 > the other.
+
+## Comparison with other agents
+
+<p align="center">
+  <img src="agent_architecture_dark.png" alt="Comparison of Clio Agent 3.1 with other AI agents across 12 architectural axes" width="880">
+</p>
 
 ## Run it
 
@@ -131,7 +137,7 @@ Two things about the scope are worth stating plainly up front:
 | | |
 |---|---|
 | Python | 3.12 or newer (`pyproject.toml` sets `requires-python = ">=3.12"`) |
-| PostgreSQL | 16 with the `pgvector` and `pg_trgm` extensions — [installed for you](#postgres-brought-up-not-assumed), or point `ETHOS_DSN` at your own |
+| PostgreSQL | 16 with the `pgvector` and `pg_trgm` extensions — [installed for you](#postgres-brought-up-not-assumed), or point `CLIO_DSN` at your own |
 | Node.js | 20 or newer — **only** for the interface bridge and `interface/`. The agent runs without it. |
 | Platform | Linux, macOS and Windows. `scripts/ensure_postgres.sh` installs PostgreSQL from Homebrew on macOS and from `apt`/`dnf`/`pacman` on Linux, so the no-Docker path is no longer macOS-only; Docker is the documented path on either. |
 
@@ -150,8 +156,8 @@ install by hand is PostgreSQL, and even that has a fallback.
 ## Installation
 
 ```bash
-git clone https://github.com/AInohogosya/Clio.git
-cd Clio
+git clone https://github.com/AInohogosya/Clio-Agent.git
+cd Clio-Agent
 pip install -e .          # or: python3.12 -m venv .venv && .venv/bin/pip install -e .
 clio up
 ```
@@ -161,8 +167,9 @@ required, and the two commands above are the ones the rest of this README assume
 after that — Postgres, migrations, the interface, the agent — is `clio up`'s job.
 
 Settings go in the environment or in a `.env` file; `.env.example` lists every variable there
-is, and `clio` reads `./.env`, the checkout's `.env`, or `$ETHOS_ENV_FILE` on any invocation. A
-value you export wins over the file, so `ETHOS_DSN=… clio up` does what it says.
+is, and `clio` reads `$CLIO_ENV_FILE` when it names one, else `./.env` in the current directory,
+else the checkout's `.env`, on any invocation. A
+value you export wins over the file, so `CLIO_DSN=… clio up` does what it says.
 
 ## Quickstart
 
@@ -219,7 +226,7 @@ clio stop            # stop the agent and everything it supervises
 clio logs            # follow the supervisor's log and each process's own
 clio doctor          # what is configured, what is missing, what is unreachable
 clio up --no-open    # do not launch a browser when the agent is up
-clio up --wait 300   # wait up to 300s for the agent (default 180, or $ETHOS_AGENT_WAIT_S)
+clio up --wait 300   # wait up to 300s for the agent (default 180, or $CLIO_AGENT_WAIT_S)
 clio --help          # every command and flag
 clio --version
 ```
@@ -281,7 +288,7 @@ nothing running on it looks completely healthy from every other angle.
 The primary signal is the timestamp of the last `presence.update` row in the agent's own `events`
 table: if the agent has not published a sign of life in **15 minutes**
 (`clio/core/status.py`, `AGENT_ABSENT_S`), it is reported absent. The agent's own recorded stop
-in `$ETHOS_HOME/data/continuity.json` also counts, and counts against it. The interface applies the
+in `$CLIO_HOME/data/continuity.json` also counts, and counts against it. The interface applies the
 same 15-minute window before it tells somebody the agent is not running, so this command and the
 browser cannot disagree about the same machine at the same moment.
 
@@ -294,7 +301,7 @@ failing.
 Postgres is the one hard dependency, and `clio up` will set it up if it is missing — you do not
 have to install anything first. `scripts/ensure_postgres.sh` is idempotent and tries, in order:
 
-1. **an existing database** at `$ETHOS_DSN` — if one is already there, it is left alone;
+1. **an existing database** at `$CLIO_DSN` — if one is already there, it is left alone;
 2. **Docker** — `docker compose up -d db` (`pgvector/pgvector:pg16`), when the daemon runs;
 3. **a local PostgreSQL 16** — installed from Homebrew on macOS or from the distro's package manager
    (`apt-get`, `dnf`, `pacman`) on Linux if needed, with pgvector built against it, a fresh cluster in
@@ -311,8 +318,8 @@ scripts/ensure_postgres.sh stop       # stop the local cluster
 scripts/ensure_postgres.sh up         # start it again
 ```
 
-`ETHOS_PG_MAJOR` (default 16), `ETHOS_PGVECTOR_VERSION` (default 0.8.6) and `ETHOS_PGDATA`
-(default `data/pgdata`) tune it. `ETHOS_PG_READY_TIMEOUT` bounds how long it waits for the cluster.
+`CLIO_PG_MAJOR` (default 16), `CLIO_PGVECTOR_VERSION` (default 0.8.6) and `CLIO_PGDATA`
+(default `data/pgdata`) tune it. `CLIO_PG_READY_TIMEOUT` bounds how long it waits for the cluster.
 
 The cluster is gitignored local state. `make clean` deliberately leaves `data/pgdata` alone because
 it holds the agent's memory; to throw it away, `make db-down && rm -rf data/pgdata`.
@@ -335,9 +342,9 @@ phone agent --json                                                 # or from a s
 ```
 
 `make agent`, `make tui`, `make interface-build` and `make interface-dev` are the same things from
-the Makefile. Override the port with `ETHOS_WEB_PORT`, or with `channels.web.http_port` in
-`$ETHOS_HOME/channels.yaml` — and to run a second interface beside a running one rather than
-against it, `ETHOS_WEB_PORT=8721 npm start`.
+the Makefile. Override the port with `CLIO_WEB_PORT`, or with `channels.web.http_port` in
+`$CLIO_HOME/channels.yaml` — and to run a second interface beside a running one rather than
+against it, `CLIO_WEB_PORT=8721 npm start`.
 
 If `interface/` cannot be installed or built, everything else still works: the agent runs and the
 bridge answers its whole API. The page itself is then a 503 that says so, rather than a 404 that
@@ -884,7 +891,7 @@ address it reaches you at. On the doors that admit by a list there is also **Ans
 with the consequence spelled out underneath it, because it is the one box on that screen that turns a
 credential into a published endpoint.
 
-A save writes two files in the agent's own home (`$ETHOS_HOME`, default `~/.ethos`):
+A save writes two files in the agent's own home (`$CLIO_HOME`, default `~/.ethos`):
 `channels.yaml` for the door, and `people.yaml` when an address is supplied. Both are merged over
 `config/*.yaml` key by key, so opening one door says nothing about the other five, and no secret is
 written into a directory that is meant to be committed. Both files are `0600` from the moment they
@@ -1253,7 +1260,7 @@ Six hard limits are stated in `clio/prompts/identity.py` and reach every workspa
   into a commitment reserve (`× gateway.budget.commitment_reserve_pct`, default `0.50`) and a
   discretionary remainder. Capital-at-risk is enforced as a **per-action** threshold in the
   guardian gate, not as an aggregate exposure calculation. The OOB watchdog suspends the guest after
-  sustained overspend, **but only if `ETHOS_SUSPEND_CMD` is set** — with no command configured it
+  sustained overspend, **but only if `CLIO_SUSPEND_CMD` is set** — with no command configured it
   logs and continues.
 
   What a dollar is, is decided in `clio/pricing.py` + `config/pricing.yaml`: per-route prices
@@ -1382,23 +1389,23 @@ the prompt says it can do, and the tools it was already given are reachable.
 
 Copy nothing — edit `config/*.yaml` directly, or override with environment. **`.env.example` lists
 every variable there is**, with the default each one has; copy it to `.env` and `clio` will read
-it on every command (`./.env` if you are standing in a directory that has one, otherwise the
-checkout's, or `$ETHOS_ENV_FILE` if you name a file). Anything you export wins over the file, so
-`ETHOS_DSN=… clio up` does what it says. The two flags are the same two settings, for a command
+it on every command (`$CLIO_ENV_FILE` if you name a file, else `./.env` in the directory you are
+standing in when it has one, otherwise the checkout's). Anything you export wins over the file, so
+`CLIO_DSN=… clio up` does what it says. The two flags are the same two settings, for a command
 line that would rather be explicit: `--config-dir` and `--home`.
 
-- `ETHOS_HOME` — agent home (default `~/.ethos`, from `paths.home` in `config/ethos.yaml`)
+- `CLIO_HOME` — agent home (default `~/.ethos`, from `paths.home` in `config/clio.yaml`)
 
   Every process resolves it the same way, and that is the point: the agent, the interface bridge,
-  and `clio up` all read it from `config/clio.yaml`, with `ETHOS_HOME` on top. A home chosen by
+  and `clio up` all read it from `config/clio.yaml`, with `CLIO_HOME` on top. A home chosen by
   one entry point and not the others is how a base model an owner chose in the browser ends up
   written to a file the agent never reads — silently, and with the agent calling a provider it has
   no key for. `clio up` prints the home it resolved, so the question has an answer on screen.
 
-- `ETHOS_CONFIG_DIR` — config directory (default `config`, resolved against the current directory
+- `CLIO_CONFIG_DIR` — config directory (default `config`, resolved against the current directory
   and falling back to the repository root; the bridge resolves it relative to the repository)
-- `ETHOS_DSN` — Postgres DSN (default `postgresql://ethos:ethos@127.0.0.1:5433/ethos`)
-- `ETHOS_WEB_PORT` — interface bridge port (default `8720`; also `channels.web.http_port`)
+- `CLIO_DSN` — Postgres DSN (default `postgresql://ethos:ethos@127.0.0.1:5433/ethos`)
+- `CLIO_WEB_PORT` — interface bridge port (default `8720`; also `channels.web.http_port`)
 
 **Provider keys.** The routing table in `config/models.yaml` reads `ANTHROPIC_API_KEY`,
 `OPENAI_API_KEY`, `GEMINI_API_KEY`, `OPENROUTER_API_KEY` and `GROQ_API_KEY`; its DeepSeek entry is
@@ -1422,7 +1429,7 @@ single **base model**: one model, configured from the interface, preferred over 
 | | |
 |---|---|
 | Configured in | Settings → Agent → Base model, `phone config set model …`, or `/model <provider> <model>` |
-| Written to | `$ETHOS_HOME/base_model.yaml`, mode `0600` |
+| Written to | `$CLIO_HOME/base_model.yaml`, mode `0600` |
 | Read by | `clio/config.py`, and re-read whenever the file changes — no restart |
 | The key | Typed in the browser, or taken from the provider's environment variable. Either way it goes to the agent's own file and is never sent back over the link, so an empty field means *keep the one on file*. `phone config set apiKey` is refused on a command line, as it is everywhere else. |
 | Seeing it | The field carries the saved key's **mask as its placeholder**, and the line under it names where the key is. Never the value: a page handed an API key could post it, and the placeholder is the one place a mask can be shown without being one keystroke from a save. `Remove` takes the agent's key back — beside the field, not behind the Save button, because an emptied field cannot mean *not this one*. It is refused with `key_required` for a provider that needs a key, which is the honest answer: removing it would leave the agent unable to reach the model it is configured with. The shared file's key is described the same way and is **not** removable from a page — a redacted snapshot also sends an empty key, so a browser that could clear it by omission would clear it by being opened. `phone config unset apiKey` is the way to remove that one. |
@@ -1472,7 +1479,7 @@ one part of an identity a person is unambiguously entitled to set.
 | | |
 |---|---|
 | Configured in | Settings → Agent → Name, or `/name <name>` in the terminal; `/name` on its own reports it |
-| Written to | `$ETHOS_HOME/identity.yaml`, mode `0600` |
+| Written to | `$CLIO_HOME/identity.yaml`, mode `0600` |
 | Read by | `clio/config.py` at start-up, and adopted into the `self_model` by `SelfModel.seed_defaults` |
 | Removing it | The browser's emptied field. There is no terminal verb for it, because a bare `/name` reports — as `/person` and `/link` do. |
 
@@ -1782,7 +1789,7 @@ service-account home. Change both before you point them at anything real.
 
 The `ExecStart` lines are `…/python -m clio <command>`, which is the same entry point as the
 `clio` console script, so a unit that has the package installed can say `ExecStart=/opt/clio/.venv/bin/clio core`
-instead. `ETHOS_CONFIG_DIR` and `ETHOS_HOME` are what a deployment sets; `.env.example`
+instead. `CLIO_CONFIG_DIR` and `CLIO_HOME` are what a deployment sets; `.env.example`
 documents both, and `EnvironmentFile=` in the unit is a fine way to point at a copy of it.
 
 ## Contributing
@@ -1796,9 +1803,5 @@ does not belong in the repository.
 
 ## License
 
-**None yet.** There is no `LICENSE` file and no `license` field in `pyproject.toml`. Until one is
-added, the default applies and the project is **all rights reserved**: nobody may legally use, copy,
-or modify it.
-
-If you clone this and intend to publish it, add a `LICENSE` file and set `license` in
-`pyproject.toml` before you do.
+**MIT.** See [`LICENSE`](LICENSE). You are free to use, copy, modify and distribute this software;
+the license carries no warranty.

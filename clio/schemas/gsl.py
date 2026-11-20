@@ -305,6 +305,13 @@ class SolverResult(BaseModel):
     social: dict[str, Any] | None = None
     plan: Plan | None = None
     verification: VerificationResult | None = None
+    # The verdict of this step's own success check, distinct from the step
+    # finishing. `None` means no check was defined (or checks were disabled);
+    # `True` means a runnable check observed something and passed; `False`
+    # means a check was defined but could not observe, or observed a failure.
+    # It is carried up so the resume blob can record "done" without implying
+    # "verified", which is the distinction a progress note lives or dies on.
+    step_verified: bool | None = None
     cost_usd: float = 0.0
     lessons: list[str] = Field(default_factory=list)
     # What failed inside this result, structured rather than only narrated.

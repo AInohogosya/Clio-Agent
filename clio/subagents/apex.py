@@ -114,7 +114,7 @@ class ApexSubAgent(SubAgent):
         (LLMTacticalPlanner, _planner_config_cls, RuntimeConfig, SafetyMode,
          ScreenMode, ControlPlane, create_screen_controller) = self._import_plane()
 
-        screen_mode = ScreenMode.VISIBLE if mode == "visible" else ScreenMode.HIDDEN
+        screen_mode = ScreenMode(mode)
         planner = LLMTacticalPlanner(apex_planner_config(
             self.config, self.gateway_url(), self.model_name(),
         ))
@@ -143,6 +143,7 @@ class ApexSubAgent(SubAgent):
             await plane.run_task(snapshot.task_id)
             final = await plane.wait_for_task(snapshot.task_id)
             result = self._result_from_snapshot(final, "inprocess")
+            result.detail["screen_mode"] = mode
             # The port is how a log line becomes a live view: the interface's
             # proxy scans for the relay, but a debugging session should not
             # have to.
@@ -271,7 +272,7 @@ class ApexSubAgent(SubAgent):
                 summary=f"apex exceeded its {timeout:.0f}s ceiling", mode="subprocess",
             ), started)
         status = _EXIT_CODES.get(code, STATUS_FAILED)
-        detail = {"exit_code": code, "output": out[-4000:]}
+        detail = {"exit_code": code, "output": out[-4000:], "screen_mode": mode}
         if status is STATUS_UNAVAILABLE:
             # The controller died before any task could be given a verified
             # verdict, so the honest sentence names the crash, not the task.
@@ -296,9 +297,19 @@ class ApexSubAgent(SubAgent):
 
     # ---- SubAgent interface ------------------------------------------------
 
+    def _screen_mode(self, requested: Any) -> str:
+        mode = str(
+            requested
+            if requested is not None and str(requested).strip()
+            else self.settings.env.get("APEX_MODE") or "hidden"
+        ).strip().casefold()
+        if mode not in {"hidden", "visible"}:
+            raise ValueError("APEX screen mode must be 'hidden' or 'visible'")
+        return mode
+
     async def run(self, task: str, *, workdir: str | None = None, **opts: Any) -> SubAgentResult:
         started = time.monotonic()
-        mode = str(opts.get("mode") or self.settings.env.get("APEX_MODE") or "hidden")
+        mode = self._screen_mode(opts.get("mode"))
         # The step ceiling, in priority order: the caller's own ask, the
         # agent program's configured environment, then this deployment's
         # `subagents.apex_max_steps`. Zero -- the field default -- means no
@@ -330,7 +341,11 @@ class ApexSubAgent(SubAgent):
         return await self._run_subprocess(task, mode, max_steps, started)
 
     async def health(self) -> dict[str, Any]:
-        info: dict[str, Any] = {"root": str(self.root), "mode": self.settings.mode}
+        info: dict[str, Any] = {
+            "root": str(self.root),
+            "mode": self.settings.mode,
+            "screen_mode": self._screen_mode(None),
+        }
         try:
             (_planner, _config_cls, _runtime, _safety, ScreenMode, _plane,
              create_screen_controller) = self._import_plane()

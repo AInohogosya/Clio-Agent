@@ -966,6 +966,20 @@ class GeneralSolverLoop:
             step_attempts.pop(step.id, None)
             steps_map[step.id]["status"] = "done"
             steps_map[step.id]["result"] = step_result.actions[-1] if step_result.actions else None
+            # "done" is what the step did; "verified" is what its own check
+            # saw. Recorded separately so a progress note can say "six steps
+            # done, none verified" instead of calling all six verified on the
+            # strength of a status word (2026-11-19: exactly that sentence went
+            # out twice, an hour before the work parked unverified).
+            if step_result.step_verified is True:
+                steps_map[step.id]["verified"] = True
+                steps_map[step.id]["verification"] = "verified"
+            elif step_result.step_verified is False:
+                steps_map[step.id]["verified"] = False
+                steps_map[step.id]["verification"] = "unverified"
+            else:
+                steps_map[step.id]["verified"] = False
+                steps_map[step.id]["verification"] = "no check"
             resume["plan"]["steps"] = list(steps_map.values())
             resume["step_attempts"] = step_attempts
             resume.setdefault("artifacts", []).extend(
@@ -1319,7 +1333,9 @@ class GeneralSolverLoop:
         # breakpoint, so the prefix stays stable). Stage 2 — `tools.search` —
         # is pinned in the prefix; the sheet names it as the way back.
         step_text = f"{intention.title} {step.description} {situation[:2000]}"
-        tool_sheet = self._narrowed_tool_sheet(step_text)
+        tool_sheet = self._narrowed_tool_sheet(
+            step_text, pinned=list(getattr(step, "tool_hints", None) or []),
+        )
         if tool_sheet:
             situation = f"{tool_sheet}\n\n{situation}"
         memories = await self._recall(f"{intention.title} {step.description}", k=6)
@@ -1684,6 +1700,15 @@ class GeneralSolverLoop:
                 )
 
         outcome = SolverOutcome.step_done if all_ok else SolverOutcome.step_failed
+        # The step's own check, as a value the caller can persist. `None` is
+        # "nothing was asked", `False` is "asked and not observed", and only
+        # `True` is evidence. A completed step is not automatically a verified
+        # one, and after this comment the record can say which it was.
+        step_verified: bool | None = None
+        if check_result is not None:
+            step_verified = bool(
+                check_result.get("passed") and check_result.get("observed")
+            )
         # A step whose own check asked a question and observed nothing is a
         # completed step, but not a *verified* one, and the two used to be
         # indistinguishable in the record: the check was simply not consulted,
@@ -1715,6 +1740,7 @@ class GeneralSolverLoop:
             plan=plan,
             cost_usd=cost,
             failures=step_failures,
+            step_verified=step_verified,
         )
 
     async def _complete_with_cost(
@@ -1868,14 +1894,16 @@ class GeneralSolverLoop:
             "listed in one of those two places."
         )
 
-    def _narrowed_tool_sheet(self, step_text: str) -> str:
+    def _narrowed_tool_sheet(self, step_text: str, pinned: list[str] | None = None) -> str:
         """Stage 1 of the narrowing, for this step's context sheet.
 
         A lightweight router (no model call) picks the top twelve catalog
         entries against the step's own text; `tools.search` is pinned first.
-        When there is no registry to narrow — the thread-worker case that has
-        never executed anything — the sheet is empty and the prompt carries
-        no sheet at all.
+        The plan's own `tool_hints` are pinned too: a step that says it needs
+        `subagent.apex` must have that tool on its sheet even when its prose
+        describes the goal without naming the worker. When there is no registry
+        to narrow — the thread-worker case that has never executed anything —
+        the sheet is empty and the prompt carries no sheet at all.
         """
         host = self.toolhost
         if host is None or not hasattr(host, "catalog"):
@@ -1894,7 +1922,7 @@ class GeneralSolverLoop:
             catalog.register(entry_from_tool_spec(entry))
         from clio.tools.catalog import narrowed_step_tools
 
-        return narrowed_step_tools(catalog, step_text)
+        return narrowed_step_tools(catalog, step_text, pinned=pinned)
 
     def _delegation_note(self, intention: Any) -> str:
         from clio.guardian.safety import effective_level
@@ -2204,10 +2232,30 @@ class GeneralSolverLoop:
             cwd=user_home(),
             changed_paths=changed,
         )
+        if (
+            verification.passed
+            and not verification.human_pending
+            and resume.pop("last_verification", None) is not None
+        ):
+            # A later attempt passed: the earlier failure is no longer the
+            # last word, and leaving it in the record would make the next
+            # progress note report a verdict that has been superseded.
+            await self._save_resume(intention, resume)
         if verification.human_pending:
             await self.memory.update_intention(
                 intention.id, status=IntentionStatus.awaiting_review.value,
             )
+            # The last verification verdict is kept where the progress and
+            # reply paths read it. Without this, an intention whose steps are
+            # all "done" has no record anywhere that the work was checked and
+            # failed, and the only honest sentence available -- "the checks did
+            # not pass" -- cannot be written from it.
+            resume["last_verification"] = {
+                "passed": False, "awaiting_review": True,
+                "rung": int(verification.rung_reached or 0),
+                "issues": [str(i)[:300] for i in (verification.issues or [])[:3]],
+            }
+            await self._save_resume(intention, resume)
             # A rung-3 review is a stage somebody is owed an answer about: this
             # program could not confirm the work meets the goal, and the thing
             # outstanding is a person. It is not "finished" -- calling it that is
@@ -2308,6 +2356,12 @@ class GeneralSolverLoop:
                 cost_usd=cost,
             ), cost
         await self.memory.update_intention(intention.id, status=IntentionStatus.in_progress.value)
+        resume["last_verification"] = {
+            "passed": False, "awaiting_review": False,
+            "rung": int(verification.rung_reached or 0),
+            "issues": [str(i)[:300] for i in (verification.issues or [])[:3]],
+        }
+        await self._save_resume(intention, resume)
         # Verification that keeps failing is a schedule risk, and the owner of
         # a project hears about it once per intention rather than every cycle.
         await self._maybe_emit_project_risk(

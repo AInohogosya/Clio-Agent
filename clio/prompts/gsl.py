@@ -408,7 +408,10 @@ def delegation_note(
     if isinstance(constraints, dict):
         text += " " + " ".join(str(v) for v in constraints.values())
     lowered = text.lower()
-    named = [name for name in ("apex", "foundry") if re.search(rf"\b{name}\b", lowered)]
+    named = [
+        name for name in ("apex", "foundry", "axiom")
+        if re.search(rf"\b{name}\b", lowered)
+    ]
     note = DELEGATION
     if named:
         names = " or ".join(named)

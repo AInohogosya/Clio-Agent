@@ -207,6 +207,30 @@ async def test_a_failed_envelope_is_not_closed_as_done(config):
     assert "the provider went away" in reason
 
 
+async def test_an_unknown_subagent_outcome_is_not_closed_as_done(config):
+    """`unknown` is a sub-agent's honest verdict that it may or may not have
+    changed the machine. Treating the returned envelope as a success closed
+    the intention `done` over work nobody can verify -- the same optimistic
+    ending `blocked` and `failed` are already excluded from."""
+    memory = _Memory()
+
+    async def _unknown_worker(spec: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "agent": "apex", "status": "unknown", "goal": spec.get("goal"),
+            "summary": "the click may or may not have landed",
+        }
+
+    manager = ThreadManager(config, memory, worker_factory=_unknown_worker)
+    handle = await manager.spawn_spec({"goal": "a delegated goal", "role": "apex"})
+    await manager.wait(handle)
+
+    assert handle.status == "failed"
+    assert "may or may not" in (handle.error or "")
+    assert len(memory.closed) == 1
+    _, status, _reason = memory.closed[0]
+    assert status == "parked"
+
+
 async def test_a_crashing_worker_parks_with_a_reason(config):
     """A worker that raises used to close its intention as `failed` — the one
     status the loop never writes, and the one stage notices cannot carry."""
@@ -247,7 +271,10 @@ def test_the_failure_envelope_vocabulary_is_shared():
     this envelope; the helpers are one definition so the two cannot drift."""
     from clio.threads.manager import failure_reason, is_failed_result
 
-    for status in ("failed", "unavailable", "blocked", "timeout", "no-gateway", "missing-intention"):
+    for status in (
+        "failed", "unavailable", "blocked", "unknown", "timeout",
+        "no-gateway", "missing-intention",
+    ):
         assert is_failed_result({"status": status}), status
     assert not is_failed_result({"status": "done"})
     assert not is_failed_result({"verdict": "needs_human"})

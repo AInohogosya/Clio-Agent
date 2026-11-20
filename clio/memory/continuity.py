@@ -59,7 +59,7 @@ class ContinuityManager:
                     "VALUES (now(), $1, $2::jsonb, $3)",
                     state.get("thread_id", "self"),
                     snapshot_json,
-                    sealed,
+                    sealed.encode("utf-8") if isinstance(sealed, str) else sealed,
                 )
             except Exception:
                 logger.exception("continuity.checkpoint_write_failed")

@@ -101,6 +101,10 @@ interface-build:
 interface-dev:
 	npm run dev --workspace @project-phone/web --prefix interface
 
+# Both interface steps in order: dependencies, then the build. What a fresh
+# checkout needs before `make tui` or the bridge can serve the built page.
+interface: interface-install interface-build
+
 tui:
 	npm run tui --workspace @project-phone/cli --prefix interface
 

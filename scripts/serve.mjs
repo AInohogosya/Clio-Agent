@@ -242,10 +242,10 @@ function resolvePort() {
       }
     };
     // `os.homedir()` rather than `$HOME`: Windows sets `USERPROFILE`, so reading
-    // `HOME` there yields "" and the agent's home becomes `/.clio` — a path that
+    // `HOME` there yields "" and the agent's home becomes `/.ethos` — a path that
     // never exists, which reads as "no override on file" and so silently resolves
     // the port from the shipped config instead of the deployment's own.
-    const home = process.env.CLIO_HOME || join(os.homedir(), ".clio");
+    const home = process.env.CLIO_HOME || join(os.homedir(), ".ethos");
     const merged = { ...readYaml(join(configDir, "channels.yaml")), ...readYaml(join(home, "channels.yaml")) };
     const port = merged?.web?.http_port;
     if (Number.isInteger(port) && port > 0) return port;

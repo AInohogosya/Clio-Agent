@@ -912,6 +912,104 @@ def test_open_work_progress_lists_the_current_focus_first() -> None:
     )
 
 
+def test_progress_summary_does_not_call_unverified_steps_verified() -> None:
+    """`status == "done"` is not verification, and a progress note is words.
+
+    On 2026-11-19 the agent sent "all six plan steps are verified done" twice
+    while every step's action was a tool-schema lookup, and an hour later the
+    same work parked because its verification had failed. The summary now says
+    what the record shows: the steps are done, and how many were actually
+    verified.
+    """
+    intention = SimpleNamespace(resume_state={"plan": {"steps": [
+        {"id": "s1", "status": "done", "description": "a", "verified": False},
+        {"id": "s2", "status": "done", "description": "b", "verified": False},
+        {"id": "s3", "status": "pending", "description": "c"},
+    ]}})
+
+    summary = Life._progress_summary(intention)
+
+    assert "verified done" not in summary
+    assert "2 of 3 plan steps done" in summary
+    assert "none verified" in summary
+
+
+def test_progress_summary_says_verified_only_when_the_step_check_saw_something() -> None:
+    intention = SimpleNamespace(resume_state={"plan": {"steps": [
+        {"id": "s1", "status": "done", "description": "a", "verified": True},
+        {"id": "s2", "status": "done", "description": "b", "verified": True},
+    ]}})
+
+    summary = Life._progress_summary(intention)
+
+    assert "all 2 plan steps done and verified" in summary
+
+
+def test_progress_summary_reports_a_failed_final_verification() -> None:
+    """The record knows the verdict; the note must not contradict it."""
+    intention = SimpleNamespace(resume_state={
+        "plan": {"steps": [
+            {"id": "s1", "status": "done", "description": "a", "verified": True},
+        ]},
+        "last_verification": {
+            "passed": False,
+            "issues": ["the artifact only shows a listing of the home directory"],
+        },
+    })
+
+    summary = Life._progress_summary(intention)
+
+    assert "final verification did not pass" in summary
+    assert "only shows a listing" in summary
+
+
+def test_the_reply_prompt_does_not_promise_a_check_the_turn_cannot_run() -> None:
+    """The reply path has no tools, so "let me look and tell you" is a lie.
+
+    The transcript that prompted this: asked how many bot summaries existed,
+    the agent said it had no count and offered to look; told "Yes", it answered
+    "Let me check that folder now." and nothing followed. The prompt now tells
+    it to answer from the record and to commission a lookup as work instead of
+    promising one in a reply.
+    """
+    messages = social_deliberation_messages(
+        self_name="Clio",
+        message=Message(person_id="mira", channel="telegram",
+                        conversation_key="telegram:mira",
+                        text="how many bot mechanisms have you compiled?"),
+        focus="(none)", now=datetime.now(UTC).isoformat(), energy=0.9,
+        commitments="(none)", recent="(none)",
+    )
+    system = messages[0]["content"]
+
+    assert "This turn cannot run tools" in system
+    assert "do not offer or promise to go and look" in system
+    assert '"let me look and tell you" is always available' not in system, (
+        "that sentence licensed the empty promise"
+    )
+    assert "creates_intention" in system
+
+
+def test_a_progress_note_may_not_call_unverified_work_finished() -> None:
+    """The note is the other channel the false "all six verified" arrived on.
+
+    Both notes on 2026-11-19 were composed from a progress line that said
+    "verified done" while the final verification had failed. The summary now
+    carries the failure; the composer is told not to paraphrase it into
+    "finished".
+    """
+    from clio.prompts.deliberation import progress_note_messages
+
+    system = progress_note_messages(
+        "Clio", title="summarise the bots",
+        progress="all 6 plan steps done, none verified; final verification did not pass",
+        who="mira",
+    )[0]["content"]
+
+    assert "not verified" in system
+    assert "Do not call it finished" in system
+
+
 def test_open_work_progress_fetches_a_focus_outside_the_top_rows() -> None:
     """A focus beyond the limit is fetched by title, not dropped."""
     now = datetime.now(UTC)

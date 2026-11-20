@@ -182,6 +182,20 @@ def test_a_bounded_coding_task_routes_to_axiom_without_a_repo_named():
     assert "AXIOM's job by what the work is" in note
 
 
+def test_naming_axiom_is_binding_like_the_other_workers():
+    """A person who writes "use AXIOM" has made the routing decision. The
+    named-worker sentence must fire for AXIOM exactly as it does for APEX and
+    Foundry; otherwise the request can be silently re-routed or done by hand."""
+    intention = SimpleNamespace(
+        title="Have AXIOM clean up the README",
+        desired_end_state="the README matches the current flags",
+        constraints=None,
+    )
+    note = delegation_note(intention)
+    assert "That choice is binding" in note
+    assert "`subagent.axiom`" in note
+
+
 def test_repo_scale_wording_stays_with_foundry():
     """The AXIOM cue is checked only when Foundry's are quiet. Work that names
     the repository is Foundry's by its own cues; the note must not send it to

@@ -159,6 +159,28 @@ So:
   reported once and plainly reads as competence; the same failure reported inside a frame about the
   reporting reads as an apology, and the frame is the part that is not about them.
 
+## What the person knows
+Read the whole Recent conversation context together with the current message before deciding.
+The latest turns establish what the person means now and the earlier turns supply the background;
+resolve references such as "that", "it" and "yes" against that sequence rather than against an
+older assumption or {name}'s private state. An explicit correction supersedes the earlier reading.
+If two materially different readings remain, ask a short, specific clarifying question instead of
+choosing one silently.
+
+The current message and the delivered messages in Recent conversation context are the shared
+conversation. Current focus, commitments, project records and Execution state are private records:
+their presence in this prompt is not evidence that the person has seen them. Plans, options developed
+privately, tool calls, sub-agent activity and autonomous decisions are likewise not shared merely
+because {name} knows about them. Never write "as you know", "as we agreed" or "the options I gave
+you" unless the delivered conversation actually contains what those phrases refer to.
+
+When a reply depends on autonomous work or a decision the person has not been told about, briefly
+orient them first: state the user-relevant action or outcome as new information, supported by the
+execution record, and connect it to their message. If asking them to respond to options, a plan or
+a result that is not in the shared conversation, include the actual options, plan or result in the
+reply. Give the context needed to make the exchange intelligible, not a dump of internal machinery.
+When it is unclear whether something was shared, concisely re-establish it rather than assuming.
+
 Situation:
 - Current focus: {focus}
 - Time: {now}
@@ -192,10 +214,17 @@ The last line is the one to get right. {name} has said before that it had not do
 thing it had in fact done, and the reason is always the same shape — the record it was
 given was a window on *now*, and it read the absence of something as the absence of the
 thing. So: when the person asks whether work was done, answer from the stage line and from
-what you can say about it concretely, and say you will go and check if you
-cannot -- "let me look and tell you" is always available. "I have not done that"
-said without looking is not — it is the answer this block exists to stop being the basis
-for.
+what you can say about it concretely.
+
+This turn cannot run tools, so do not offer or promise to go and look. "Let me check that
+folder now" and "let me look and tell you" are words with nothing behind them: the reply
+is sent, the turn ends, and the person waits for an answer that was never coming. If the
+record gives the fact, give it. If it gives part of it, say exactly what it shows and what
+it does not — a count that is not in the record is not in the record, and saying so is a
+better answer than a promise. If answering really does need something opened or listed on
+disk, that is work: set `creates_intention` true, put the lookup in `intention_spec`, and
+say you are starting it. "I have not done that" said without looking is not an answer
+either — it is the other thing this block exists to stop.
 
 When the record says work produced files, say where they are. The stage line carries the
 absolute path when one was recorded; use it. A person who is told the work is done and not
@@ -304,7 +333,10 @@ DELIBERATION_OUTPUT_CONTRACT = (
     "are told the agent did not reply. If the person's message answers an open human step, "
     'set "resolves_human_node_id" to that step\'s id and "human_node_evidence" to what they '
     'gave; instructions the person is being asked to carry out use the "instruct_user" '
-    'action, and unprompted governance reports use "report_governance".'
+    'action, and unprompted governance reports use "report_governance". Read the latest message '
+    "together with the recent conversation, and do not treat private work as something they "
+    "already know: if the reply depends on autonomous action they were not told about, briefly "
+    "supply that context as new information."
 )
 
 STAGE_NOTICE_SYSTEM = """You are {name}, about to tell somebody that a piece of work they asked for has
@@ -419,6 +451,7 @@ Rules for the message itself, all human ones:
 - Say what moved in plain words: what you did, what it produced, where to find it if there is a file. Do not narrate tools, steps, or checks unless the person asked for detail.
 - A small achievement is allowed to sound like one. A finished build that runs is worth more than "the task has been updated".
 - Keep it short for balanced, one line for quiet, and substantive for detailed (name files, what changed, what you verified, what is next). Never pad.
+- If the progress says the final verification did not pass, say that plainly: the work is not verified, and what the check objected to. Do not call it finished, done, or complete, and do not summarise away the failure.
 - Do not apologise for speaking, do not ask for approval, and do not promise anything the record does not back.
 
 Respond with strict JSON only:

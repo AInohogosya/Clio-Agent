@@ -89,9 +89,8 @@ test('a save that never reached the base model writes nothing to the agent', () 
   // "saved". A save that changed nothing about the base model must not claim
   // one, and must not make one either.
   assert.match(screen, /if \(await writeBaseModel\(\)\) said = t\('agentBaseModelSaved'\);/, 'the save does not ask the agent');
-  // Closing with a base-model edit pending discards it rather than writing half
-  // a save: persisting the shared file while the agent's file still holds the
-  // old vendor is the split that reads as a revert on the next open.
-  const closing = between('const close = () => {', 'return (');
-  assert.match(closing, /!\(agentMode && baseTouched\)/, 'a pending base-model edit is written on close');
+  // Closing saves every pending change first — the shared file and the agent
+  // file must not disagree, or the next open reads as a mysterious revert.
+  const closing = between('const close = async () => {', 'return (');
+  assert.match(closing, /await save\(\)/, 'close saves before leaving the screen');
 });

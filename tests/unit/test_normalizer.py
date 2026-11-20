@@ -376,6 +376,27 @@ def test_a_reasoning_budget_becomes_the_endpoints_own_parameter():
         "the ceiling stays whole; only what thinking may take of it is bounded"
 
 
+def test_a_reasoning_budget_over_the_ceiling_cannot_swallow_the_answer():
+    """A thinking budget at or over `max_tokens` is the empty-body failure.
+
+    The gateway fills an unnamed budget from the base model's reasoning level
+    (8192 at `medium`), so a caller with a small ceiling of its own — the
+    verification judge at 1200, the reverie's chooser at 400 — received a
+    thinking budget far larger than its answer room. The endpoint spends the
+    whole ceiling thinking and returns `finish_reason: length` with no content:
+    `reasoned without answering` on every attempt.
+    """
+    swallowed = simple_request(reasoning_budget=8192, max_tokens=1200)
+    payload = messages_to_openai_compat(swallowed, "thinking-model", QUIRKS.openai_compat)
+    thinking = payload["reasoning"]["max_tokens"]
+    assert thinking < 1200, "thinking is bounded below the ceiling"
+    assert 1200 - thinking >= 256, "and the answer keeps a room of its own"
+
+    tiny = simple_request(reasoning_budget=8192, max_tokens=400)
+    payload = messages_to_openai_compat(tiny, "thinking-model", QUIRKS.openai_compat)
+    assert payload["reasoning"]["max_tokens"] < 400
+
+
 def test_no_reasoning_budget_sends_no_reasoning_parameter():
     """A model that does not reason has nothing to apply it to."""
     request = simple_request()

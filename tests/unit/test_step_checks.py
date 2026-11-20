@@ -19,6 +19,7 @@ decision rather than a description of it.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from typing import Any
@@ -137,11 +138,14 @@ async def test_a_step_whose_own_check_passes_is_a_finished_step(tmp_path: Path) 
     result = await _run(tmp_path, {"type": "file_exists",
                                    "path": str(tmp_path / "thing.py")})
     assert result.outcome.value == "step_done"
+    assert result.step_verified is True, "a check that observed the file passed"
 
 
 async def test_a_step_with_no_check_is_unaffected(tmp_path: Path) -> None:
     """Most steps have nothing mechanical about them, and must not be held to it."""
-    assert (await _run(tmp_path, {})).outcome.value == "step_done"
+    result = await _run(tmp_path, {})
+    assert result.outcome.value == "step_done"
+    assert result.step_verified is None, "no check was asked for, so non-verdict"
 
 
 async def test_a_failing_command_check_tells_the_model_what_failed(tmp_path: Path) -> None:
@@ -291,3 +295,67 @@ async def test_a_read_only_command_with_stderr_redirection_still_runs(
 
     assert result.outcome.value == "step_failed"
     assert any("1 == 2" in t for t in result.thoughts), result.thoughts
+
+
+async def test_a_find_that_prints_nothing_is_done_but_not_verified(
+    tmp_path: Path,
+) -> None:
+    """`find` exits 0 whether it matched anything or not.
+
+    So a check that only ran `find ... -print` could pass while enumerating
+    nothing, and the step inherited "verified" from an empty result. The step
+    is still done -- it did what it did -- but the record must not call it
+    verified.
+    """
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    result = await _run(tmp_path, {
+        "type": "command",
+        "command": f"find {empty} -type f -print",
+        "expect": "exit_zero",
+        "timeout_s": 20,
+    })
+
+    assert result.outcome.value == "step_done"
+    assert result.step_verified is False, "the check observed no file"
+    assert any("unverified" in t for t in result.thoughts), result.thoughts
+
+
+def test_a_passing_loop_over_an_unmatched_glob_is_not_observation(
+    tmp_path: Path,
+) -> None:
+    """The canonical vacuous check: a loop whose glob matches nothing.
+
+    A shell with `nullglob` never enters the body, so the command exits 0 while
+    opening no file. `true` after it makes the exit status unambiguous. The
+    check may pass -- nothing objected -- but it is not evidence.
+    """
+    from clio.gsl.evaluator import ObjectiveChecker
+
+    pattern = tmp_path / "absent" / "*.md"
+    result = asyncio.run(ObjectiveChecker(tmp_path).check({
+        "type": "command",
+        "command": f"for f in {pattern}; do :; done; true",
+        "expect": "exit_zero",
+        "timeout_s": 20,
+    }))
+
+    assert result["passed"] is True
+    assert result["observed"] is False, "the glob expanded to nothing"
+    assert "match nothing" in result["evidence"]["note"]
+
+
+def test_a_loop_over_a_real_file_is_still_observation(tmp_path: Path) -> None:
+    """The guard must not turn a genuine check into an unverified one."""
+    from clio.gsl.evaluator import ObjectiveChecker
+
+    (tmp_path / "summary.md").write_text("done\n", encoding="utf-8")
+    result = asyncio.run(ObjectiveChecker(tmp_path).check({
+        "type": "command",
+        "command": f"for f in {tmp_path}/*.md; do [ -s \"$f\" ]; done",
+        "expect": "exit_zero",
+        "timeout_s": 20,
+    }))
+
+    assert result["passed"] is True
+    assert result["observed"] is True

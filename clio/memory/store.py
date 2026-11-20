@@ -281,7 +281,8 @@ class MemoryStore:
             "sealed_payload) "
             "VALUES ($1, now(), $2, $3, $4, $5::jsonb, $6, $7, 0.5, $8, now(), 0, 'active', $9::vector, $10, $11, $12)",
             ep_id, thread_id, kind, summary, json.dumps(body_json), intention_id,
-            float(importance), float(half_life_h), to_pgvector(vec), scope, namespace_id, sealed,
+            float(importance), float(half_life_h), to_pgvector(vec), scope, namespace_id,
+            sealed.encode("utf-8") if isinstance(sealed, str) else sealed,
         )
         if publish and self.bus is not None:
             await self.bus.publish(
@@ -389,7 +390,8 @@ class MemoryStore:
                     "valid_from, strength, embedding, updated_at, scope, namespace_id, sealed_payload) "
                     "VALUES ($1, $2, $3, $4, $5::jsonb, $6, now(), 0.5, $7::vector, now(), $8, $9, $10)",
                     fact_id, subject, statement, float(confidence),
-                    json.dumps(prov_json), field, to_pgvector(vec), scope, namespace_id, sealed,
+                    json.dumps(prov_json), field, to_pgvector(vec), scope, namespace_id,
+                    sealed.encode("utf-8") if isinstance(sealed, str) else sealed,
                 )
                 if similar:
                     for row in similar:

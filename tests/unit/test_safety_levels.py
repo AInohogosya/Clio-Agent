@@ -60,6 +60,39 @@ def test_network_detection():
     assert not is_network_command("fs.write", {"path": "/tmp/x", "content": "hi"})
 
 
+def test_download_detection():
+    # Downloads are network commands: they cannot have run without Wi-Fi,
+    # so level 3 gates them like every other network command.
+    for command in (
+        "pip3 install requests",
+        "python -m pip install requests",
+        "uv pip install requests",
+        "uv add pydantic",
+        "uv sync",
+        "pipx install black",
+        "conda install numpy",
+        "mamba install numpy",
+        "cargo install ripgrep",
+        "go install example.com/tool",
+        "brew install wget",
+        "yarn add typescript",
+        "pnpm add tsx",
+        "npm install react",
+        "docker pull nginx",
+        "git clone https://github.com/org/repo",
+        "git fetch",
+        "ftp example.com",
+        "sftp user@host",
+    ):
+        assert is_network_command("shell.run", {"command": command}), command
+    assert is_network_command("code.exec", {"code": "uv sync"})
+    # Local spellings and local operations stay non-network.
+    assert not is_network_command("shell.run", {"command": "make install"})
+    assert not is_network_command("shell.run", {"command": "git status"})
+    assert not is_network_command("shell.run", {"command": "ls -la"})
+    assert not is_network_command("code.exec", {"code": "print('hi')"})
+
+
 def test_decide_level1():
     assert decide(1, "memory.search", {}).action == "allow"
     rejected = decide(1, "shell.run", {"command": "ls"})
@@ -80,6 +113,8 @@ def test_decide_level3():
     assert decide(3, "shell.run", {"command": "ls"}).action == "allow"
     assert decide(3, "fs.write", {"path": "/tmp/x"}).action == "allow"
     assert decide(3, "shell.run", {"command": "curl https://example.com"}).action == "require_approval"
+    assert decide(3, "shell.run", {"command": "pip3 install requests"}).action == "require_approval"
+    assert decide(3, "shell.run", {"command": "uv sync"}).action == "require_approval"
     assert decide(3, "http.request", {"url": "https://example.com"}).action == "require_approval"
     assert decide(3, "subagent.apex", {"task": "x"}).action == "require_approval"
     assert decide(3, "subagent.foundry", {"task": "x"}).action == "allow"
@@ -142,6 +177,17 @@ async def test_gate_level3_network_needs_approval_local_runs(config, tmp_path):
     network = await gate.review("http.request", {"url": "https://example.com"}, reason="fetch")
     assert network.verdict == Verdict.REJECT
     assert "approval" in network.reason.lower()
+
+
+async def test_gate_level3_downloads_need_approval(config, tmp_path):
+    gate = _gate(config, tmp_path, 3)
+    download = await gate.review(
+        "shell.run", {"command": "pip3 install requests"}, reason="install deps",
+    )
+    assert download.verdict == Verdict.REJECT
+    assert "approval" in download.reason.lower()
+    install = await gate.review("shell.run", {"command": "uv sync"}, reason="sync env")
+    assert install.verdict == Verdict.REJECT
 
 
 async def test_gate_level4_runs_without_channel(config, tmp_path):

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import glob
 import inspect
 import json
 import os
+import re
+import shlex
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +15,71 @@ from clio.paths import resolve
 from clio.schemas.gsl import EvaluationResult
 
 logger = get_logger("clio.gsl.evaluator")
+
+# The word-list of a `for ... in ...; do` loop, which is where a glob that
+# matches nothing is most expensive: the loop body runs zero or one times and
+# the command still exits 0, so the check "passed" without opening a file.
+_FOR_IN = re.compile(r"\bfor\s+\w+\s+in\s+([^;]+?)\s*;?\s*do\b", re.DOTALL)
+_FIND_COMMAND = re.compile(r"(?:^|[;&|]\s*)find\b")
+_GLOB_CHARS = frozenset({"*", "?", "["})
+
+
+def _is_path_shaped(token: str) -> bool:
+    """Whether a shell word names a path, rather than an option or a pattern.
+
+    Only path-shaped globs are expanded for the vacuity check. That keeps a
+    pattern argument (`grep 'error*' app.log`) from being read as a file glob,
+    because the common false positive here is worse than the miss: a check that
+    really did observe something must never be reported as unverified.
+    """
+    return token.startswith(("/", "~", "./", "../")) or "/" in token
+
+
+def _unmatched_path_globs(command: str, cwd: str | None) -> list[str]:
+    """Path globs in a `for ... in` list that the shell would expand to nothing.
+
+    A loop over an unmatched glob is the canonical vacuous check: with
+    `nullglob` the body never runs, and without it the body runs once against
+    the literal pattern. Either way `exit_zero` says nothing about the files the
+    step claimed to produce. Expanding the same tokens here is how the checker
+    can tell the two apart without trying to interpret the whole command.
+    """
+    base = Path(cwd) if cwd else Path.cwd()
+    unmatched: list[str] = []
+    for group in _FOR_IN.findall(command):
+        try:
+            tokens = shlex.split(group)
+        except ValueError:
+            # An unbalanced quote in the check is the command's problem, not
+            # this helper's; the command still runs and reports honestly.
+            continue
+        for token in tokens:
+            if not _GLOB_CHARS.intersection(token) or "$" in token:
+                continue
+            if not _is_path_shaped(token):
+                continue
+            pattern = os.path.expanduser(token)
+            if not os.path.isabs(pattern):
+                pattern = str(base / pattern)
+            try:
+                matched = glob.glob(pattern)
+            except (OSError, re.error):
+                matched = ["?"]
+            if not matched:
+                unmatched.append(token)
+    return unmatched
+
+
+def _find_printed_nothing(command: str, stdout_text: str) -> bool:
+    """Whether the check was a `find` that enumerated nothing.
+
+    `find` exits 0 whether it matched a thousand files or none, so an empty
+    result passes while observing no file at all. A `find` that printed paths
+    did look at the tree, even if the paths are not the ones the step wanted;
+    the relevance question belongs to the planner, but "observed nothing" is a
+    fact this checker can decide.
+    """
+    return bool(_FIND_COMMAND.search(command)) and not stdout_text.strip()
 
 
 class ObjectiveChecker:
@@ -148,13 +216,32 @@ class ObjectiveChecker:
             passed = process.returncode != 0
         else:
             passed = process.returncode == 0
+        unmatched = _unmatched_path_globs(command, cwd)
+        # A passing command that expanded a path glob to nothing, or a `find`
+        # that printed nothing, exercised no file. It is reported as passed --
+        # nothing objected -- but not as observed, because a step's "done" must
+        # not inherit evidence from a check that never looked at anything.
+        # Under `expect: exit_nonzero` an empty glob is the assertion itself,
+        # so vacuity only applies to the exit-zero form.
+        vacuous = expect == "exit_zero" and passed and (
+            unmatched or _find_printed_nothing(command, stdout_text)
+        )
+        note = ""
+        if vacuous and unmatched:
+            note = (
+                "the check expands paths that match nothing on disk "
+                f"({', '.join(unmatched[:3])}), so it verified no file"
+            )
+        elif vacuous:
+            note = "the check printed nothing, so it verified no file"
         return {
             "passed": passed,
-            "observed": True,
+            "observed": not vacuous,
             "evidence": {
                 "command": command, "cwd": cwd, "returncode": process.returncode,
                 "stdout": stdout_text, "stderr": stderr_text, "expect": expect,
                 "label": check.get("label", ""),
+                **({"note": note} if note else {}),
             },
         }
 

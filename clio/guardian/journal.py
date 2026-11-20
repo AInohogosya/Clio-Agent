@@ -215,7 +215,8 @@ class ActionJournal:
                 "COALESCE($10::uuid, (SELECT root_intention_id FROM intentions WHERE id = $3)), $11)",
                 action_id, thread_id, intention_id, tool,
                 args_json, reason, idempotency_key, side_effects,
-                project_id, root_intention_id, sealed,
+                project_id, root_intention_id,
+                sealed.encode("utf-8") if isinstance(sealed, str) else sealed,
             )
         else:
             await self._file_append({

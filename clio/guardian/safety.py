@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -88,6 +89,47 @@ _NETWORK_CODE_HINTS = (
     "ssh ", "scp ", "rsync", "nc ", "ncat",
 )
 
+# A shell command whose text names a download: the installers and fetchers
+# that reach a package registry or a remote host even when the tool they
+# invoke is not in `COMMAND_TABLE` or whose table entry is not `network`
+# (`pip3` is not `pip`, `uv sync` is not anything in the table). Level 3
+# treats these as network commands: they are the commands that cannot have
+# been executed without Wi-Fi, so they wait for approval like any other.
+_DOWNLOAD_COMMAND_RE = re.compile(
+    r"(?:"
+    # pip, in the spellings people actually type
+    r"\b(?:pip|pip3|pipx)\s+(?:install|download|sync)\b"
+    r"|\bpython[0-9.]*\s+-m\s+pip[0-9]*\s+(?:install|download)\b"
+    r"|\buv\s+pip\s+(?:install|download|sync)\b"
+    r"|\buv\s+(?:add|sync)\b"
+    # exec-style fetch of a package by name
+    r"|\b(?:uvx|npx)\b"
+    # the other installers and package managers
+    r"|\b(?:conda|mamba|micromamba)\s+install\b"
+    r"|\b(?:yarn|pnpm|bun)\s+(?:install|add|upgrade)\b"
+    r"|\bnpm\s+(?:install|ci|add)\b"
+    r"|\b(?:brew|homebrew)\s+(?:install|upgrade)\b"
+    r"|\b(?:cargo|go|rustup)\s+install\b"
+    r"|\bgo\s+get\b"
+    # git remote operations and the registries they reach
+    r"|\bgit\s+(?:clone|fetch|pull|push)\b"
+    r"|\bdocker\s+(?:pull|push)\b"
+    # remote file transfer
+    r"|\b(?:ftp|sftp)\b"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def is_download_command(command: str) -> bool:
+    """Whether the command fetches files or packages from the network.
+
+    Complements the classifier table: `pip` is `network`, but `pip3` is
+    nothing, and `uv sync` reaches the network without naming one. A command
+    this matches is a download as far as Level 3 is concerned.
+    """
+    return bool(_DOWNLOAD_COMMAND_RE.search(command or ""))
+
 
 def is_network_command(tool: str, args: dict[str, Any]) -> bool:
     from clio.guardian.classifier import classify_shell, classify_tool
@@ -102,14 +144,17 @@ def is_network_command(tool: str, args: dict[str, Any]) -> bool:
             return False
         if not command:
             return True
-        return "network" in classify_shell(command).categories
+        return (
+            "network" in classify_shell(command).categories
+            or is_download_command(command)
+        )
     effects = classify_tool(tool, args)
     if "network" in effects.categories:
         return True
     if tool == "code.exec":
         code = str(args.get("code") or "")
         lowered = code.lower()
-        return any(hint in lowered for hint in _NETWORK_CODE_HINTS)
+        return any(hint in lowered for hint in _NETWORK_CODE_HINTS) or is_download_command(code)
     return False
 
 
@@ -225,7 +270,7 @@ def decide(
         if network or _targets_apex(tool, args):
             return SafetyDecision(
                 DIALOGUE_REQUIRE_APPROVAL,
-                "safety level 3: internet-connected commands (and APEX) require manual approval",
+                "safety level 3: commands that connect to the network or download files, and APEX, require manual approval",
                 level, False, network, subagent,
             )
         return SafetyDecision(DIALOGUE_ALLOW, "safety level 3: non-internet command", level, False, network, subagent)
@@ -242,7 +287,7 @@ def describe_level(level: int) -> str:
     descriptions = {
         1: "dialogue-only: no commands, no sub-agents",
         2: "all commands require manual approval",
-        3: "internet-connected commands require manual approval, others auto-run",
+        3: "internet-connected and downloading commands require manual approval, others auto-run",
         4: "all commands and sub-agents run without approval",
     }
     return descriptions.get(level, "unknown level")
