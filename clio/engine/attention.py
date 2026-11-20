@@ -1,0 +1,378 @@
+from __future__ import annotations
+
+import math
+import re
+from collections.abc import Sequence
+from datetime import datetime
+from typing import Any
+
+from clio.config import ClioConfig
+from clio.gateway.embeddings import EmbeddingProvider
+from clio.observability.logger import get_logger
+from clio.parse import parse_json_block
+from clio.schemas.events import Appraisal, Percept, ScoredPercept
+from clio.schemas.gsl import Focus
+from clio.schemas.messages import Message, sender_label
+from clio.schemas.models import ModelMessage, ModelRequest, Role, Tier
+from clio.util import clip
+
+logger = get_logger("clio.attention")
+
+_TOKEN_RE = re.compile(r"[a-z0-9]+")
+
+
+def jaccard(a: Sequence[str], b: Sequence[str]) -> float:
+    sa, sb = set(a), set(b)
+    if not sa or not sb:
+        return 0.0
+    return len(sa & sb) / len(sa | sb)
+
+
+def project_preemption_allowed(
+    candidate_project_id: str | None,
+    active_project_id: str | None,
+    candidate_salience: float,
+    *,
+    lock_active: bool,
+    current_salience: float,
+    margin: float,
+    priority_override: bool = False,
+) -> bool:
+    """Whether a stimulus from another project may take the pass, purely.
+
+    The focus-quantum rule: while a project is `active` and inside its
+    minimum focus quantum, work belonging to a *different* project does not
+    steal focus — unless it clears the challenger margin over the current
+    focus's salience, or the deliberation flagged an explicit priority
+    override. Same-project stimuli are never blocked: continuing the
+    project's own work is what the lock is protecting.
+    """
+    if not lock_active:
+        return True
+    if not candidate_project_id or not active_project_id:
+        return True
+    if str(candidate_project_id) == str(active_project_id):
+        return True
+    if priority_override:
+        return True
+    return float(candidate_salience) >= float(current_salience) + float(margin)
+
+
+def estimate_salience(
+    percept: Percept,
+    focus: Focus | None,
+    weights,
+    sender_weights: dict[str, float],
+    embedder: EmbeddingProvider | None,
+    focus_vec: list[float] | None,
+    novelty_centroid: list[float] | None,
+) -> tuple[float, dict[str, float]]:
+    """T0 salience estimate: sal = clip(ws*src + wu*urg + wr*rel + wn*nov)."""
+    src = sender_weights.get(percept.sender_class, sender_weights.get("unknown", 0.3))
+    urg = clip(percept.urgency)
+    summary_tokens = _TOKEN_RE.findall(percept.summary.lower())
+    if focus_vec is not None and embedder is not None:
+        p_vec = embedder.embed([percept.summary or percept.kind])[0]
+        rel = clip(sum(a * b for a, b in zip(p_vec, focus_vec, strict=False)))
+    else:
+        focus_tokens = _TOKEN_RE.findall((focus.title + " " + (focus.why or "")).lower()) if focus else []
+        rel = jaccard(summary_tokens, focus_tokens)
+    if novelty_centroid is not None and embedder is not None:
+        p_vec = embedder.embed([percept.summary or percept.kind])[0]
+        nov = clip(1.0 - sum(a * b for a, b in zip(p_vec, novelty_centroid, strict=False)))
+    else:
+        nov = 0.5
+    components = {"src": src, "urg": urg, "rel": rel, "nov": nov}
+    sal = clip(
+        weights.src * src + weights.urg * urg + weights.rel * rel + weights.nov * nov,
+        0.0,
+        1.0,
+    )
+    return sal, components
+
+
+REFINE_PROMPT = """You are the fast-glance tier (T1) of {name}'s attention. Score this percept
+against the current focus. Reply with strict JSON only:
+{{"urgency": 0.0, "relevance": 0.0, "novelty": 0.0}}
+
+CURRENT FOCUS: {focus}
+PERCEPT [{kind}] from {source}: {summary}"""
+
+
+class Attention:
+    """Salience appraisal with T0 rules + T1 refinement in the [0.3, 0.8] band [D-03].
+
+    v3.1: nothing here overrides the judgement that something matters. v3.0 kept
+    a whitelist of percept kinds that were allowed to interrupt even above
+    threshold, which was a hardcoded filter sitting between the salience
+    appraisal and the agent's own attention (NA-P1.3, NA-H5): a percept that
+    scored over the state's threshold but was not one of five blessed kinds was
+    silently dropped from consideration. The threshold — configured per state,
+    and the only place a per-state sensitivity decision belongs — is now the
+    whole gate. What a percept means is still the model's to weigh downstream;
+    the arithmetic here prices how pressing it is, and the whitelist no longer
+    vetoes the price.
+    """
+
+    def __init__(
+        self,
+        config: ClioConfig,
+        embedder: EmbeddingProvider | None = None,
+        gateway: Any | None = None,
+        self_model: Any | None = None,
+    ):
+        self.config = config
+        self.embedder = embedder
+        self.gateway = gateway
+        self.self_model = self_model
+        self.band = config.rhythm.attention.refine_band
+        self.max_refines_per_cycle = 3
+
+    async def refine_salience(self, percept: Percept, focus: Focus | None) -> float | None:
+        if self.gateway is None:
+            return None
+        name = self.config.self_name
+        if self.self_model is not None:
+            try:
+                name = await self.self_model.get("name", self.config.self_name)
+            except Exception:
+                pass
+        request = ModelRequest(
+            tier=Tier.T1,
+            purpose="attention.refine",
+            messages=[
+                ModelMessage(role=Role.system, content=REFINE_PROMPT.format(
+                    name=name, focus=focus.title if focus else "(none)",
+                    kind=percept.kind, source=percept.source or "internal",
+                    summary=percept.summary[:400],
+                )),
+            ],
+            # A ceiling, not a reservation: the answer is three floats of JSON,
+            # so the ceiling costs nothing the answer does not spend. The old 120
+            # was smaller than the reasoning of the base model this deployment
+            # thinks with — the reply came back as thought and nothing else,
+            # `finish_reason: length`, and a refine paid six attempts across the
+            # catalogue to return None. The reasoning bound is what actually
+            # holds: thinking is capped inside the ceiling, the way the
+            # deliberation prompt bounds its own, and an endpoint that refuses
+            # the parameter is remembered by the provider rather than fatal.
+            max_tokens=1024,
+            reasoning_budget=300,
+        )
+        try:
+            response = await self.gateway.complete(request)
+            data = parse_json_block(response.text or "")
+            if not data:
+                return None
+            w = self.config.rhythm.attention.weights
+            sender = self.config.rhythm.attention.sender
+            src = sender.get(percept.sender_class, sender.get("unknown", 0.3))
+            return clip(
+                w.src * src
+                + w.urg * clip(float(data.get("urgency", percept.urgency)))
+                + w.rel * clip(float(data.get("relevance", 0.3)))
+                + w.nov * clip(float(data.get("novelty", 0.5)))
+            )
+        except Exception:
+            logger.exception("attention.refine_failed")
+            return None
+
+    @staticmethod
+    def dedupe(percepts: list[Percept], window_s: float = 10.0) -> list[Percept]:
+        seen: dict[tuple[str, str | None], datetime] = {}
+        out: list[Percept] = []
+        for p in percepts:
+            key = (p.kind, p.source)
+            last = seen.get(key)
+            if last is not None and (p.ts - last).total_seconds() < window_s:
+                continue
+            seen[key] = p.ts
+            out.append(p)
+        return out
+
+    async def appraise(
+        self,
+        percepts: list[Percept],
+        focus: Focus | None,
+        recent_centroid: list[float] | None = None,
+        thresholds_by_state: dict[str, float] | None = None,
+        state_name: str | None = None,
+        *,
+        active_project_id: str | None = None,
+        project_lock_active: bool = False,
+    ) -> Appraisal:
+        percepts = self.dedupe(percepts)
+        if not percepts:
+            return Appraisal()
+        cfg_att = self.config.rhythm.attention
+        focus_vec = None
+        if self.embedder is not None and focus is not None:
+            focus_vec = self.embedder.embed([f"{focus.title} {focus.why}"])[0]
+        scored: list[ScoredPercept] = []
+        for p in percepts:
+            sal, components = estimate_salience(
+                p, focus, cfg_att.weights, cfg_att.sender, self.embedder, focus_vec, recent_centroid,
+            )
+            p.salience = sal
+            scored.append(ScoredPercept(percept=p, salience=sal, components=components))
+        scored.sort(key=lambda s: s.salience, reverse=True)
+
+        thresholds = thresholds_by_state or {}
+        threshold = thresholds.get(state_name or "", thresholds.get("default", 0.65))
+
+        refined = 0
+        for scored_percept in scored:
+            if refined >= self.max_refines_per_cycle:
+                break
+            lo, hi = self.band
+            if lo <= scored_percept.salience <= hi:
+                new_sal = await self.refine_salience(scored_percept.percept, focus)
+                if new_sal is not None:
+                    scored_percept.salience = new_sal
+                    scored_percept.percept.salience = new_sal
+                    refined += 1
+        if refined:
+            scored.sort(key=lambda s: s.salience, reverse=True)
+
+        top = scored[0]
+        # The threshold is the whole gate. The kind whitelist that used to sit
+        # beside it is gone: a percept that clears the state's threshold is an
+        # interrupt, whatever kind it is, because a hardcoded list of interrupt
+        # kinds was the program's judgment standing in for the agent's.
+        interrupt = top.salience >= threshold
+        # The focus-quantum guard sits after the threshold, not before it: the
+        # threshold decides whether the stimulus is pressing at all, and the
+        # quantum decides whether *another project's* pressing stimulus may
+        # take the pass. Inside the lock, a different project's percept must
+        # clear the state threshold *plus* the switch margin — the margin is
+        # what makes preemption a decision rather than a tie — unless the
+        # deliberation marked it priority_override.
+        if interrupt and project_lock_active:
+            allowed = project_preemption_allowed(
+                percept_project_id(top.percept),
+                active_project_id,
+                top.salience,
+                lock_active=True,
+                current_salience=threshold,
+                margin=self.config.projects.project_switch_margin,
+                priority_override=bool(
+                    (top.percept.payload or {}).get("priority_override", False)
+                ),
+            )
+            if not allowed:
+                logger.info(
+                    "attention.project_quantum_held",
+                    active_project=active_project_id,
+                    candidate_project=percept_project_id(top.percept),
+                    salience=round(top.salience, 3),
+                )
+                return Appraisal(
+                    interrupt=False,
+                    new_focus=None,
+                    top=scored,
+                    refined=refined > 0,
+                )
+        appraisal = Appraisal(
+            interrupt=interrupt,
+            new_focus=None,
+            top=scored,
+            refined=refined > 0,
+        )
+        if interrupt:
+            appraisal.new_focus = focus_from_percept(top.percept)
+        return appraisal
+
+    @staticmethod
+    def percept_from_message(message: Message) -> Percept:
+        known = message.person_id is not None
+        return Percept(
+            kind="msg.inbound",
+            source=f"{message.channel}:{message.person_id or 'unknown'}",
+            payload={
+                "message_id": str(message.id),
+                "text": message.text[:2000],
+                # The same two keys `percept_from_event` leaves in the payload for
+                # the bus path, so `focus_from_percept` reads a sender the same way
+                # whichever of the two produced this percept. A focus titled
+                # "Respond to tg:819012345678" and one titled "Respond to alice" are
+                # the same moment, and only one of them tells the agent who it is
+                # about to talk to.
+                "sender_name": message.sender_name,
+                "sender_username": message.sender_username,
+            },
+            sender_class="known" if known else "unknown",
+            sender_person=message.person_id,
+            urgency=0.3 if known else 0.2,
+            summary=f"Message from {message.sender_who()}: {message.text[:200]}",
+            trust="known" if known else "untrusted",
+            is_untrusted=not known,
+        )
+
+
+def percept_sender(percept: Percept) -> str:
+    """Whoever a percept came from, named if the channel said so.
+
+    `sender_person` alone is an address — `tg:819012345678` — and it stays that
+    because that is what a reply is sent to. It is a poor title for the thing the
+    agent is about to attend to, though, so the name the adapters now carry is
+    read out of the payload and put first.
+    """
+    return sender_label(
+        percept.payload.get("sender_name"),
+        percept.payload.get("sender_username"),
+        percept.sender_person,
+    )
+
+
+def percept_project_id(percept: Percept) -> str | None:
+    """Which project a percept belongs to, when anything said so.
+
+    A percept carries `project_id` in its payload when the event that made it
+    was attributed to a project — a thread result from a project's worker, a
+    journal action, a message whose conversation is bound to one. `None` means
+    the percept is not project work and the quantum never blocks it.
+    """
+    value = (percept.payload or {}).get("project_id")
+    return str(value) if value else None
+
+
+def focus_from_percept(percept: Percept) -> Focus:
+    if percept.kind == "msg.inbound":
+        return Focus(
+            title=f"Respond to {percept_sender(percept)}",
+            kind="social",
+            why=f"inbound message on {percept.source}",
+            bookmark={"percept": percept.model_dump(mode="json")},
+        )
+    if percept.kind == "timer.fired":
+        return Focus(
+            title="Handle timer",
+            kind="timer",
+            why=percept.summary,
+            bookmark={"percept": percept.model_dump(mode="json")},
+        )
+    if percept.kind == "thread.result":
+        return Focus(
+            title="Integrate thread result",
+            kind="thread_result",
+            why=percept.summary,
+            bookmark={"percept": percept.model_dump(mode="json")},
+        )
+    return Focus(
+        title=percept.summary[:80] or "Unhandled percept",
+        kind="event",
+        why=f"percept {percept.kind} from {percept.source}",
+        bookmark={"percept": percept.model_dump(mode="json")},
+    )
+
+
+def centroid_of(vectors: list[list[float]] | None) -> list[float] | None:
+    if not vectors:
+        return None
+    dim = len(vectors[0])
+    centroid = [0.0] * dim
+    for vec in vectors:
+        for i, x in enumerate(vec):
+            centroid[i] += x
+    norm = math.sqrt(sum(x * x for x in centroid)) or 1.0
+    return [x / norm for x in centroid]

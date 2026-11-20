@@ -30,10 +30,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from ethos.prompts.deliberation import execution_state_block
-from ethos.prompts.gsl import PLAN_PROMPT, delegation_note
-from ethos.schemas.messages import SocialAction, SocialDecision
-from ethos.social.deliberation import (
+from clio.prompts.deliberation import execution_state_block
+from clio.prompts.gsl import PLAN_PROMPT, delegation_note
+from clio.schemas.messages import SocialAction, SocialDecision
+from clio.social.deliberation import (
     SocialCognition,
     _ExecutionState,
     claims_work_is_underway,
@@ -43,7 +43,7 @@ from tests.conftest import make_config
 
 
 def _config(name: str):
-    config = make_config(Path(f"/tmp/ethos-test-{name}"))
+    config = make_config(Path(f"/tmp/clio-test-{name}"))
     config.paths.ensure()
     return config
 
@@ -215,6 +215,22 @@ def test_future_promises_and_finished_facts_are_still_not_matched() -> None:
         assert not claims_work_is_underway(text), text
 
 
+def test_an_immediate_work_promise_is_matched() -> None:
+    """The promise sent while planning was backed off, in the agent's own words.
+
+    Nothing was journaled. The reply still said the folder and the build would
+    move now, which is a claim about this turn and is exactly what the journal
+    can settle. "After lunch" remains outside the rule.
+    """
+    for text in (
+        "I'll get the folder created and the build moving now.",
+        "I'll have the build going now.",
+        "I will get the report ready.",
+    ):
+        assert claims_work_is_underway(text), text
+    assert not claims_work_is_underway("I'll get some rest after lunch.")
+
+
 def test_subagent_names_are_read_off_the_reply() -> None:
     """The names a claim pins itself to, and nothing invented."""
     assert subagents_named("Running APEX once more now") == {"apex"}
@@ -324,8 +340,9 @@ def test_the_plan_prompt_carries_the_delegation_text() -> None:
     )
     rendered = PLAN_PROMPT.format(
         name="Clio", commissioned="C", success_checks="S",
-        delegation=delegation_note(intention), approach="A",
+        deliverable="V", delegation=delegation_note(intention), approach="A",
         title=intention.title, desired_end_state=intention.desired_end_state,
+        constraints="K", success_criteria="R",
     )
     assert "subagent.foundry" in rendered
     assert "subagent.apex" in rendered
@@ -428,7 +445,7 @@ def test_apex_health_probes_the_real_import_chain(monkeypatch) -> None:
     real run takes, so a deployment whose desktop half is broken reads as
     unavailable before the agent plans a delegation on it.
     """
-    from ethos.subagents.apex import ApexSubAgent
+    from clio.subagents.apex import ApexSubAgent
 
     def _fake_import_plane(self):
         class _Mode:
@@ -457,7 +474,7 @@ def test_apex_health_probes_the_real_import_chain(monkeypatch) -> None:
 
 def test_apex_health_reports_available_when_the_whole_chain_imports(monkeypatch) -> None:
     """A health that can say yes is as necessary as one that says no."""
-    from ethos.subagents.apex import ApexSubAgent
+    from clio.subagents.apex import ApexSubAgent
 
     class _Mode:
         HIDDEN = "hidden"
@@ -478,3 +495,58 @@ def test_apex_health_reports_available_when_the_whole_chain_imports(monkeypatch)
 
     assert health["available"] is True
     assert health["import"] == "in-process"
+
+
+def test_a_not_started_claim_about_started_work_is_withheld() -> None:
+    """The mirror guard: 'haven't started X' is also a journal claim.
+
+    2026-11-09: the reply said "I haven't started the Helium review" while
+    Helium review was the current focus with 86 journaled actions — the
+    reply snapshot could not see it, so the sentence was inferred from the
+    conversation instead. The per-intention progress line is the evidence,
+    and a claim that names that work as unstarted is withheld against it.
+    """
+    from clio.social.deliberation import claims_work_not_started
+
+    assert claims_work_not_started("I haven't started the Helium review.")
+    assert claims_work_not_started("Still checking — I have not yet started it.")
+    assert not claims_work_not_started("I'm on it — next message is the result.")
+
+    social = SocialCognition(_config("guard-not-started"))
+    decision = _decision("Still checking — I haven't started the Helium review.")
+    state = _state(journaled=["shell.run -> ok"])
+    state.progress = [
+        "[in_progress] Review the Helium folder on the desktop to understand "
+        "the AI agent: last action shell.run (ok) 14 min ago; this is the "
+        "current focus",
+    ]
+
+    social._withhold_unearned_progress(decision, state)
+
+    assert decision.reply_texts == [], (
+        "a not-started claim about work the journal shows as started"
+    )
+    assert decision.action is SocialAction.act_silently
+    assert decision.decided is False
+    assert "had not started" in decision.reason
+
+
+def test_a_not_started_claim_about_other_work_stands() -> None:
+    """The guard pins the claim to the work it names, not to any work.
+
+    Started Helium work must not withhold an honest 'haven't started the
+    CodeForge build' — the token match is per-title, so unrelated started
+    work does not disarm a true negative claim.
+    """
+    social = SocialCognition(_config("guard-not-started-other"))
+    decision = _decision("I haven't started the CodeForge build yet.")
+    state = _state(journaled=["shell.run -> ok"])
+    state.progress = [
+        "[in_progress] Review the Helium folder on the desktop to understand "
+        "the AI agent: last action shell.run (ok) 14 min ago",
+    ]
+
+    social._withhold_unearned_progress(decision, state)
+
+    assert decision.reply_texts == ["I haven't started the CodeForge build yet."]
+    assert decision.decided is True

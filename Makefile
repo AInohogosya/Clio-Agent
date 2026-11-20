@@ -10,15 +10,15 @@ VENV := .venv
 # `make PY=".venv/Scripts/python.exe" up`.
 PY := $(shell if [ -x "$(VENV)/Scripts/python.exe" ]; then echo "$(VENV)/Scripts/python.exe"; else echo "$(VENV)/bin/python"; fi)
 
-# `ethos up` is the recommended way to start the agent, and it is this target's
+# `clio up` is the recommended way to start the agent, and it is this target's
 # whole job — creating the virtualenv first when there is not one yet, so `make
 # up` works on a fresh clone the way `./start.sh` still does. `pip install -e .`
-# in any interpreter, then `ethos up`, is the same thing without make.
+# in any interpreter, then `clio up`, is the same thing without make.
 $(PY):
 	$(MAKE) install
 
 up: $(PY)
-	$(PY) -m ethos up
+	$(PY) -m clio up
 
 install:
 	uv venv $(VENV) --python 3.12 || true
@@ -34,34 +34,34 @@ db-status:
 	scripts/ensure_postgres.sh status
 
 migrate:
-	$(PY) -m ethos db upgrade
+	$(PY) -m clio db upgrade
 
 seed:
-	$(PY) -m ethos db seed
+	$(PY) -m clio db seed
 
 doctor:
-	$(PY) -m ethos doctor
+	$(PY) -m clio doctor
 
 # The seven-process model in the foreground, for working on the agent itself.
 run:
-	$(PY) -m ethos supervisor
+	$(PY) -m clio supervisor
 
 # Everything in one process, for working on the agent's own loop. It is also the
 # only process, so it is the one that holds the channel doors open — which is
 # what makes this the run to use when trying Telegram or Discord from a phone
 # without starting the whole model.
 run-dev:
-	$(PY) -m ethos core --listen-channels
+	$(PY) -m clio core --listen-channels
 
-# Liveness and shutdown for the supervisor `ethos up` (or `make up`) starts.
+# Liveness and shutdown for the supervisor `clio up` (or `make up`) starts.
 status:
-	$(PY) -m ethos status
+	$(PY) -m clio status
 
 stop:
-	$(PY) -m ethos stop
+	$(PY) -m clio stop
 
 logs:
-	$(PY) -m ethos logs
+	$(PY) -m clio logs
 
 test:
 	$(PY) -m pytest tests/ -q
@@ -81,11 +81,11 @@ test-scenarios:
 	$(PY) -m pytest tests/scenarios -q
 
 lint:
-	$(PY) -m ruff check ethos tests
+	$(PY) -m ruff check clio tests
 	# Formatting is not part of lint: the tree is not format-clean, and a
 	# `--check` that cannot fail would print a thousand lines of diff and
 	# still exit 0 — a lint run nobody can read the result of. Run
-	# `ruff format ethos tests` deliberately when you want the reformat.
+	# `ruff format clio tests` deliberately when you want the reformat.
 
 # interface/ is the interface: a browser page and a terminal client for this agent.
 interface-install:
@@ -101,6 +101,10 @@ interface-build:
 interface-dev:
 	npm run dev --workspace @project-phone/web --prefix interface
 
+# Both interface steps in order: dependencies, then the build. What a fresh
+# checkout needs before `make tui` or the bridge can serve the built page.
+interface: interface-install interface-build
+
 tui:
 	npm run tui --workspace @project-phone/cli --prefix interface
 
@@ -110,7 +114,7 @@ tui:
 agent:
 	node web/server/index.mjs
 
-# `data/home` is only removed for a checkout that still points `ETHOS_HOME` at it;
+# `data/home` is only removed for a checkout that still points `CLIO_HOME` at it;
 # the default home is `~/.ethos`, which `clean` deliberately leaves alone.
 clean:
 	rm -rf .venv web/node_modules data/home .pytest_cache

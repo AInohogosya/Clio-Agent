@@ -19,14 +19,14 @@ import json
 import sys
 from pathlib import Path
 
-from ethos.gsl.acceptance import (
+from clio.gsl.acceptance import (
     changed_paths,
     derive_checks,
     is_code,
     project_root,
     uncovered_paths,
 )
-from ethos.gsl.evaluator import ObjectiveChecker, evaluate_objective
+from clio.gsl.evaluator import ObjectiveChecker, evaluate_objective
 
 
 def _python_project(root: Path, *, passing: bool = True, with_tests: bool = True) -> Path:
@@ -333,7 +333,7 @@ def test_the_test_search_does_not_walk_into_things_that_are_not_source(tmp_path:
 def test_the_linter_is_run_on_what_changed_rather_than_on_the_repository(
     tmp_path: Path,
 ) -> None:
-    """This repository lints `ethos tests` and deliberately not `migrations`.
+    """This repository lints `clio tests` and deliberately not `migrations`.
 
     Running the linter over the project root instead reports four pre-existing
     errors in a generated Alembic file, so every coding task in the repository
@@ -466,3 +466,69 @@ def test_the_interpreter_running_the_agent_is_the_one_that_runs_the_tests(tmp_pa
     source = _python_project(tmp_path / "demo")
     command = [c for c in derive_checks([source]).checks if c["type"] == "command"][0]
     assert command["command"].startswith(sys.executable), command["command"]
+
+
+def test_a_missing_entry_module_is_caught_by_the_entrypoint_check(tmp_path: Path) -> None:
+    """A package whose entry module was never written must fail verification.
+
+    2026-11-08: CodeForge was reported "built" while `python -m codeforge`
+    died on `ModuleNotFoundError: codeforge.cli` — `cli.py` was never in the
+    changed files, so the syntax check never looked at it. Deriving an
+    entrypoint check from `[project.scripts]` names the missing file.
+    """
+    root = tmp_path / "proj"
+    pkg = root / "codeforge"
+    pkg.mkdir(parents=True)
+    (root / "pyproject.toml").write_text(
+        "[project]\nname='codeforge'\n"
+        "[project.scripts]\ncodeforge = 'codeforge.cli:main'\n",
+        encoding="utf-8",
+    )
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "__main__.py").write_text(
+        "from codeforge.cli import main\n", encoding="utf-8",
+    )
+    source = pkg / "__main__.py"
+
+    derived = derive_checks([source])
+
+    entry = [c for c in derived.checks if "entrypoint" in str(c.get("label", ""))]
+    assert entry, f"an entrypoint check is derived: {derived.checks}"
+    assert "-m codeforge --help" in entry[0]["command"]
+
+
+def test_a_working_entry_module_passes_the_entrypoint_check(tmp_path: Path) -> None:
+    """The entrypoint check is a check, not a trap: a real CLI passes it."""
+    import subprocess
+    import sys
+
+    root = tmp_path / "proj"
+    pkg = root / "mycli"
+    pkg.mkdir(parents=True)
+    (root / "pyproject.toml").write_text(
+        "[project]\nname='mycli'\n"
+        "[project.scripts]\nmycli = 'mycli.cli:main'\n",
+        encoding="utf-8",
+    )
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "__main__.py").write_text(
+        "from mycli.cli import main\n\nif __name__ == '__main__':\n    main()\n",
+        encoding="utf-8",
+    )
+    (pkg / "cli.py").write_text(
+        "import argparse\n\ndef main():\n    argparse.ArgumentParser().parse_args()\n",
+        encoding="utf-8",
+    )
+    source = pkg / "cli.py"
+
+    derived = derive_checks([source])
+    entry = [c for c in derived.checks if "entrypoint" in str(c.get("label", ""))]
+    assert entry
+    command = entry[0]["command"]
+    proc = subprocess.run(
+        command, shell=True, cwd=str(root), capture_output=True, text=True,
+        timeout=30,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "--help" in proc.stdout or "usage" in proc.stdout.lower()
+    assert sys.executable  # the check runs under the agent interpreter

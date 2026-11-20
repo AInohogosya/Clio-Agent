@@ -35,9 +35,9 @@ from typing import Any
 
 import pytest
 
-import ethos.toolhost.tools as tools_package
-from ethos.prompts.identity import build_tool_catalog_block
-from ethos.toolhost.server import Tool
+import clio.toolhost.tools as tools_package
+from clio.prompts.identity import build_tool_catalog_block
+from clio.toolhost.server import Tool
 
 
 def render(tools: list[dict[str, Any]]) -> str:
@@ -100,7 +100,7 @@ def registered_tools() -> list[dict[str, Any]]:
     """Every tool the toolhost registers, exactly as `Toolhost.catalog` would."""
     found: dict[str, dict[str, Any]] = {}
     for module in pkgutil.iter_modules(tools_package.__path__):
-        mod = importlib.import_module(f"ethos.toolhost.tools.{module.name}")
+        mod = importlib.import_module(f"clio.toolhost.tools.{module.name}")
         for _, obj in inspect.getmembers(mod, inspect.isclass):
             if issubclass(obj, Tool) and obj is not Tool and getattr(obj, "name", None) \
                     and hasattr(obj, "input_schema"):
@@ -342,14 +342,29 @@ def test_a_tool_with_no_parameters_is_the_only_one_with_an_empty_signature():
 
 def test_the_catalog_is_not_much_larger_than_it_has_to_be():
     """
-    The block is in the cached prefix, so its size is paid on every turn of every
-    thread at the cache-read price. It grew from a thousand tokens to nearly two
-    thousand when the schemas came back, and that is a trade worth making once — a
-    refused call costs a whole round trip — but not one worth making twice. This is
-    the guard on the trade, and it fails if a tool with a paragraph of description is
-    added to a registry that has no reason to hold it.
+    Two-stage narrowing changed what the cached prefix pays for. The full
+    registry no longer rides in block 2 — the pinned `tools.search` meta-tool
+    does, byte-stable, and the per-step sheet of up to twelve tools is
+    rendered below the cache breakpoint. So the guard on the trade guards two
+    things now: the pinned block stays a few dozen tokens (it is paid on every
+    turn of every thread), and the per-step sheet never carries more than the
+    twelve the router chose.
     """
-    assert len(render(registered_tools())) // 4 < 2500
+    from clio.prompts.identity import build_pinned_tools_block
+    from clio.tools.catalog import SEARCH_TOOLS_SPEC, TOP_K, pinned_prefix_tools
+
+    pinned = build_pinned_tools_block(pinned_prefix_tools(), len(registered_tools()))
+    assert len(pinned) // 4 < 400, "the pinned block is a meta-tool and a note, not a registry"
+    assert SEARCH_TOOLS_SPEC["name"] in pinned
+
+    # And the sheet: a full registry narrows to at most TOP_K entries.
+    from clio.tools.catalog import ToolCatalog, entry_from_tool_spec
+
+    catalog = ToolCatalog()
+    for tool in registered_tools():
+        catalog.register(entry_from_tool_spec(tool))
+    sheet = catalog.route("edit the config file and run the tests", k=TOP_K)
+    assert len(sheet) <= TOP_K
 
 
 @pytest.mark.parametrize("tool", registered_tools(), ids=lambda t: t["name"])

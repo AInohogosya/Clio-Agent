@@ -5,12 +5,12 @@ from pathlib import Path
 
 import pytest
 
-from ethos.gateway.embeddings import HashingEmbedder
-from ethos.guardian.gate import GuardianGate
-from ethos.guardian.journal import ActionJournal
-from ethos.guardian.trash import TrashStore
-from ethos.memory.store import MemoryStore
-from ethos.toolhost.server import ToolContext, Toolhost
+from clio.gateway.embeddings import HashingEmbedder
+from clio.guardian.gate import GuardianGate
+from clio.guardian.journal import ActionJournal
+from clio.guardian.trash import TrashStore
+from clio.memory.store import MemoryStore
+from clio.toolhost.server import ToolContext, Toolhost
 from tests.conftest import FakeRegistry, FakeVerifier, ListAudit, NoopControl, NoopSnapshots
 
 pytestmark = pytest.mark.integration
@@ -29,6 +29,7 @@ async def harness(db, config, tmp_path: Path):
     config = make_config(tmp_path)
     config.paths.ensure()
     config.permissions.network.deny_private_ranges = False
+    config.permissions.safety_level = 4
     memory = MemoryStore(db, HashingEmbedder(1024), config)
     trash = TrashStore(tmp_path / "trash")
     journal = ActionJournal(file_path=tmp_path / "journal.jsonl")
@@ -108,9 +109,9 @@ async def test_fs_delete_transforms_to_trash(harness, tmp_path: Path):
 
 async def test_shell_run_and_failure(harness):
     host = harness["host"]
-    ok = await host.execute("shell.run", {"command": "echo hello-ethos"}, ctx())
+    ok = await host.execute("shell.run", {"command": "echo hello-clio"}, ctx())
     assert ok.ok
-    assert "hello-ethos" in ok.content["stdout"]
+    assert "hello-clio" in ok.content["stdout"]
     assert ok.content["returncode"] == 0
     failed = await host.execute("shell.run", {"command": "exit 41"}, ctx())
     assert failed.ok
@@ -221,6 +222,7 @@ async def test_tool_catalog_matches_primitive_spec(harness):
         "shell.run", "shell.job", "shell.session_open", "shell.session_write",
         "shell.session_read", "shell.session_close",
         "fs.read", "fs.write", "fs.edit", "fs.move", "fs.delete", "fs.list", "fs.stat",
+        "fs.mkdir",
         "code.exec", "code.reset",
         "browser.visit", "browser.click", "browser.type", "browser.extract",
         "browser.screenshot", "browser.close",
@@ -266,7 +268,7 @@ async def test_memory_and_intent_tools(harness):
 async def test_secrets_tools_never_leak(harness):
     host = harness["host"]
     memory = harness["memory"]
-    from ethos.gateway.secrets import SecretVault
+    from clio.gateway.secrets import SecretVault
 
     vault = SecretVault(keyfile=memory.config.paths.data_dir / "keys" / "age.key",
                         store_path=memory.config.paths.data_dir / "secrets.age",
@@ -284,7 +286,7 @@ async def test_secrets_tools_never_leak(harness):
 
 async def test_schedule_tools_register_and_cancel(harness):
     host = harness["host"]
-    from ethos.core.scheduler import Scheduler
+    from clio.core.scheduler import Scheduler
 
     async def noop_bus():
         return None

@@ -3,10 +3,11 @@ requires = ["hatchling>=1.24"]
 build-backend = "hatchling.build"
 
 [project]
-name = "ethos"
-version = "3.0.1"
-description = "Clio Agent 3: a continuously existing, general-purpose autonomous agent"
+name = "clio"
+version = "3.1.0"
+description = "Clio Agent 3.1: a continuously existing, general-purpose autonomous agent"
 requires-python = ">=3.12"
+license = {text = "MIT"}
 dependencies = [
     "uvloop>=0.19; sys_platform != 'win32'",
     "pydantic>=2.7",
@@ -23,6 +24,7 @@ dependencies = [
     "bashlex>=0.18",
     "pyrage>=1.1",
     "structlog>=24.1",
+    "networkx>=3.0",
     "fastapi>=0.111",
     "uvicorn[standard]>=0.30",
     "websockets>=12.0",
@@ -32,7 +34,7 @@ dependencies = [
     "aiosmtplib>=3.0",
     # JWT verification for the two doors whose inbound proof is a bearer token
     # rather than a body signature (Microsoft Teams, Google Chat), and signing for
-    # the Google Chat service account. Imported lazily by ethos.comms.jwt, so an
+    # the Google Chat service account. Imported lazily by clio.comms.jwt, so an
     # install with both doors off never loads it.
     "cryptography>=42",
     "pyyaml>=6.0",
@@ -52,13 +54,13 @@ dev = [
 ]
 
 [project.scripts]
-# `main`, not the Typer app object: the console script and `python -m ethos` then
+# `main`, not the Typer app object: the console script and `python -m clio` then
 # run the same function, so the `.env` file is read once on both paths and there
 # is one entry point to read rather than two that differ in a way nothing records.
-ethos = "ethos.__main__:main"
+clio = "clio.__main__:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["ethos", "migrations"]
+packages = ["clio", "migrations"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
@@ -79,4 +81,4 @@ select = ["E", "F", "I", "W", "B", "UP"]
 ignore = ["E501", "UP042"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["ethos"]
+known-first-party = ["clio"]

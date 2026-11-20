@@ -17,9 +17,9 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from ethos.engine.workspace import BLOCK_ORDER, STABLE_BLOCKS, WorkspaceAssembler
-from ethos.prompts.identity import build_identity_kernel
-from ethos.schemas.gsl import Focus
+from clio.engine.workspace import BLOCK_ORDER, STABLE_BLOCKS, WorkspaceAssembler
+from clio.prompts.identity import build_identity_kernel
+from clio.schemas.gsl import Focus
 
 
 def assemble(**overrides):
@@ -172,5 +172,5 @@ def test_the_block_order_and_the_cache_boundary_are_unchanged():
 
 def test_the_identity_block_still_leads_the_stable_prefix():
     """The first thing read has to be what this is, before what it can do."""
-    assert "I am Aria, an AI agent based on Clio Agent 3." in \
+    assert "I am Aria, an AI agent based on Clio Agent 3.1." in \
         assemble().stable_prefix_text()

@@ -244,7 +244,7 @@ export function PersonList({ conversations, selected, onSelect, t }: {
             title={conversation.label}
             type="button"
           >
-            <Icon name="globe" size={12} />
+            <Icon name="user" size={12} />
             <span className="max-w-[11rem] truncate">{conversation.label}</span>
           </button>
         );

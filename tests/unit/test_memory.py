@@ -5,11 +5,11 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from ethos.config import load_config
-from ethos.engine.rhythm import RhythmController
-from ethos.gateway.embeddings import HashingEmbedder
-from ethos.memory.consolidate import hdbscan_like_cluster
-from ethos.memory.retrieval import (
+from clio.config import load_config
+from clio.engine.rhythm import RhythmController
+from clio.gateway.embeddings import HashingEmbedder
+from clio.memory.consolidate import hdbscan_like_cluster
+from clio.memory.retrieval import (
     HybridRetriever,
     bm25_scores,
     cosine,
@@ -18,7 +18,7 @@ from ethos.memory.retrieval import (
     score_memory,
     tokenize,
 )
-from ethos.schemas.memory import MemoryHit
+from clio.schemas.memory import MemoryHit
 
 
 @pytest.fixture()
@@ -37,8 +37,8 @@ def test_cosine_identical_and_orthogonal():
 
 
 def test_bm25_ranks_relevant_doc_higher():
-    query = ["ethos", "memory"]
-    docs = [tokenize("ethos keeps its memory alive across restarts"),
+    query = ["clio", "memory"]
+    docs = [tokenize("clio keeps its memory alive across restarts"),
             tokenize("the quick brown fox jumps over the lazy dog")]
     scores = bm25_scores(query, docs)
     assert scores[0] > scores[1]
@@ -190,8 +190,8 @@ async def test_a_bookmark_merges_into_the_resume_state_rather_than_replacing_it(
     import json as _json
     from uuid import uuid4
 
-    from ethos.memory.store import MemoryStore
-    from ethos.schemas.gsl import Bookmark
+    from clio.memory.store import MemoryStore
+    from clio.schemas.gsl import Bookmark
 
     db = _RecordingDB()
     store = MemoryStore(db, HashingEmbedder(1024), load_config("config"))
@@ -213,6 +213,79 @@ async def test_a_bookmark_merges_into_the_resume_state_rather_than_replacing_it(
         "the merge erases with nulls what it kept"
     )
     assert args[1] == intention_id
+
+
+class _RowsDB:
+    """A store DB that answers `fetch` with prepared rows.
+
+    It honours the one clause this test depends on -- the commission filter --
+    so a row that is not commissioned work is not handed back, the way the real
+    engine would not hand it back.
+    """
+
+    def __init__(self, rows: list[dict]) -> None:
+        self.rows = rows
+        self.queries: list[str] = []
+
+    async def fetch(self, sql: str, *args, **kwargs):
+        self.queries.append(sql)
+        if "origin = 'commission'" in sql:
+            return [r for r in self.rows if r.get("origin") == "commission"]
+        return self.rows
+
+
+def _intention_row(**overrides):
+    row = {
+        "id": "21111111-1111-1111-1111-111111111111", "parent_id": None,
+        "kind": "commitment", "title": "Resume the Snake build",
+        "desired_end_state": "the model trains", "success_criteria": "[]",
+        "constraints": "{}", "origin": "commission",
+        "commissioned_by": "owner", "status": "active", "priority": 0.5,
+        "deadline": None, "budget_usd": None, "spent_usd": 0,
+        "resume_state": "{}", "hypothesis": None,
+        "created_at": datetime.now(UTC), "updated_at": datetime.now(UTC),
+        "closed_reason": None,
+    }
+    row.update(overrides)
+    return row
+
+
+async def test_next_open_commission_names_the_work_somebody_is_waiting_on(memory_config):
+    """The commission bypass has to be reachable from mid-cycle, not only from
+    an empty focus.
+
+    `choose_focus` gives a person's request the pass outright -- but only when
+    the focus is empty. An impulse focus with a pending step never empties, so
+    the bypass was unreachable and a live agent spent a whole morning
+    advancing a drive placeholder while the commissioned task sat open and the
+    replies said it was being worked on. This is the same selection, callable
+    every cycle: open commissioned work only, most urgent first.
+    """
+    from clio.gateway.embeddings import HashingEmbedder
+    from clio.memory.store import MemoryStore
+
+    db = _RowsDB([_intention_row()])
+    store = MemoryStore(db, HashingEmbedder(1024), load_config("config"))
+
+    found = await store.next_open_commission()
+
+    assert found is not None and found.title == "Resume the Snake build"
+    assert db.queries and "origin = 'commission'" in db.queries[0], (
+        "only work somebody commissioned qualifies"
+    )
+    assert "status = ANY" in db.queries[0], "closed work is not waiting"
+
+
+async def test_next_open_commission_is_none_when_only_self_set_work_is_open(memory_config):
+    from clio.gateway.embeddings import HashingEmbedder
+    from clio.memory.store import MemoryStore
+
+    db = _RowsDB([_intention_row(origin="impulse", kind="task",
+                                 title="advance_commitment",
+                                 commissioned_by=None)])
+    store = MemoryStore(db, HashingEmbedder(1024), load_config("config"))
+
+    assert await store.next_open_commission() is None
 
 
 # --------------------------------------------------------------------------
@@ -317,9 +390,9 @@ def test_rhythm_energy_rest_boost(config):
 
 
 def test_rhythm_energy_rest_boost_uncapped_contribution():
-    from ethos.config import EthosConfig
+    from clio.config import ClioConfig
 
-    cfg = EthosConfig()
+    cfg = ClioConfig()
     cfg.rhythm.energy.cap = 2.0
     rhythm = _at_the_peak(cfg)
     rhythm.mark_awake()

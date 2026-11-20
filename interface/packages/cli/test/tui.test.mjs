@@ -207,11 +207,36 @@ test('the wizard walks to the credentials step and validates a missing key', { s
   });
 });
 
+test('the tuning categories live behind the advanced settings fold', { skip }, async () => {
+  await withConfig(async () => {
+    // The fold starts closed: the sidebar names the section, and none of the
+    // tuning categories are offered until it is opened.
+    const folded = await drive([['\u0013', 1400]]);
+    assert.match(folded, /Advanced settings/);
+    assert.doesNotMatch(folded, /Token budget/);
+    assert.doesNotMatch(folded, /Budget unit/);
+
+    // Tab to the sidebar, walk down to the fold, open it, and step into Budget.
+    const screen = await drive([
+      ['\u0013', 1400],
+      ['\t', 400],
+      ['\u001b[B', 300],
+      ['\u001b[B', 300],
+      ['\r', 500],
+      ['\u001b[B', 300],
+      ['\r', 900],
+    ]);
+    assert.match(screen, /Advanced settings/);
+    assert.match(screen, /Token budget/);
+    assert.match(screen, /Budget unit/);
+  });
+});
+
 test('a keyless local provider is not asked for a key', { skip }, async () => {
   await withConfig(async () => {
     const screen = await drive([['\u0013', 1400], ['\r', 900], ['\r', 1200]]);
     assert.doesNotMatch(screen, /Enter an API key to continue/);
-    assert.match(screen, /Model discovery/);
+    assert.match(screen, /Step 3/);
   });
 });
 

@@ -6,8 +6,8 @@ from typing import Any
 
 import pytest
 
-from ethos.social.conversation import open_conversations, render_conversations
-from ethos.social.etiquette import OutboundPipeline
+from clio.social.conversation import open_conversations, render_conversations
+from clio.social.etiquette import OutboundPipeline
 from tests.conftest import make_config
 
 pytestmark = pytest.mark.scenario
@@ -375,8 +375,8 @@ async def test_the_reply_path_is_told_the_same_thing():
     """
     from datetime import UTC, datetime
 
-    from ethos.prompts.deliberation import social_deliberation_messages
-    from ethos.schemas.messages import Message
+    from clio.prompts.deliberation import social_deliberation_messages
+    from clio.schemas.messages import Message
 
     inbound = Message(
         channel="telegram", person_id="tg:819012345678", text="any news on the launch?",

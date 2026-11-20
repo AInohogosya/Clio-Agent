@@ -23,8 +23,8 @@ from pathlib import Path
 
 import pytest
 
-from ethos.config import load_config
-from ethos.gateway.cost import (
+from clio.config import load_config
+from clio.gateway.cost import (
     SPEND_BY_BUCKET_SQL,
     SPEND_BY_DAY_SQL,
     SPEND_BY_MODEL_SQL,
@@ -32,7 +32,7 @@ from ethos.gateway.cost import (
     CostCalculator,
     start_of_day,
 )
-from ethos.gateway.normalizer import (
+from clio.gateway.normalizer import (
     response_from_anthropic,
     response_from_google,
     response_from_openai_compat,
@@ -40,7 +40,7 @@ from ethos.gateway.normalizer import (
     usage_from_inclusive_completion,
     usage_from_inclusive_prompt,
 )
-from ethos.pricing import (
+from clio.pricing import (
     SOURCE_FREE,
     SOURCE_LIVE,
     SOURCE_UNKNOWN,
@@ -94,7 +94,7 @@ def test_free_by_base_url_not_by_name(table):
 
 
 def test_free_model_costs_zero_regardless_of_usage(costs):
-    from ethos.schemas.models import Usage
+    from clio.schemas.models import Usage
 
     usage = Usage(
         input_tokens=1_000_000, cached_input_tokens=1_000_000,
@@ -347,7 +347,7 @@ def test_reported_zero_is_reported_zero(costs):
 
 
 def _usage_dict(inp, output=0):
-    from ethos.schemas.models import Usage
+    from clio.schemas.models import Usage
 
     return Usage(input_tokens=inp, output_tokens=output)
 
@@ -357,7 +357,7 @@ def _usage_dict(inp, output=0):
 
 
 def test_estimate_reads_the_actual_request(costs):
-    from ethos.schemas.models import ModelMessage, ModelRequest, Role, Tier
+    from clio.schemas.models import ModelMessage, ModelRequest, Role, Tier
 
     small = ModelRequest(
         tier=Tier.T1, purpose="test",
@@ -376,7 +376,7 @@ def test_estimate_reads_the_actual_request(costs):
 
 
 def test_estimate_never_exceeds_the_promised_ceiling(costs):
-    from ethos.schemas.models import ModelMessage, ModelRequest, Role, Tier
+    from clio.schemas.models import ModelMessage, ModelRequest, Role, Tier
 
     request = ModelRequest(
         tier=Tier.T1, purpose="test",

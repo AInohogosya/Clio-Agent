@@ -7,8 +7,8 @@ from typing import Any
 
 import pytest
 
-from ethos.memory.context import ContextLayer
-from ethos.schemas.context import NarrativeLine, TurnKind
+from clio.memory.context import ContextLayer
+from clio.schemas.context import NarrativeLine, TurnKind
 from tests.conftest import make_config
 from tests.scenarios.test_restart_continuity import build_life
 
@@ -102,9 +102,9 @@ async def test_gsl_step_receives_the_volatile_context(db, tmp_path: Path):
     `_execute_step` used to send only the cache-stable prefix, so six of nine
     blocks never reached the model however much work `Life` did assembling them.
     """
-    from ethos.gsl.loop import GeneralSolverLoop, _step_from
-    from ethos.gsl.verification import VerificationLadder
-    from ethos.schemas.gsl import Plan
+    from clio.gsl.loop import GeneralSolverLoop, _step_from
+    from clio.gsl.verification import VerificationLadder
+    from clio.schemas.gsl import Plan
     from tests.conftest import ScriptedGateway
 
     config = make_config(tmp_path / "gsl-ctx")
@@ -147,8 +147,8 @@ async def test_conversation_history_is_available_to_deliberation(db, tmp_path: P
     string, so every reply was written as though it were the first message ever
     received on that conversation.
     """
-    from ethos.schemas.messages import Message
-    from ethos.social.deliberation import SocialCognition
+    from clio.schemas.messages import Message
+    from clio.social.deliberation import SocialCognition
     from tests.conftest import ScriptedGateway
 
     config = make_config(tmp_path / "conv-history")
@@ -187,10 +187,52 @@ async def test_conversation_history_is_available_to_deliberation(db, tmp_path: P
         "deliberation must carry the conversation it is answering into"
 
 
+async def test_undelivered_messages_are_not_shared_conversation_history(db, tmp_path: Path):
+    """The reply must not assume the person saw a message the pipeline held."""
+    from clio.schemas.messages import Message
+    from clio.social.deliberation import SocialCognition
+
+    config = make_config(tmp_path / "conv-history-delivered")
+    social = SocialCognition(config, db=db)
+    key = "web:delivered-history"
+    await _seed_messages(db, key, [
+        ("inbound", -30, "choose a project name"),
+        ("outbound", -29, "I privately chose Helio"),
+        ("outbound", -28, "I privately chose Clio"),
+        ("outbound", -27, "I narrowed it to Clio and Helio"),
+        ("inbound", -26, "which one did you choose?"),
+    ])
+    await db.execute(
+        "UPDATE messages SET delivery = '{\"status\":\"held\"}'::jsonb "
+        "WHERE conversation_key = $1 AND text = 'I privately chose Helio'",
+        key,
+    )
+    await db.execute(
+        "UPDATE messages SET delivery = '{\"status\":\"duplicate\"}'::jsonb "
+        "WHERE conversation_key = $1 AND text = 'I privately chose Clio'",
+        key,
+    )
+    latest = await db.fetchrow(
+        "SELECT id FROM messages WHERE conversation_key = $1 ORDER BY ts DESC LIMIT 1",
+        key,
+    )
+    message = Message(
+        id=latest["id"], channel="web", conversation_key=key, person_id="owner",
+        text="which one did you choose?",
+    )
+
+    history = await social._recent_conversation(message)
+
+    assert "choose a project name" in history
+    assert "I narrowed it to Clio and Helio" in history
+    assert "I privately chose Helio" not in history
+    assert "I privately chose Clio" not in history
+
+
 async def test_open_commitments_reach_deliberation(db, tmp_path: Path):
     """Saying yes to something already owed is how an agent double-books itself."""
-    from ethos.schemas.messages import Message
-    from ethos.social.deliberation import SocialCognition
+    from clio.schemas.messages import Message
+    from clio.social.deliberation import SocialCognition
     from tests.conftest import ScriptedGateway
 
     config = make_config(tmp_path / "commitments-ctx")
@@ -220,7 +262,12 @@ async def test_open_commitments_reach_deliberation(db, tmp_path: Path):
 
 
 async def test_context_rolls_into_narrative_during_a_life(db, tmp_path: Path):
-    """The buffer is bounded, but nothing is lost: it becomes a line."""
+    """The buffer is bounded, and compression is lossy only for the routine.
+
+    A roll narrates the stretch into a line, but what it *consumes* is the
+    routine half: a person's question and a failure stay verbatim, because a
+    roll is allowed to lose a detail, not a conversation.
+    """
     config = make_config(tmp_path / "roll-live")
     config.paths.ensure()
     config.memory.context.narrate_every = 3
@@ -233,8 +280,12 @@ async def test_context_rolls_into_narrative_during_a_life(db, tmp_path: Path):
     await life._append_turn(TurnKind.action.value, "retried with different args")
     await context.roll("fix the tool")
 
-    assert len(context.turns) == 0, "the batch should have been consumed"
-    assert len(context.narrative) == 1, "and become a line"
+    assert len(context.narrative) == 1, "the stretch became a line"
+    kinds = {t.kind for t in context.turns}
+    assert TurnKind.action.value not in kinds, "the routine turn was consumed"
+    assert {TurnKind.inbound.value, TurnKind.failure.value} <= kinds, \
+        "the person's question and the failure stay verbatim"
+    assert "owner asked a question" in context.render()
     assert "What I have been doing" in context.render_thread()
     await deps.bus.stop()
 
@@ -242,7 +293,7 @@ async def test_context_rolls_into_narrative_during_a_life(db, tmp_path: Path):
 async def test_focus_change_writes_down_what_was_being_worked_on(db, tmp_path: Path):
     """A change of focus is the natural seam: the work just finished, so it gets
     written down now rather than whenever the buffer happens to fill."""
-    from ethos.schemas.gsl import Focus
+    from clio.schemas.gsl import Focus
 
     life, deps = await build_life(db, tmp_path, "focus-roll")
     life.context.cfg.narrate_every = 1
@@ -263,7 +314,7 @@ async def test_silence_is_kept_as_a_choice(db, tmp_path: Path):
     message that never arrived."""
     from uuid import uuid4
 
-    from ethos.schemas.messages import IgnoreReason, Message, SocialAction, SocialDecision
+    from clio.schemas.messages import IgnoreReason, Message, SocialAction, SocialDecision
 
     life, deps = await build_life(db, tmp_path, "silence")
     message = Message(

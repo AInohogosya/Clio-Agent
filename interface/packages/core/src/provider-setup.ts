@@ -11,7 +11,7 @@ import {
 } from './security.js';
 import type { TranslationKey } from './i18n.js';
 import { providerFor } from './providers.js';
-import { MAX_PERSON_LENGTH, type ModelDiscoveryResult, type ProviderId, type Settings } from './types.js';
+import { MAX_PERSON_LENGTH, REASONING_LEVELS, type ModelDiscoveryResult, type ProviderId, type ReasoningLevel, type Settings } from './types.js';
 import { createSettings } from './types.js';
 
 /**
@@ -81,6 +81,30 @@ export function setupProblem(step: SetupStep, draft: Settings, keyOnFile = false
   if (providerFor(draft.provider).requiresApiKey && !draft.apiKey.trim() && !keyOnFile) return 'keyRequired';
   if (step >= 3 && !draft.model.trim()) return 'modelRequired';
   return null;
+}
+
+/**
+ * Whether a launch opens on the provider and LLM settings rather than the
+ * chat: there is no configuration file yet.
+ *
+ * `firstLaunch` is whatever the surface that launched can say about the
+ * file itself — whether it exists at all — and it is the only signal that
+ * tells a fresh install apart from an existing one whose metadata has
+ * not moved. A file that exists is never a first launch even when its
+ * revision or timestamp has not moved. A surface with no bridge keeps the
+ * settings it defaults to, so "no file" is the half that matters there;
+ * the bridge answers with the file itself, so it carries the same fact
+ * over the link.
+ * A saved but unconfigured file is not a first launch either, and it is
+ * not gated this way on purpose: the person has launched before, and a
+ * missing provider or key is a state the chat and the settings screen
+ * name and refuse rather than a reason to intercept the launch — a setup
+ * reached from the chat is always one Ctrl-S away.
+ */
+export function shouldShowProviderSetupOnLaunch(input: {
+  firstLaunch: boolean;
+}): boolean {
+  return input.firstLaunch;
 }
 
 /**
@@ -324,6 +348,41 @@ export function shouldProbeCatalog(
   if (!providerFor(draft.provider).requiresApiKey) return true;
   if (options.useEnv || options.keyOnFile) return true;
   return draft.apiKey.trim() !== '';
+}
+
+/**
+ * The reasoning levels a model may be offered.
+ *
+ * What the provider reported for this model when it reported anything —
+ * filtered to levels this kit knows, and always holding `off`, which sends
+ * nothing and therefore takes what the provider does by default. A model the
+ * provider did not describe, or no discovery run at all, gets the full set:
+ * the offer can only be narrowed by something somebody said, never by a gap
+ * where a report should have been.
+ */
+export function levelsForModel(
+  support: Record<string, ReasoningLevel[]> | undefined,
+  model: string,
+): ReasoningLevel[] {
+  const reported = support?.[model];
+  if (!reported) return [...REASONING_LEVELS];
+  const known = reported.filter((level): level is ReasoningLevel => (REASONING_LEVELS as readonly string[]).includes(level));
+  return known.includes('off') ? known : ['off', ...known];
+}
+
+/**
+ * The level to actually use for a model, narrowed to what it accepts.
+ *
+ * The fallback is `off`, not "the first of the offered": a level a model
+ * cannot take is what this page is built to not write, and the honest floor
+ * for one is no level at all.
+ */
+export function effectiveReasoningLevel(
+  support: Record<string, ReasoningLevel[]> | undefined,
+  model: string,
+  level: ReasoningLevel,
+): ReasoningLevel {
+  return levelsForModel(support, model).includes(level) ? level : 'off';
 }
 
 /** Case-insensitive substring search over a discovered catalogue. */

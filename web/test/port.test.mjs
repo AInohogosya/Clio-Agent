@@ -13,7 +13,7 @@ import { after, before, test } from 'node:test';
  * The supervisor starts this process alongside an agent that may already have one
  * running, so the second bridge finding the port held is an ordinary outcome rather
  * than a fault — and it used to arrive as an uncaught `error` event: a Node stack
- * trace on stderr, filed under `ethos-web.log` where nobody reads it, and a child
+ * trace on stderr, filed under `clio-web.log` where nobody reads it, and a child
  * the supervisor records as dead. The information that was actually worth having —
  * another bridge is serving the interface, and the page is right there — was in
  * none of it.
@@ -41,7 +41,7 @@ let builtPage = '';
 
 /** A directory holding one real index.html, so "is the page served" has a real answer. */
 function makeBuild() {
-  const dir = mkdtempSync(join(tmpdir(), 'ethos-dist-'));
+  const dir = mkdtempSync(join(tmpdir(), 'clio-dist-'));
   writeFileSync(join(dir, 'index.html'), '<!doctype html><title>Clio Agent</title>');
   return dir;
 }
@@ -60,10 +60,10 @@ function startBridge(overrides = {}) {
   return spawn(process.execPath, [SERVER], {
     env: {
       ...process.env,
-      ETHOS_HOME: home,
-      ETHOS_CONFIG_DIR: CONFIG_DIR,
-      ETHOS_WEB_PORT: String(port),
-      ETHOS_PHONE_DIST: builtPage,
+      CLIO_HOME: home,
+      CLIO_CONFIG_DIR: CONFIG_DIR,
+      CLIO_WEB_PORT: String(port),
+      CLIO_PHONE_DIST: builtPage,
       ...overrides,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -71,7 +71,7 @@ function startBridge(overrides = {}) {
 }
 
 before(async () => {
-  home = mkdtempSync(join(tmpdir(), 'ethos-port-'));
+  home = mkdtempSync(join(tmpdir(), 'clio-port-'));
   port = await freePort();
   base = `http://127.0.0.1:${port}`;
   builtPage = makeBuild();
@@ -131,12 +131,12 @@ test('the port is only reported as served when a page actually comes back', asyn
 });
 
 test('a port held by something that serves no page is reported, not called a success', async () => {
-  // The case that made `ethos up` and `ethos status` confidently wrong: a bridge
+  // The case that made `clio up` and `clio status` confidently wrong: a bridge
   // that took the port while the interface was unbuilt. It answers its whole API —
   // so every liveness check says the interface is up — and 404s the page.
-  const emptyBuild = mkdtempSync(join(tmpdir(), 'ethos-dist-empty-'));
+  const emptyBuild = mkdtempSync(join(tmpdir(), 'clio-dist-empty-'));
   const portWithoutPage = await freePort();
-  const holder = startBridge({ ETHOS_PHONE_DIST: emptyBuild, ETHOS_WEB_PORT: String(portWithoutPage) });
+  const holder = startBridge({ CLIO_PHONE_DIST: emptyBuild, CLIO_WEB_PORT: String(portWithoutPage) });
   const holderBase = `http://127.0.0.1:${portWithoutPage}`;
   try {
     for (let attempt = 0; attempt < 100; attempt += 1) {
@@ -149,7 +149,7 @@ test('a port held by something that serves no page is reported, not called a suc
     }
 
     const said = await new Promise((done) => {
-      const child = startBridge({ ETHOS_PHONE_DIST: emptyBuild, ETHOS_WEB_PORT: String(portWithoutPage) });
+      const child = startBridge({ CLIO_PHONE_DIST: emptyBuild, CLIO_WEB_PORT: String(portWithoutPage) });
       let output = '';
       child.stdout.on('data', (chunk) => { output += chunk.toString(); });
       child.stderr.on('data', (chunk) => { output += chunk.toString(); });
@@ -170,9 +170,9 @@ test('a build that appears after startup is served without a restart', async () 
   // The ordering this used to lose: the bridge was started first, the interface was
   // built afterwards, and the build was never picked up — the process had already
   // decided, once, that it would not serve a page.
-  const lateBuild = mkdtempSync(join(tmpdir(), 'ethos-dist-late-'));
+  const lateBuild = mkdtempSync(join(tmpdir(), 'clio-dist-late-'));
   const latePort = await freePort();
-  const bridge = startBridge({ ETHOS_PHONE_DIST: lateBuild, ETHOS_WEB_PORT: String(latePort) });
+  const bridge = startBridge({ CLIO_PHONE_DIST: lateBuild, CLIO_WEB_PORT: String(latePort) });
   const lateBase = `http://127.0.0.1:${latePort}`;
   try {
     for (let attempt = 0; attempt < 100; attempt += 1) {

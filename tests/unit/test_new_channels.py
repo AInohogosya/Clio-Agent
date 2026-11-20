@@ -2,7 +2,7 @@
 
 The three doors here were added together because two of them need the same
 machinery, and the tests follow the same split: one section per door for the
-parts that are its own, and one for `ethos.comms.jwt`, which is the part that
+parts that are its own, and one for `clio.comms.jwt`, which is the part that
 would silently weaken every door using it if it were wrong.
 
 Each test says which behaviour it is standing on. The ones worth reading rather
@@ -28,11 +28,11 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from cryptography.x509.oid import NameOID
 
-from ethos.comms.adapters.googlechat import GoogleChatAdapter, chat_address
-from ethos.comms.adapters.line import LineAdapter, line_signature
-from ethos.comms.adapters.teams import TeamsAdapter
-from ethos.comms.jwt import JwtUnavailable, PublicKeys, bearer, sign_rs256, verify
-from ethos.schemas.messages import Message
+from clio.comms.adapters.googlechat import GoogleChatAdapter, chat_address
+from clio.comms.adapters.line import LineAdapter, line_signature
+from clio.comms.adapters.teams import TeamsAdapter
+from clio.comms.jwt import JwtUnavailable, PublicKeys, bearer, sign_rs256, verify
+from clio.schemas.messages import Message
 
 # A fixed RSA keypair, generated once per test session and used for both sides of
 # every JWT in this file. Generated rather than committed, because a key in the
@@ -262,7 +262,7 @@ def teams_activity(text: str = "hello", *, from_id: str = "29:abc-def",
         "from": {"id": from_id, "name": "Ada Lovelace"},
         "conversation": {"id": conversation, "isGroup": False},
         "channelId": "msteams", "serviceUrl": service_url,
-        "recipient": {"id": "app-id", "name": "Ethos"},
+        "recipient": {"id": "app-id", "name": "Clio"},
     }
 
 
@@ -322,7 +322,7 @@ async def test_teams_strips_its_own_mention_and_ignores_its_own_messages():
     adapter = TeamsAdapter("app-id", "secret", [], http=FakeHttp())
     await adapter.start()
     try:
-        assert adapter.parse(teams_activity("<at>Ethos</at> please do the thing")) == \
+        assert adapter.parse(teams_activity("<at>Clio</at> please do the thing")) == \
             [("29:abc-def", "a:1v2pHM", "act-1", "please do the thing")]
         assert adapter.parse(teams_activity(from_id="app-id")) == []
         assert adapter.parse(teams_activity(text="  ")) == []
@@ -553,7 +553,7 @@ async def test_a_public_key_is_built_from_both_published_shapes():
     Refusing either would mean the same door working or not depending on which
     format the publisher happened to choose that day.
     """
-    from ethos.comms.jwt import _certificate_of, _entries_of, _key_of
+    from clio.comms.jwt import _certificate_of, _entries_of, _key_of
 
     entry = _jwks()["keys"][0]
     cert = _certificate()
@@ -620,7 +620,7 @@ async def test_a_push_route_without_a_secret_is_still_a_closed_door():
     itself is worth testing, because it is the property that makes a
     half-configured door closed rather than published.
     """
-    from ethos.comms.webhook import WebhookRoute
+    from clio.comms.webhook import WebhookRoute
 
     route = WebhookRoute("/hooks/teams", None, lambda payload: None)
     assert route.authentic_body({"authorization": "Bearer zzz"}, b"{}") is False
@@ -634,7 +634,7 @@ async def test_the_receiver_answers_a_reachability_probe_with_a_constant():
     a constant, because there is nothing in the request to echo and nothing it
     could prove.
     """
-    from ethos.comms.webhook import WebhookReceiver
+    from clio.comms.webhook import WebhookReceiver
 
     receiver = WebhookReceiver("127.0.0.1", 0, lambda message: None)
     receiver.route("/hooks/line", "s", lambda payload: None, ping=lambda: "OK")

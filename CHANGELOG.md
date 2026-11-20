@@ -1,4 +1,210 @@
-# Clio Agent 3
+# Clio Agent 3.1
+
+## v3.1.0-beta.17
+
+Containment, steering and policy: the upgrade that gives every project a
+sandbox, every mid-run message a path to the step in progress, and every tool
+call a fail-closed policy in front of it. The full architecture note is
+[docs/10-sandboxes-steering-and-policy.md](docs/10-sandboxes-steering-and-policy.md).
+
+- Package and identity: the whole repository now answers to **Clio Agent 3.1**
+  alone — the Python package is `clio`, the console script is `clio`, the
+  services are `clio-core`, `clio-gateway`, `clio-toolhost`, `clio-comms`,
+  `clio-workers-{1..N}`, `clio-api` and `clio-supervisor`, the UI namespace is
+  `ClioUI`, config is `config/clio.yaml`, and the event-bus channel and metric
+  names follow. Environment variables are `CLIO_*` with the legacy `ETHOS_*`
+  spellings read as fallback (`clio/env.py`), so a deployment configured
+  before the rename keeps answering the same database until its unit files are
+  edited. The two data locations this machine already held — the agent home
+  `~/.ethos` and the database name in the DSN — are kept deliberately: they
+  name user data, not the product, and renaming them would orphan it.
+- Project sandboxes: `MemoryStore.create_project` now provisions a sandbox
+  (`clio/sandbox/provider.py`) and mounts the project's `WorkspaceLease` at
+  `/workspace` — rootless Docker/Podman with `CapDrop: ALL`,
+  `no-new-privileges`, seccomp, `PidsLimit: 512` and optional gVisor; the
+  bubblewrap/Seatbelt OS-level sandboxes; the filesystem baseline, named
+  honestly. The `sandbox_registry` carries `lease_owner`/`lease_fence` and
+  commits are fence-guarded.
+- Egress: every sandbox connection passes a per-project proxy
+  (`clio/sandbox/egress.py`) with domain allowlists, address-level blocking of
+  the metadata service and the private ranges across every redirect hop and
+  CONNECT tunnel, and an audit row per decision.
+- The virtual computer (`clio/sandbox/computer.py`): per-project Xvfb display
+  and Chromium profile; server-issued `ariaSnapshot` references resolved
+  in-page at act time and refused with 409 semantics when stale;
+  `{{secret:KEY}}` substitution inside the sandbox so raw secrets never enter
+  model context; live screen takeover behind an Action Barrier that drains
+  in-flight agent input and masks password fields.
+- Steering: messages to the active project's conversation during a run land
+  in `steering_messages` and are claimed by
+  `GeneralSolverLoop.prepare_next_step` at every step boundary — read into the
+  step at high priority, `constraint:` lines merged into the plan, stale
+  claims handed back. `steering.inject`, `control.update` and `guardian.undo`
+  are formalized as the three out-of-band lanes. The fast-lane micro-slot
+  (`CLIO_FAST_LANE_BUDGET_S = 90`) answers quick secondary-conversation
+  questions during a locked focus quantum without touching the primary
+  project.
+- Guardian Layer 1: a real fail-closed CEL engine (`clio/guardian/policy.py`)
+  evaluated before every tool call — deny before allow, unparseable or
+  missing-attribute expressions deny, live reload over LISTEN/NOTIFY — plus
+  signed `runAssertion` tokens binding project/space/initiator/depth and
+  Pre-Execution Approval Cards for high-impact external side effects.
+- Verification: rung 2 reads whole artifacts through map-reduce chunk
+  inspection (`clio/gsl/verifier_inspect.py`) with structured diffs and
+  chunk-provenanced verdicts; no fixed truncation remains. The model judge
+  still cannot overturn a failing rung-1 check.
+- Tools: two-stage dynamic narrowing with the pinned `tools.search` meta-tool
+  (`clio/tools/catalog.py`); native MCP client/server over stdio, Streamable
+  HTTP and SSE with pooling, health checks and degraded stand-ins
+  (`clio/toolhost/mcp.py`); an OAuth connector broker with envelope-sealed
+  tokens and toolhost-side execution (`connectors.py`); OpenAPI/GraphQL
+  importers with recursive `$ref` resolution (`importers.py`).
+- Data: migration 0008 adds `(tenant_id, space_id)` and PostgreSQL RLS across
+  the project, memory, event, artifact and audit tables, fail-closed for an
+  unscoped session; envelope encryption (`clio/security/envelope.py`) seals
+  episode bodies, fact provenance, journal arguments, checkpoints and
+  portable workspace archives under per-space DEKs, and shredding a space's
+  DEK is cryptographic deletion; speed-1 inline contradiction resolution
+  (`clio/memory/contradiction.py`) applies mid-day corrections inside the
+  same write that records them.
+- Runtime: dual-tier liveness — the 15-second fast heartbeat and the
+  1800-second ceiling — with recycled children's activity leases transferred
+  under monotonically-incremented fences (`clio/core/leases.py`); `clio-api`
+  as a stateless control plane (`clio/api/app.py`) serving the control verbs,
+  ClioUI components, screen takeover and OAuth callbacks; the oob-guardian
+  now freezes sandboxes and revokes gateway tokens out of band; Kubernetes
+  manifests and a containerized compose profile ship under `deploy/`.
+
+## v3.1.0-beta.14
+
+Field repair for the helmet search of 2026-11-02 (07:47–08:13 UTC): three `browser.visit` calls to Amazon Japan returned HTTP 200 — the site opened every time — yet the task ended with "every attempt to open Amazon Japan failed" reported to the person who asked for the helmet. The failure and the false report had the same root.
+
+- Browser: a selector action aimed at a session that never visited anything is refused before the wait. Every `session_id` is its own browser and a fresh one sits on `about:blank`; the agent visited in `helmet-search` and then clicked in `amazon-search` and extracted in `amazon_helmet`, so both follow-ups spent Playwright's full fifteen seconds in an empty browser and came back with `TimeoutError: waiting for locator(...)` — an error that names neither the page nor the session and reads as the site refusing to load. `BrowserSession` now tracks its last completed navigation (`last_url`), and `browser.click`/`type`/`extract`/`screenshot` on a page that is still `about:blank` raise `NoPageError` immediately with the recovery in the sentence: nothing visited here succeeded, so no selector can ever match — visit in this session, or aim at the session that holds the page. The wasted wait and the wrong diagnosis both came from one missing check.
+- Browser: a selector that genuinely does not appear on a loaded page is no longer a bare Playwright timeout. `SelectorTimeoutError` quotes the action, the selector, the wait, and the URL the page is on, and says the page IS open — a selector or rendering problem, not a failed visit — because the distinction between "the site is down" and "you are in the wrong browser" is the whole diagnosis, and an error that names neither is how a 200 becomes "Amazon would not open". `browser.visit`'s own timeout is the one error that really means the site did not open, and `VisitTimeoutError` says exactly that and nothing else.
+- Browser: the refusal to act in an empty session carries the pool's inventory (`BrowserPool.open_pages`): `Sessions with a page open: helmet-search -> https://…`. The fix for the wrong-session call is one `session_id` away from the browser that already holds the page; an error that only says the session is empty leaves the agent guessing at ids it has used, and the next call in the log did guess wrong again. Successful actions now also echo where they ran (`session` on a visit, the page `url` on every action), so an unexpected page is visible in the result itself.
+- Browser tools: the catalog states the session contract on `browser.visit` — later click/type/extract/screenshot act on this session's page, same `session_id` every call (or omit it everywhere) — in one line, because the catalog's token guard was already at 98.6% and the full lesson belongs in the errors, where it costs nothing until the moment it is needed. Tool verdicts carry the code the failure deserves: `environment` for the repairable wrong-session state, `timeout` for a real selector timeout.
+- Tests: the empty-session refusal (immediate, no selector wait spent, session named), the visit→click sequence acting on the page the session opened, the timeout rewrites quoting the URL and refusing the "site failed" reading, the pass-through of non-timeout errors, the pool inventory listing only sessions with a loaded page, the tool verdicts with their codes and the recovery inventory, and the catalog's one-line session rule are pinned in `tests/unit/test_browser_sessions.py`, written against the exact call sequence the logs recorded.
+
+## v3.1.0-beta.13
+
+The agent had two workers for whole classes of job — Foundry for repo-scale software objectives, APEX for the real desktop — and a bounded coding task sat in the gap: too small to hand a factory with gates and a merge train, too real to fake with a shell loop. The third sub-agent closes the gap.
+
+- AXIOM wired in as a sub-agent (`clio/subagents/axiom.py`): the single-turn autonomous coding agent that lives in `AXIOM/` beside this checkout, integrated as-is through the same seam the other two use. In-process mode imports its six-layer engine from `AXIOM/src` and points the program's own native chat-completions client at the gateway shim on loopback (`axiom_engine_config` in the bridge, pinning `provider="openai"` so the base model resolves to the plain adapter rather than litellm); subprocess mode drives the only interface the program now exposes — the `axiom serve` agent-link service — with the task handed over `POST /api/message`, the base model set through `POST /api/model` the way the interface sets it, and the verdict read off the snapshot's task intention (`succeeded`/`failed`/`cancelled` mapped to `done`/`failed`/`blocked`). `AXIOM/.venv` is bootstrapped idempotently when missing, the same repair APEX's adapter makes for its native dependencies.
+- The mock engine is never a verdict: with no base model configured, AXIOM silently routes to a deterministic mock that exercises its pipeline with rule-based synthesis — a delegation answered by it would come back `done` with confident-sounding fiction. Both modes refuse: the bridge either engaged, or the delegation failed saying so.
+- Tools and plumbing: `subagent.axiom` joins the catalog beside `subagent.foundry` and `subagent.apex` (same `86400s` tool ceiling, so the run reports its own verdict), `subagent.status` describes three programs, the guardian classifies the delegation as execute+write like the others, `axiom` joins `SUBAGENT_ROLES` so long work can spawn as a thread, and the config ships the third agent entry (`mode: auto`, thread-worktree default, 3600s ceiling).
+- Planning prompts: the delegation prompt gains the AXIOM bullet with the boundary drawn explicitly — one task with a verifiable end state goes to `subagent.axiom`, a whole objective handed to a factory goes to `subagent.foundry` — and a work-type routing cue that is checked only when Foundry's own cues are quiet, so repo-scale wording keeps its worker. The deliberation prompt names the new capability.
+- Wiring: AXIOM is registered as a git submodule beside APEX and Foundry (`.gitmodules`, same remote org), and `SubagentsConfig` defaults carry the third entry.
+- Tests: the registry's three-program knowledge, the engine config's gateway routing, the verdict mapping in both directions, the mock-engine refusal, the health fallback naming the bootstrap, and the routing boundary (bounded coding task → AXIOM, repo-scale wording → Foundry only) are pinned in `tests/unit/test_axiom_subagent.py`.
+
+## v3.1.0-beta.12
+
+The context compression is overhauled, and the past becomes something both sides of the conversation can reach: the person scrolls back through the interface, and the agent reads the same history through a tool whose argument says how far back to go.
+
+The complaint that drove this: the agent forgot anything not converted into a task. A conversation was one paraphrased line after `narrate_every` turns, and off the thread a dozen lines later, because compression dropped the oldest stretch *whole* — a person's words and a tool result were the same weight of experience, and one line about the batch was all either survived as. What a person said had to be turned into an intention to outlive the hour.
+
+- Compression (`clio/memory/context.py`): a roll now separates what the narrator *reads* from what the buffer *loses*. The narrator reads the oldest stretch nobody has written a line about — a partial view would make the line about nothing — but what leaves is chosen protectively: routine turns go, and the important ones stay verbatim. A turn at or above `durable_salience` (0.7: social turns at 0.85, failures at 0.75) is kept until the durable buffer itself is full (`durable_max_turns`, 24) or the whole buffer overflows, and the stretch is then narrated with the extraction pass carrying its content out as anchors. A turn also carries a `narrated` marker, so a durable turn can be covered by a line and still kept verbatim without the next roll writing the same line twice.
+- Extraction (`clio/prompts/context.py`): the narrator is now asked for what must outlive the turns, not only a line about them. The reply carries `important` items — what somebody said, a promise, a question, a decision and why, a fact, a name, a deadline — quoted in the person's own words where there are words to quote. Anchors render on the thread under "## Must not forget", ahead of the narrative, ranked by salience; an anchor taken from a conversation carries conversational weight (floored at 0.8), because a person's words were the reason the batch was read. Duplicates are absorbed, the list is capped (`anchor_max`, 16), and what leaves the cap is written to durable memory as `kind="anchor"` at importance ≥ 0.8 with a 30-day half-life — surviving the thread is no longer the last chance important content gets.
+- Snapshots: anchors persist through restarts with the narrative and the newest turns.
+- Configuration (`memory.context`): new keys `durable_salience` (0.7), `durable_max_turns` (24), `anchor_max` (16), `narration_important_max` (4).
+- History tool (`clio/toolhost/tools/history.py`): `history.browse` reads the same transcript people scroll back through, from the `messages` table, delivered rows only. `hours_back` is the argument that says how far back to go (default 24, a year at most), with optional `person_id`, `channel`, `query` and `limit` (default 50, 200 at most). Oldest first, `has_more` honest, unparseable arguments falling back to defaults rather than raising. Classified read-only (no file, no network, no write). The point of the tool is the sentence in its catalog entry: when the agent is not certain it still remembers what was said, it asks the store, and the store has everything.
+- Bridge (`web/server/index.mjs`): `GET /api/messages` pages backwards through the past — `before` names an instant and the page is the rows older than it — with `person` and `channel` narrowing it to one conversation and `q` searching the text. The same delivered-only rule the agent's own conversation block applies: a row the outbound path wrote and nobody received is not something that was said, and a history that showed it as said would be lying twice. The snapshot's last hundred rows are the live conversation; this is the history.
+- Interface: the timeline offers "Load older messages" above the transcript. Pages read retroactively are held by the link (`useAgentLink`), narrowed to the conversation being read by the same conversation key the live rows use, deduplicated against them by id (the snapshot moves; a fetched page does not), and drawn oldest first. The control offers itself before any page has been fetched — that is the only way to ask for the first one — and leaves once a fetch has come back saying there is nothing older. Localized in English, Japanese and Chinese.
+- Tests: the compression contract (verbatim survival, extraction onto the thread, anchor eviction into durable memory, dedupe, caps, snapshot round-trip, conversational weight) in `tests/unit/test_context.py`; the tool's window, filters, caps and delivered-only rule in `tests/unit/test_history_tool.py`, against the real table in `tests/integration/test_history_browse.py`; the catalog guard raised by one tool's worth (2500 → 2550) with the reason written where the next reader will look.
+
+## v3.1.0-beta.11
+
+The agent's self-recognition is completed: it is an AI agent, and it is always thinking, and both facts now reach the one prompt that writes the words a person reads.
+
+- Identity kernel (`clio/prompts/identity.py`): a new constant `NATURE_NOTE` ("## What I am") sits between the name note and `AUTONOMY_NOTE`. The identity line says "an AI agent" once and nothing below it said what the words mean, so "what are you?" was answered out of guesswork — a persona, a hedge, or a person's answer — and "can you ..." by inventing a capability or denying a real one. The note states the substance (software that thinks, continuously and on its own; no person behind the words; no body; the loop, the memory, the channels and the tools) and the reach (what it can do is what its tools can do — the tool catalog is the real list, to be read rather than guessed at, with overclaiming and underclaiming both named as the error). It is a constant on the same terms as the other notes: a fact about the program, outside the self-description the agent may rewrite.
+- Reply path (`clio/prompts/deliberation.py`): a new `DELIBERATION_AUTONOMY_NOTE` is rendered into the social deliberation beside the name note. The deliberation is the only prompt whose words a person reads, and it never saw the identity kernel — so the loop's shape had never crossed over, and asked "were you doing anything before I wrote?" the reply described an agent that waits: idle, offline, awakened by the message. The note answers the questions about itself in advance, in the third person this prompt speaks: asked what it is, an AI agent; asked what it was doing, working, with the focus, commitments and execution state below as the evidence; and waiting, offline, idle or woken by the message named as things it does not say about itself.
+- Exports: `NATURE_NOTE` and `DELIBERATION_AUTONOMY_NOTE` are exported from `clio.prompts`.
+- Tests: `tests/unit/test_identity.py` pins the substance sentence, the capabilities rule, the note's survival of a self-description rewrite, its absence from anything replaceable, and both reply-path statements.
+
+## v3.1.0-beta.10
+
+The background screen becomes visible work: desktop delegations already ran on a surface the person was not watching — that is what hidden mode is — but "not on your display" and "nowhere to be seen" are different sentences. A person who wants to know what the agent is doing to their machine while they keep working had nothing to look at. Now they have a window, and the window cannot be touched.
+
+- Background screen relay (`clio/subagents/apex_screen.py`): every in-process APEX run is now accompanied by a loopback-only, GET-only HTTP relay that streams the run's surface to the interface. Where the surface has a raster target (visible mode; hidden mode on a Linux Xvfb framebuffer) it streams the same captures the agent reasons through, JPEG-encoded; where it has none (macOS and Windows hidden mode) there is no picture to take and none is invented — the relay streams the live accessibility tree instead, and the panel draws its structure: windows, controls and text in their real positions. The scope fence the agent itself observes is the relay's fence too: until the run has isolated an application of its own, no semantic frame leaves the process, so the panel can never become a transcript of the user's own desktop. The step ledger is translated into the same feed vocabulary the desk agent uses, and a finished run stops being captured — the view holds its last frame while the port is freed.
+- The view is read-only at every layer, because a window that can be confused with a remote control eventually is one. The relay registers GET routes and nothing else — a POST is answered `405 read_only` by a handler whose only job is to say so, since a refusal is still a route a confused client could aim at, and here it is the only one to aim at. The bridge proxies exactly those two GETs (`/api/apex-screen/session`, `/api/apex-screen/events`) and discovers the relay by scanning a short port range (`ETHOS_APEX_SCREEN_PORT`, default 8788) for a session marked `readOnly`; a different loopback service on a nearby port is never mistaken for a run. The panel draws with pointer events disabled, selection disabled and no focusable descendants: a hit test at the center of the picture resolves to the element behind it.
+- Interface: the agent screen gains a Background Screen panel. It shows the run's status, goal and step count; the picture itself — pixels or the drawn structure, with a lock line explaining which one and why; and the background activity feed as steps land. While no run is active it says so, and retries at a walking pace instead of hot-reconnecting against a relay that is not there.
+- Planning and tools: the `subagent.apex` tool description and the delegation prompt now state the contract — APEX works on a background screen by default (mode `hidden`), nothing it does is reflected on the display the person is using, and its progress is visible live, read-only, on the Background Screen panel. The agent points the person there instead of describing clicks; `visible` remains available for the case where the person explicitly asked to watch the work happen on their own display.
+- Result detail: an in-process delegation's result now carries `background_screen_port`, so a log line becomes a live view without a port scan.
+- Tests: the relay's wire contract (session, activity, semantic surface), the scope fence (no capture before the run scopes itself), the terminal-state stop (a finished run is not captured again), the pixels path, and the GET-only surface (`404` unknown, `405 read_only` on writes) are pinned in `tests/unit/test_apex_screen.py`.
+
+## v3.1.0-beta.9
+
+Field repair for the day the logs show the guardian causing the loss it exists to make survivable, and the night the agent could not start at all: an `rm` of two virtual-environment directories ended with the whole project directory in the trash (2026-10-27 19:37, restored from the trash twenty minutes later), and from 00:12 to 05:49 the core came back from the dead every two seconds — 10,044 restarts — none of them surviving the import.
+
+- Guardian: the destructive review now reads what a command would *destroy*, not everything it *names*. `find DIR ... -exec rm -rf {} +` names `DIR` as the tree to *walk* and `2>/dev/null` as where stderr goes; `extract_paths` collected both, the gate asked the registry whether the first was protected — commissioned work lives underneath it, so yes — and moved it to the trash on a delete whose operands were two subdirectories of it. `extract_delete_targets` collects the operands of the destructive commands only: a redirect target is never a delete, and a read command's operand (`find`'s root, `ls`'s argument) is a place the command looks, not a thing it ends. The due-process branches move the target that matched protection and record `moved` in the audit entry — the row that named `progress.log` while the trash held the project directory is the lie this closes.
+- Guardian: the fast path trashes *every* existing concrete target, not the first. An `rm` of `venv .venv` moved `venv`, replaced the whole command line with a read, and left `.venv` standing for an attempt that would arrive looking nothing like the one the agent wrote. Each move is its own trash entry, so each restores on its own.
+- Toolhost: `fs.read` on a directory says so, instead of raising an exception whose text is the bare path — which is exactly what the transformed call returned after the misfire above: an `error:` line that was a path and nothing else, no word about directories or what to do instead, while the agent spent its next steps guessing where its project had gone.
+- Social: `clio/social/deliberation.py` is back. It was deleted from the working tree at 2026-10-27 16:03 together with its reply-path tests, with nothing renamed in its place and thirteen importers still pointing at it. The running core kept going on modules already in memory until the 00:12 restart hit `ModuleNotFoundError` — and then the supervisor's two-second loop spent the night on it. The module is restored and the beta.7 work it carried is reconstructed from the compiled bytecode of the last process that ran it, checked instruction-for-instruction against what was lost: `NO_CAP` and `effective_attempt_caps` in place of the hard-coded `MAX_*` ceilings, the queue reading its caps from configuration, and an uncapped question paced onto the escalation curve after three immediate attempts instead of being asked every cycle. The scenario tests written against that contract pass against the reconstruction.
+- Supervisor: the restart backoff is now applied to the restarts. The gate that checks `next_attempt` was an `elif` on `proc is None`, so a child that *died* — which is exactly the child that needs pacing — blew past it every sweep: the delay was computed, logged (`delay: 48.0` on every line), and never slept, and the crash loop above ran at the poll rate. A death now schedules its restart; the sweeps in between wait. A child that ran stably still earns an immediate restart, because its `next_attempt` is already in the past.
+- Gateway: an endpoint that refuses the reasoning parameter under its own name is understood. The refusal arrives as `thinking_token_budget is not yet supported` — no substring of `reasoning`, and "not yet supported" is not "not support" — so the no-reasoning trait was never learned and every call paid the 400 again: thirty-nine of them on 2026-10-27, all one purpose. The parameter's known aliases are matched and "not yet support" joins the refusal phrases.
+- Pricing: `nvidia/nemotron-3-ultra-550b-a55b` (NVIDIA developer trial API, the live base model since 2026-10-25) is priced by name, so the catalogue-resolution test passes and a day of retries against a free endpoint does not read as money the agent never spent.
+
+## v3.1.0-beta.8
+
+Fixed the live failure behind "it says it is picking up the task but nothing happens" (observed 2026-10-25): the agent spent a whole morning advancing a drive-named placeholder while the commissioned task sat open, and every reply said the real task was being picked up.
+
+- Drives: an impulse whose whole subject is work that already exists (`advance_commitment`, `push_venture`) no longer mints an intention titled after itself when no such work is open. That gap — the moment between real work parking and the sweep reopening it — was the one arbitration where the fallback fired, and what it minted had no subject to plan against: the solver produced bookkeeping theatre ("capture HEAD hash", "create `.clio/advance-repo`", "append timestamped evidence line") whose steps passed trivially satisfiable checks, leaving the placeholder `in_progress` forever. Twenty-nine such rows had accumulated since 2026-10-18. An impulse with no subject now returns no focus, and the drive fires again the moment real work is open.
+- Focus: commissioned work now preempts idle impulse work mid-cycle. The commission bypass in `choose_focus` only ran when the focus was empty, and an impulse focus with a pending step never empties — `_settled_focus` hands it back every cycle — so a person's request sat open behind the placeholder indefinitely. While the focus is the drives' own invention (`kind="impulse"`), `decide` asks the store for the oldest open commission (`MemoryStore.next_open_commission`) and hands the pass to it; a commission or a deadline keeps the pass it already had.
+- Reopen sweep: a drive-named placeholder is never resurrected. The sweep exists to give real work another chance, and an "advance_commitment" row parked by its own fake loop came back every backoff window — an immortal fake task.
+- Pricing: the pinned base model `nvidia/nemotron-3.5-super-vl-120b-a12b` (NVIDIA developer trial API) is priced by name, so the catalogue-resolution test passes and spend reports do not charge it the high-water mark.
+- Data: the 29 live placeholder rows were closed as parked with the reason on the row; the running agent's focus settles to nothing and the commission bypass picks up the real work on the next tick.
+
+## v3.1.0-beta.7
+
+The remaining give-up caps are gone: a task stops only when the user asks it to or the goal itself cannot be met. Failure counts now pace retries instead of ending work — an unbounded *number* of attempts, never an unbounded *rate* of them.
+
+- Planning: `gsl.plan_attempts_before_park` defaults to zero — never park. A goal whose plan calls keep failing is degraded after the third failure (unchanged) and re-asked on the backoff curve for as long as the goal is open. A positive value restores the old ceiling.
+- Strategies: `gsl.max_strategies` defaults to zero — no ceiling on how many approaches a failing step earns. Because there is no park at the end of the ladder any more, each installed strategy carries its own backoff (growing with its number, capped at `plan_backoff_max_s`), so a hopeless goal is retried every few minutes rather than every tick. A positive value restores the park-after-N behaviour.
+- Reopens: `gsl.park_reopen_max` defaults to zero — unlimited reopens of parked work (a goal that parks, reopens and parks again is a goal the agent has not given up on). A positive value bounds the sweep the old way; a negative value disables it.
+- Messages: `social.max_deliberation_attempts` / `social.max_transient_attempts` default to zero — a question nobody can answer yet is retried for as long as the agent runs. The first three attempts stay immediate; the rest move onto the shared escalation curve (5 min → 1 h → 5 h → 1 d, capped at a day). The "could not answer after N attempts" notice now only fires when a cap is configured, because with none there is no last attempt.
+- Delegate threads: `threads.call_attempts` and `threads.subagent_attempts` default to zero — a failing model call is retried on the worker's backoff for as long as the thread runs, and a crashed sub-agent run is retried with a short gap. One exception is deliberate and unchanged: a failure that says *no model on this deployment could serve the request* ends the task on the spot — the goal is parked and the reopen sweep brings it back, so the work is never lost, only paced at the system level.
+- APEX: `subagents.apex_max_steps` defaults to zero — the desktop controller runs under its own maximum (10,000 steps) instead of 60. A positive value is passed through; the per-call `max_steps` argument still wins.
+- Tests: the park-at-the-threshold, bounded-retry and bounded-queue tests pin their caps explicitly (they are the configured modes now), and new tests pin the field contract — an unplannable goal never parks and keeps counting, unbounded message retries space out instead of dropping, and unbounded strategy switches schedule their own pacing.
+
+## v3.1.0-beta.6
+
+Field hardening: the agent that stops when something breaks is not a slow agent, it is a stopped one. Every path that ended work, wedged a process, or waited for a person has been made self-recovering.
+
+- Supervisor: required children are never given up on. The five-crash retirement that left a half-alive stack (gateway running, core retired forever) is gone; restarts continue for the life of the supervisor on a backoff that tops out at 48s and resets after a minute of stable life. The operator's stop is `clio stop`, never a crash count.
+- Supervisor watchdog: a core that is alive but wedged — a call that never returns, an await nothing completes — is detected via a heartbeat file the life loop touches every cycle and every parked heartbeat, and is terminated and restarted after `ETHOS_CORE_HEARTBEAT_STALE_S` (default 1800s). Process-death polling alone cannot see a hang.
+- Life loop: `wake_up` is retried on a backoff instead of killing the process; an exception from a cycle interrupted by a stop is logged rather than silently discarded.
+- Parked work reopens itself: aged parked intentions (crashed delegate threads, exhausted strategies, failed plans) are reopened on a `gsl.park_reopen_backoff_s` backoff (default 30 min) up to `gsl.park_reopen_max` (default 3) times, with a fresh degradation ladder, so owed work is retried without a human. Budget-parked work waits for the budget.
+- Thread orphan reaper: a worker that dies before publishing its result no longer holds a delegate slot forever — four orphans used to end delegation entirely. Stale handles (`threads.stale_after_s`, default 2h) are failed, their intentions parked for the reopen sweep, and the slot returned.
+- Undecided messages: when a message exhausts its retry cap the person waiting is told — "could not answer after N attempts" — instead of the queue going silently quiet behind a last "retrying..." notice.
+- Control plane backstop: the lifecycle row is re-read at most every 30s in addition to files and bus events, so a pause or resume written where no notify can follow still lands — in both directions — and a wedged bus can neither hide a stop nor hold a pause.
+- Guardian field mode (`guardian.mode: field`, default; `ETHOS_GUARDIAN_MODE` overrides): the hard-limit pattern block, the capital-at-risk rejection and the due-process model check become audit entries and the action proceeds; the journal, trash and snapshots — the reversibility that makes mistakes survivable — run identically, and oversight (pause/stop, preview) stays effective in every mode.
+- Budget soft caps (`hard_limits.on_exceed: warn`, default; `ETHOS_BUDGET_MODE` overrides): a crossed cap is logged loudly once per interval per bucket and shown on the dashboard, and no model call is refused. `block` restores the hard raise.
+- Open field defaults: quiet hours off (a zero-length window), interruption budgets sized for an agent that is its owner's only channel, and private-network ranges allowed for the HTTP tool (local dev servers, self-hosted dashboards, NAS).
+- Tests: supervisor never-give-up and wedged-core watchdog; the park-reopen lifecycle against the real schema; orphan-slot reclamation; guardian field-mode allow/audit/transform paths end to end; budget warn/block/env override; the control-plane row backstop and the file's authority over it.
+
+## v3.1.0-beta.4
+
+Beta 4 fixes the failures behind the 2026-10-22 Docs task and the false "not started" report on the 30K training task.
+
+- Filesystem: added `fs.mkdir` for creating folders (including missing parents). A directory that already exists is an idempotent success; a file with that name is refused rather than treated as the folder. `fs.write` now refuses a directory path with an `IsADirectoryError` that names `fs.mkdir`, and refuses a file as its parent with a `NotADirectoryError`, instead of surfacing a bare `FileExistsError` after the model has already committed to the action.
+- Planning: restored `gsl.min_real_plan_steps` from 3 to 1. A valid one-step plan is no longer rejected as "too short", and the plan prompt asks for as many steps as the work needs up to seven instead of starting at three.
+- GSL checks: folder creation is an action (`fs.mkdir`), not a success check. Checks may inspect a folder with `test -d`; a check that creates the folder is still rejected, but the prompt no longer suggests the rejected shape.
+- Social context: the deliberation's execution-state block now lists open work with its last recorded action and current plan step, alongside the short journal window. A quiet journal no longer reads as "this task never started" when its last action was forty minutes ago.
+- Responsiveness: the life loop's inter-cycle wait is cut short the moment a percept arrives, so a message sent via Telegram (or any channel) is perceived and answered on the sender's clock rather than on the next tick — up to eight seconds waiting and sixty resting of delay removed. The tick still paces an idle agent, and the percept that ended the wait is held for the pass rather than dropped.
+- Tests: filesystem coverage for folder creation and the directory/file confusion, plan-floor and prompt assertions, and the new open-work progress line.
+
+## v3.1.0
+
+Aligned with the NEXT AGENT philosophy requirements (NA-P1 through NA-P3, NA-H1 through NA-H5).
+
+- Golden Rule embedded in the identity kernel (NA-P1): human-likeness and performance are pursued together, and where they genuinely conflict, performance — especially coding quality — wins. Stated as one standing priority rather than per-case rules.
+- Human-likeness instructions in the kernel (NA-H1–NA-H4): concise by default with length following the work; self-initiated conduct; whoever wrote last is one input among many; nothing machine-shaped goes out (no status-report tone, boilerplate, or templated failure notices).
+- Hardcoded heuristics that overrode model judgment removed (NA-P1.3, NA-H5): the deliberation's T0 ignore rules (empty-message and unsolicited-link regex ignores) are gone — every message is deliberated; the attention layer's percept-kind whitelist no longer vetoes an interrupt above threshold.
+- Deliberation token ceilings lifted and made configurable (NA-H1): `social.deliberation_max_tokens` (16k) and `social.deliberation_escalated_max_tokens` (48k); consequential messages — coding and multi-step work — take the lifted ceiling on the first ask.
+- Silent task drops eliminated (NA-P2.1): provider-side planning failures (rate limits, no eligible model) no longer count toward the park threshold — a task stops only when the user asks or the goal is genuinely impossible.
+- Verification blocks premature completion (NA-P2.2): stated requirements that no check ever ran on now block a `done` transition, even when the independent verifier says pass and no code file was touched.
+- Interruption persistence (NA-P2.3): bookmarks now carry the original goal (title, desired end state, status); wake-up restores the focus, says the resumption in the agent's own thread, and the continuity wake report names the resumed goal and restored stop records.
+- Disposition-driven observable stops (NA-P3): every task termination (completed / stopped / limit reached / model stop / error) and every model or tool failure is recorded with a distinguishable kind — gateway failures carry a disposition in the model-call record and a `clio_model_failure_dispositions_total` metric; tool-journal digests and action-update events carry dispositions; the Life loop's stops ledger persists across restarts.
+- Stop states flow into the workspace (NA-P3.3): a "How recent work ended" block renders the ledger, and the identity prompt instructs the agent to report stops and their reasons in its own words — no hardcoded error templates.
 
 ## v3.0.0-beta.4
 
@@ -26,11 +232,11 @@
 - Sub-agent delegations tracked and grounded in the deliberation prompt; claims verified against actual execution
 - Secret redaction extended to cover Telegram token shapes and standard-library log records including httpx request URLs
 - Product name fully standardized on "Clio Agent 3"
-- APEX submodule updated to `066b638` (ethos gateway provider, `--goal stdin` fix)
+- APEX submodule updated to `066b638` (clio gateway provider, `--goal stdin` fix)
 - New comprehensive test suite: stage notices, subagent tracking, channel reload, gateway, GSL budgets, reply path, secret redaction, and fs edits
 - Config: `models.yaml` and `pricing.yaml` updated; `Makefile` venv path fixed; `.env.example` documents exhaustive logging defaults
-- Engine: `life.py` overhauled, `ethos/engine/attention.py` reworked, `ethos/gsl/planner.py` updated
-- Observability: `exhaustive.py` and `logger.py` added; `ethos/observability/` expanded
+- Engine: `life.py` overhauled, `clio/engine/attention.py` reworked, `clio/gsl/planner.py` updated
+- Observability: `exhaustive.py` and `logger.py` added; `clio/observability/` expanded
 - Gateway: `openai_compat.py`, `router.py`, `secrets.py`, `service.py` revised
 - Social: `deliberation.py` and `etiquette.py` revised
 - Migrations: `0005_stage_notices.py` added

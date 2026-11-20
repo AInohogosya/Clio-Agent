@@ -30,7 +30,7 @@ purpose. A data migration has to give the same answer when it is re-run as it
 gave when it was written, and a backfill that silently changes meaning
 whenever somebody edits a config file is not reproducible. The figures were
 read from the vendors' pricing pages on the date above and are cross-checked
-against OpenRouter's live catalogue; `ethos/pricing.py` and `pricing.yaml` are
+against OpenRouter's live catalogue; `clio/pricing.py` and `pricing.yaml` are
 the living copies and may since have moved on.
 
 Raw token counts are not touched -- only `cost_usd`, and `price_source` so the

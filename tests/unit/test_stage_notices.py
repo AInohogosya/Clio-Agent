@@ -26,22 +26,22 @@ from types import SimpleNamespace
 from typing import Any
 from uuid import uuid4
 
-from ethos.engine.life import Life, LifeDeps
-from ethos.engine.states import State
-from ethos.prompts.deliberation import (
+from clio.engine.life import Life, LifeDeps
+from clio.engine.states import State
+from clio.prompts.deliberation import (
     execution_state_block,
     social_deliberation_messages,
     stage_notice_messages,
 )
-from ethos.schemas.gsl import STAGE_NOTIFIABLE, IntentionRecord, StageNotice
-from ethos.schemas.messages import Message
-from ethos.social.deliberation import SocialCognition
-from ethos.social.etiquette import OutboundPipeline
+from clio.schemas.gsl import STAGE_NOTIFIABLE, IntentionRecord, StageNotice
+from clio.schemas.messages import Message
+from clio.social.deliberation import SocialCognition
+from clio.social.etiquette import OutboundPipeline
 from tests.conftest import ScriptedGateway, make_config
 
 
 def _config(name: str):
-    config = make_config(Path(f"/tmp/ethos-test-{name}"))
+    config = make_config(Path(f"/tmp/clio-test-{name}"))
     config.paths.ensure()
     # Quiet hours that are definitely not now, so a failure is about a gate and
     # not about the clock crossing 22:00.
@@ -110,6 +110,36 @@ def test_finished_work_appears_in_the_execution_state_block() -> None:
     assert "already reached a stage" in block
     assert "fix the parser" in block
     assert "finished" in block
+
+
+def test_an_unverified_stage_is_not_reported_as_finished() -> None:
+    """A rung-3 review is "not verified", not "finished".
+
+    The execution-state line said `awaiting_review` was "finished, waiting on
+    you", and a reply read that as a completed build. It was a folder of source
+    files with no launchable icon, and the person went looking for one. The
+    stage line now says what the status means, and carries the path the files
+    were actually written to so the reply can name it.
+    """
+    class _Stages:
+        async def fetch(self, query: str, *args: Any) -> list[dict[str, Any]]:
+            return [{
+                "stage": "awaiting_review",
+                "title": "build the coding agent",
+                "detail": "the work could not be verified; files: /Users/me/Desktop/coding-agent",
+                "delivered_at": None,
+            }]
+
+    social = SocialCognition(_config("unverified-stage"), db=_Stages())
+    lines = asyncio.run(social._finished_work())
+
+    assert lines, "the stage has to be visible to the reply at all"
+    assert "not verified" in lines[0]
+    assert "finished" not in lines[0]
+    assert "/Users/me/Desktop/coding-agent" in lines[0], (
+        "a report about files has to say where they are, or the person searches "
+        "the desktop for something that was never named"
+    )
 
 
 def test_an_empty_stage_list_is_not_read_as_nothing_happened() -> None:
@@ -665,7 +695,8 @@ def test_the_notice_prompt_distinguishes_finished_from_stopped_short() -> None:
 
     assert "finished and passed its checks" in done["content"]
     assert "stopped short of finished" in parked["content"]
-    assert "outstanding is a person" in review["content"]
+    assert "not verified" in review["content"]
+    assert "Do not call it finished" in review["content"]
     for rendered in (done, parked, review):
         assert "Do not narrate your own machinery" in rendered["content"]
 
@@ -675,7 +706,7 @@ def test_a_braced_work_title_does_not_break_the_notice_prompt() -> None:
 
     The value is interpolated into the prompt rather than formatted through it, so
     a title like `fix the {parser}` renders as itself. This is the same reason
-    `ethos/prompts/identity.py` uses f-strings throughout.
+    `clio/prompts/identity.py` uses f-strings throughout.
     """
     messages = stage_notice_messages(
         "Clio", stage="done", title="rename {legacy} to {new}", detail="", who="mira",
@@ -772,7 +803,7 @@ def test_a_notice_carries_the_address_it_was_written_with() -> None:
         async def fetch(self, query: str, *args: Any) -> list[Any]:
             return []
 
-    from ethos.memory.store import MemoryStore
+    from clio.memory.store import MemoryStore
 
     store = MemoryStore.__new__(MemoryStore)
     store.db = _Db()
@@ -797,7 +828,7 @@ def test_work_nobody_asked_for_is_not_a_debt() -> None:
     A notice with no address would be a debt the loop keeps paying into a void,
     spending a pass and a model call on every idle cycle to tell nobody.
     """
-    from ethos.memory.store import MemoryStore
+    from clio.memory.store import MemoryStore
 
     store = MemoryStore.__new__(MemoryStore)
     store.db = None
@@ -805,3 +836,213 @@ def test_work_nobody_asked_for_is_not_a_debt() -> None:
     intention = IntentionRecord(id=uuid4(), title="a venture of my own")
 
     assert asyncio.run(store.record_stage_notice(intention, "done")) is None
+
+
+def test_open_work_progress_separates_stalled_from_never_started() -> None:
+    """The journal window is short; the progress line is not the same fact.
+
+    Saying "the training hasn't started" because the last fifteen minutes were
+    quiet was false when the task had been running for hours. The block has to
+    carry the last action for open work so the reply can tell stalled from
+    unborn.
+    """
+    block = execution_state_block(
+        "Clio", journaled=[], blocked=[], window_min=15.0, stages=[],
+        progress=[
+            "[in_progress] Train a 30K model: last action shell.run (ok) 40 min ago; "
+            "current step s2: Run the training script",
+        ],
+    )
+    flat = " ".join(block.split())
+    assert "Open work and its last recorded action" in flat
+    assert "40 min ago" in flat
+    assert "does not mean the work never started" in flat
+
+
+def test_open_work_progress_lists_the_current_focus_first() -> None:
+    """The focus is the one intention the reply must name, and it used to be
+    the one it could not see.
+
+    `_open_work_progress` was called without the focus, ordered by priority
+    with a top-5 limit that GSL child tasks (0.6) filled ahead of real
+    commitments (0.5) — so the focused intention was absent from the reply
+    prompt entirely, and the reply inferred its state from the
+    conversation. The focus now leads the list, marked as the focus.
+    """
+    now = datetime.now(UTC)
+
+    class _Db:
+        def __init__(self) -> None:
+            self.queries: list[str] = []
+
+        async def fetch(self, query: str, *args: Any) -> list[dict[str, Any]]:
+            self.queries.append(query)
+            if "i.title = $1" in query:
+                return []
+            return [
+                {
+                    "title": "Build the terminal coding agent",
+                    "status": "in_progress",
+                    "created_at": now,
+                    "resume_state": {},
+                    "last_action": now,
+                    "last_tool": "shell.run",
+                    "last_status": "ok",
+                },
+                {
+                    "title": "Review the Helium folder",
+                    "status": "in_progress",
+                    "created_at": now,
+                    "resume_state": {},
+                    "last_action": now,
+                    "last_tool": "shell.run",
+                    "last_status": "ok",
+                },
+            ]
+
+    social = SocialCognition(_config("focus-first"), db=_Db())
+
+    lines = asyncio.run(social._open_work_progress("Review the Helium folder"))
+
+    assert lines, "open work is reported"
+    assert "Review the Helium folder" in lines[0], "the focus leads the list"
+    assert "this is the current focus" in lines[0]
+    assert any("parent_id IS NOT NULL" in q for q in social.db.queries), (
+        "proposed GSL children no longer crowd commitments out of the list"
+    )
+
+
+def test_progress_summary_does_not_call_unverified_steps_verified() -> None:
+    """`status == "done"` is not verification, and a progress note is words.
+
+    On 2026-11-19 the agent sent "all six plan steps are verified done" twice
+    while every step's action was a tool-schema lookup, and an hour later the
+    same work parked because its verification had failed. The summary now says
+    what the record shows: the steps are done, and how many were actually
+    verified.
+    """
+    intention = SimpleNamespace(resume_state={"plan": {"steps": [
+        {"id": "s1", "status": "done", "description": "a", "verified": False},
+        {"id": "s2", "status": "done", "description": "b", "verified": False},
+        {"id": "s3", "status": "pending", "description": "c"},
+    ]}})
+
+    summary = Life._progress_summary(intention)
+
+    assert "verified done" not in summary
+    assert "2 of 3 plan steps done" in summary
+    assert "none verified" in summary
+
+
+def test_progress_summary_says_verified_only_when_the_step_check_saw_something() -> None:
+    intention = SimpleNamespace(resume_state={"plan": {"steps": [
+        {"id": "s1", "status": "done", "description": "a", "verified": True},
+        {"id": "s2", "status": "done", "description": "b", "verified": True},
+    ]}})
+
+    summary = Life._progress_summary(intention)
+
+    assert "all 2 plan steps done and verified" in summary
+
+
+def test_progress_summary_reports_a_failed_final_verification() -> None:
+    """The record knows the verdict; the note must not contradict it."""
+    intention = SimpleNamespace(resume_state={
+        "plan": {"steps": [
+            {"id": "s1", "status": "done", "description": "a", "verified": True},
+        ]},
+        "last_verification": {
+            "passed": False,
+            "issues": ["the artifact only shows a listing of the home directory"],
+        },
+    })
+
+    summary = Life._progress_summary(intention)
+
+    assert "final verification did not pass" in summary
+    assert "only shows a listing" in summary
+
+
+def test_the_reply_prompt_does_not_promise_a_check_the_turn_cannot_run() -> None:
+    """The reply path has no tools, so "let me look and tell you" is a lie.
+
+    The transcript that prompted this: asked how many bot summaries existed,
+    the agent said it had no count and offered to look; told "Yes", it answered
+    "Let me check that folder now." and nothing followed. The prompt now tells
+    it to answer from the record and to commission a lookup as work instead of
+    promising one in a reply.
+    """
+    messages = social_deliberation_messages(
+        self_name="Clio",
+        message=Message(person_id="mira", channel="telegram",
+                        conversation_key="telegram:mira",
+                        text="how many bot mechanisms have you compiled?"),
+        focus="(none)", now=datetime.now(UTC).isoformat(), energy=0.9,
+        commitments="(none)", recent="(none)",
+    )
+    system = messages[0]["content"]
+
+    assert "This turn cannot run tools" in system
+    assert "do not offer or promise to go and look" in system
+    assert '"let me look and tell you" is always available' not in system, (
+        "that sentence licensed the empty promise"
+    )
+    assert "creates_intention" in system
+
+
+def test_a_progress_note_may_not_call_unverified_work_finished() -> None:
+    """The note is the other channel the false "all six verified" arrived on.
+
+    Both notes on 2026-11-19 were composed from a progress line that said
+    "verified done" while the final verification had failed. The summary now
+    carries the failure; the composer is told not to paraphrase it into
+    "finished".
+    """
+    from clio.prompts.deliberation import progress_note_messages
+
+    system = progress_note_messages(
+        "Clio", title="summarise the bots",
+        progress="all 6 plan steps done, none verified; final verification did not pass",
+        who="mira",
+    )[0]["content"]
+
+    assert "not verified" in system
+    assert "Do not call it finished" in system
+
+
+def test_open_work_progress_fetches_a_focus_outside_the_top_rows() -> None:
+    """A focus beyond the limit is fetched by title, not dropped."""
+    now = datetime.now(UTC)
+
+    class _Db:
+        async def fetch(self, query: str, *args: Any) -> list[dict[str, Any]]:
+            if "i.title = $1" in query:
+                return [
+                    {
+                        "title": "Review the Helium folder",
+                        "status": "in_progress",
+                        "created_at": now,
+                        "resume_state": {},
+                        "last_action": now,
+                        "last_tool": "fs.read",
+                        "last_status": "ok",
+                    },
+                ]
+            return [
+                {
+                    "title": "Build the terminal coding agent",
+                    "status": "in_progress",
+                    "created_at": now,
+                    "resume_state": {},
+                    "last_action": now,
+                    "last_tool": "shell.run",
+                    "last_status": "ok",
+                },
+            ]
+
+    social = SocialCognition(_config("focus-fetch"), db=_Db())
+
+    lines = asyncio.run(social._open_work_progress("Review the Helium folder"))
+
+    assert lines and "Review the Helium folder" in lines[0]
+    assert "fs.read" in lines[0], "the focus line carries its own journal row"

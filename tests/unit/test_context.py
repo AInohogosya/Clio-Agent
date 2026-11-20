@@ -4,10 +4,10 @@ from typing import Any
 
 import pytest
 
-from ethos.config import load_config
-from ethos.memory.context import ContextLayer
-from ethos.schemas.context import TurnKind
-from ethos.schemas.models import NormalizedResponse, Usage
+from clio.config import load_config
+from clio.memory.context import ContextLayer
+from clio.schemas.context import TurnKind
+from clio.schemas.models import NormalizedResponse, Usage
 
 
 class NarrationGateway:
@@ -57,9 +57,9 @@ def context_config():
 
 
 def make_layer(context_config, gateway=None, memory=None) -> ContextLayer:
-    from ethos.config import EthosConfig
+    from clio.config import ClioConfig
 
-    config = EthosConfig()
+    config = ClioConfig()
     config.memory.context = context_config
     return ContextLayer(config, memory=memory, gateway=gateway)
 
@@ -425,3 +425,173 @@ async def test_snapshot_is_json_serialisable(context_config):
     await layer.append(TurnKind.inbound.value, "said something")
     await layer.roll("focus")
     assert json.loads(json.dumps(layer.snapshot()))["narrative"]
+
+
+# ----------------------------------------------------------------- protection
+
+
+class ExtractingGateway(NarrationGateway):
+    """A narrator that also extracts important items, as the real prompt asks."""
+
+    def __init__(self, items: list[dict[str, Any]] | None = None, lines: list[str] | None = None):
+        super().__init__(lines)
+        self.items = list(items or [])
+
+    async def complete(self, request: Any) -> NormalizedResponse:
+        import json as _json
+
+        self.requests.append(request)
+        line = self.lines.pop(0) if self.lines else f"did some work, pass {self.calls}"
+        self.calls += 1
+        payload = {"line": line, "open_loops": [], "important": self.items}
+        return NormalizedResponse(
+            text=_json.dumps(payload), cost_usd=0.002,
+            usage=Usage(input_tokens=50, output_tokens=5),
+        )
+
+
+async def test_a_persons_words_are_kept_verbatim_while_routine_turns_roll(context_config):
+    """The complaint this overhauls: a conversation was one paraphrase and gone.
+
+    A person asks something, then routine cycles fill the buffer. The routine
+    turns must be the ones narration takes, and the person's words must still be
+    in the buffer to read.
+    """
+    context_config.max_turns = 10
+    context_config.narrate_every = 3
+    layer = make_layer(context_config, gateway=NarrationGateway())
+    await layer.append(
+        TurnKind.inbound.value, "owner asked about the deploy",
+        detail={"text": "any news on the deploy?"},
+    )
+    for i in range(30):
+        await layer.append(TurnKind.action.value, f"routine {i}")
+    assert any("owner asked about the deploy" in t.summary for t in layer.turns), \
+        "a person's words must survive the routine rolls around them"
+
+
+async def test_durable_turns_are_eventually_compressed_with_extraction(context_config):
+    """Protected, not immortal: a durable buffer that outgrows its own cap is
+    compressed, and the extraction pass is what the content rides out on."""
+    context_config.durable_max_turns = 4
+    context_config.narrate_every = 2
+    gateway = ExtractingGateway(items=[
+        {"text": "owner needs the report by Friday", "kind": "promise", "salience": 0.9},
+    ])
+    layer = make_layer(context_config, gateway=gateway)
+    for i in range(10):
+        await layer.append(TurnKind.inbound.value, f"owner turn {i}")
+    assert len(layer.turns) <= context_config.durable_max_turns + context_config.narrate_every
+    assert layer.anchors, "the extraction must have captured something"
+
+
+async def test_narration_extraction_is_kept_on_the_thread(context_config):
+    context_config.narrate_every = 2
+    gateway = ExtractingGateway(items=[
+        {"text": "owner asked for the deploy notes by Friday", "kind": "promise", "salience": 0.9},
+    ])
+    layer = make_layer(context_config, gateway=gateway)
+    await layer.append(TurnKind.inbound.value, "owner spoke")
+    await layer.append(TurnKind.action.value, "routine")
+    await layer.roll("focus")
+    thread, _ = layer.render_blocks()
+    assert "## Must not forget" in thread
+    assert "deploy notes by Friday" in thread
+
+
+async def test_anchors_survive_after_the_narrative_scrolls_off(context_config):
+    """The failure of the old scheme, reproduced: lines age off the thread and
+    take their meaning with them. An anchor must outlive the lines around it."""
+    context_config.narrate_every = 1
+    context_config.narrative_max_lines = 2
+    gateway = ExtractingGateway(items=[
+        {"text": "the export key is in the vault under deploy", "kind": "fact", "salience": 0.9},
+    ])
+    memory = RecordingMemory()
+    layer = make_layer(context_config, gateway=gateway, memory=memory)
+    await layer.append(TurnKind.action.value, "learned the key location")
+    await layer.roll("focus")
+    assert layer.anchors
+    for i in range(6):
+        gateway.items = []
+        await layer.append(TurnKind.action.value, f"routine {i}")
+        await layer.roll("focus")
+    thread, _ = layer.render_blocks()
+    assert "export key" in thread, "the anchor must still be on the thread"
+    assert len(layer.narrative) == 2, "the narrative must have kept scrolling"
+
+
+async def test_anchor_overflow_is_written_to_durable_memory(context_config):
+    context_config.narrate_every = 1
+    context_config.anchor_max = 2
+    gateway = ExtractingGateway(items=[
+        {"text": f"fact number {i}", "kind": "fact", "salience": 0.5} for i in range(4)
+    ])
+    memory = RecordingMemory()
+    layer = make_layer(context_config, gateway=gateway, memory=memory)
+    for i in range(4):
+        await layer.append(TurnKind.action.value, f"turn {i}")
+        await layer.roll("focus")
+    assert len(layer.anchors) == 2
+    evicted = [e for e in memory.episodes if e["kind"] == "anchor"]
+    assert evicted, "an anchor that leaves the thread must reach durable memory"
+    assert all(e["importance"] >= 0.8 for e in evicted)
+
+
+async def test_duplicate_anchors_are_absorbed(context_config):
+    context_config.narrate_every = 1
+    gateway = ExtractingGateway(items=[
+        {"text": "owner needs the report by Friday", "kind": "promise"},
+    ])
+    layer = make_layer(context_config, gateway=gateway)
+    for i in range(3):
+        await layer.append(TurnKind.action.value, f"turn {i}")
+        await layer.roll("focus")
+    assert len(layer.anchors) == 1
+
+
+async def test_anchor_cap_holds(context_config):
+    context_config.narrate_every = 1
+    context_config.anchor_max = 3
+    memory = RecordingMemory()
+    gateway = ExtractingGateway()
+    layer = make_layer(context_config, gateway=gateway, memory=memory)
+    for i in range(10):
+        gateway.items = [{"text": f"unique fact {i}", "kind": "fact", "salience": 0.5}]
+        await layer.append(TurnKind.action.value, f"turn {i}")
+        await layer.roll("focus")
+    assert len(layer.anchors) <= 3
+
+
+async def test_snapshot_round_trips_anchors(context_config):
+    context_config.narrate_every = 1
+    gateway = ExtractingGateway(items=[
+        {"text": "owner asked for the notes", "kind": "promise", "salience": 0.9},
+    ])
+    layer = make_layer(context_config, gateway=gateway)
+    await layer.append(TurnKind.inbound.value, "owner spoke")
+    await layer.roll("focus")
+    revived = make_layer(context_config)
+    revived.restore(layer.snapshot())
+    assert [a.text for a in revived.anchors] == [a.text for a in layer.anchors]
+    assert "Must not forget" in revived.render_thread()
+
+
+async def test_social_extraction_outranks_the_routine_on_the_thread(context_config):
+    """An anchor taken from a conversation is why the stretch was read, so it
+    ranks above a routine fact when the thread is drawn."""
+    context_config.narrate_every = 1
+    gateway = ExtractingGateway()
+    layer = make_layer(context_config, gateway=gateway)
+    await layer.append(TurnKind.action.value, "routine turn")
+    gateway.items = [{"text": "routine fact", "kind": "fact", "salience": 0.5}]
+    await layer.roll("focus")
+    await layer.append(
+        TurnKind.inbound.value, "owner spoke", conversation_key="tg:8190",
+    )
+    gateway.items = [{"text": "what the person said", "kind": "fact", "salience": 0.5}]
+    await layer.roll("focus")
+    assert layer.anchors[-1].salience >= 0.8, \
+        "an anchor from a conversation must carry conversational weight"
+    thread = layer.render_thread()
+    assert thread.index("what the person said") < thread.index("routine fact")

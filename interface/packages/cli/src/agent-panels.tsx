@@ -665,6 +665,9 @@ export function AgentSettingsPanel({
         <Meta label={t('theme')} palette={palette}>{settings.theme}</Meta>
         <Meta label={t('language')} palette={palette}>{settings.language}</Meta>
         <Meta label={t('accent')} palette={palette}>{settings.accent}</Meta>
+        <Meta label={t('density')} palette={palette}>{settings.density === 'compact' ? t('densityCompact') : t('densityComfortable')}</Meta>
+        <Meta label={t('showTimestamps')} palette={palette}>{settings.showTimestamps ? t('on') : t('off')}</Meta>
+        <Meta label={t('showSidebar')} palette={palette}>{settings.showSidebar ? t('on') : t('off')}</Meta>
         <Box marginTop={1}>
           <Text bold color={palette.inkFaint}>{label(t('cliCommands'))}</Text>
           {[
@@ -676,6 +679,9 @@ export function AgentSettingsPanel({
             '/theme',
             '/lang',
             '/accent',
+            '/density [compact|comfortable]',
+            '/timestamps [on | off]',
+            '/sidebar [on | off]',
           ].map((command) => (
             <Text color={palette.accent} key={command}>{`  ${command}`}</Text>
           ))}
@@ -882,6 +888,196 @@ export function ChannelsPanel({
 
   return (
     <Panel palette={palette} title={t('panelChannels')} width={width}>
+      <SlicedRows height={height} palette={palette} rows={rows} scroll={scroll ?? 0} t={t} />
+    </Panel>
+  );
+}
+
+/**
+ * Commands the guardian is holding for a person's decision.
+ *
+ * The twin of the web's approvals pane and the CLI's `ethos approvals list`,
+ * reading the same snapshot field. Every row names the short id its
+ * `/approve` and `/deny` take — the same prefix resolution `/undo` keeps —
+ * and the tool it would run, because a decision without its tool name is a
+ * button without a label.
+ */
+export function ApprovalsPanel({
+  approvals, envKeys, palette, t, width, scroll, height,
+}: {
+  approvals: AgentView['approvals'];
+  envKeys: ReadonlyArray<{ provider: string; present: boolean; variable: string }>;
+  palette: Palette;
+  t: T;
+  width: number;
+  scroll?: number;
+  height?: number;
+}) {
+  const rows: React.ReactElement[] = [];
+  rows.push(
+    <Text bold color={palette.inkFaint} key="ap-h">{t('panelApprovals').toUpperCase()}</Text>,
+  );
+  if (approvals.length === 0) {
+    rows.push(<Text color={palette.inkFaint} key="ap-e">{t('cliApprovalsNone')}</Text>);
+  } else {
+    approvals.forEach((approval, index) => {
+      rows.push(
+        <Box flexDirection="column" key={approval.id} marginBottom={1}>
+          <Box gap={1}>
+            <Text color={palette.inkFaint}>{`${String(index + 1).padStart(2, ' ')}.`}</Text>
+            <Text bold color={toneHex(palette, 'warning')}>
+              {truncateWidth(approval.tool, Math.max(8, width - 24))}
+            </Text>
+            <Text color={palette.inkFaint}>{shortId(approval.id)}</Text>
+          </Box>
+          <Text color={palette.inkFaint} wrap="truncate">
+            {`  ${truncateWidth(approval.reason, Math.max(8, width - 4))}`}
+          </Text>
+        </Box>,
+      );
+    });
+    rows.push(<Text color={palette.inkFaint} key="ap-hint">{t('cliApprovalsHint')}</Text>);
+  }
+  rows.push(
+    <Box key="keys-gap" marginTop={1} />,
+    <Text bold color={palette.inkFaint} key="keys-h">{t('panelEnvKeys').toUpperCase()}</Text>,
+  );
+  if (envKeys.length === 0) {
+    rows.push(<Text color={palette.inkFaint} key="keys-e">{t('cliKeysNone')}</Text>);
+  } else {
+    for (const key of envKeys) {
+      rows.push(
+        <Meta key={`keys-${key.provider}`} label={truncateWidth(key.provider, Math.max(8, Math.floor(width / 3)))} palette={palette}>
+          <Text color={toneHex(palette, key.present ? 'success' : 'muted')}>
+            {key.present ? key.variable : t('cliKeysAbsent')}
+          </Text>
+        </Meta>,
+      );
+    }
+  }
+  return (
+    <Panel palette={palette} title={t('panelApprovals')} width={width}>
+      <SlicedRows height={height} palette={palette} rows={rows} scroll={scroll ?? 0} t={t} />
+    </Panel>
+  );
+}
+
+/**
+ * The past, fetched retroactively: `/history` pages and `/find` searches.
+ *
+ * The twin of the web timeline's "load older" and its search box. The rows are
+ * the same delivered-only transcript the live window draws, so a held message
+ * is absent from both or neither.
+ */
+export function HistoryPanel({
+  page, query, palette, t, width, scroll, height,
+}: {
+  page: { messages: AgentView['messages']; hasMore: boolean; oldest: string | null } | null;
+  query: string;
+  palette: Palette;
+  t: T;
+  width: number;
+  scroll?: number;
+  height?: number;
+}) {
+  const rows: React.ReactElement[] = [];
+  const heading = query ? t('historySearchTitle') : t('historyTitle');
+  rows.push(
+    <Text bold color={palette.inkFaint} key="h-h">
+      {truncateWidth(query ? `${heading}: ${query}` : heading, Math.max(8, width - 2))}
+    </Text>,
+  );
+  if (!page || page.messages.length === 0) {
+    rows.push(<Text color={palette.inkFaint} key="h-e">{t('cliHistoryEmpty')}</Text>);
+  } else {
+    for (const message of page.messages) {
+      const who = message.direction === 'inbound' ? message.person_id ?? message.channel : t('historyAgentWord');
+      const when = formatClock(new Date(message.ts).toISOString(), 'en');
+      rows.push(
+        <Box key={message.id} gap={1} flexDirection="column">
+          <Text color={palette.inkFaint} wrap="truncate">
+            {`${when} ${truncateWidth(who, 24)}`}
+          </Text>
+          <Text color={toneHex(palette, message.direction === 'inbound' ? 'muted' : 'accent')} wrap="truncate">
+            {`  ${truncateWidth(message.text.replace(/\s+/g, ' '), Math.max(8, width - 4))}`}
+          </Text>
+        </Box>,
+      );
+    }
+    rows.push(
+      <Text color={palette.inkFaint} key="h-f">
+        {page.hasMore ? t('historyMore') : t('historyEnd')}
+      </Text>,
+    );
+  }
+  return (
+    <Panel palette={palette} title={t('historyTitle')} width={width}>
+      <SlicedRows height={height} palette={palette} rows={rows} scroll={scroll ?? 0} t={t} />
+    </Panel>
+  );
+}
+
+/**
+ * What the background screen relay knows about the run it is streaming.
+ *
+ * The terminal cannot draw the browser's canvas, and it should not pretend to:
+ * a pixel frame squeezed into a text grid is a screenshot nobody can read. What
+ * a terminal reader needs is the run's shape — is one running, what is it doing,
+ * how far — which is the relay's session, and the live pixels stay one click
+ * away in the browser.
+ */
+export function ApexPanel({
+  session, palette, t, width, scroll, height,
+}: {
+  session: {
+    active: boolean;
+    goal: string | null;
+    status: string | null;
+    step: number | null;
+    mode: string | null;
+    readOnly: boolean;
+    updated_at: string | null;
+  } | null;
+  palette: Palette;
+  t: T;
+  width: number;
+  scroll?: number;
+  height?: number;
+}) {
+  const rows: React.ReactElement[] = [];
+  if (!session) {
+    rows.push(<Text color={palette.inkFaint} key="a-none">{t('apexNoRun')}</Text>);
+  } else {
+    rows.push(
+      <Meta key="a-active" label={t('apexRunning')} palette={palette}>
+        <Text color={toneHex(palette, session.active ? 'success' : 'muted')}>
+          {session.active ? t('on') : t('off')}
+        </Text>
+      </Meta>,
+    );
+    if (session.goal) {
+      rows.push(
+        <Text key="a-goal" wrap="truncate" color={palette.ink}>
+          {`${label(t('apexGoal'))} ${truncateWidth(session.goal, Math.max(8, width - 12))}`}
+        </Text>,
+      );
+    }
+    if (session.status) {
+      rows.push(
+        <Meta key="a-status" label={t('apexStatus')} palette={palette}>{session.status}</Meta>,
+      );
+    }
+    rows.push(
+      <Meta key="a-step" label={t('apexStep')} palette={palette}>{session.step === null ? '—' : String(session.step)}</Meta>,
+      <Meta key="a-mode" label={t('apexMode')} palette={palette}>{session.mode ?? '—'}</Meta>,
+      <Meta key="a-updated" label={t('presenceUpdated')} palette={palette}>
+        {session.updated_at ? formatClock(session.updated_at, 'en') : t('presenceNever')}
+      </Meta>,
+    );
+    rows.push(<Text color={palette.inkFaint} key="a-hint">{t('apexWebHint')}</Text>);
+  }
+  return (
+    <Panel palette={palette} title={t('panelApex')} width={width}>
       <SlicedRows height={height} palette={palette} rows={rows} scroll={scroll ?? 0} t={t} />
     </Panel>
   );

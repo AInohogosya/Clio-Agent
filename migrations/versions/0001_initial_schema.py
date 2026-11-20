@@ -1,23 +1,23 @@
-"""initial Clio Agent 3 schema
+"""initial Clio Agent 3.1 schema
 
 Revision ID: 0001
 Revises:
 Create Date: 2026-01-01
 
-All 20 tables from the Clio Agent 3 implementation specification (Section 5.1)
+All 20 tables from the Clio Agent 3.1 implementation specification (Section 5.1)
 with HNSW and GIN indexes.
 """
 
-from typing import Sequence, Union
+from collections.abc import Sequence
 
 import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
 revision: str = "0001"
-down_revision: Union[str, None] = None
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = None
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:

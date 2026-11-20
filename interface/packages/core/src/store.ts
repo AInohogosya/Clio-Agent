@@ -37,7 +37,7 @@ import { createSettings, type Settings } from './types.js';
  * kept out of the browser barrel in `index.ts`.
  */
 
-export { MAX_CONFIG_BYTES, configPath, defaultConfigPath } from './config-file.js';
+export { MAX_CONFIG_BYTES, configPath, defaultConfigPath, configFileExists } from './config-file.js';
 // Re-exported for callers that reach for the revision cap here; the value is
 // defined once, next to the state it bounds.
 export { MAX_REVISION } from './shared-state.js';

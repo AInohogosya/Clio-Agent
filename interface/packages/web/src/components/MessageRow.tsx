@@ -13,6 +13,9 @@ import type { ChatMessage } from '@project-phone/core';
  * arrival on another door) while the direct pane reads `message.author ?? you`.
  * A system message gets the spark avatar on the direct pane only, because only
  * that pane ever draws one.
+ *
+ * The reader's density and clock preferences reach the row as props: compact
+ * tightens the bubble and the header, and no-clock turns the header into a name.
  */
 export function MessageRow({
   message,
@@ -20,6 +23,8 @@ export function MessageRow({
   clock,
   system,
   truncateSender,
+  showTimestamps = true,
+  density = 'comfortable',
 }: {
   message: ChatMessage;
   sender: string;
@@ -31,35 +36,50 @@ export function MessageRow({
    * whose senders are short, so a long one still wraps instead of vanishing.
    */
   truncateSender?: boolean;
+  showTimestamps?: boolean;
+  density?: 'comfortable' | 'compact';
 }): React.ReactElement {
   const isUser = message.role === 'user';
   // Opt-in, because only the direct pane ever draws one: the agent pane must
   // keep reading a system arrival exactly as it did, as an ordinary bubble.
   const isSystem = system === true;
+  const compact = density === 'compact';
   return (
-    <div className={classNames('flex gap-3', isUser ? 'justify-end' : 'justify-start')}>
+    <div className={classNames('flex', compact ? 'gap-2' : 'gap-3', isUser ? 'justify-end' : 'justify-start')}>
       {!isUser ? (
-        <div className={classNames('mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-[var(--line)] bg-[var(--canvas-raised)]', isSystem ? 'text-[var(--ink-faint)]' : 'text-[var(--ink-muted)]')}>
-          <Icon name={isSystem ? 'spark' : 'cpu'} size={15} />
+        <div className={classNames(
+          'mt-1 flex shrink-0 items-center justify-center rounded-xl border border-[var(--accent-line)] bg-[var(--accent-soft)] accent-text shadow-sm',
+          compact ? 'h-7 w-7' : 'h-9 w-9',
+          isSystem && 'border-[var(--line)] bg-[var(--canvas-raised)] text-[var(--ink-faint)]',
+        )}>
+          <Icon name={isSystem ? 'spark' : 'cpu'} size={compact ? 13 : 16} />
         </div>
       ) : null}
-      <div className={classNames('max-w-[min(86%,680px)]', isUser ? 'items-end' : 'items-start')}>
-        <div className={classNames('mb-1 flex items-center gap-2 text-[0.65rem] text-[var(--ink-faint)]', isUser ? 'justify-end' : 'justify-start')}>
+      <div className={classNames('flex max-w-[min(86%,680px)] flex-col', isUser ? 'items-end' : 'items-start')}>
+        <div className={classNames(
+          'flex items-center gap-2 text-[0.68rem] font-medium text-[var(--ink-faint)]',
+          compact ? 'mb-0.5' : 'mb-1.5',
+          isUser ? 'justify-end' : 'justify-start',
+        )}>
           <span className={classNames(truncateSender && 'max-w-[16rem] truncate')}>{sender}</span>
-          <span>{clock}</span>
+          {showTimestamps ? <span className="rounded-full bg-[var(--canvas-well)] px-2 py-0.5">{clock}</span> : null}
         </div>
         <div className={classNames(
-          'whitespace-pre-wrap rounded-2xl px-4 py-3 text-sm leading-6',
+          'whitespace-pre-wrap rounded-3xl text-sm leading-6 shadow-sm',
+          compact ? 'px-3.5 py-2' : 'px-5 py-3.5',
           isUser
-            ? 'rounded-tr-md border border-[var(--accent-line)] bg-[var(--accent-soft)] text-[var(--ink)]'
-            : 'rounded-tl-md border border-[var(--line)] bg-[var(--canvas-well)] text-[var(--ink)]',
+            ? 'rounded-br-lg border border-[var(--accent-line)] bg-gradient-to-b from-[var(--accent-soft)] to-[var(--canvas-well)] text-[var(--ink)]'
+            : 'rounded-bl-lg border border-[var(--line)] bg-[var(--canvas-raised)] text-[var(--ink)]',
         )}>
           {message.text}
         </div>
       </div>
       {isUser ? (
-        <div className="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-[var(--line)] bg-[var(--canvas-raised)] text-[var(--ink-muted)]">
-          <Icon name="home" size={15} />
+        <div className={classNames(
+          'mt-1 flex shrink-0 items-center justify-center rounded-xl border border-[var(--line)] bg-[var(--canvas-raised)] text-[var(--ink-muted)] shadow-sm',
+          compact ? 'h-7 w-7' : 'h-9 w-9',
+        )}>
+          <Icon name="home" size={compact ? 13 : 16} />
         </div>
       ) : null}
     </div>

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# Bring up the one thing Clio Agent 3 cannot run without: PostgreSQL 16 + pgvector,
-# reachable at $ETHOS_DSN, with the application role, database and extensions
+# Bring up the one thing Clio Agent 3.1 cannot run without: PostgreSQL 16 + pgvector,
+# reachable at $CLIO_DSN, with the application role, database and extensions
 # already in place.
 #
 # Idempotent. If a Postgres is already answering at the DSN and the agent can
@@ -27,15 +27,15 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-PG_MAJOR="${ETHOS_PG_MAJOR:-16}"
-PGVECTOR_VERSION="${ETHOS_PGVECTOR_VERSION:-0.8.6}"
-PGVECTOR_REPO="${ETHOS_PGVECTOR_REPO:-https://github.com/pgvector/pgvector.git}"
+PG_MAJOR="${CLIO_PG_MAJOR:-${ETHOS_PG_MAJOR:-16}}"
+PGVECTOR_VERSION="${CLIO_PGVECTOR_VERSION:-${ETHOS_PGVECTOR_VERSION:-0.8.6}}"
+PGVECTOR_REPO="${CLIO_PGVECTOR_REPO:-${ETHOS_PGVECTOR_REPO:-https://github.com/pgvector/pgvector.git}}"
 
 DATA_DIR="$ROOT/data"
-PGDATA_DIR="${ETHOS_PGDATA:-$DATA_DIR/pgdata}"
+PGDATA_DIR="${CLIO_PGDATA:-${ETHOS_PGDATA:-$DATA_DIR/pgdata}}"
 LOG_DIR="$DATA_DIR/logs"
 PG_LOG="$LOG_DIR/postgres.log"
-READY_TIMEOUT="${ETHOS_PG_READY_TIMEOUT:-60}"
+READY_TIMEOUT="${CLIO_PG_READY_TIMEOUT:-${ETHOS_PG_READY_TIMEOUT:-60}}"
 
 PG_BIN=""
 
@@ -73,19 +73,19 @@ usable_locale() {
   echo C
 }
 
-ETHOS_LOCALE="$(usable_locale)"
+CLIO_LOCALE="$(usable_locale)"
 
 # --- the DSN, parsed ---------------------------------------------------------
 #
-# The default matches config/ethos.yaml, so a bare ./start.sh and a bare
+# The default matches config/clio.yaml, so a bare ./start.sh and a bare
 # make db-up converge on the same database.
 
-dsn="${ETHOS_DSN:-postgresql://ethos:ethos@127.0.0.1:5433/ethos}"
+dsn="${CLIO_DSN:-${ETHOS_DSN:-postgresql://ethos:ethos@127.0.0.1:5433/ethos}}"
 case "$dsn" in
 postgres://*) dsn="postgresql://${dsn#postgres://}" ;;
 esac
 dsn_body="${dsn#*://}"
-[ "$dsn_body" != "$dsn" ] || die "ETHOS_DSN is not a URL: $dsn"
+[ "$dsn_body" != "$dsn" ] || die "CLIO_DSN is not a URL: $dsn"
 
 dsn_auth="${dsn_body%%/*}"
 if [ "${dsn_body#*/}" = "$dsn_body" ]; then
@@ -120,7 +120,7 @@ PGHOST="${PGHOST#[}"
 PGHOST="${PGHOST%]}"
 PGHOST="${PGHOST:-127.0.0.1}"
 PGUSER="${PGUSER:-ethos}"
-[[ "$PGPORT" =~ ^[0-9]+$ ]] || die "ETHOS_DSN has a non-numeric port: $PGPORT"
+[[ "$PGPORT" =~ ^[0-9]+$ ]] || die "CLIO_DSN has a non-numeric port: $PGPORT"
 
 # Postgres caps socket paths near 100 characters and this repo may sit deep in a
 # checkout; a short prefix keeps the loopback socket usable.
@@ -287,14 +287,14 @@ ensure_postgres_install() {
    Fix it with one of:
      brew install postgresql@${PG_MAJOR}    # what this script would do for you
      install Docker Desktop                 # start.sh then uses docker-compose.yml
-     export ETHOS_DSN=postgresql://user:pass@host:5432/db   # a Postgres you already run"
+     export CLIO_DSN=postgresql://user:pass@host:5432/db   # a Postgres you already run"
   fi
   die "no PostgreSQL ${PG_MAJOR} on this machine, and none could be installed.
    Fix it with one of:
      apt-get install postgresql-${PG_MAJOR} postgresql-server-dev-${PG_MAJOR} build-essential git
      dnf install postgresql-server postgresql${PG_MAJOR}-devel gcc make git
      install Docker                          # this script then uses docker-compose.yml
-     export ETHOS_DSN=postgresql://user:pass@host:5432/db   # a Postgres you already run"
+     export CLIO_DSN=postgresql://user:pass@host:5432/db   # a Postgres you already run"
 }
 
 # pgvector is a C extension, and Homebrew's current formula is built for newer
@@ -368,7 +368,7 @@ ensure_pgvector() {
 write_config() {
   [ -f "$PGDATA_DIR/postgresql.conf" ] || return 0
   mkdir -p "$PGDATA_DIR/conf.d" "$SOCKET_DIR"
-  cat >"$PGDATA_DIR/conf.d/ethos.conf" <<EOF
+  cat >"$PGDATA_DIR/conf.d/clio.conf" <<EOF
 # Written by scripts/ensure_postgres.sh. Changes here are overwritten.
 port = ${PGPORT}
 listen_addresses = '${PGHOST}'
@@ -410,7 +410,7 @@ cluster_running() { "$PG_BIN/pg_ctl" -D "$PGDATA_DIR" status >/dev/null 2>&1; }
 # ask the config Postgres is actually reading.
 own_cluster_port() {
   local file port
-  for file in "$PGDATA_DIR/conf.d/ethos.conf" "$PGDATA_DIR/postgresql.conf"; do
+  for file in "$PGDATA_DIR/conf.d/clio.conf" "$PGDATA_DIR/postgresql.conf"; do
     [ -f "$file" ] || continue
     port="$(awk -F= '/^[[:space:]]*port[[:space:]]*=/ {gsub(/[[:space:]]/, "", $2); print $2; exit}' "$file")"
     if [ -n "$port" ]; then
@@ -432,7 +432,7 @@ start_cluster() {
     action=restart # running, but not where the DSN points
   fi
   say "${action}ing postgres in $(rel "$PGDATA_DIR") on ${PGHOST}:${PGPORT}"
-  if ! env LC_ALL="$ETHOS_LOCALE" LANG="$ETHOS_LOCALE" "$PG_BIN/pg_ctl" -D "$PGDATA_DIR" -l "$PG_LOG" \
+  if ! env LC_ALL="$CLIO_LOCALE" LANG="$CLIO_LOCALE" "$PG_BIN/pg_ctl" -D "$PGDATA_DIR" -l "$PG_LOG" \
     -w -t "$READY_TIMEOUT" -o "-p ${PGPORT}" "$action" >/dev/null; then
     warn "$(tail -5 "$PG_LOG" 2>/dev/null || true)"
     die "postgres did not start; the tail of its log is above ($(rel "$PG_LOG"))"
@@ -511,7 +511,7 @@ do_up() {
     # Not ours. Say so, rather than fighting it for the bind and failing later
     # with a socket error.
     die "something is already listening on ${PGHOST}:${PGPORT}, but ${PGUSER} cannot log in to
-   the database '${PGDATABASE}' there. Either fix that role, or point ETHOS_DSN
+   the database '${PGDATABASE}' there. Either fix that role, or point CLIO_DSN
    at a port nothing is using."
   fi
 

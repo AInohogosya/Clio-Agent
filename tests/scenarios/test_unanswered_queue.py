@@ -6,7 +6,7 @@ from uuid import uuid4
 
 import pytest
 
-from ethos.social.deliberation import MAX_DELIBERATION_ATTEMPTS, SocialCognition
+from clio.social.deliberation import SocialCognition
 from tests.conftest import make_config
 
 pytestmark = pytest.mark.scenario
@@ -24,8 +24,8 @@ the row said so too -- with nothing anywhere recording that a model had been
 tried and had not managed to think.
 
 So a failed deliberation is counted, written down with its reason, and left where
-the next cycle will find it. Bounded, because otherwise a model that can never
-answer a message is asked about it every cycle forever.
+the next cycle will find it. The field default is no cap at all; this fixture
+restores a bounded one, because the cap is the behaviour under test here.
 """
 
 
@@ -63,6 +63,9 @@ async def _stored(db: Any, message_id: str) -> dict[str, Any]:
 @pytest.fixture()
 def social(tmp_path, db) -> SocialCognition:
     config = make_config(tmp_path / "home")
+    # The cap under test, restored here: the field default is unlimited, and
+    # this fixture pins a small one so the bounded behaviour can be walked.
+    config.social.max_deliberation_attempts = 3
     config.paths.ensure()
     return SocialCognition(config=config, db=db)
 
@@ -87,8 +90,9 @@ async def test_a_message_nobody_answered_stays_on_the_queue(db, social):
 
 
 async def test_the_attempts_are_counted_and_bounded(db, social):
+    capped = social.config.social.max_deliberation_attempts
     message_id, key = await _ask(db, "are you still there?")
-    for expected in range(1, MAX_DELIBERATION_ATTEMPTS + 1):
+    for expected in range(1, capped + 1):
         queue = await _queue(social, key)
         assert queue == [message_id], f"attempt {expected} is still owed"
         pending = await social.pending_inbound(limit=50)
@@ -104,9 +108,48 @@ async def test_the_attempts_are_counted_and_bounded(db, social):
     )
     final = await _stored(db, message_id)
     assert final["decided"] is False, "the row is left as the readable record it is"
-    assert final["attempts"] == MAX_DELIBERATION_ATTEMPTS
+    assert final["attempts"] == capped
     assert "still no answer" in final["reason"], \
         "with the reason a person or the agent reads back afterwards"
+
+
+async def test_an_uncapped_question_is_never_dropped_but_is_spaced_out(db, social):
+    """The field contract: no cap on the asking, a curve on the pace.
+
+    With the cap lifted, a question nobody can answer yet stays owed
+    forever -- but after the first few immediate attempts the retries move
+    onto the escalation curve, so the promise to answer costs one attempt
+    a day rather than one every cycle. `next_retry_after_epoch` is what
+    the queue's SQL reads to hold the row, and the attempt count keeps
+    growing rather than freezing. The waits are real (an hour, then five,
+    then a day), so the test walks past each one by backdating the
+    deadline -- the same thing time does, only faster.
+    """
+    import uuid as uuid_module
+
+    social.config.social.max_deliberation_attempts = 0
+    message_id, key = await _ask(db, "are you still there?")
+    for expected in range(1, 7):
+        queue = await _queue(social, key)
+        assert queue == [message_id], f"attempt {expected} is still owed with no cap"
+        pending = await social.pending_inbound(limit=50)
+        row = next(m for m in pending if str(m.id) == message_id)
+        written = await social.record_failure(row, {
+            "action": "act_silently", "reason": "still no answer", "decided": False,
+        })
+        assert written["attempts"] == expected
+        if expected <= 3:
+            assert not written.get("next_retry_after_epoch"), \
+                "the first attempts are immediate, as they always were"
+        else:
+            assert written.get("next_retry_after_epoch"), \
+                "late unbounded retries are spaced on the escalation curve"
+            # The wait elapses; the question is owed again.
+            await db.execute(
+                "UPDATE messages SET social_decision = jsonb_set("
+                "social_decision, '{next_retry_after_epoch}', '0') WHERE id = $1",
+                uuid_module.UUID(message_id),
+            )
 
 
 async def test_a_decided_message_is_not_asked_about_again(db, social):

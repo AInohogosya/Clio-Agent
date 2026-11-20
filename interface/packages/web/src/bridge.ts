@@ -30,6 +30,13 @@ export interface BridgeSnapshot {
   messages: ChatMessage[];
   configFile: string;
   credentialSource: 'none' | 'file' | 'environment';
+  /**
+   * Whether the configuration file exists on disk at all. The bridge is
+   * the only party that can say so — the page never sees the filesystem —
+   * and it is the first-launch signal: a fresh install has not written
+   * the file yet.
+   */
+  persisted: boolean;
 }
 
 export interface PushState {
@@ -398,5 +405,6 @@ export function normalizeBridgeSnapshot(value: unknown): BridgeSnapshot {
     credentialSource: record.credentialSource === 'file' || record.credentialSource === 'environment'
       ? record.credentialSource
       : 'none',
+    persisted: record.persisted === true,
   };
 }

@@ -614,7 +614,7 @@ test('the agent address must be this machine', () => {
     assert.equal(isValidAgentEndpoint(good), true, good);
   }
   for (const bad of [
-    'http://ethos.example.com:8720',
+    'http://clio.example.com:8720',
     'http://192.168.1.10:8720',
     'https://127.0.0.1:8720',
     'http://user:pw@127.0.0.1:8720',
@@ -936,6 +936,33 @@ test('a stopped agent is refused before the question is queued', async () => {
   duplex.dispose();
 });
 
+test('a turn finished in silence shows nothing', async () => {
+  // No reply in this turn is not a decision not to reply: the agent may have
+  // received the message, done something, and reply later. So the turn ends
+  // with the question alone in the transcript — no notice, no assistant
+  // stand-in — and nothing is recorded as an error.
+  const { client: agent, channel } = makeClient();
+  await agent.connect();
+  const duplex = new DuplexClient({
+    settings: createSettings({ interface: 'agent' }),
+    transport: createAgentTransport({ resolve: () => agent, now: () => NOW }),
+  });
+  duplex.connect();
+  const pending = duplex.sendMessage('are you there?');
+  channel.push({
+    type: 'event',
+    kind: 'message.handled',
+    payload: { message_id: 'm-sent', action: 'ignore', reason: 'no_response_needed' },
+  });
+  const reply = await pending;
+  assert.equal(reply, undefined);
+  assert.equal(duplex.getSnapshot().pending, false);
+  assert.equal(duplex.getSnapshot().lastError, null);
+  assert.deepEqual(duplex.getSnapshot().messages.map((message) => message.role), ['user']);
+  agent.dispose();
+  duplex.dispose();
+});
+
 test('an agent model list comes from the agent, because it holds the key', async () => {
   // This link used to report that it had no catalogue, on the grounds that the
   // agent picks its own model per call. That was true of the routing catalogue
@@ -1208,7 +1235,6 @@ test('each refusal reads as the different thing it is', () => {
     ['agent_invalid_endpoint', /not a local interface service/i],
     ['agent_not_running', /not running/i],
     ['agent_stopped', /stopped/i],
-    ['agent_declined', /chose not to reply/i],
     ['agent_unanswered', /could not answer/i],
     ['agent_timeout', /went quiet/i],
     ['agent_aborted', /Stopped waiting/i],
@@ -1218,6 +1244,9 @@ test('each refusal reads as the different thing it is', () => {
     assert.match(String(said), pattern, code);
   }
   assert.equal(describeAgentFailure(new Error('other'), 'en'), null);
+  // A turn finished in silence is shown as nothing: no reply in this turn is
+  // not a decision not to reply, and a reply may still land later.
+  assert.equal(describeAgentFailure(new AgentRequestError('agent_declined'), 'en'), null);
 });
 
 // ------------------------------------------- whether there is an agent to ask
@@ -1398,7 +1427,7 @@ test('a question the agent answers with nothing is a decline, not a stall', asyn
   });
   await assert.rejects(() => waiting, (error) => {
     assert.equal(error.code, 'agent_declined');
-    assert.match(describeAgentFailure(error, 'en'), /chose not to reply/i);
+    assert.equal(describeAgentFailure(error, 'en'), null, 'a decline is shown as nothing');
     return true;
   });
   client.dispose();

@@ -1,4 +1,4 @@
-import { channelLabel, formatTime, type ChatMessage, type Language } from '@project-phone/core';
+import { channelLabel, formatTime, type ChatMessage, type Density, type Language } from '@project-phone/core';
 import { displayWidth, type LineTone } from './palette.js';
 import { messageVoice, wrapText } from './render.js';
 
@@ -17,17 +17,27 @@ export type { LineTone } from './palette.js';
  */
 export function transcriptLines(
   messages: ChatMessage[],
-  options: { width: number; language: Language; gutter?: number },
+  options: {
+    width: number;
+    language: Language;
+    gutter?: number;
+    /** The clock in each header. Off, the turn opens with its author alone. */
+    showTimestamps?: boolean;
+    /** Compact leaves the blank line out, so the pane holds more of the record. */
+    density?: Density;
+  },
 ): TranscriptLine[] {
   const { width, language } = options;
   const gutter = options.gutter ?? 3;
+  const showTime = options.showTimestamps !== false;
+  const compact = options.density === 'compact';
   const lines: TranscriptLine[] = [];
   const body = Math.max(8, width - gutter);
 
   messages.forEach((message, index) => {
-    if (index > 0) lines.push({ text: '', tone: 'faint' });
+    if (index > 0 && !compact) lines.push({ text: '', tone: 'faint' });
     const voice = messageVoice(message, language);
-    const time = formatTime(message.createdAt, language);
+    const time = showTime ? formatTime(message.createdAt, language) : '';
     // The door, when it is not the local line and not the same one as the turn
     // above it. Shown only on a change, because a terminal is narrow and a header
     // that repeats itself is where the width goes.
@@ -43,7 +53,7 @@ export function transcriptLines(
     // where the header itself overflows the pane.
     const timeRoom = Math.max(0, body - displayWidth(header) - 2);
     lines.push({
-      text: `${header}  ${timeRoom > 0 ? time : ''}`.trimEnd(),
+      text: time ? `${header}  ${timeRoom > 0 ? time : ''}`.trimEnd() : header,
       tone: voice.tone,
       bold: true,
     });

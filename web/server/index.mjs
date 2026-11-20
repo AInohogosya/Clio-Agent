@@ -12,7 +12,7 @@ import { WebSocketServer } from "ws";
 /**
  * The interface bridge.
  *
- * The interface is Clio Agent 3's: a browser page and a terminal client that both read
+ * The interface is Clio Agent 3.1's: a browser page and a terminal client that both read
  * this agent and ask it to do things. So this process has exactly two jobs, and
  * it is a peer of the agent rather than part of it — it holds no state of its own,
  * and everything it shows is a row the agent wrote.
@@ -33,7 +33,7 @@ import { WebSocketServer } from "ws";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
-const DB_DSN = process.env.ETHOS_DSN ?? "postgresql://ethos:ethos@127.0.0.1:5433/ethos";
+const DB_DSN = process.env.CLIO_DSN ?? process.env.ETHOS_DSN ?? "postgresql://ethos:ethos@127.0.0.1:5433/ethos";
 
 /**
  * Where the interface is built from.
@@ -43,8 +43,8 @@ const DB_DSN = process.env.ETHOS_DSN ?? "postgresql://ethos:ethos@127.0.0.1:5433
  * API without it, and refusing to start would make "run the agent, look at it
  * over HTTP" depend on a JavaScript toolchain.
  */
-const PHONE_DIST = process.env.ETHOS_PHONE_DIST
-  ? path.resolve(process.env.ETHOS_PHONE_DIST)
+const PHONE_DIST = process.env.CLIO_PHONE_DIST
+  ? path.resolve(process.env.CLIO_PHONE_DIST)
   : path.resolve(ROOT, "..", "interface", "packages", "web", "dist");
 
 const { Pool, Client } = pg;
@@ -68,7 +68,7 @@ function handle(fn) {
     Promise.resolve()
       .then(() => fn(req, res))
       .catch((error) => {
-        console.error(`ethos-web ${req.method} ${req.path}: ${error?.message ?? error}`);
+        console.error(`clio-web ${req.method} ${req.path}: ${error?.message ?? error}`);
         if (res.headersSent) return;
         res.status(503).json({ error: "agent_unavailable", detail: String(error?.message ?? error) });
       });
@@ -141,20 +141,20 @@ app.get("/api/health", handle(async (_req, res) => {
  * the file cannot be read the caps come back as zero and the panels say "no cap
  * reported", which is honest in a way that a guessed number is not.
  */
-const CONFIG_DIR = process.env.ETHOS_CONFIG_DIR
-  ? path.resolve(process.env.ETHOS_CONFIG_DIR)
+const CONFIG_DIR = process.env.CLIO_CONFIG_DIR
+  ? path.resolve(process.env.CLIO_CONFIG_DIR)
   : path.resolve(ROOT, "..", "config");
 
 /**
  * The port this bridge listens on.
  *
- * `ETHOS_WEB_PORT` wins, then the `web.http_port` key of `config/channels.yaml`
+ * `CLIO_WEB_PORT` wins, then the `web.http_port` key of `config/channels.yaml`
  * — the file the documentation points a deployment at, so editing it does what
  * it says — and 8720 when neither is set. Read here rather than at the top
  * because the config directory has to be resolved first.
  */
 function resolvePort() {
-  const fromEnv = Number(process.env.ETHOS_WEB_PORT);
+  const fromEnv = Number(process.env.CLIO_WEB_PORT);
   if (Number.isFinite(fromEnv) && Number.isInteger(fromEnv) && fromEnv > 0) return fromEnv;
   try {
     const port = readChannelsFile()?.web?.http_port;
@@ -170,13 +170,13 @@ function resolvePort() {
  *
  * `config/` is a directory that is meant to be committed, so a base model — which
  * carries an API key — does not go there. It goes where the rest of the agent's
- * private state is, which is `paths.home` in `config/ethos.yaml` with
- * `ETHOS_HOME` on top: exactly the order `ethos.config.load_config` applies, so
+ * private state is, which is `paths.home` in `config/clio.yaml` with
+ * `CLIO_HOME` on top: exactly the order `clio.config.load_config` applies, so
  * what this process writes is what the gateway reads. Resolving it from the same
  * two sources rather than hard-coding `~/.ethos` is what keeps a `start.sh` run
  * and a bare `node web/server/index.mjs` run pointed at the same file.
  *
- * `~` is expanded the way `ethos/config.py` expands it — with `os.path.expanduser`
+ * `~` is expanded the way `clio/config.py` expands it — with `os.path.expanduser`
  * on the Python side, and by hand here. Doing it by hand is only safe if it is
  * done *properly*, and the obvious one-liner is not: stripping the `~` off
  * `~/.ethos` leaves `/.ethos`, which `path.resolve` then reads as an absolute
@@ -210,12 +210,12 @@ function usableHome(value) {
 }
 
 function resolveAgentHome() {
-  if (process.env.ETHOS_HOME) {
-    const explicit = usableHome(expandHome(process.env.ETHOS_HOME));
+  if (process.env.CLIO_HOME) {
+    const explicit = usableHome(expandHome(process.env.CLIO_HOME));
     if (explicit) return explicit;
   }
   try {
-    const raw = fs.readFileSync(path.join(CONFIG_DIR, "ethos.yaml"), "utf8");
+    const raw = fs.readFileSync(path.join(CONFIG_DIR, "clio.yaml"), "utf8");
     const home = loadYaml(raw)?.paths?.home;
     if (typeof home === "string" && home.trim()) {
       const configured = usableHome(expandHome(home));
@@ -235,7 +235,7 @@ const IDENTITY_FILE = path.join(AGENT_HOME, "identity.yaml");
  *
  * `channels.yaml` here is an *overlay*, not a copy: the same shape as the shipped
  * `config/channels.yaml`, merged over it key by key by `readChannelsFile`, exactly
- * as `ethos.config.load_config` does on the Python side. `people.yaml` overlays
+ * as `clio.config.load_config` does on the Python side. `people.yaml` overlays
  * the contact book the same way, and a `null` address there is a removal.
  *
  * Both are here for the reason `base_model.yaml` is: a bot token and a chat id
@@ -259,7 +259,7 @@ const PORT = resolvePort();
  *
  * A vendor, not a protocol, is what a person picks in a settings screen; what the
  * agent needs to know is which adapter to hand the request to. So this maps
- * forward into the four wire protocols `ethos/gateway/service.py` has an adapter
+ * forward into the four wire protocols `clio/gateway/service.py` has an adapter
  * for, and a provider that is not in this table is not one the agent can be
  * pointed at.
  */
@@ -865,7 +865,7 @@ const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
  * is interpolated into the first line of the agent's own system prompt, where a
  * newline would end the sentence the prompt opens with and start another. This is
  * the cheapest prompt injection there is: a field labelled "what should I call you"
- * that silently rewrites the identity it is written into. `ethos.config` repeats the
+ * that silently rewrites the identity it is written into. `clio.config` repeats the
  * rule with the same pattern when it reads the file, so a name that reaches the
  * agent some other way is refused the same way.
  */
@@ -921,7 +921,7 @@ function baseUrlOf(provider, value) {
  * The agent posts its own reasoning to this address with a credential attached,
  * so the check is about where that traffic can go rather than about whether the
  * string parses: plain `http` only to this machine, and never a private,
- * link-local or unspecified address. `ethos.config.is_valid_base_url` repeats this
+ * link-local or unspecified address. `clio.config.is_valid_base_url` repeats this
  * when the file is read; doing it here as well means a bad address is refused
  * with an answer the person can see, instead of being written and then ignored.
  */
@@ -1000,11 +1000,14 @@ const NO_BASE_MODEL = {
   protocol: "",
   model: "",
   base_url: "",
+  reasoning_level: "off",
   key_present: false,
   key_hint: "",
   key_env: "",
   key_env_present: false,
 };
+
+const REASONING_LEVELS = ["off", "low", "medium", "high"];
 
 /**
  * The base model file as it is on disk, or `null` when there is nothing to read.
@@ -1097,6 +1100,11 @@ function readBaseModel() {
     protocol,
     model: typeof data.model === "string" ? data.model : "",
     base_url: typeof data.base_url === "string" ? data.base_url : "",
+    // A file written before this field existed, or by hand with something
+    // else in it, reads as `off` — no level, not a level nobody chose.
+    reasoning_level: typeof data.reasoning_level === "string" && REASONING_LEVELS.includes(data.reasoning_level.trim())
+      ? data.reasoning_level.trim()
+      : "off",
     key_present: key.length > 0,
     key_hint: keyHint(key),
     key_env: keyEnv,
@@ -1158,14 +1166,14 @@ function fsyncWritten(file) {
  * mid-session read as the agent abruptly thinking with a different model and
  * nothing more — and an instruction sent from the browser was present only as
  * the replies it provoked. Same file, same line shape, and the same redaction,
- * as `ethos/observability/exhaustive.py`: a record that carried a live
+ * as `clio/observability/exhaustive.py`: a record that carried a live
  * credential would not be a more complete record.
  *
  * Never throws: a log line that could fail the write it describes is a worse
  * failure than a lost line.
  */
-const EXHAUSTIVE_LOG_DIR = process.env.ETHOS_EXHAUSTIVE_LOG_DIR
-  ? path.resolve(expandHome(process.env.ETHOS_EXHAUSTIVE_LOG_DIR))
+const EXHAUSTIVE_LOG_DIR = process.env.CLIO_EXHAUSTIVE_LOG_DIR
+  ? path.resolve(expandHome(process.env.CLIO_EXHAUSTIVE_LOG_DIR))
   : path.join(AGENT_HOME, 'data', 'logs');
 
 const EXHAUSTIVE_REDACTED = '[REDACTED]';
@@ -1214,7 +1222,14 @@ function logExhaustive(kind, payload) {
     for (const key of Object.keys(entry).sort()) sorted[key] = entry[key];
     fs.mkdirSync(EXHAUSTIVE_LOG_DIR, { recursive: true });
     fs.appendFileSync(
-      path.join(EXHAUSTIVE_LOG_DIR, `exhaustive-${now.toISOString().slice(0, 10)}.jsonl`),
+      // The same file name the Python writer uses (`%Y%m%d`, UTC): one log,
+      // whichever process happened to record the event. A dashed date here
+      // split the web bridge's writes into a second file that the reader of
+      // the agent's exhaustive log never opened.
+      path.join(
+        EXHAUSTIVE_LOG_DIR,
+        `exhaustive-${now.toISOString().slice(0, 10).replaceAll('-', '')}.jsonl`,
+      ),
       `${JSON.stringify(sorted)}\n`,
     );
   } catch {
@@ -1256,6 +1271,14 @@ function writeBaseModel(body) {
   if (!MODEL_NAME.test(model)) return { error: "invalid_model" };
   const baseUrl = baseUrlOf(vendor, body?.base_url);
   if (!endpointAllowed(baseUrl)) return { error: "invalid_endpoint" };
+  // Omitted means "leave the one on file as it is", and anything that is not
+  // one of the four names is a refusal rather than a silent default.
+  const reasoningLevel = body?.reasoning_level === undefined
+    ? null
+    : text(body.reasoning_level, 16).trim();
+  if (reasoningLevel !== null && !REASONING_LEVELS.includes(reasoningLevel)) {
+    return { error: "invalid_reasoning_level" };
+  }
 
   // An absent key means "keep the one already stored", so a person can change the
   // model from a page that never held the credential. `clear_key` is how a key is
@@ -1270,7 +1293,7 @@ function writeBaseModel(body) {
   const storedFile = readBaseModelFileForWrite();
   if (!storedFile.ok) {
     const detail = `${BASE_MODEL_FILE} is not a readable settings document; nothing was written to it`;
-    console.error(`ethos-web base model not written — ${detail}`);
+    console.error(`clio-web base model not written — ${detail}`);
     return { error: "settings_unreadable", detail };
   }
   const stored = storedFile.data;
@@ -1305,6 +1328,13 @@ function writeBaseModel(body) {
   if (usingEnv) apiKeyEnv = env.variable;
   if (!apiKey && !apiKeyEnv && BASE_PROVIDERS[vendor].requiresKey) return { error: "key_required" };
 
+  // The level is carried across from the stored file like the key envelope
+  // above: a save that only changed the model must not silently reset the
+  // thinking somebody had chosen on a save before it.
+  const storedLevel = stored && typeof stored.reasoning_level === "string"
+    && REASONING_LEVELS.includes(stored.reasoning_level.trim())
+    ? stored.reasoning_level.trim()
+    : "off";
   const document = {
     // The vendor is kept alongside the protocol so the file says what a person
     // chose and not only what the adapter is called, which is what makes the
@@ -1313,6 +1343,7 @@ function writeBaseModel(body) {
     provider: BASE_PROVIDERS[vendor].protocol,
     model,
     base_url: baseUrl,
+    reasoning_level: reasoningLevel ?? storedLevel,
     api_key: apiKey,
     // Empty rather than absent, so a file that had one and no longer does does not
     // keep a reference the agent would resolve over the key that replaced it.
@@ -1340,7 +1371,7 @@ function writeBaseModel(body) {
     // The path goes to the log and not to the page: a surface is shown what to
     // do about it, and the log line is where the directory itself belongs.
     const detail = `${AGENT_HOME}: ${error?.code ?? error?.message ?? error}`;
-    console.error(`ethos-web base model not written — ${detail}`);
+    console.error(`clio-web base model not written — ${detail}`);
     return { error: "home_unwritable", detail };
   }
   const after = readBaseModel();
@@ -1371,7 +1402,7 @@ function readIdentityFile() {
  * What the agent is called, as a surface may see it.
  *
  * `configured` is the honest half of this answer. An empty `self_name` does not mean
- * the agent has no name — it has whatever `config/ethos.yaml` calls it — it means no
+ * the agent has no name — it has whatever `config/clio.yaml` calls it — it means no
  * person has chosen one, which is a different thing, and the one a settings screen has
  * to offer to fix rather than display as a fact.
  */
@@ -1412,7 +1443,7 @@ function writeIdentity(body) {
   }
 
   // Trimmed first, then checked, and the trimmed form is what gets written — the same
-  // order `ethos.config.normalise_agent_name` uses, so both sides agree about which
+  // order `clio.config.normalise_agent_name` uses, so both sides agree about which
   // names exist and neither can write a name it would then refuse. `text` has already
   // rejected anything carrying a control character, which is the half that matters:
   // the check and the write have to be about the same string, or a name could be
@@ -1434,7 +1465,7 @@ function writeIdentity(body) {
       /* nothing was written */
     }
     const detail = `${AGENT_HOME}: ${error?.code ?? error?.message ?? error}`;
-    console.error(`ethos-web agent name not written — ${detail}`);
+    console.error(`clio-web agent name not written — ${detail}`);
     return { error: "home_unwritable", detail };
   }
   const after = readIdentity();
@@ -1549,11 +1580,18 @@ async function listModels(body) {
     if (!response.ok) {
       return { models: STATIC_MODELS[vendor], source: "offline", error: `http_${response.status}`, key_source: keySource };
     }
-    const models = extractModelIds(await response.json(), vendor);
+    const payload = await response.json();
+    const models = extractModelIds(payload, vendor);
     if (models.length === 0) {
       return { models: STATIC_MODELS[vendor], source: "offline", error: "empty_catalog", key_source: keySource };
     }
-    return { models, source: "remote", key_source: keySource };
+    const reasoning = extractReasoningSupport(payload, vendor);
+    return {
+      models,
+      source: "remote",
+      key_source: keySource,
+      ...(Object.keys(reasoning).length ? { reasoning } : {}),
+    };
   } catch (error) {
     return {
       models: STATIC_MODELS[vendor],
@@ -1588,6 +1626,52 @@ function extractModelIds(payload, vendor) {
     if (MODEL_NAME.test(id)) seen.add(id);
   }
   return [...seen].sort();
+}
+
+/**
+ * The reasoning levels one catalogue entry reports it accepts, or `null` when
+ * it reports nothing — which is not the same as reporting it takes none.
+ *
+ * The same rule the direct interface applies, because the two catalogues
+ * answer the same question: OpenRouter's `supported_parameters`/`reasoning`
+ * metadata, then a generic capability spelling, then silence — in which case
+ * the entry is absent and the caller offers every level.
+ */
+function extractReasoningSupport(payload, vendor) {
+  const support = {};
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return support;
+  const items = vendor === "gemini"
+    ? (Array.isArray(payload.models) ? payload.models : [])
+    : (Array.isArray(payload.data) ? payload.data : []);
+  for (const item of items.slice(0, MAX_CATALOGUE_ENTRIES)) {
+    if (!item || typeof item !== "object") continue;
+    const raw = vendor === "gemini" ? item.name : item.id;
+    if (typeof raw !== "string") continue;
+    const id = (vendor === "gemini" ? raw.replace(/^models\//, "") : raw).trim();
+    if (!MODEL_NAME.test(id)) continue;
+    const levels = reasoningLevelsOfEntry(item);
+    if (levels) support[id] = levels;
+  }
+  return support;
+}
+
+function reasoningLevelsOfEntry(entry) {
+  const reported = entry.supported_parameters;
+  if (Array.isArray(reported)) {
+    const params = reported.filter((name) => typeof name === "string");
+    if (params.includes("reasoning") || entry.reasoning !== undefined) return [...REASONING_LEVELS];
+    return ["off"];
+  }
+  if (entry.reasoning && typeof entry.reasoning === "object") return [...REASONING_LEVELS];
+  const capabilities = entry.capabilities && typeof entry.capabilities === "object"
+    ? entry.capabilities
+    : null;
+  const thinking = capabilities ? (capabilities.thinking ?? capabilities.reasoning) : undefined;
+  if (thinking === true || thinking === "supported" || thinking === "enabled") return [...REASONING_LEVELS];
+  if (thinking === false || thinking === "unsupported" || thinking === "disabled") return ["off"];
+  if (entry.supports_thinking === true) return [...REASONING_LEVELS];
+  if (entry.supports_thinking === false) return ["off"];
+  return null;
 }
 
 /**
@@ -1664,7 +1748,7 @@ function mergeSection(base, overlay) {
  * Merged key by key rather than replaced, and that is the point. A replacement
  * would require the home file to carry every door to be right, so writing one
  * Telegram token into it would silently switch off WhatsApp, Slack, Discord and
- * the webhook receiver. `ethos.config.load_config` merges the same two files the
+ * the webhook receiver. `clio.config.load_config` merges the same two files the
  * same way, so what a settings screen writes and what the agent runs cannot
  * disagree about what this machine is configured to do.
  */
@@ -1706,7 +1790,7 @@ function readPeopleFile() {
  * The doors a person can turn on, and what each one needs before it can be.
  *
  * One table, for the same reason `DOOR_CREDENTIALS` is one table in
- * `ethos/config.py`: three readers — the comms host that skips a door it cannot
+ * `clio/config.py`: three readers — the comms host that skips a door it cannot
  * build, `doctor` that says why, and this form — would otherwise each carry their
  * own copy of the same list and disagree. The credential keys are the fields on
  * the channel's own configuration, so there is no name here to keep in step.
@@ -1909,7 +1993,7 @@ function readChannelSetup(person = "owner") {
  *
  * Two files, written to a sibling temporary and renamed, at 0600 from the moment
  * they exist: the channel document and the contact-book address. Both are read by
- * the agent when `ethos-comms` next starts, so a half-written one would be a door
+ * the agent when `clio-comms` next starts, so a half-written one would be a door
  * that is half configured.
  */
 function writeChannelSetup(body) {
@@ -2001,7 +2085,7 @@ function writeChannelSetup(body) {
   for (const file of [CHANNELS_FILE, ...(address !== undefined ? [PEOPLE_FILE] : [])]) {
     if (parseYamlFile(file).ok) continue;
     const detail = `${file} is not a readable settings document; nothing was written to it`;
-    console.error(`ethos-web channel doors not written — ${detail}`);
+    console.error(`clio-web channel doors not written — ${detail}`);
     return { error: "settings_unreadable", detail };
   }
   const written = writeHomeDocument(CHANNELS_FILE, (document) => {
@@ -2113,7 +2197,7 @@ function writeHomeDocument(file, change, what) {
   const stored = parseYamlFile(file);
   if (!stored.ok) {
     const detail = `${file} is not a readable settings document; nothing was written to it`;
-    console.error(`ethos-web ${what} not written — ${detail}`);
+    console.error(`clio-web ${what} not written — ${detail}`);
     return { error: "settings_unreadable", detail };
   }
   const document = change({ ...stored.data });
@@ -2131,7 +2215,7 @@ function writeHomeDocument(file, change, what) {
       /* nothing was written */
     }
     const detail = `${AGENT_HOME}: ${error?.code ?? error?.message ?? error}`;
-    console.error(`ethos-web ${what} not written — ${detail}`);
+    console.error(`clio-web ${what} not written — ${detail}`);
     return { error: "home_unwritable", detail };
   }
   return { ok: true };
@@ -2293,15 +2377,15 @@ function readChannels(book = readAddressBook()) {
 /**
  * The share of the daily cap the gateway reserves for committed work.
  *
- * Read from `gateway.budget.commitment_reserve_pct` in `config/ethos.yaml` —
- * the same key `ethos/gateway/cost.py` splits the cap by — so a dashboard
+ * Read from `gateway.budget.commitment_reserve_pct` in `config/clio.yaml` —
+ * the same key `clio/gateway/cost.py` splits the cap by — so a dashboard
  * retuning the reserve does not quietly disagree with the gate that enforces
  * it. The default matches the file's, not the code's, so an unreadable config
  * and an untouched one answer the same.
  */
 function commitmentReserveShare() {
   try {
-    const raw = fs.readFileSync(path.join(CONFIG_DIR, "ethos.yaml"), "utf8");
+    const raw = fs.readFileSync(path.join(CONFIG_DIR, "clio.yaml"), "utf8");
     const share = loadYaml(raw)?.gateway?.budget?.commitment_reserve_pct;
     if (typeof share === "number" && Number.isFinite(share) && share >= 0 && share <= 1) return share;
   } catch {
@@ -2311,12 +2395,21 @@ function commitmentReserveShare() {
 }
 
 async function budgetCaps() {
-  const none = { daily_usd: 0, monthly_usd: 0, commitment_usd: 0, discretionary_usd: 0 };
+  const none = {
+    daily_usd: 0, monthly_usd: 0, commitment_usd: 0, discretionary_usd: 0,
+    per_minute: null, per_10_minutes: null, per_hour: null, per_5_hours: null,
+    daily: null, monthly: null,
+    budget_unit: "usd",
+  };
   try {
     const raw = await fs.promises.readFile(path.join(CONFIG_DIR, "permissions.yaml"), "utf8");
     const limits = loadYaml(raw)?.hard_limits;
     if (!limits || typeof limits !== "object") return none;
     const number = (value) => (typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0);
+    const nullable = (value) => {
+      const n = number(value);
+      return n > 0 ? n : null;
+    };
     const daily = number(limits.H2_daily_spend_usd);
     const commitment = daily * commitmentReserveShare();
     return {
@@ -2324,6 +2417,13 @@ async function budgetCaps() {
       monthly_usd: number(limits.H2_monthly_spend_usd),
       commitment_usd: commitment,
       discretionary_usd: daily - commitment,
+      per_minute: nullable(limits.H2_per_minute_limit),
+      per_10_minutes: nullable(limits.H2_per_10_minutes_limit),
+      per_hour: nullable(limits.H2_per_hour_limit),
+      per_5_hours: nullable(limits.H2_per_5_hours_limit),
+      daily: nullable(limits.H2_daily_spend_usd),
+      monthly: nullable(limits.H2_monthly_spend_usd),
+      budget_unit: limits.budget_unit === "tokens" ? "tokens" : "usd",
     };
   } catch {
     return none;
@@ -2333,7 +2433,7 @@ async function budgetCaps() {
 /**
  * How many models the agent's own catalogue holds.
  *
- * Read from the same file `ethos/gateway/service.py` routes over, so the number
+ * Read from the same file `clio/gateway/service.py` routes over, so the number
  * on the screen is the number the router has. Zero when the file cannot be read:
  * a count is a thing to be right about, and a guessed one would put a number in
  * front of somebody that no process is using.
@@ -2357,6 +2457,7 @@ async function controlState() {  const row = await pool.query(
     stopped: Boolean(attrs.stopped),
     emergency: Boolean(attrs.emergency),
     preview: Boolean(attrs.preview),
+    safety_level: [1, 2, 3, 4].includes(attrs.safety_level) ? attrs.safety_level : null,
   };
 }
 
@@ -2411,7 +2512,7 @@ async function readView() {
     // timezone, against the guard's UTC midnight: a deployment whose database
     // runs on local time was showing a different day than the one being capped.
     //
-    // `ethos/gateway/cost.py` holds the canonical definitions (`SPEND_SQL` and
+    // `clio/gateway/cost.py` holds the canonical definitions (`SPEND_SQL` and
     // friends, and `start_of_day`). This is the same query written twice
     // because this process speaks SQL and not Python; `tests/unit/test_pricing.py`
     // asserts the two agree, because the drift that produced this was silent.
@@ -2435,6 +2536,18 @@ async function readView() {
     ),
     budgetCaps(),
   ]);
+  // Approvals live in the toolhost process, not in Postgres, so they ride
+  // alongside the queries rather than inside the Promise.all — and they are
+  // best-effort by construction: a toolhost that is restarting must not turn
+  // the whole snapshot into a 503. An empty list is "nothing waiting", which
+  // is also what a toolhost with no gate answers, and a surface that cannot
+  // tell those apart has lost nothing either way.
+  let approvals = [];
+  try {
+    approvals = await listApprovals();
+  } catch {
+    approvals = [];
+  }
   const cycle = latestCycle.rows[0] ?? null;
   // When the agent was last *heard*, not when it last finished a cycle.
   //
@@ -2493,6 +2606,10 @@ async function readView() {
       auditHead: auditHead.rows[0] ?? null,
       protectedCount: Number(protectedCount.rows[0]?.n ?? 0),
     },
+    // Commands waiting on a person. Carried on the snapshot so both surfaces
+    // see them without polling a second endpoint, and so "the agent is quiet"
+    // can be told apart from "the agent is waiting for you".
+    approvals,
   };
 }
 
@@ -2501,6 +2618,70 @@ async function readView() {
 // is down" from every other refusal by the code alone.
 app.get("/api/snapshot", handle(async (_req, res) => {
   res.json(await readView());
+}));
+
+/**
+ * Past messages, on request.
+ *
+ * `/api/snapshot` carries the last hundred rows, which is the live conversation
+ * and not the history: a person who wants what was said last week has nowhere
+ * to look. This is that place. It is paged backwards — `before` names an
+ * instant, and the page is the rows older than it — because the question a
+ * reader asks while scrolling up is always "what came before this", never
+ * "what is on page four". Everything else is a filter on the same window:
+ * `person` and `channel` narrow it to one conversation, `q` searches the text.
+ *
+ * The delivered-only rule is the agent's own (`clio/social/conversation.py`):
+ * the transcript holds rows the outbound path wrote and nobody ever received,
+ * and a history that shows a held message as if it was said is lying twice.
+ */
+const MESSAGE_PAGE_MAX = 200;
+app.get("/api/messages", handle(async (req, res) => {
+  const limitRaw = Number.parseInt(req.query?.limit, 10);
+  const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(limitRaw, 1), MESSAGE_PAGE_MAX) : 60;
+  const before = text(req.query?.before, 40).trim();
+  const person = text(req.query?.person, 128).trim();
+  const channel = text(req.query?.channel, 64).trim();
+  const query = text(req.query?.q, 256).trim();
+
+  const params = [];
+  const clauses = ["COALESCE(delivery->>'status', 'sent') = 'sent'"];
+  if (before) {
+    const instant = Date.parse(before);
+    if (!Number.isFinite(instant)) return res.status(400).json({ error: "invalid_before" });
+    params.push(new Date(instant).toISOString());
+    clauses.push(`ts < $${params.length}::timestamptz`);
+  }
+  if (person) {
+    params.push(person);
+    clauses.push(`person_id = $${params.length}`);
+  }
+  if (channel) {
+    params.push(channel);
+    clauses.push(`channel = $${params.length}`);
+  }
+  if (query) {
+    params.push(query);
+    clauses.push(`text ILIKE '%' || $${params.length} || '%'`);
+  }
+  params.push(limit + 1);
+  const rows = await pool.query(
+    `SELECT id::text AS id, ts, direction, channel, person_id, sender_name,
+            sender_username, text, delivery
+     FROM messages WHERE ${clauses.join(" AND ")}
+     ORDER BY ts DESC LIMIT $${params.length}`,
+    params,
+  );
+  const hasMore = rows.rows.length > limit;
+  const page = rows.rows.slice(0, limit);
+  // Oldest first, the order a transcript is read in; `oldest` is the cursor the
+  // next page back is fetched with, and `null` when there is no next page.
+  page.reverse();
+  res.json({
+    messages: page,
+    hasMore,
+    oldest: hasMore && page.length ? page[0].ts : null,
+  });
 }));
 
 /**
@@ -2515,6 +2696,167 @@ app.get("/api/snapshot", handle(async (_req, res) => {
  * refused, and a request with no browser provenance at all — a terminal, `curl`
  * — is allowed, because that is the owner.
  */
+// ---------------------------------------------------------------------------
+// Clio Agent settings (token budget + every config file), for the settings
+// screens. One allowlist maps a field id to its YAML cell; GET returns the
+// flat values, POST merges a subset back. Writes go to config/*.yaml, the
+// files `clio.config.load_config` reads, atomically (tmp + rename).
+// ---------------------------------------------------------------------------
+const AGENT_CONFIG_FIELDS = [
+  { id: "general.self_name", file: "clio.yaml", path: "self_name", type: "text" },
+  { id: "general.timezone", file: "clio.yaml", path: "timezone", type: "select", options: ["local", "UTC", "Asia/Tokyo", "America/Los_Angeles", "Europe/London"] },
+  { id: "gateway.host", file: "clio.yaml", path: "gateway.host", type: "text" },
+  { id: "gateway.port", file: "clio.yaml", path: "gateway.port", type: "number", min: 1, max: 65535 },
+  { id: "gateway.toolhost_port", file: "clio.yaml", path: "gateway.toolhost_port", type: "number", min: 1, max: 65535 },
+  { id: "workers.count", file: "clio.yaml", path: "workers.count", type: "number", min: 1, max: 32 },
+  { id: "threads.max_concurrent", file: "clio.yaml", path: "threads.max_concurrent", type: "number", min: 1, max: 64 },
+  { id: "threads.max_depth", file: "clio.yaml", path: "threads.max_depth", type: "number", min: 1, max: 16 },
+  { id: "threads.mode", file: "clio.yaml", path: "threads.mode", type: "select", options: ["inprocess", "subprocess"] },
+  { id: "hard_limits.budget_unit", file: "permissions.yaml", path: "hard_limits.budget_unit", type: "select", options: ["usd", "tokens"] },
+  { id: "hard_limits.H2_per_minute_limit", file: "permissions.yaml", path: "hard_limits.H2_per_minute_limit", type: "number", nullable: true, min: 0 },
+  { id: "hard_limits.H2_per_10_minutes_limit", file: "permissions.yaml", path: "hard_limits.H2_per_10_minutes_limit", type: "number", nullable: true, min: 0 },
+  { id: "hard_limits.H2_per_hour_limit", file: "permissions.yaml", path: "hard_limits.H2_per_hour_limit", type: "number", nullable: true, min: 0 },
+  { id: "hard_limits.H2_per_5_hours_limit", file: "permissions.yaml", path: "hard_limits.H2_per_5_hours_limit", type: "number", nullable: true, min: 0 },
+  { id: "hard_limits.H2_daily_spend_usd", file: "permissions.yaml", path: "hard_limits.H2_daily_spend_usd", type: "number", nullable: true, min: 0 },
+  { id: "hard_limits.H2_monthly_spend_usd", file: "permissions.yaml", path: "hard_limits.H2_monthly_spend_usd", type: "number", nullable: true, min: 0 },
+  { id: "hard_limits.on_exceed", file: "permissions.yaml", path: "hard_limits.on_exceed", type: "select", options: ["warn", "block"] },
+  { id: "hard_limits.H2_capital_at_risk_usd", file: "permissions.yaml", path: "hard_limits.H2_capital_at_risk_usd", type: "number", min: 0 },
+  { id: "hard_limits.money_threshold_usd", file: "permissions.yaml", path: "hard_limits.money_threshold_usd", type: "number", min: 0 },
+  { id: "gateway.routing.mu", file: "clio.yaml", path: "gateway.routing.mu", type: "number", min: 0 },
+  { id: "gateway.routing.nu", file: "clio.yaml", path: "gateway.routing.nu", type: "number", min: 0 },
+  { id: "gateway.circuit_breaker.max_failures", file: "clio.yaml", path: "gateway.circuit_breaker.max_failures", type: "number", min: 1 },
+  { id: "gateway.circuit_breaker.cooldown_s", file: "clio.yaml", path: "gateway.circuit_breaker.cooldown_s", type: "number", min: 0 },
+  { id: "gateway.retry.max_retries", file: "clio.yaml", path: "gateway.retry.max_retries", type: "number", min: 0, max: 50 },
+  { id: "gateway.retry.backoff_s", file: "clio.yaml", path: "gateway.retry.backoff_s", type: "number", min: 0 },
+  { id: "gateway.retry.max_backoff_s", file: "clio.yaml", path: "gateway.retry.max_backoff_s", type: "number", min: 0 },
+  { id: "gateway.retry.fail_over", file: "clio.yaml", path: "gateway.retry.fail_over", type: "boolean" },
+  { id: "social.deliberation_max_tokens", file: "social.yaml", path: "deliberation_max_tokens", type: "number", min: 500, max: 200000 },
+  { id: "social.deliberation_escalated_max_tokens", file: "social.yaml", path: "deliberation_escalated_max_tokens", type: "number", min: 500, max: 500000 },
+  { id: "social.execution_state_window_min", file: "social.yaml", path: "execution_state_window_min", type: "number", min: 1 },
+  { id: "social.execution_state_max_actions", file: "social.yaml", path: "execution_state_max_actions", type: "number", min: 1 },
+  { id: "social.max_deliberation_attempts", file: "social.yaml", path: "max_deliberation_attempts", type: "number", min: 0 },
+  { id: "social.proactive_enabled", file: "social.yaml", path: "proactive_enabled", type: "boolean" },
+  { id: "social.proactive_progress_interval_min", file: "social.yaml", path: "proactive_progress_interval_min", type: "number", min: 1 },
+  { id: "gsl.understand_tokens", file: "gsl.yaml", path: "understand_tokens", type: "number", min: 100, max: 100000 },
+  { id: "gsl.devise_tokens", file: "gsl.yaml", path: "devise_tokens", type: "number", min: 100, max: 100000 },
+  { id: "gsl.plan_tokens", file: "gsl.yaml", path: "plan_tokens", type: "number", min: 100, max: 100000 },
+  { id: "gsl.step_tokens", file: "gsl.yaml", path: "step_tokens", type: "number", min: 100, max: 100000 },
+  { id: "gsl.reflect_tokens", file: "gsl.yaml", path: "reflect_tokens", type: "number", min: 100, max: 100000 },
+  { id: "gsl.degraded_reasoning_budget", file: "gsl.yaml", path: "degraded_reasoning_budget", type: "number", min: 0, max: 100000 },
+  { id: "gsl.reasoning_budget", file: "gsl.yaml", path: "reasoning_budget", type: "number", min: 0, max: 100000 },
+  { id: "gsl.model_hint", file: "gsl.yaml", path: "model_hint", type: "text" },
+  { id: "gsl.plan_attempts_before_degrade", file: "gsl.yaml", path: "plan_attempts_before_degrade", type: "number", min: 0 },
+  { id: "gsl.plan_attempts_before_park", file: "gsl.yaml", path: "plan_attempts_before_park", type: "number", min: 0 },
+  { id: "gsl.plan_backoff_s", file: "gsl.yaml", path: "plan_backoff_s", type: "number", min: 0 },
+  { id: "gsl.plan_backoff_max_s", file: "gsl.yaml", path: "plan_backoff_max_s", type: "number", min: 0 },
+  { id: "gsl.max_strategies", file: "gsl.yaml", path: "max_strategies", type: "number", min: 0 },
+  { id: "gsl.verify_code", file: "gsl.yaml", path: "verify_code", type: "boolean" },
+  { id: "gsl.verify_step_checks", file: "gsl.yaml", path: "verify_step_checks", type: "boolean" },
+  { id: "gsl.unverified_is_failure", file: "gsl.yaml", path: "unverified_is_failure", type: "boolean" },
+  { id: "rhythm.energy.night_floor", file: "rhythm.yaml", path: "energy.night_floor", type: "number", min: 0, max: 1 },
+  { id: "rhythm.energy.peak_hour", file: "rhythm.yaml", path: "energy.peak_hour", type: "number", min: 0, max: 24 },
+  { id: "rhythm.energy.low_energy", file: "rhythm.yaml", path: "energy.low_energy", type: "number", min: 0, max: 1 },
+  { id: "rhythm.focus.max_session_min", file: "rhythm.yaml", path: "focus.max_session_min", type: "number", min: 1 },
+  { id: "rhythm.focus.micro_break_min", file: "rhythm.yaml", path: "focus.micro_break_min", type: "number", min: 0 },
+  { id: "rhythm.reverie.enabled", file: "rhythm.yaml", path: "reverie.enabled", type: "boolean" },
+  { id: "rhythm.reverie.max_tokens", file: "rhythm.yaml", path: "reverie.max_tokens", type: "number", min: 50, max: 10000 },
+  { id: "rhythm.reverie.min_gap_min", file: "rhythm.yaml", path: "reverie.min_gap_min", type: "number", min: 1 },
+  { id: "rhythm.reverie.max_gap_min", file: "rhythm.yaml", path: "reverie.max_gap_min", type: "number", min: 1 },
+  { id: "memory.retrieval.top_k", file: "memory.yaml", path: "retrieval.top_k", type: "number", min: 1, max: 500 },
+  { id: "memory.retrieval.candidate_k", file: "memory.yaml", path: "retrieval.candidate_k", type: "number", min: 1, max: 1000 },
+  { id: "memory.retrieval.mmr_lambda", file: "memory.yaml", path: "retrieval.mmr_lambda", type: "number", min: 0, max: 1 },
+  { id: "memory.context.max_turns", file: "memory.yaml", path: "context.max_turns", type: "number", min: 1, max: 500 },
+  { id: "memory.context.max_chars", file: "memory.yaml", path: "context.max_chars", type: "number", min: 100, max: 100000 },
+  { id: "permissions.safety_level", file: "permissions.yaml", path: "safety_level", type: "select", options: ["1", "2", "3", "4"] },
+  { id: "permissions.sudo_allowed", file: "permissions.yaml", path: "sudo_allowed", type: "boolean" },
+  { id: "permissions.approval_timeout_s", file: "permissions.yaml", path: "approval_timeout_s", type: "number", min: 0 },
+  { id: "permissions.guardian.mode", file: "permissions.yaml", path: "guardian.mode", type: "select", options: ["field", "normal"] },
+  { id: "permissions.network.deny_private_ranges", file: "permissions.yaml", path: "network.deny_private_ranges", type: "boolean" },
+  { id: "clio.subagents.tier", file: "clio.yaml", path: "subagents.tier", type: "select", options: ["T1", "T2", "T3"] },
+];
+const AGENT_CONFIG_MAP = new Map(AGENT_CONFIG_FIELDS.map((f) => [f.id, f]));
+
+function getPath(obj, dotted) {
+  let cur = obj;
+  for (const part of dotted.split(".")) {
+    if (cur === null || typeof cur !== "object") return undefined;
+    cur = cur[part];
+  }
+  return cur;
+}
+function setPath(obj, dotted, value) {
+  const parts = dotted.split(".");
+  let cur = obj;
+  for (let i = 0; i < parts.length - 1; i++) {
+    const part = parts[i];
+    if (cur[part] === null || typeof cur[part] !== "object" || Array.isArray(cur[part])) cur[part] = {};
+    cur = cur[part];
+  }
+  cur[parts[parts.length - 1]] = value;
+}
+function readAgentConfigValues() {
+  const cache = new Map();
+  const values = {};
+  for (const field of AGENT_CONFIG_FIELDS) {
+    if (!cache.has(field.file)) cache.set(field.file, readYamlFile(path.join(CONFIG_DIR, field.file)) ?? {});
+    const raw = getPath(cache.get(field.file), field.path);
+    if (raw === null || raw === undefined) values[field.id] = field.nullable ? null : (field.type === "boolean" ? false : field.type === "number" ? 0 : "");
+    else if (field.type === "boolean") values[field.id] = raw === true || raw === 1 || raw === "true";
+    else if (field.type === "number") { const n = Number(raw); values[field.id] = Number.isFinite(n) ? n : (field.nullable ? null : 0); }
+    else values[field.id] = String(raw);
+  }
+  return values;
+}
+function writeAgentConfigValues(incoming) {
+  if (!incoming || typeof incoming !== "object" || Array.isArray(incoming)) return { error: "unknown_field" };
+  const byFile = new Map();
+  for (const [id, raw] of Object.entries(incoming)) {
+    const field = AGENT_CONFIG_MAP.get(id);
+    if (!field) return { error: "unknown_field", detail: id };
+    let value;
+    if (field.nullable && (raw === null || raw === undefined || raw === "")) value = null;
+    else if (field.type === "boolean") value = raw === true || raw === "true" || raw === 1;
+    else if (field.type === "number") {
+      const n = typeof raw === "string" ? Number(raw.trim()) : raw;
+      if (typeof n !== "number" || !Number.isFinite(n)) return { error: "invalid_value", detail: id };
+      if (field.min !== undefined && n < field.min) return { error: "invalid_value", detail: id };
+      if (field.max !== undefined && n > field.max) return { error: "invalid_value", detail: id };
+      value = n;
+    } else if (field.type === "select") {
+      const s = String(raw ?? "").trim();
+      if (field.options && !field.options.includes(s)) return { error: "invalid_value", detail: id };
+      // safety_level stored as number in YAML
+      value = id === "permissions.safety_level" ? Number(s) : s;
+    } else {
+      const s = String(raw ?? "").trim();
+      if (s.length > 500) return { error: "invalid_value", detail: id };
+      value = s;
+    }
+    if (!byFile.has(field.file)) byFile.set(field.file, []);
+    byFile.get(field.file).push({ field, value });
+  }
+  for (const [file, writes] of byFile) {
+    const target = path.join(CONFIG_DIR, file);
+    const data = readYamlFile(target) ?? {};
+    for (const { field, value } of writes) setPath(data, field.path, value);
+    const tmp = `${target}.tmp-${process.pid}`;
+    fs.writeFileSync(tmp, dumpYaml(data), { mode: 0o644 });
+    fs.renameSync(tmp, target);
+    logExhaustive("settings.change", { actor: "web", what: `agent_config:${file}`, fields: writes.map((w) => w.field.id) });
+  }
+  return { values: readAgentConfigValues() };
+}
+
+app.get("/api/agent-config", handle(async (_req, res) => {
+  res.json({ values: readAgentConfigValues() });
+}));
+app.post("/api/agent-config", handle(async (req, res) => {
+  if (!sameOwner(req)) return res.status(403).json({ error: "cross_origin_refused" });
+  const result = writeAgentConfigValues(req.body?.values ?? req.body);
+  if (result?.error) return res.status(400).json({ error: result.error, ...(result.detail ? { detail: result.detail } : {}) });
+  res.json(result);
+}));
+
 function sameOwner(req) {
   const site = req.get("sec-fetch-site");
   if (site && site !== "same-origin" && site !== "none") return false;
@@ -2648,6 +2990,10 @@ app.post("/api/models", handle(async (req, res) => {
     // typed" or "asked with OPENAI_API_KEY" rather than leaving the reader to
     // work out which of the two they just exercised.
     ...(result.key_source ? { key_source: result.key_source } : {}),
+    // The per-model reasoning offer the provider reported, when it reported
+    // any: the form narrows the levels it offers to what the model accepts,
+    // and leaves every level offered for one it did not describe.
+    ...(result.reasoning ? { reasoning: result.reasoning } : {}),
     ...(result.error ? { error: result.error } : {}),
   });
 }));
@@ -2664,7 +3010,7 @@ async function publish(kind, source, payload) {
     "INSERT INTO events (ts, kind, source, payload) VALUES (now(), $1, $2, $3::jsonb) RETURNING id",
     [kind, source, JSON.stringify(payload)],
   );
-  await pool.query("SELECT pg_notify('ethos_events', $1)", [
+  await pool.query("SELECT pg_notify('clio_events', $1)", [
     JSON.stringify({ id: Number(inserted.rows[0].id) }),
   ]);
   return Number(inserted.rows[0].id);
@@ -2681,7 +3027,7 @@ async function publish(kind, source, payload) {
  * that a resume must not silently restart an agent somebody had stopped on
  * purpose — but that rule assumed a stop ended the *process*, so there was
  * nothing left for a resume to restart and the flag had to outlive it. A stop
- * parks the agent now (`ethos/engine/life.py`), it is still there, and the
+ * parks the agent now (`clio/engine/life.py`), it is still there, and the
  * Resume button beside the Stop button is how it is started again. So the case
  * the old rule protected against is the one the surface cannot express any more:
  * a person pressing Resume is asking for the agent back.
@@ -2701,6 +3047,11 @@ const CONTROL_FLAGS = {
   // by key, so a surface that only knows `preview` never touches the others.
   preview_on: { preview: true },
   preview_off: { preview: false },
+  safety_level_1: { safety_level: 1 },
+  safety_level_2: { safety_level: 2 },
+  safety_level_3: { safety_level: 3 },
+  safety_level_4: { safety_level: 4 },
+  safety_level_reset: { safety_level: null },
 };
 
 app.post("/api/control", handle(async (req, res) => {
@@ -2924,6 +3275,246 @@ app.post("/api/intentions/:id/close", handle(async (req, res) => {
 }));
 
 /**
+ * Manual approvals: the one decision a level-2/3 gate waits on a person for.
+ *
+ * At safety levels 2-3 a network command (and APEX, at any level below 4)
+ * creates a pending approval inside the toolhost's `ApprovalManager` and the
+ * step waits — fail-closed — for `approval_timeout_s`. Until now the only road
+ * to that decision was the `clio approvals` CLI on the agent's machine; the
+ * interfaces had none, which is why 2026-11-08..10 filled the action journal
+ * with `rejected (timeout)` rows: the steps asked, nobody was watching the one
+ * surface that could answer, and five hours later the command was denied.
+ *
+ * These three routes are the bridge over that gap. The toolhost is a *separate
+ * process* speaking HTTP over its unix socket (`run_dir/toolhost.sock`; TCP
+ * 8701 where the platform has no sockets), so the bridge does what it always
+ * does — a read-only proxy with no state of its own. Every route is
+ * `sameOwner`-guarded like the other writes: an approval is the owner's
+ * authority acting on a tool run, and a cross-origin page does not get to
+ * spend it.
+ */
+const TOOLHOST_SOCK = process.env.CLIO_TOOLHOST_SOCK
+  ?? path.join(process.env.CLIO_HOME ?? path.join(os.homedir(), ".ethos"), "run", "toolhost.sock");
+const TOOLHOST_TCP = process.env.CLIO_TOOLHOST_URL ?? "http://127.0.0.1:8701";
+const TOOLHOST_TIMEOUT_MS = 4000;
+
+function toolhostRequest(method, requestPath, body) {
+  return new Promise((resolve, reject) => {
+    const payload = body === undefined ? null : JSON.stringify(body);
+    const options = {
+      method,
+      path: requestPath,
+      headers: {
+        host: "toolhost.local",
+        ...(payload === null ? {} : {
+          "content-type": "application/json",
+          "content-length": Buffer.byteLength(payload),
+        }),
+      },
+      timeout: TOOLHOST_TIMEOUT_MS,
+    };
+    const finish = (response) => {
+      const chunks = [];
+      response.on("data", (chunk) => chunks.push(chunk));
+      response.on("end", () => {
+        const raw = Buffer.concat(chunks).toString("utf8");
+        let parsed = null;
+        try { parsed = raw ? JSON.parse(raw) : null; } catch { parsed = { raw }; }
+        resolve({ status: response.statusCode, body: parsed });
+      });
+      response.on("error", reject);
+    };
+    let request;
+    try {
+      // The socket first: it is what the toolhost binds wherever the platform
+      // has AF_UNIX, which is every deployment but the rarest Windows one.
+      request = http.request({ ...options, socketPath: TOOLHOST_SOCK }, finish);
+    } catch (error) {
+      reject(error);
+      return;
+    }
+    request.on("error", (error) => {
+      // A missing socket means the toolhost took the TCP branch; one fallback
+      // attempt, and a failure there is the answer — the toolhost is down.
+      if (error?.code === "ECONNREFUSED" || error?.code === "ENOENT" || error?.code === "EACCES") {
+        const fallback = http.request({ ...options, ...new URL(TOOLHOST_TCP) }, finish);
+        fallback.on("error", reject);
+        fallback.setTimeout(TOOLHOST_TIMEOUT_MS, () => fallback.destroy(new Error("toolhost timeout")));
+        if (payload !== null) fallback.write(payload);
+        fallback.end();
+        return;
+      }
+      reject(error);
+    });
+    request.setTimeout(TOOLHOST_TIMEOUT_MS, () => request.destroy(new Error("toolhost timeout")));
+    if (payload !== null) request.write(payload);
+    request.end();
+  });
+}
+
+async function listApprovals() {
+  const { status, body } = await toolhostRequest("GET", "/approvals");
+  if (status !== 200) throw new Error(`toolhost approvals ${status}`);
+  return Array.isArray(body) ? body : (body?.approvals ?? []);
+}
+
+app.get("/api/approvals", handle(async (req, res) => {
+  if (!sameOwner(req)) {
+    return res.status(403).json({ error: "cross_origin_refused" });
+  }
+  res.json(await listApprovals());
+}));
+
+async function decideApproval(req, res, verb) {
+  if (!sameOwner(req)) {
+    return res.status(403).json({ error: "cross_origin_refused" });
+  }
+  const id = text(req.params.id, 128);
+  if (!id) return res.status(400).json({ error: "invalid_id" });
+  const by = typeof req.body?.by === "string" && req.body.by.trim() ? req.body.by.trim() : "web";
+  const { status, body } = await toolhostRequest("POST", `/approvals/${encodeURIComponent(id)}/${verb}`, { by });
+  if (status === 404) return res.status(404).json({ error: "no_such_approval" });
+  if (status !== 200) {
+    return res.status(502).json({ error: "toolhost_refused", detail: body ?? null });
+  }
+  res.json({ ok: true, approval: body });
+}
+
+app.post("/api/approvals/:id/approve", handle(async (req, res) => {
+  await decideApproval(req, res, "approve");
+}));
+
+app.post("/api/approvals/:id/deny", handle(async (req, res) => {
+  await decideApproval(req, res, "deny");
+}));
+
+/**
+ * The background screen: a read-only window onto an APEX sub-agent's run.
+ *
+ * When the agent delegates desktop work, the run happens on a surface the
+ * person is not watching — that is the point of hidden mode — and the
+ * `ApexScreenRelay` beside the run streams that surface over loopback. This
+ * proxy is the two GET roads the interface's Background Screen panel needs:
+ *
+ * `GET /api/apex-screen/session`
+ *     The relay's session — status, goal, step count, and whether the view is
+ *     pixels or a semantic mirror.
+ * `GET /api/apex-screen/events`
+ *     The relay's `/frames` event stream, piped through byte for byte.
+ *
+ * The read-only property is structural, not remembered. Only GETs are
+ * registered here, the relay itself answers GETs and nothing else, and the
+ * panel draws with pointer events disabled — so a view that cannot ask for
+ * input at any layer cannot accidentally become one. Discovery scans the
+ * relay's small port range (CLIO_APEX_SCREEN_PORT, default 8788, upward) and
+ * requires the relay's own `readOnly` marker, so a different loopback service
+ * that happens to live on a nearby port is never mistaken for a run.
+ */
+const APEX_SCREEN_BASE_PORT = Number.isInteger(Number(process.env.CLIO_APEX_SCREEN_PORT))
+  && Number(process.env.CLIO_APEX_SCREEN_PORT) > 0
+  ? Number(process.env.CLIO_APEX_SCREEN_PORT)
+  : 8788;
+const APEX_SCREEN_PORT_SPAN = 8;
+const APEX_SCREEN_PROBE_TIMEOUT_MS = 600;
+
+async function findApexScreenRelay() {
+  for (let offset = 0; offset < APEX_SCREEN_PORT_SPAN; offset += 1) {
+    const port = APEX_SCREEN_BASE_PORT + offset;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), APEX_SCREEN_PROBE_TIMEOUT_MS);
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/session`, {
+        cache: "no-store",
+        signal: controller.signal,
+      });
+      if (!response.ok) continue;
+      const session = await response.json();
+      if (session?.readOnly === true && session?.source === "agent") {
+        return { port, session };
+      }
+    } catch {
+      /* nothing lives on this port; try the next one */
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  return null;
+}
+
+app.get("/api/apex-screen/session", async (_req, res) => {
+  try {
+    const relay = await findApexScreenRelay();
+    if (!relay) {
+      res.status(503).json({ error: "no_active_session" });
+      return;
+    }
+    res.json(relay.session);
+  } catch {
+    res.status(502).json({ error: "relay_unreachable" });
+  }
+});
+
+app.get("/api/apex-screen/events", async (_req, res) => {
+  const relay = await findApexScreenRelay();
+  if (!relay) {
+    // The panel treats this as "no run is working right now" and retries on
+    // its own cadence, so a quiet day never becomes a reconnect storm.
+    res.status(503).json({ error: "no_active_session" });
+    return;
+  }
+  let upstream;
+  try {
+    upstream = await fetch(`http://127.0.0.1:${relay.port}/frames`, {
+      cache: "no-store",
+    });
+  } catch {
+    res.status(502).json({ error: "relay_unreachable" });
+    return;
+  }
+  if (!upstream.ok || !upstream.body) {
+    res.status(502).json({ error: "relay_unreachable" });
+    return;
+  }
+  res.writeHead(200, {
+    "cache-control": "no-store",
+    connection: "keep-alive",
+    "content-type": "text/event-stream; charset=utf-8",
+    "x-accel-buffering": "no",
+    "x-content-type-options": "nosniff",
+  });
+  const close = new AbortController();
+  let closed = false;
+  res.on("close", () => {
+    closed = true;
+    close.abort();
+  });
+  const reader = upstream.body.getReader();
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done || closed) break;
+      if (!res.write(value)) {
+        // Respect the browser's own backpressure: the relay already drops
+        // frames for a slow reader, so this only keeps the pipe honest. The
+        // close race matters — a response that ends while backing up must
+        // not leave this await parked forever.
+        await new Promise((resolve) => {
+          res.once("drain", resolve);
+          res.once("close", resolve);
+        });
+        if (closed) break;
+      }
+    }
+  } catch {
+    /* the wire went away; the relay notices its subscribers ending */
+  } finally {
+    close.abort();
+    reader.cancel().catch(() => undefined);
+    if (!res.writableEnded) res.end();
+  }
+});
+
+/**
  * The shared phone settings (provider, model, key, language, theme, …) as
  * durable state, so the page keeps what a person configured across a reload
  * and across a restart of this process.
@@ -2980,6 +3571,19 @@ function phoneConfigPath() {
 function phoneDisplayPath() {
   const full = phoneConfigPath();
   return full.length > PHONE_MAX_PATH_LENGTH ? `${full.slice(0, PHONE_MAX_PATH_LENGTH)}…` : full;
+}
+
+// Same rule as core's `configFileExists`: an ENOENT is a fresh install,
+// and any other stat failure is "not first launch" rather than a verdict,
+// so a momentary read failure cannot bring back the setup screen.
+function phoneConfigFileExists() {
+  try {
+    fs.lstatSync(phoneConfigPath());
+    return true;
+  } catch (error) {
+    if (error && error.code === "ENOENT") return false;
+    return true;
+  }
 }
 
 function phoneText(value, max) {
@@ -3260,6 +3864,10 @@ function publicPhoneState(state) {
     messages: state.messages,
     configFile: phoneDisplayPath(),
     credentialSource: credential.source,
+    // The page cannot see the filesystem; this is the bridge's half of the
+    // first-launch rule. Without it the page falls back to "no answer yet",
+    // which reads as first launch on every load.
+    persisted: phoneConfigFileExists(),
   };
 }
 
@@ -3720,7 +4328,7 @@ app.post(`${PHONE_BRIDGE_PREFIX}/complete`, (req, res) => {
       if (!res.writableEnded) res.end();
     }
   })().catch((error) => {
-    console.error(`ethos-web POST /__phone/complete: ${error?.message ?? error}`);
+    console.error(`clio-web POST /__phone/complete: ${error?.message ?? error}`);
     if (!res.headersSent) {
       res.status(503).json({ error: "agent_unavailable", detail: String(error?.message ?? error) });
     }
@@ -3828,7 +4436,7 @@ async function phoneComplete(settings, apiKey, prompt, history, signal) {
  * A bridge that started before `npm run build` finished therefore had no static
  * routes for its whole life, and the only cure was restarting it — while every
  * signal it could give said everything was fine: `/api/health` answered, so
- * `ethos status` printed "interface: up", and a second start found the port taken
+ * `clio status` printed "interface: up", and a second start found the port taken
  * and reported that the page was already being served.
  *
  * Asking at request time costs one `stat` and makes the answer true. The build
@@ -3839,7 +4447,7 @@ async function phoneComplete(settings, apiKey, prompt, history, signal) {
  */
 const NOT_BUILT =
   `The interface is not built yet.\n\n  npm run build          # from the checkout root\n` +
-  `  # or point ETHOS_PHONE_DIST at an existing build\n\nThe API is live on this port regardless.\n`;
+  `  # or point CLIO_PHONE_DIST at an existing build\n\nThe API is live on this port regardless.\n`;
 
 const indexFile = () => path.join(PHONE_DIST, "index.html");
 
@@ -3873,7 +4481,7 @@ app.get("*", (_req, res) => {
  * framework chose, and a code a client can match.
  */
 app.use((error, req, res, _next) => {
-  console.error(`ethos-web ${req.method} ${req.path}: ${error?.message ?? error}`);
+  console.error(`clio-web ${req.method} ${req.path}: ${error?.message ?? error}`);
   if (res.headersSent) return;
   const status = typeof error?.status === "number" ? error.status
     : typeof error?.statusCode === "number" ? error.statusCode
@@ -4002,7 +4610,7 @@ async function maintainListener() {
         }
       });
       await client.connect();
-      await client.query("LISTEN ethos_events");
+      await client.query("LISTEN clio_events");
       listenBackoffMs = 1000;
       await disconnected;
     } catch {
@@ -4026,7 +4634,7 @@ void maintainListener();
  *
  * An unhandled `error` on a listening server is an uncaught exception: the
  * process dies with `Error: listen EADDRINUSE` and a Node stack on stderr, which
- * the supervisor files under `ethos-web.log` where nobody reads it. And the
+ * the supervisor files under `clio-web.log` where nobody reads it. And the
  * situation is usually not a fault at all — the supervisor starts this bridge
  * alongside an agent that may already have one running, so the ordinary case is a
  * second bridge finding the port taken.
@@ -4035,7 +4643,7 @@ void maintainListener();
  * announced that the page on that port was the other bridge's, and exited 0,
  * without asking. When the bridge holding the port started before the interface
  * was built it has no static routes at all, and answers `/` with a 404 — so a
- * second `ethos up`, a second `npm start`, and `ethos status` all reported a
+ * second `clio up`, a second `npm start`, and `clio status` all reported a
  * working interface while the page was unreachable. Asking costs one request and
  * is the difference between a start command that is true and one that has to be
  * believed.
@@ -4078,35 +4686,35 @@ function reportListenFailure(error) {
     void probeExistingListener().then((answer) => {
       if (answer.servesPage) {
         console.error(
-          `ethos-web: ${PORT} is already in use — another bridge is serving the interface there. ` +
+          `clio-web: ${PORT} is already in use — another bridge is serving the interface there. ` +
             `Nothing to do: the page on http://127.0.0.1:${PORT} is that one.`,
         );
         process.exit(0);
       }
       console.error(
-        `ethos-web: ${PORT} is already in use, but nothing there is serving the interface — ` +
+        `clio-web: ${PORT} is already in use, but nothing there is serving the interface — ` +
           `asking it for the page ${answer.detail}.`,
       );
       console.error(
         "   That is what a bridge started before the interface was built looks like: it holds\n" +
           "   the port and answers its API, and serves no page. Stop it and start this one again:",
       );
-      // `make stop`, not `ethos stop`: `ethos` is the checkout's console script, so
+      // `make stop`, not `clio stop`: `clio` is the checkout's console script, so
       // it is only on PATH in a shell that has activated the virtualenv, and this
       // message is read by people whose shell has not. A remedy that is itself
       // "command not found" is the same failure as the one being reported.
       console.error(`     make stop && npm start          # stop the agent holding ${PORT}`);
       console.error("   Or leave it alone and run a second one on its own port:");
-      console.error("     ETHOS_WEB_PORT=8721 npm start");
+      console.error("     CLIO_WEB_PORT=8721 npm start");
       process.exit(1);
     });
     return;
   }
   if (error?.code === "EACCES") {
-    console.error(`ethos-web: not allowed to listen on ${PORT} — pick another with ETHOS_WEB_PORT.`);
+    console.error(`clio-web: not allowed to listen on ${PORT} — pick another with CLIO_WEB_PORT.`);
     process.exit(1);
   }
-  console.error(`ethos-web: could not listen on ${PORT}: ${error?.message ?? error}`);
+  console.error(`clio-web: could not listen on ${PORT}: ${error?.message ?? error}`);
   process.exit(1);
 }
 
@@ -4119,7 +4727,7 @@ server.listen(PORT, "127.0.0.1", () => {
   // this line is served without a restart and the line above it is not a
   // prediction that has since stopped being true.
   const ui = fs.existsSync(indexFile())
-    ? `Clio Agent 3 on http://127.0.0.1:${PORT}`
+    ? `Clio Agent 3.1 on http://127.0.0.1:${PORT}`
     : "interface not built yet (the API is live; the page appears once `npm run build` finishes)";
-  console.log(`ethos-web listening on http://127.0.0.1:${PORT} — ${ui}`);
+  console.log(`clio-web listening on http://127.0.0.1:${PORT} — ${ui}`);
 });

@@ -128,10 +128,11 @@ async complete(
       });
       try {
         // `sentAt` is handed to the wait as well as checked, because it is the one
-        // thing that ties a "heard you, not answering" back to this question. The
-        // agent is free to decline, and when it does the surface should say the
-        // agent declined rather than sit out the whole stall budget and then
-        // report that it had gone quiet.
+        // thing that ties a finished-in-silence turn back to this question. The
+        // agent may finish this turn without a reply, and that ends the turn
+        // here rather than sitting out the whole stall budget and then
+        // reporting that it had gone quiet — but nothing is shown for it, since
+        // a reply may still land later.
         const reply = await agent.awaitReply(after, signal, alreadyAnswered, sentAt);
         onAssigned?.({ answerId: reply.id });
         const text = reply.text.trim();

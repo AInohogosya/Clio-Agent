@@ -1,5 +1,6 @@
 import { createTranslator, type TranslationKey } from './i18n.js';
 import { describeAgentFailure } from './agent/reasons.js';
+import { AgentRequestError } from './agent/types.js';
 import {
   discoverProviderModels,
   ProviderRequestError,
@@ -160,9 +161,14 @@ function providerErrorKey(error: ProviderRequestError): TranslationKey {
  * A translated reason alone sends people hunting; a raw status alone is not
  * readable in three languages. The two together say both what happened here
  * and what the provider objected to.
+ *
+ * Returns `null` for a question the agent finished with in silence: no reply
+ * in this turn is not a decision not to reply, and a reply may still land
+ * later, so nothing is shown for it.
  */
-export function describeFailure(error: unknown, language: Language): string {
+export function describeFailure(error: unknown, language: Language): string | null {
   const t = createTranslator(language);
+  if (error instanceof AgentRequestError && error.code === 'agent_declined') return null;
   // An agent's refusals are its own vocabulary, and it knows which of several
   // different things went wrong; asking a provider sentence to describe an agent
   // that has been stopped would turn "the agent is stopped" into "the endpoint
@@ -537,14 +543,19 @@ export class DuplexClient {
   private failTurn(error: unknown, operation: number): undefined {
     if (this.disposed || operation !== this.operation) return undefined;
     const connected = this.snapshotState.connected;
+    const described = describeFailure(error, this.snapshotState.settings.language);
     this.update((snapshot) => ({
       ...snapshot,
       pending: false,
       streamingText: '',
       status: connected ? 'online' : 'offline',
-      lastError: describeFailure(error, snapshot.settings.language),
+      lastError: described,
     }));
-    this.emit({ type: 'error', message: failureCode(error) });
+    // A decline is shown as nothing at all, here too: no error event for it to
+    // announce, in the debug pane any more than in the transcript.
+    if (described !== null) {
+      this.emit({ type: 'error', message: failureCode(error) });
+    }
     return undefined;
   }
 

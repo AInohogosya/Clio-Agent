@@ -19,6 +19,7 @@ decision rather than a description of it.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from typing import Any
@@ -40,7 +41,7 @@ class _SilentToolhost:
     async def execute(self, name: str, args: dict, ctx) -> Any:
         from pathlib import Path as _Path
 
-        from ethos.toolhost.server import ToolResult
+        from clio.toolhost.server import ToolResult
 
         self.calls.append((name, args))
         if args.get("path") and args.get("content") is not None:
@@ -67,7 +68,7 @@ class _WS:
 
 
 def _solver(tmp_path: Path) -> Any:
-    from ethos.gsl.loop import GeneralSolverLoop
+    from clio.gsl.loop import GeneralSolverLoop
 
     solver = GeneralSolverLoop.__new__(GeneralSolverLoop)
     solver.config = make_config(tmp_path)
@@ -78,6 +79,7 @@ def _solver(tmp_path: Path) -> Any:
     solver.context = None
     solver.memory = None
     solver.audit = None
+    solver._steering = None
 
     async def _recall(*_a: Any, **_k: Any) -> list[Any]:
         return []
@@ -99,8 +101,8 @@ def _solver(tmp_path: Path) -> Any:
 
 
 async def _run(tmp_path: Path, success_check: dict[str, Any]) -> Any:
-    from ethos.gsl.loop import GeneralSolverLoop  # noqa: F401
-    from ethos.schemas.gsl import Plan, PlanStep
+    from clio.gsl.loop import GeneralSolverLoop  # noqa: F401
+    from clio.schemas.gsl import Plan, PlanStep
 
     solver = _solver(tmp_path)
     plan = Plan(approach_id="a1", approach="do it", strategy_number="1",
@@ -136,11 +138,14 @@ async def test_a_step_whose_own_check_passes_is_a_finished_step(tmp_path: Path) 
     result = await _run(tmp_path, {"type": "file_exists",
                                    "path": str(tmp_path / "thing.py")})
     assert result.outcome.value == "step_done"
+    assert result.step_verified is True, "a check that observed the file passed"
 
 
 async def test_a_step_with_no_check_is_unaffected(tmp_path: Path) -> None:
     """Most steps have nothing mechanical about them, and must not be held to it."""
-    assert (await _run(tmp_path, {})).outcome.value == "step_done"
+    result = await _run(tmp_path, {})
+    assert result.outcome.value == "step_done"
+    assert result.step_verified is None, "no check was asked for, so non-verdict"
 
 
 async def test_a_failing_command_check_tells_the_model_what_failed(tmp_path: Path) -> None:
@@ -191,7 +196,7 @@ async def test_the_step_check_can_be_turned_off_by_configuration(tmp_path: Path)
     """An operator whose plans carry checks that cannot pass needs a way out."""
     solver = _solver(tmp_path)
     solver.config.gsl.verify_step_checks = False
-    from ethos.schemas.gsl import Plan, PlanStep
+    from clio.schemas.gsl import Plan, PlanStep
 
     plan = Plan(approach_id="a1", approach="", strategy_number="1",
                 steps=[PlanStep(id="s1", description="x")])
@@ -223,3 +228,134 @@ async def test_the_thought_names_the_check_that_failed_not_just_that_something_d
     check_named = [t for t in result.thoughts if "file_exists" in t]
     assert check_named, result.thoughts
     assert json.dumps(result.actions), "and the actions that were taken are still there"
+
+
+async def test_a_file_check_accepts_the_spellings_plans_actually_write(
+    tmp_path: Path,
+) -> None:
+    """`file_path` and `expected` were what the model wrote; the checker ignored them.
+
+    The schema never fixed these key names, so a plan that said
+    `{"type": "file_contains", "file_path": "...", "expected": "..."}` was
+    resolved as the empty path -- the current directory -- and passed without
+    opening the file. The aliases are accepted because the plan's intent is not
+    ambiguous; the empty-path guard below is what stops the old silent pass.
+    """
+    target = tmp_path / "written.py"
+    target.write_text("def plan(self, task: str) -> str:\n", encoding="utf-8")
+
+    result = await _run(tmp_path, {
+        "type": "file_contains",
+        "file_path": str(target),
+        "expected": "def plan(self, task: str) -> str:",
+    })
+
+    assert result.outcome.value == "step_done"
+
+
+async def test_a_file_check_with_no_path_does_not_pass_on_the_cwd(tmp_path: Path) -> None:
+    """An empty path is the current directory, and the check must not pass on it."""
+    result = await _run(tmp_path, {"type": "file_exists"})
+
+    assert result.outcome.value == "step_failed", (
+        "a malformed file check must not be a verified step"
+    )
+    assert any("success check" in t for t in result.thoughts), result.thoughts
+
+
+async def test_a_check_that_performs_the_work_is_refused(tmp_path: Path) -> None:
+    """The `cat > file` in a check is the work, and the work is not a check.
+
+    A plan that put the whole write in `success_check` and left the action as
+    `ls` was recorded as a verified step every time: the checker created the
+    file, then reported success. The step is now failed with the command in the
+    evidence so the next attempt moves it into the action.
+    """
+    target = tmp_path / "created-by-the-check.txt"
+    result = await _run(tmp_path, {
+        "type": "command",
+        "command": f"cat > {target} << 'EOF'\nhello\nEOF\n",
+        "expect": "exit_zero",
+    })
+
+    assert result.outcome.value == "step_failed"
+    assert not target.exists(), "the check must not have been allowed to write"
+    assert any("perform" in t or "read-only" in t for t in result.thoughts), result.thoughts
+
+
+async def test_a_read_only_command_with_stderr_redirection_still_runs(
+    tmp_path: Path,
+) -> None:
+    """`>&2` is a diagnostic, not a file write, and must stay runnable."""
+    result = await _run(tmp_path, {
+        "type": "command",
+        "command": "echo 'assert 1 == 2' >&2; exit 1",
+        "expect": "exit_zero",
+    })
+
+    assert result.outcome.value == "step_failed"
+    assert any("1 == 2" in t for t in result.thoughts), result.thoughts
+
+
+async def test_a_find_that_prints_nothing_is_done_but_not_verified(
+    tmp_path: Path,
+) -> None:
+    """`find` exits 0 whether it matched anything or not.
+
+    So a check that only ran `find ... -print` could pass while enumerating
+    nothing, and the step inherited "verified" from an empty result. The step
+    is still done -- it did what it did -- but the record must not call it
+    verified.
+    """
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    result = await _run(tmp_path, {
+        "type": "command",
+        "command": f"find {empty} -type f -print",
+        "expect": "exit_zero",
+        "timeout_s": 20,
+    })
+
+    assert result.outcome.value == "step_done"
+    assert result.step_verified is False, "the check observed no file"
+    assert any("unverified" in t for t in result.thoughts), result.thoughts
+
+
+def test_a_passing_loop_over_an_unmatched_glob_is_not_observation(
+    tmp_path: Path,
+) -> None:
+    """The canonical vacuous check: a loop whose glob matches nothing.
+
+    A shell with `nullglob` never enters the body, so the command exits 0 while
+    opening no file. `true` after it makes the exit status unambiguous. The
+    check may pass -- nothing objected -- but it is not evidence.
+    """
+    from clio.gsl.evaluator import ObjectiveChecker
+
+    pattern = tmp_path / "absent" / "*.md"
+    result = asyncio.run(ObjectiveChecker(tmp_path).check({
+        "type": "command",
+        "command": f"for f in {pattern}; do :; done; true",
+        "expect": "exit_zero",
+        "timeout_s": 20,
+    }))
+
+    assert result["passed"] is True
+    assert result["observed"] is False, "the glob expanded to nothing"
+    assert "match nothing" in result["evidence"]["note"]
+
+
+def test_a_loop_over_a_real_file_is_still_observation(tmp_path: Path) -> None:
+    """The guard must not turn a genuine check into an unverified one."""
+    from clio.gsl.evaluator import ObjectiveChecker
+
+    (tmp_path / "summary.md").write_text("done\n", encoding="utf-8")
+    result = asyncio.run(ObjectiveChecker(tmp_path).check({
+        "type": "command",
+        "command": f"for f in {tmp_path}/*.md; do [ -s \"$f\" ]; done",
+        "expect": "exit_zero",
+        "timeout_s": 20,
+    }))
+
+    assert result["passed"] is True
+    assert result["observed"] is True

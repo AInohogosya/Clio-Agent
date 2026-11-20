@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pytest
 
-from ethos.config import (
+from clio.config import (
     BaseModelConfig,
     ModelEntry,
     ModelsConfig,
@@ -21,10 +21,10 @@ from ethos.config import (
     load_base_model,
     load_config,
 )
-from ethos.gateway.cost import CostCalculator
-from ethos.gateway.router import ModelRouter
-from ethos.gateway.service import GatewayService
-from ethos.schemas.models import Tier
+from clio.gateway.cost import CostCalculator
+from clio.gateway.router import ModelRouter
+from clio.gateway.service import GatewayService
+from clio.schemas.models import Tier
 from tests.conftest import simple_request
 
 
@@ -82,7 +82,7 @@ def test_resolving_prepends_to_the_catalogue():
 
 def test_it_loads_with_the_rest_of_the_configuration(tmp_path, monkeypatch):
     write_base_model(tmp_path, VALID)
-    monkeypatch.setenv("ETHOS_HOME", str(tmp_path))
+    monkeypatch.setenv("CLIO_HOME", str(tmp_path))
     config = load_config("config")
     assert config.models.base is not None
     assert config.models.models[0].model == "some/model-id"
@@ -243,7 +243,7 @@ def test_an_unavailable_pin_falls_through_to_the_catalogue():
 
 def test_the_key_comes_from_the_file_when_there_is_no_variable(tmp_path, monkeypatch):
     write_base_model(tmp_path, VALID)
-    monkeypatch.setenv("ETHOS_HOME", str(tmp_path))
+    monkeypatch.setenv("CLIO_HOME", str(tmp_path))
     monkeypatch.delenv("PINNED_API_KEY", raising=False)
     service = GatewayService(load_config("config"), providers={})
     assert service._provider_for(service.config.models.models[0]).api_key == "sk-example"
@@ -255,7 +255,7 @@ def test_the_environment_wins_over_the_file(tmp_path, monkeypatch):
         tmp_path,
         "provider: openai_compat\nmodel: m\napi_key: from-file\napi_key_env: PINNED_API_KEY\n",
     )
-    monkeypatch.setenv("ETHOS_HOME", str(tmp_path))
+    monkeypatch.setenv("CLIO_HOME", str(tmp_path))
     monkeypatch.setenv("PINNED_API_KEY", "from-env")
     service = GatewayService(load_config("config"), providers={})
     assert service._provider_for(service.config.models.models[0]).api_key == "from-env"
@@ -263,11 +263,11 @@ def test_the_environment_wins_over_the_file(tmp_path, monkeypatch):
 
 def test_a_base_model_written_while_running_is_picked_up(tmp_path, monkeypatch):
     """Otherwise the setting could not be changed from the page that found it wrong."""
-    monkeypatch.setenv("ETHOS_HOME", str(tmp_path))
+    monkeypatch.setenv("CLIO_HOME", str(tmp_path))
     # The checkout ships a base model of its own (`config/base_model.yaml`);
     # this test is about the home file's precedence, so the shipped one is
     # taken back out for the same reason an operator's would be.
-    monkeypatch.setattr("ethos.config.load_shipped_base_model", lambda *_: None)
+    monkeypatch.setattr("clio.config.load_shipped_base_model", lambda *_: None)
     service = GatewayService(load_config("config"), providers={})
     assert service.config.models.base is None
     catalogue = len(service.config.models.models)
@@ -280,7 +280,11 @@ def test_a_base_model_written_while_running_is_picked_up(tmp_path, monkeypatch):
 
 
 def test_removing_it_keeps_the_catalogue_the_same_size(tmp_path, monkeypatch):
-    monkeypatch.setenv("ETHOS_HOME", str(tmp_path))
+    monkeypatch.setenv("CLIO_HOME", str(tmp_path))
+    monkeypatch.setattr("clio.config.load_shipped_base_model", lambda *_: None)
+    # The sync fallback also reads the shipped loader by name from
+    # `clio.gateway.service`, so patch it there too.
+    monkeypatch.setattr("clio.gateway.service.load_shipped_base_model", lambda *_: None, raising=False)
     service = GatewayService(load_config("config"), providers={})
     write_base_model(tmp_path, VALID)
     service.sync_base_model()
@@ -292,8 +296,34 @@ def test_removing_it_keeps_the_catalogue_the_same_size(tmp_path, monkeypatch):
     assert len(service.config.models.models) == with_base - 1
 
 
+def test_removing_it_falls_back_to_the_shipped_base_model(tmp_path, monkeypatch):
+    """Start-up and runtime sync must agree on the fallback.
+
+    `load_config` uses `config/base_model.yaml` when no home file overrides
+    it. A runtime sync that instead set the base to None on removal left the
+    running agent with a different model -- or none -- from what a restart
+    would give it.
+    """
+    monkeypatch.setenv("CLIO_HOME", str(tmp_path))
+    service = GatewayService(load_config("config"), providers={})
+    shipped = service.config.models.base
+    assert shipped is not None, "the shipped config carries a base model"
+
+    write_base_model(tmp_path, VALID)
+    service.sync_base_model()
+    assert service.config.models.base is not None
+    assert service.config.models.base.model == "some/model-id"
+
+    base_model_path(tmp_path).unlink()
+    service.sync_base_model()
+    assert service.config.models.base == shipped
+    assert service.config.models.models[0].model == shipped.model
+
+
 def test_a_corrupt_file_leaves_the_agent_running(tmp_path, monkeypatch):
-    monkeypatch.setenv("ETHOS_HOME", str(tmp_path))
+    monkeypatch.setenv("CLIO_HOME", str(tmp_path))
+    monkeypatch.setattr("clio.config.load_shipped_base_model", lambda *_: None)
+    monkeypatch.setattr("clio.gateway.service.load_shipped_base_model", lambda *_: None, raising=False)
     service = GatewayService(load_config("config"), providers={})
     write_base_model(tmp_path, VALID)
     service.sync_base_model()
@@ -308,7 +338,7 @@ def test_a_corrupt_file_leaves_the_agent_running(tmp_path, monkeypatch):
 
 def test_a_rewrite_of_the_same_size_is_still_picked_up(tmp_path, monkeypatch):
     """The reload is gated on a size+mtime stamp, and mtime has a resolution."""
-    monkeypatch.setenv("ETHOS_HOME", str(tmp_path))
+    monkeypatch.setenv("CLIO_HOME", str(tmp_path))
     service = GatewayService(load_config("config"), providers={})
     write_base_model(tmp_path, "provider: openai_compat\nmodel: aaa\napi_key: k")
     service.sync_base_model()
@@ -323,7 +353,7 @@ def test_a_rewrite_of_the_same_size_is_still_picked_up(tmp_path, monkeypatch):
 
 def test_the_status_reports_the_key_without_revealing_it(tmp_path, monkeypatch):
     write_base_model(tmp_path, VALID)
-    monkeypatch.setenv("ETHOS_HOME", str(tmp_path))
+    monkeypatch.setenv("CLIO_HOME", str(tmp_path))
     service = GatewayService(load_config("config"), providers={})
     status = service.model_status()
     assert status["base"]["configured"] is True
@@ -336,20 +366,20 @@ def test_a_key_in_the_environment_counts_as_a_key(tmp_path, monkeypatch):
     """A base model may name a variable and hold no key at all."""
     write_base_model(
         tmp_path,
-        "provider: openai_compat\nmodel: some/model-id\napi_key_env: ETHOS_TEST_BASE_KEY\n",
+        "provider: openai_compat\nmodel: some/model-id\napi_key_env: CLIO_TEST_BASE_KEY\n",
     )
-    monkeypatch.setenv("ETHOS_HOME", str(tmp_path))
-    monkeypatch.setenv("ETHOS_TEST_BASE_KEY", "sk-from-the-environment")
+    monkeypatch.setenv("CLIO_HOME", str(tmp_path))
+    monkeypatch.setenv("CLIO_TEST_BASE_KEY", "sk-from-the-environment")
     service = GatewayService(load_config("config"), providers={})
     status = service.model_status()
     # Reporting "no key" here would say a working install cannot think, and the
     # variable is named so a surface can say which one it is reading.
     assert status["base"]["key_present"] is True
-    assert status["base"]["key_env"] == "ETHOS_TEST_BASE_KEY"
+    assert status["base"]["key_env"] == "CLIO_TEST_BASE_KEY"
     assert "sk-from-the-environment" not in repr(status)
 
     # And with the variable gone, the same file is honestly a model with no
     # credential — which is what makes the first answer worth anything.
-    monkeypatch.delenv("ETHOS_TEST_BASE_KEY")
+    monkeypatch.delenv("CLIO_TEST_BASE_KEY")
     service = GatewayService(load_config("config"), providers={})
     assert service.model_status()["base"]["key_present"] is False

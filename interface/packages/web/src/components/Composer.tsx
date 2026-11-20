@@ -111,13 +111,13 @@ interface ComposerProps {
   /** Whether a reply is in flight, which is what makes Escape mean interrupt. */
   pending: boolean;
   /**
-   * Whether this line can be written to at all.
-   *
-   * A conversation on a door the agent no longer has open. Refused here rather
-   * than at the send, because a field that accepts a question and then reports
-   * nothing is the reading that makes a reader think the agent has gone quiet —
-   * and the reason is said above the field, where they are already looking.
-   */
+    * Whether this line can be written to at all.
+    *
+    * A conversation on a door the agent no longer has open. Refused here rather
+    * than at the send, because a field that accepts a question and then reports
+    * nothing is the reading that makes a reader think the agent has gone quiet —
+    * and the reason is said above the field, where they are already looking.
+    */
   disabled?: boolean;
   /**
    * The field's wording when it is empty, and its accessible name.
@@ -128,6 +128,12 @@ interface ComposerProps {
   placeholder: string;
   /** The send button's wording, in the reader's language. */
   sendLabel: string;
+  /**
+   * Whether Enter sends. Off, Enter is a newline and Ctrl/Cmd+Enter sends — the
+   * spelling a reader who writes multi-line thoughts asks for, and the one the
+   * surfaces must keep in step about.
+   */
+  enterToSend?: boolean;
   /** Anything the surface wants under the field, such as its shortcut hints. */
   children?: ReactNode;
 }
@@ -142,18 +148,19 @@ interface ComposerProps {
  * is a new line, Escape interrupts a reply in flight — on every surface, so
  * interrupting does not depend on which one happens to be mounted.
  */
-export function Composer({ value, onChange, onSubmit, onInterrupt, pending, disabled, placeholder, sendLabel, children }: ComposerProps) {
+export function Composer({ value, onChange, onSubmit, onInterrupt, pending, disabled, placeholder, sendLabel, enterToSend = true, children }: ComposerProps) {
   const fieldRef = useFieldHeight(value);
 
   return (
     <form
       className="shrink-0 border-t border-[var(--line)] p-3 sm:p-4"
+      style={{ background: 'var(--glass)', backdropFilter: 'blur(12px)' }}
       onSubmit={(event) => {
         event.preventDefault();
         onSubmit();
       }}
     >
-      <div className="instrument-well flex items-end gap-2 rounded-xl p-2 focus-within:border-[var(--accent-line)]">
+      <div className="instrument-well flex items-end gap-2 rounded-2xl p-2 transition focus-within:border-[var(--accent-line)] focus-within:ring-2 focus-within:ring-[var(--focus-ring)]">
         <textarea
           aria-label={placeholder}
           className="composer-field scrollbar-thin flex-1 resize-none bg-transparent px-2 py-2 text-sm leading-6 text-[var(--ink)] outline-none placeholder:text-[var(--ink-faint)]"
@@ -161,12 +168,18 @@ export function Composer({ value, onChange, onSubmit, onInterrupt, pending, disa
           maxLength={MAX_PROMPT_LENGTH}
           onChange={(event) => onChange(event.target.value)}
           onKeyDown={(event) => {
-            if (event.key === 'Enter' && !event.shiftKey) {
+            // The key that sends is the preference's, not the component's: with
+            // the preference off, Enter belongs to the sentence, and the chord
+            // is the send. Escape keeps its one meaning everywhere.
+            const sends = enterToSend
+              ? event.key === 'Enter' && !event.shiftKey
+              : event.key === 'Enter' && (event.metaKey || event.ctrlKey);
+            if (sends) {
               event.preventDefault();
               onSubmit();
+              return;
             }
-            // The key the footer names: interrupting a reply in flight must not
-            // depend on which screen is mounted.
+            if (event.key === 'Enter' && !enterToSend && !event.shiftKey) event.preventDefault();
             if (event.key === 'Escape' && pending) {
               event.preventDefault();
               onInterrupt();

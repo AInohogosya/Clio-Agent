@@ -16,6 +16,7 @@ import {
 } from './channel.js';
 import {
   AgentRequestError,
+  emptyAgentHistory,
   emptyAgentIdentity,
   emptyAgentView,
   isAgentControlAction,
@@ -25,13 +26,19 @@ import {
   readAgentBaseModel,
   readAgentChannelSetup,
   readAgentDoors,
+  readAgentHistory,
   readAgentMessage,
   readAgentView,
+  readApexSession,
+  readApprovals,
   readBaseModelReply,
   readEnvApiKeys,
   readIdentityReply,
   readPresence,
+  readReasoningSupport,
   readThought,
+  type AgentApproval,
+  type AgentApexSession,
   type AgentBaseModel,
   type AgentBaseModelInput,
   type AgentChannelSetup,
@@ -41,6 +48,7 @@ import {
   type AgentDoorWrite,
   type AgentEvent,
   type AgentFailureCode,
+  type AgentHistoryPage,
   type AgentIdentity,
   type AgentLinkStatus,
   type AgentMessage,
@@ -522,6 +530,45 @@ export class AgentClient {
     });
   }
 
+  // ------------------------------------------------------------- the approvals
+
+  /**
+   * The commands the guardian is holding for a person's decision, read fresh.
+   *
+   * The snapshot carries the same list; this is the write-adjacent read a
+   * surface uses right after acting, so an approve is followed by an answer
+   * rather than by the next poll interval.
+   */
+  async approvals(): Promise<AgentApproval[]> {
+    return this.getOr<AgentApproval[]>('/api/approvals', [], readApprovals);
+  }
+
+  /** Approves one held command. A 404 names an approval that already resolved. */
+  async approveApproval(id: string): Promise<void> {
+    const approvalId = id.trim();
+    if (!approvalId) throw new AgentRequestError('agent_refused', 'no_approval_id');
+    const endpoints = this.requireEndpoints();
+    const response = await this.post(
+      `${endpoints.http}/api/approvals/${encodeURIComponent(approvalId)}/approve`,
+      { by: this.personId },
+    );
+    if (response.status === 404) throw new AgentRequestError('agent_refused', 'no_such_approval');
+    if (!response.ok) throw new AgentRequestError('agent_unreachable', `http_${response.status}`);
+  }
+
+  /** Denies one held command: the step is journalled as rejected, nothing runs. */
+  async denyApproval(id: string): Promise<void> {
+    const approvalId = id.trim();
+    if (!approvalId) throw new AgentRequestError('agent_refused', 'no_approval_id');
+    const endpoints = this.requireEndpoints();
+    const response = await this.post(
+      `${endpoints.http}/api/approvals/${encodeURIComponent(approvalId)}/deny`,
+      { by: this.personId },
+    );
+    if (response.status === 404) throw new AgentRequestError('agent_refused', 'no_such_approval');
+    if (!response.ok) throw new AgentRequestError('agent_unreachable', `http_${response.status}`);
+  }
+
   // ----------------------------------------------------------- the base model
 
   /**
@@ -625,6 +672,9 @@ export class AgentClient {
       model: input.model.trim(),
       base_url: input.baseUrl.trim(),
     };
+    // Sent only when mentioned: omitted leaves the level on file as it is, and
+    // `off` is a real answer rather than an omission, so it is sent too.
+    if (input.reasoningLevel !== undefined) body.reasoning_level = input.reasoningLevel;
     if (input.apiKey?.trim()) body.api_key = input.apiKey.trim();
     if (input.clearKey) body.clear_key = true;
     // A typed key wins over the variable: somebody who has just pasted one is
@@ -660,6 +710,35 @@ export class AgentClient {
   async doors(): Promise<AgentDoor[]> {
     const fallback = readAgentDoors(null);
     return this.getOr('/api/channels', fallback, readAgentDoors);
+  }
+
+  /**
+   * One page of the past, read backwards from `before`.
+   *
+   * The snapshot carries the live conversation and not the history, so a reader
+   * who wants what was said last week has to be able to ask for it. Never
+   * rejects: an older bridge with no such route, or an agent that is down, is
+   * an empty page rather than an error in the timeline — a history that cannot
+   * be reached reads as "nothing older", which is what the pane can say.
+   */
+  async history(options: {
+    before?: string;
+    person?: string;
+    channel?: string;
+    /** A text search over the past, as the bridge's `q` parameter names it. */
+    q?: string;
+    limit?: number;
+  } = {}): Promise<AgentHistoryPage> {
+    const params = new URLSearchParams();
+    if (options.before) params.set('before', options.before);
+    if (options.person) params.set('person', options.person);
+    if (options.channel) params.set('channel', options.channel);
+    if (options.q) params.set('q', options.q);
+    if (options.limit) params.set('limit', String(Math.trunc(options.limit)));
+    const query = params.toString();
+    return this.getOr('/api/messages', emptyAgentHistory(), readAgentHistory, {
+      query: query ? `?${query}` : '',
+    });
   }
 
   /**
@@ -754,15 +833,22 @@ export class AgentClient {
         source?: unknown;
         error?: unknown;
         key_source?: unknown;
+        reasoning?: unknown;
       };
       const models = Array.isArray(payload.models)
         ? payload.models.filter((entry): entry is string => typeof entry === 'string')
         : [];
+      // The per-model reasoning offer, read defensively like every other field
+      // on this link: a map of arrays of levels, filtered to the ones this kit
+      // knows. A model missing from it is one the provider did not describe,
+      // and the screen offers it the full set.
+      const reasoning = readReasoningSupport(payload.reasoning);
       return {
         models,
         source: payload.source === 'remote' ? 'remote' : 'offline',
         ...(typeof payload.error === 'string' ? { error: payload.error } : {}),
         ...(typeof payload.key_source === 'string' ? { keySource: payload.key_source } : {}),
+        ...(reasoning ? { reasoning } : {}),
       };
     } catch {
       // The service, not the provider: this is the one place where the fetch that
@@ -788,6 +874,17 @@ export class AgentClient {
    */
   async readEnvApiKeys(): Promise<EnvApiKey[]> {
     return this.getOr('/api/env-keys', [], readEnvApiKeys);
+  }
+
+  /**
+   * The background screen relay's session, or `null` when there is no run.
+   *
+   * Read-only by construction: the relay answers only GETs and reports
+   * `readOnly: true`, and this client only ever fetches — a surface that can
+   * see a desktop run cannot touch it from here.
+   */
+  async apexScreenSession(): Promise<AgentApexSession | null> {
+    return this.getOr<AgentApexSession | null>('/api/apex-screen/session', null, readApexSession);
   }
 
   /**
@@ -846,6 +943,39 @@ export class AgentClient {
     body: Record<string, unknown>,
   ): Promise<{ ok: true; payload: unknown } | { ok: false; refusal: string }> {
     return this.postWithRefusal('/api/channels', body, isChannelRefusal);
+  }
+
+  /** Every Clio Agent setting as flat values, or null when it cannot be asked. */
+  async readAgentConfig(): Promise<Record<string, string | number | boolean | null> | null> {
+    const endpoints = this.endpoints;
+    if (!endpoints) return null;
+    try {
+      const response = await this.fetcher(`${endpoints.http}/api/agent-config`, {
+        method: 'GET',
+        headers: { accept: 'application/json' },
+      });
+      if (!response.ok) return null;
+      const payload = (await response.json().catch(() => null)) as { values?: unknown } | null;
+      if (!payload || typeof payload.values !== 'object' || payload.values === null || Array.isArray(payload.values)) return null;
+      return payload.values as Record<string, string | number | boolean | null>;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Writes a subset of Clio Agent settings. Values keyed by field id. */
+  async saveAgentConfig(values: Record<string, string | number | boolean | null>): Promise<Record<string, string | number | boolean | null>> {
+    const endpoints = this.requireEndpoints();
+    const response = await this.fetcher(`${endpoints.http}/api/agent-config`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', accept: 'application/json' },
+      body: JSON.stringify({ values }),
+    });
+    const payload = (await response.json().catch(() => ({}))) as { values?: Record<string, string | number | boolean | null>; error?: string; detail?: string };
+    if (!response.ok) {
+      throw new AgentRequestError('agent_refused', payload.error ?? `http_${response.status}`);
+    }
+    return payload.values ?? {};
   }
 
   private async post(url: string, body: unknown): Promise<Response> {
@@ -967,6 +1097,10 @@ export class AgentClient {
    * somebody the agent had chosen not to reply to every message it was sent,
    * when the truth was that it had not managed to think — and the two call for
    * opposite things, since one is worth sending again.
+   *
+   * The chosen kind ends the wait with `agent_declined`, and a surface shows
+   * nothing for it: finishing this turn in silence is not a decision never to
+   * reply, and a reply may still land later.
    */
   private settleDeclined(payload: Record<string, unknown>): void {
     const declined = typeof payload.message_id === 'string' ? payload.message_id : '';

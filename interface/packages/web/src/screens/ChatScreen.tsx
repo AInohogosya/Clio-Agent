@@ -61,14 +61,14 @@ export function ChatScreen({ snapshot, coordination, onSend, onInterrupt, onClea
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <header className="shrink-0 border-b border-[var(--line)] px-4 py-4 sm:px-7 lg:px-10">
+      <header className="shrink-0 border-b border-[var(--line)] px-4 py-4 sm:px-7 lg:px-10" style={{ background: 'var(--glass)', backdropFilter: 'blur(14px)' }}>
         <div className="mx-auto flex w-full max-w-7xl items-center justify-between gap-4">
-          <div className="flex min-w-0 items-center gap-3">
-            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-[var(--line-strong)] bg-[var(--canvas-raised)] text-[var(--accent)] shadow-emboss">
-              <Icon name="terminal" size={19} />
+          <div className="flex min-w-0 items-center gap-3.5">
+            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border border-[var(--accent-line)] bg-[var(--accent-soft)] accent-text shadow-emboss">
+              <Icon name="terminal" size={20} />
             </div>
             <div className="min-w-0">
-              <h1 className="truncate text-sm font-semibold tracking-wide text-[var(--ink)]">{t('appName')}</h1>
+              <h1 className="truncate text-base font-bold tracking-tight text-[var(--ink)]">{t('appName')}</h1>
               <p className="truncate text-xs text-[var(--ink-faint)]">{t('appTagline')}</p>
             </div>
           </div>
@@ -100,8 +100,8 @@ export function ChatScreen({ snapshot, coordination, onSend, onInterrupt, onClea
         ) : null}
 
         <div className="grid min-h-0 flex-1 gap-4 lg:grid-cols-[minmax(0,1fr)_286px]">
-          <section className="instrument-panel flex min-h-0 min-w-0 flex-col overflow-hidden rounded-2xl" aria-label={t('liveChat')}>
-            <div className="flex items-center justify-between border-b border-[var(--line)] px-4 py-3 sm:px-5">
+          <section className="instrument-panel flex min-h-0 min-w-0 flex-col overflow-hidden rounded-3xl" aria-label={t('liveChat')}>
+            <div className="flex items-center justify-between border-b border-[var(--line)] px-5 py-3.5">
               <div className="flex items-center gap-2 text-xs text-[var(--ink-muted)]">
                 <span className={classNames('h-2 w-2 rounded-full', snapshot.connected ? 'bg-[var(--ok-dot)]' : 'bg-[var(--ink-faint)]')} />
                 <span>{snapshot.connected ? t('online') : t('offline')}</span>
@@ -117,7 +117,9 @@ export function ChatScreen({ snapshot, coordination, onSend, onInterrupt, onClea
             </div>
 
             <ConversationFeed
-              contentClassName="space-y-5 px-4 py-5 sm:px-6"
+              contentClassName={snapshot.settings.density === 'compact'
+                ? 'space-y-2.5 px-4 py-4 sm:px-6'
+                : 'space-y-5 px-4 py-5 sm:px-6'}
               feed={feed}
               label={t('jumpToLatest')}
             >

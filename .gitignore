@@ -37,7 +37,7 @@ pnpm-debug.log*
 # Local state
 #
 # Everything the agent writes about itself lives under the configured home
-# (`paths.home`, `~/.ethos` by default, with `ETHOS_HOME` or `--home` on top).
+# (`paths.home`, `~/.ethos` by default, with `CLIO_HOME` or `--home` on top).
 # That is where the message exchange logs, the Postgres cluster, the
 # age-encrypted secret vault and its key, the agent's own memory and its sockets
 # end up. None of it is source, and the vault is the one thing here that must
@@ -68,7 +68,7 @@ data/
 !.env.example
 # The two credential files the systemd units name as `EnvironmentFile`
 # (`channel-keys.env`, `api-keys.env`), for a checkout that put them beside the
-# units rather than in `/home/ethos/.config/ethos/` where they belong.
+# units rather than in `/home/clio/.config/clio/` where they belong.
 *.env
 
 # Credentials in file form, for the deployment that keeps one on disk instead of
@@ -93,19 +93,27 @@ id_ed25519
 .npmrc
 .pgpass
 
-# A secret that has been written beside the file that reads it, which is how
-# `channels.yaml` gets a token pasted into it by hand rather than through the
-# interface. Both the obvious name and the `*.local` convention that keeps an
-# override beside the default it overrides.
-config/channels.local.yaml
-config/people.local.yaml
-config/models.local.yaml
-config/secrets.yaml
-config/vault.yaml
+# Local deployment configuration. The whole directory is local state, not
+# source: it holds this machine's model routing, channel tokens (by *_env
+# name, but edited in place by the settings UI), contact book, permissions
+# and DSN. Previously the defaults were tracked (all remote branches had
+# them), so they are now untracked with `git rm --cached`; the files stay
+# on disk. Templates, if wanted later, should be added as
+# `config/*.example.yaml` (explicitly re-included below) rather than by
+# re-tracking the live files. `config/*` (not `config/`) so the negations
+# below can re-include templates.
+config/*
+!config/.gitkeep
+!config/*.example.yaml
+!config/*.example.yml
 *.local.yaml
+*secret*.yaml
+*secret*.yml
+*credential*.yaml
+*credential*.yml
 
 # The agent's home, for a checkout whose `paths.home` was pointed at the
-# checkout itself rather than at `~/.ethos` — `ETHOS_HOME=. ./start.sh` does
+# checkout itself rather than at `~/.ethos` — `CLIO_HOME=. ./start.sh` does
 # that, and it puts the vault key, the message logs and the memory database in
 # the tree. Ignored by name so that mistake cannot be published.
 .ethos/
@@ -135,6 +143,14 @@ Clio Agent 3 mascots/
 *.orig
 *.rej
 *.bak
+# Dated backups (`models.yaml.bak-20261104`, `base.py.bak-20261105`) do not
+# end in `.bak`, so `*.bak` alone let them be committed. They are snapshots
+# of config / source files and must never be tracked.
+*.bak-*
+*.bak.*
+config/*.bak*
+*.yaml.bak*
+*.yml.bak*
 
 # OS
 .DS_Store

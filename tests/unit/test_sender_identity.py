@@ -29,8 +29,8 @@ import json
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from ethos.prompts.deliberation import social_deliberation_messages
-from ethos.schemas.messages import MAX_SENDER_NAME_LENGTH, Message, sender_label
+from clio.prompts.deliberation import social_deliberation_messages
+from clio.schemas.messages import MAX_SENDER_NAME_LENGTH, Message, sender_label
 
 # --------------------------------------------------------------- the label
 
@@ -191,7 +191,7 @@ def test_a_recorded_message_round_trips_its_sender_through_the_row():
     statement and both values on the arguments, so a rename on one side and not the
     other fails here rather than as a name that quietly stops arriving.
     """
-    from ethos.social.deliberation import SocialCognition
+    from clio.social.deliberation import SocialCognition
 
     statement, params = _recorded_sql(Message(
         channel="telegram", person_id="tg:819012345678", text="are you there?",
@@ -217,7 +217,7 @@ def test_a_row_written_before_this_change_still_reads_as_something():
     the label falls back to the address. A reader that assumed a name and rendered
     `None` would turn a year of transcript into `None (tg:1)`.
     """
-    from ethos.social.deliberation import SocialCognition
+    from clio.social.deliberation import SocialCognition
 
     read_back = SocialCognition._row_to_message(_row(sender_name=None, sender_username=None))
     assert read_back.sender_name is None
@@ -234,7 +234,7 @@ def test_a_summary_and_a_focus_name_the_sender_and_agree_with_each_other():
     own attention is set to, so a title saying `tg:819012345678` next to a summary
     saying `Ada Lovelace` is two answers to one question in the same place.
     """
-    from ethos.engine.attention import Attention, focus_from_percept
+    from clio.engine.attention import Attention, focus_from_percept
 
     message = Message(
         channel="telegram", person_id="tg:819012345678", text="are you there?",
@@ -254,7 +254,7 @@ def test_a_percept_from_the_bus_reads_its_sender_out_of_the_payload():
     the bus. Each used to build its own "Message from…" line out of `person_id`
     alone, which is exactly how a name ends up on one path and not the other.
     """
-    from ethos.schemas.events import Event, percept_from_event
+    from clio.schemas.events import Event, percept_from_event
 
     event = Event(
         kind="msg.inbound", source="telegram:tg:1",
@@ -267,7 +267,7 @@ def test_a_percept_from_the_bus_reads_its_sender_out_of_the_payload():
         trust="known",
     )
     percept = percept_from_event(event)
-    from ethos.engine.attention import focus_from_percept
+    from clio.engine.attention import focus_from_percept
 
     assert focus_from_percept(percept).title == "Respond to Ada Lovelace (@ada, tg:1)"
     # The name is lifted out of the payload into the fields the prompt and the
@@ -287,8 +287,8 @@ def _recorded_sql(message: Message) -> tuple[str, list]:
     """
     import asyncio
 
-    from ethos.config import load_config
-    from ethos.social.deliberation import SocialCognition
+    from clio.config import load_config
+    from clio.social.deliberation import SocialCognition
 
     recorded: dict[str, object] = {}
 

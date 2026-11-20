@@ -1,0 +1,1526 @@
+from __future__ import annotations
+
+import asyncio
+import os
+import time
+from collections.abc import Iterable
+from datetime import UTC, datetime
+from typing import Any
+from uuid import uuid4
+
+import httpx
+
+from clio import PRODUCT_NAME, __version__
+from clio.config import REASONING_LEVEL_BUDGETS, ClioConfig, base_model_path, load_base_model
+from clio.db import Database
+from clio.engine.stops import disposition_from_exception
+from clio.gateway.client import backoff_delay
+from clio.gateway.cost import BudgetExceededError, CostCalculator, SpendGuard, refresh_live_prices
+from clio.gateway.embeddings import EmbeddingProvider, build_role_embedder
+from clio.gateway.normalizer import estimate_tokens, was_truncated
+from clio.gateway.providers.anthropic_native import AnthropicNativeProvider
+from clio.gateway.providers.base import Provider, ProviderError
+from clio.gateway.providers.google_native import GoogleNativeProvider
+from clio.gateway.providers.openai_compat import OpenAICompatProvider
+from clio.gateway.providers.openai_native import OpenAINativeProvider
+from clio.gateway.ratelimit import RateLimiter
+from clio.gateway.router import ModelRouter, NoModelAvailable, entry_key
+from clio.observability import exhaustive, metrics
+from clio.observability.logger import get_logger
+from clio.platform import uvicorn_loop
+from clio.pricing import CostBreakdown
+from clio.schemas.models import (
+    ModelCallRecord,
+    ModelMessage,
+    ModelRequest,
+    NormalizedResponse,
+    Role,
+    Tier,
+    Usage,
+)
+
+logger = get_logger("clio.gateway")
+
+PROVIDER_CLASSES: dict[str, type[Provider]] = {
+    "anthropic": AnthropicNativeProvider,
+    "openai": OpenAINativeProvider,
+    "google": GoogleNativeProvider,
+    "openai_compat": OpenAICompatProvider,
+}
+
+
+class UnusableResponse(RuntimeError):
+    """A 200 whose contents no caller could work with.
+
+    Held apart from `ProviderError` because the two are not the same kind of
+    event and are not treated the same way. A provider error is a model saying
+    no; this is a model saying something that cannot be read. Both are worth
+    another attempt, but only one of them is evidence that the model itself is
+    unwell, and recording every one of them against its circuit breaker opens
+    breakers for requests that were asking for too much in the first place.
+
+    `request_scoped` is the second distinction, and it decides which lever moves
+    on the retry: a failure about *what was asked for* is retried with a
+    different request, because the identical one is the same bet again.
+    Truncation is the case that matters — it is the reply that ran out of room,
+    and a reasoning model that filled the room with thinking will fill it again.
+    """
+
+    def __init__(self, reason: str, counts_against_model: bool = True,
+                 request_scoped: bool = False):
+        super().__init__(reason)
+        self.counts_against_model = counts_against_model
+        self.request_scoped = request_scoped
+
+
+# A 429 is the provider asking for time, and the time it asks for is often
+# longer than the ordinary retry ceiling. Capping it at `max_backoff_s` (30s)
+# retried a 120s ask after 30s, burned the whole budget in one minute, and
+# parked the goal that was being worked on -- the "stops midway" outage.
+# So a rate limit waits out what was asked (up to this per sleep), while every
+# other failure keeps the short ceiling that keeps a life cycle moving.
+RATE_LIMIT_MAX_WAIT_S = 300.0
+
+# The escalation a rate limit is waited out on: five minutes, then an hour,
+# then five hours, then a day. Five minutes is only the first rung -- a limit
+# that is still there after five minutes is not one that clears in six, so
+# each consecutive rate-limited failure waits longer, up to a day, and stays
+# at a day rather than giving up. Read across cycles rather than slept through
+# in one call: holding a life cycle open for a day is a longer outage than the
+# one being waited out, so one sleep never exceeds `RATE_LIMIT_MAX_WAIT_S`
+# and the longer rungs are scheduled by the caller (the social queue and the
+# solver loop), which keep working on anything else meanwhile.
+RATE_LIMIT_WAIT_SCHEDULE_S = (300.0, 3600.0, 18000.0, 86400.0)
+
+# The longest single wait ever scheduled, so a provider asking for a week is
+# still only ever waited out a day at a time before being asked again.
+RATE_LIMIT_WAIT_CAP_S = 86400.0
+
+# At or above this, a wait is "extended" and surfaces as a waiting status
+# rather than as an immediate retry. Shown on screen so a pause reads as a
+# pause instead of as silence.
+LONG_WAIT_THRESHOLD_S = 10.0
+
+
+def is_rate_limited(exc: BaseException) -> bool:
+    """Whether a failure is a 429, however it arrived."""
+    return isinstance(exc, ProviderError) and exc.status == 429
+
+
+def retry_after_of(exc: BaseException) -> float | None:
+    """The provider's asked-for wait, when it asked for one."""
+    value = getattr(exc, "retry_after_s", None)
+    return float(value) if isinstance(value, (int, float)) else None
+
+
+def rate_limit_wait_for_attempt(attempt: int, retry_after_s: float | None = None) -> float:
+    """How long to wait after `attempt` consecutive rate-limited failures.
+
+    `attempt` is 1-based: the first 429 waits out five minutes, the next an
+    hour, then five hours, then a day, and it stays at a day rather than
+    giving up. A provider's own `Retry-After` is honoured when it asks for
+    longer than the rung (capped at a day), because it knows something about
+    its own load that no schedule here does.
+    """
+    index = min(max(0, attempt - 1), len(RATE_LIMIT_WAIT_SCHEDULE_S) - 1)
+    scheduled = RATE_LIMIT_WAIT_SCHEDULE_S[index]
+    if retry_after_s is not None:
+        try:
+            return max(scheduled, min(float(retry_after_s), RATE_LIMIT_WAIT_CAP_S))
+        except (TypeError, ValueError):
+            return scheduled
+    return scheduled
+
+
+def format_wait(wait_s: float | None) -> str:
+    """A wait for a screen: 'about 90s', 'about 5m', 'about 2h', 'about 1d'."""
+    if wait_s is None:
+        return "a short wait"
+    try:
+        total = max(1, round(float(wait_s)))
+    except (TypeError, ValueError):
+        return "a short wait"
+    if total < 120:
+        return f"about {total}s"
+    if total < 3600:
+        minutes = max(1, round(total / 60))
+        return f"about {minutes}m"
+    if total < 172800:
+        hours = max(1, round(total / 3600))
+        return f"about {hours}h"
+    return f"about {max(1, round(total / 86400))}d"
+
+
+# Which lever a failure moves. Read off the exception rather than off the retry
+# loop's position in the sequence, because the same exception at attempt 4 is
+# the same kind of event it was at attempt 0.
+_REQUEST_SCOPED = "request"
+_MODEL_SCOPED = "model"
+_PROVIDER_SCOPED = "provider"
+
+
+def failure_scope(exc: BaseException) -> str:
+    """Whose problem a failed attempt was: the request, the model, or the provider.
+
+    One function, called from exactly one place, so that "which retry policy
+    applies to this error" cannot be answered differently by two callers.
+
+    `UnusableResponse` knows its own answer (`request_scoped`, set at the raise
+    site where the reason is known). `ProviderError` knows it from the status
+    (401 and 403 are about the credential, 404 and 410 about a model this
+    endpoint does not serve, not the call). Everything else is a provider's mood: a 429, a timeout, a 5xx, a
+    connection error, and time is the only thing that has ever fixed any of them.
+    """
+    if isinstance(exc, UnusableResponse):
+        return _REQUEST_SCOPED if exc.request_scoped else _PROVIDER_SCOPED
+    if isinstance(exc, ProviderError):
+        return exc.scope
+    return _PROVIDER_SCOPED
+
+
+def _credential_diagnosis(exc: ProviderError) -> str:
+    """What a status means for the credential, in the words of a remedy.
+
+    The four cases a health check most often has to tell apart, because they look
+    identical in a config file and need opposite actions: a key that is not a key,
+    an account that has run out of money, a model that is not on the account, and
+    a provider having a bad moment. The provider's own message is quoted after
+    this rather than instead of it, because it carries the specifics -- which
+    limit was hit, which model -- that this cannot.
+    """
+    detail = str(exc).split(": ", 1)[-1][:160]
+    if exc.status == 401:
+        return f"key rejected or revoked ({detail})"
+    if exc.status == 403:
+        lowered = detail.lower()
+        if "quota" in lowered or "billing" in lowered or "credit" in lowered:
+            return f"quota or billing exhausted ({detail})"
+        return f"no access to this model with this credential ({detail})"
+    if exc.status == 410:
+        return f"the model has been retired by the provider ({detail})"
+    if exc.status == 404:
+        return f"model not found on this endpoint ({detail})"
+    if exc.status == 402:
+        return f"out of credits on this endpoint ({detail})"
+    if exc.status == 429:
+        return f"rate limited or out of quota ({detail})"
+    if exc.status >= 500:
+        return f"provider error, may be temporary ({detail})"
+    if exc.status == 0:
+        return f"could not be reached ({detail})"
+    return f"the request was rejected ({detail})"
+
+
+class GatewayService:
+    def __init__(
+        self,
+        config: ClioConfig,
+        db: Database | None = None,
+        embedder: EmbeddingProvider | None = None,
+        http: httpx.AsyncClient | None = None,
+        providers: dict[str, Provider] | None = None,
+    ):
+        self.config = config
+        self.db = db
+        self.costs = CostCalculator(config)
+        self.router = ModelRouter(config, self.costs)
+        self.limiter = RateLimiter()
+        self.spend = SpendGuard(db, config)
+        self.http = http or httpx.AsyncClient()
+        self._owns_http = http is None
+        self.embedder = embedder or build_role_embedder("gateway", config)
+        self.providers: dict[Any, Provider] = providers if providers is not None else {}
+        # The catalogue is the shipped file and does not move under a running
+        # agent, so it is held apart from the resolved list: `sync_base_model`
+        # rebuilds that list on every change, and folding the result back in
+        # would accumulate another copy of the base model each time one is
+        # written. Pinned rows are dropped rather than assumed absent, because
+        # `load_config` has already put one at the front of `models` by now.
+        self._catalogue = [entry for entry in config.models.models if not entry.pinned]
+        self._base = config.models.base
+        self._base_stamp = self._stamp_base_model()
+
+    def _stamp_base_model(self) -> tuple[int, int] | None:
+        """
+        A cheap "has this file changed" token: its size and mtime, or nothing.
+
+        `sync_base_model` runs on the way into every completion, and a YAML parse
+        per model call to discover there is no change is work spent on a path that
+        is hot. A stat is not a substitute for reading when the file really has
+        changed, so the read still happens then — this only skips the parse when
+        the answer is already known to be "no".
+        """
+        try:
+            info = base_model_path(self.config.paths.home).stat()
+        except OSError:
+            return None
+        return (info.st_size, info.st_mtime_ns)
+
+    def sync_base_model(self) -> None:
+        """
+        Picks up a base model written while the agent was already running.
+
+        The interface can write one at any moment, and a setting that needed a
+        restart to take effect would be a setting that cannot be changed from the
+        page somebody is looking at when they discover it is wrong. Only the base
+        model moves: the catalogue behind it is unchanged, and the provider
+        objects are dropped because each one holds the key it was built with.
+        """
+        stamp = self._stamp_base_model()
+        if stamp == self._base_stamp:
+            return
+        self._base_stamp = stamp
+        base = load_base_model(self.config.paths.home)
+        if base is None:
+            # The same fallback `load_config` applies at start-up: a home file
+            # that was deleted or no longer parses hands back to the shipped
+            # `config/base_model.yaml`, it does not leave the agent with no
+            # base model at all. Without this, deleting the override at
+            # runtime silently dropped the deployment's configured model
+            # while a restart would have restored it.
+            from clio.config import config_dir, load_shipped_base_model
+
+            base = load_shipped_base_model(config_dir())
+        if base == self._base:
+            return
+        logger.warning(
+            "gateway.base_model_changed",
+            old_model=self._base.model if self._base else None,
+            old_base_url=self._base.base_url if self._base else None,
+            new_model=base.model if base else None,
+            new_base_url=base.base_url if base else None,
+            new_provider=base.provider if base else None,
+        )
+        self._base = base
+        self.config.models.base = base
+        self.config.models.models = (
+            [base.entry(), *self._catalogue] if base is not None else list(self._catalogue)
+        )
+        self.providers.clear()
+
+    async def probe_local_endpoints(self, timeout_s: float = 2.0) -> None:
+        """
+        Asks each keyless loopback entry whether its endpoint exists.
+
+        A catalogue entry with no credential and a loopback base_url always reads
+        as "available" — `available()` cannot tell an unauthenticated endpoint
+        from one that is not there, and loopback is the one place *not* there is
+        the common case: nothing was ever started, or something *else* took the
+        port. Port 8000 on a laptop is exactly that. The entry then sits in the
+        failover ladder as a candidate that answers every attempt with a 404, and
+        because a 404 is deliberately not routed around, the ladder stops there:
+        one dead local entry turned a recoverable miss on the base model into a
+        failed request, a thousand times over.
+
+        So the endpoint is asked, once, at start-up, the cheap question every
+        OpenAI-compatible host answers: `GET /models`. Anything that does not
+        answer 200 — nothing listening, or something unrelated listening — is out
+        of the catalogue for the life of the process, and the removal is logged.
+        The shipped file is not edited: a vLLM started after this probe would be
+        picked up by a restart, and an entry carrying a key is left alone, since
+        a credential failure is how the loop already says "this one is wrong".
+
+        Idempotent, and cheap to call more than once: one loopback round trip per
+        distinct base_url, whatever the number of entries on it.
+        """
+        import ipaddress
+        from urllib.parse import urlsplit
+
+        def _is_local(base_url: str) -> bool:
+            host = urlsplit(base_url).hostname or ""
+            lowered = host.rstrip(".").lower()
+            try:
+                return (
+                    lowered in ("localhost",) or lowered.endswith(".localhost")
+                    or ipaddress.ip_address(host).is_loopback
+                )
+            except ValueError:
+                return False
+
+        # base_url -> problem or None
+        answers: dict[str, str | None] = {}
+
+        async def _probe(base_url: str) -> str | None:
+            if base_url not in answers:
+                try:
+                    probe = await self.http.get(f"{base_url}/models", timeout=timeout_s)
+                    answers[base_url] = None if probe.status_code == 200 else f"HTTP {probe.status_code}"
+                except Exception as exc:
+                    answers[base_url] = exc_brief(exc)
+            return answers[base_url]
+
+        excluded: list[str] = []
+        for entry in list(self._catalogue):
+            if entry.pinned or entry.provider != "openai_compat":
+                continue
+            base_url = entry.base_url or ""
+            if not base_url or not _is_local(base_url):
+                continue
+            if entry.api_key_env or self._api_key_for(entry):
+                continue
+            problem = await _probe(base_url)
+            if problem is None:
+                continue
+            excluded.append(f"{entry.model} @ {base_url} ({problem})")
+            self._catalogue.remove(entry)
+            if entry in self.config.models.models:
+                self.config.models.models.remove(entry)
+        if excluded:
+            logger.warning(
+                "gateway.local_endpoints_unavailable",
+                excluded=excluded,
+                action="removed from the live catalogue until restart; the shipped config is unchanged",
+            )
+        # The pinned base model is probed the same way but never removed: a
+        # pin is a decision somebody made on purpose. It is benched instead
+        # (the modelled failure below carries scope "model", so the router
+        # records a terminal bench), which takes it out of selection for the
+        # bench window while leaving it visible in the configuration and in
+        # `model_status`. Skipping it entirely -- as this probe used to --
+        # left a keyless loopback pin that the endpoint could not serve
+        # (an NVIDIA model name on a local Ollama server, say) asked first
+        # for every request, answering 404 forever.
+        base = self._base
+        if base is not None and base.provider == "openai_compat":
+            base_url = base.base_url or ""
+            if base_url and _is_local(base_url) and not self._api_key_for(base.entry()):
+                problem = await _probe(base_url)
+                if problem is not None:
+                    pinned_entry = base.entry()
+                    self.router.record_failure(
+                        pinned_entry,
+                        ProviderError("probe", 404, problem, retryable=False),
+                    )
+                    logger.warning(
+                        "gateway.base_model_endpoint_unavailable",
+                        model=base.model,
+                        base_url=base_url,
+                        problem=problem,
+                        action="benched until restart or a successful call; catalogue failover serves in the meantime",
+                    )
+
+    def _api_key_for(self, entry: Any) -> str:
+        """
+        The credential for one model: the environment first, then the base model.
+
+        The environment wins, so a deployment can override a key somebody typed
+        in without editing what they typed — a variable set before the process
+        starts is a more deliberate thing than a field in a file, and the file
+        exists for the machine that has no shell set up to hand.
+        """
+        if entry.api_key_env:
+            key = os.environ.get(entry.api_key_env, "")
+            if key:
+                return key
+        base = self._base
+        if base is not None and entry.pinned:
+            return base.api_key
+        return ""
+
+    def _provider_for(self, entry: Any) -> Provider:
+        key = (entry.provider, entry.base_url or "")
+        if key in self.providers:
+            return self.providers[key]
+        if entry.provider in self.providers and entry.provider != "openai_compat":
+            return self.providers[entry.provider]
+        cls = PROVIDER_CLASSES.get(entry.provider)
+        if cls is None:
+            raise RuntimeError(f"unknown provider {entry.provider}")
+        api_key = self._api_key_for(entry)
+        default_base = {
+            "anthropic": "https://api.anthropic.com",
+            "openai": "https://api.openai.com/v1",
+            "google": "https://generativelanguage.googleapis.com",
+        }.get(entry.provider, entry.base_url or "")
+        kwargs: dict[str, Any] = {
+            "api_key": api_key or None,
+            "base_url": entry.base_url or default_base,
+            "quirks": getattr(self.config.quirks, entry.provider),
+            "http": self.http,
+        }
+        # Learned traits (a refused `reasoning` parameter, a model that thinks by
+        # default) survive restarts and base-model reloads in the agent's own
+        # data directory, so the lesson is bought once rather than every run.
+        if cls is OpenAICompatProvider:
+            kwargs["state_path"] = self.config.paths.data_dir / "learned_model_traits.json"
+        instance = cls(**kwargs)
+        self.providers[key] = instance
+        return instance
+
+    def _is_entry_available(self, entry: Any) -> bool:
+        if self.router.breaker_open(entry):
+            return False
+        try:
+            return self._provider_for(entry).available()
+        except Exception:
+            return False
+
+    def available_providers(self) -> set[str]:
+        """
+        The providers this process can actually spend money with right now.
+
+        Asked of the provider objects rather than of the environment, so the
+        answer cannot drift from what `select` would do: a provider with no key
+        is not one a request can be sent to, and reporting it as available is
+        the kind of optimistic answer that turns into `NoModelAvailable` further
+        up with nothing in between explaining it.
+        """
+        return {e.provider for e in self.config.models.models if self._is_entry_available(e)}
+
+    def model_status(self) -> dict[str, Any]:
+        """What the agent would think with, and whether it could."""
+        base = self._base
+        # Resolved the way a request would resolve it, rather than by looking at
+        # the file: a base model may name the variable to read its key from and
+        # hold no key at all, and reporting that as "no key" would say a working
+        # install cannot think. The variable is named, the value never is.
+        key_present = bool(base and self._api_key_for(base.entry()))
+        return {
+            "base": {
+                "configured": base is not None,
+                "provider": base.provider if base else "",
+                "model": base.model if base else "",
+                "base_url": base.base_url if base else "",
+                "key_present": key_present,
+                "key_env": base.api_key_env if base else "",
+                "tiers": list(base.tiers) if base else [],
+            },
+            "catalogue": len(self._catalogue),
+            "usable": bool(self.available_providers()),
+        }
+
+    def _readable(self, response: NormalizedResponse) -> None:
+        """
+        Raises `UnusableResponse` unless the reply carries something a caller can use.
+
+        A 200 is not an answer. Empty, whitespace-only, and answers the provider
+        itself marked as cut off all come back as success codes, and each of them
+        reaches a caller as a decision the agent appears to have made when in fact
+        nothing arrived: `parse_json_block("")` is `{}`, and `{}` is what every
+        prompt in this system asks for. So a caller cannot tell "the model chose
+        nothing" from "the reply never landed", and reads the first one.
+
+        Truncation is the one that bites, because it produces a valid-looking
+        prefix of a JSON object. It is also the one a second attempt genuinely
+        fixes, sometimes because the model got unlucky and sometimes because
+        `fail_over` moves the request to a model that fits the answer in the room
+        it has.
+
+        A refusal is deliberately left alone. That is the model declining on
+        purpose, and asking again spends money to be declined again.
+
+        Reasoning on its own is not an answer either, and used to be mistaken
+        for one here: the check below used to pass anything that came back with
+        thinking attached, which is right for a tool call and wrong for
+        everything else. A reasoning model that thinks for the whole of
+        `max_tokens` returns exactly that -- a body of reasoning, no content at
+        all, `finish_reason: length` -- so the gate read it as a reply, the
+        caller parsed `{}` out of it, and a decision that had been paid for came
+        back as a recorded silence. A tool call still needs no text; thinking
+        alone does not.
+        """
+        if response.tool_calls:
+            return
+        if not (response.text or "").strip():
+            if response.thinking_blocks:
+                raise UnusableResponse(
+                    "the model reasoned without answering", counts_against_model=False,
+                    # The room was spent on thinking. More room is the wrong
+                    # answer to that, so the request lever moves first: less
+                    # thinking, and the answer gets what was left.
+                    request_scoped=True,
+                )
+            raise UnusableResponse("empty response body")
+        if was_truncated(response.finish_reason):
+            raise UnusableResponse(
+                f"response cut off mid-answer ({response.finish_reason})",
+                counts_against_model=False,
+                request_scoped=True,
+            )
+
+    def _delay_before_retry(
+        self, attempt: int, retry_after_s: float | None,
+        *, rate_limited: bool = False,
+    ) -> float:
+        """
+        Exponential, capped, and jittered.
+
+        The cap is what stops a generous retry budget from turning into minutes
+        of a caller held open, which is a different failure from the one being
+        retried. The jitter is what stops everything that failed in the same
+        window from coming back in the same window -- a backoff curve with no
+        randomness in it is a mechanism for synchronising retries rather than
+        spreading them.
+
+        A `Retry-After` the provider sent is honoured when it is longer than the
+        curve would have waited, because it knows something about its own load
+        that no curve here does. For a 429 it is honoured up to
+        `RATE_LIMIT_MAX_WAIT_S`: a provider asking for two minutes is asking to
+        be waited out, and retrying after 30s is what burned the budget and
+        parked the goal. For every other failure the ceiling stays
+        `max_backoff_s`, because moving on to another model is the better
+        answer there.
+
+        The ceiling is applied last, so the cap is the longest this can
+        ever be rather than the longest it is before jitter.
+        """
+        retry = self.config.gateway.retry
+        cap = RATE_LIMIT_MAX_WAIT_S if rate_limited else retry.max_backoff_s
+        return backoff_delay(
+            attempt, base_s=retry.backoff_s, jitter=retry.jitter,
+            cap_s=cap, retry_after_s=retry_after_s,
+        )
+
+    def register_session_driver(self, provider_key: str, driver: Any) -> None:
+        """Attach a stateful session/CLI driver to the gateway provider map."""
+        self.providers[provider_key] = driver
+
+    def replay_request(
+        self, request: ModelRequest, *, from_session: Any = None,
+    ) -> ModelRequest:
+        """Rebuild the request for the next provider after a session failure.
+
+        The normalized conversation (messages, purpose, tier, ceiling) is
+        snapshotted from the failing session and replayed verbatim onto the
+        router's next selection, so a mid-turn 429/breaker handover costs no
+        context.
+        """
+        if from_session is not None:
+            snapshot_fn = getattr(from_session, "conversation_snapshot", None)
+            if callable(snapshot_fn):
+                try:
+                    snapshot = snapshot_fn(request)
+                    replay_fn = getattr(self, "_session_replay", None)
+                    if callable(replay_fn):
+                        return replay_fn(snapshot)
+                    # Fall back to the request itself: the gateway already
+                    # carries the normalized conversation on the request.
+                    return request.model_copy(update={
+                        "messages": list(request.messages),
+                    })
+                except Exception:
+                    pass
+        return request
+
+    def _session_replay(self, snapshot: dict[str, Any]) -> ModelRequest:
+        """Rebuild a ModelRequest from a session snapshot (failover replay)."""
+        from clio.schemas.models import ModelMessage, Role, Tier
+
+        messages = []
+        for raw in (snapshot.get("messages") or []):
+            try:
+                messages.append(ModelMessage(
+                    role=Role(str(raw.get("role", "user"))),
+                    content=raw.get("content"),
+                ))
+            except Exception:
+                continue
+        return ModelRequest(
+            tier=Tier(str(snapshot.get("tier", "T2"))),
+            purpose=str(snapshot.get("purpose", "session.replay")),
+            messages=messages,
+            max_tokens=int(snapshot.get("max_tokens", 4096)),
+        )
+
+    def _next_entry(
+        self, request: ModelRequest, failed: Any, tried: set[str], *,
+        model_scoped: bool, transient: frozenset[str] = frozenset(),
+    ) -> Any | None:
+        """
+        Where the next attempt goes, or `None` when there is nowhere left to go.
+
+        Re-sending the same request to the model that just failed is worth it
+        when the failure is the provider's mood -- a 429, a timeout, a 500 --
+        because that clears on its own. It is worth much less when the model is
+        failing outright, where five more attempts at it is five more answers
+        nobody wants. So once a model has failed, the selection runs again
+        without it and the request goes somewhere else that can do the job.
+
+        Staying on the failed model when nothing else is eligible is deliberate,
+        and it is *only* deliberate for a failure that might clear. A provider's
+        mood is one of those, so a caller that named one model, or a deployment
+        with only one installed, is better served by a second attempt than by a
+        `NoModelAvailable` raised by the retry machinery rather than by the
+        request.
+
+        A credential failure is not one of those, and the difference is the whole
+        reason this takes a flag. A dead key returns 401 on the next request
+        exactly as it returned it on this one, so staying on it converts a
+        failover the catalogue could have made into an outage. So for
+        `model_scoped`, staying is not an option: the entry is excluded, and if
+        the selection comes back empty the answer is `None` and the caller raises
+        `NoModelAvailable` -- which is the truth. "No model here can serve this,
+        and not this one" is what happened, and the caller gets told it in the
+        exception it already knows how to handle, instead of an HTTP status that
+        means nothing outside this function.
+        """
+        if not self.config.gateway.retry.fail_over:
+            return failed if not model_scoped else None
+        tried.add(entry_key(failed))
+        try:
+            return self.router.select(
+                request, is_available=self._is_entry_available, exclude=frozenset(tried)
+            )
+        except NoModelAvailable:
+            # Nothing is left that has not already failed *on this request*.
+            # Before calling it, put back the entries whose failure was the
+            # provider's mood rather than the model's own -- a rate limit, a
+            # timeout, a 5xx, which is exactly what the retry ladder exists to
+            # wait out. Without this a rate limit on the one working model
+            # excluded it for the rest of the request, the ladder walked on into
+            # the catalogue's dead entries, and the request ended in
+            # `no_model_available` while the model that could answer sat one
+            # slot behind it, excluded for a reason that had already expired.
+            redo = frozenset(transient) - {entry_key(failed)}
+            if model_scoped and redo:
+                try:
+                    return self.router.select(
+                        request, is_available=self._is_entry_available,
+                        exclude=frozenset(tried - redo),
+                    )
+                except NoModelAvailable:
+                    return None
+            return None if model_scoped else failed
+
+    def _widen_request(self, request: ModelRequest) -> tuple[ModelRequest, list[str]]:
+        """A different request for the next attempt, and what was changed.
+
+        Two levers on the request itself, in this order, and the order is the
+        reasoning:
+
+        1. **Think less.** On every endpoint that bills reasoning inside
+           `max_tokens`, thinking is spent out of the same ceiling as the answer.
+           A reply that stopped at the ceiling with no content is the signature
+           of a model that spent all of it thinking, so the first thing to change
+           is how much it is allowed to think. Halved rather than removed: some
+           of it is what gets to the answer, and a bound of zero is a different
+           model, not a smaller version of this one. Once it is down to the floor
+           it goes off, which is the second step of the same lever and not a
+           separate decision.
+        2. **Think it has more room.** Only once thinking is bounded or off, and
+           only up to a cap. `max_tokens` is a ceiling and not a reservation, so
+           raising it costs nothing when the answer is short -- which is the
+           common case, and the reason this can be done without a budget
+           argument. But it does bound the damage of a retry loop that would
+           otherwise escalate on every attempt.
+
+        `None` in place of a request is returned as the *unchanged* request with
+        an empty change list once there is nothing left to change, and the caller
+        is expected to notice. That matters because the alternative -- silently
+        re-sending the same bytes -- is the behaviour this whole method exists to
+        remove, and a caller that cannot see whether the request changed cannot
+        assert that it did.
+        """
+        retry = self.config.gateway.retry
+        changes: list[str] = []
+        budget = request.reasoning_budget
+        thinking = request.thinking_budget
+        if budget:
+            if budget > retry.reasoning_budget_floor:
+                next_budget = max(retry.reasoning_budget_floor, budget // 2)
+            else:
+                next_budget = None  # off: the floor has been reached
+            changes.append(f"reasoning_budget {budget} -> {next_budget}")
+            request = request.model_copy(update={"reasoning_budget": next_budget})
+        if thinking:
+            next_thinking = max(0, thinking // 2)
+            changes.append(f"thinking_budget {thinking} -> {next_thinking}")
+            request = request.model_copy(update={"thinking_budget": next_thinking})
+        if not budget and not thinking:
+            # Nothing to bound, so room is the only lever left.
+            if request.max_tokens < retry.max_tokens_cap:
+                grown = min(
+                    retry.max_tokens_cap,
+                    max(int(request.max_tokens * retry.escalate_max_tokens_by),
+                        request.max_tokens + 1),
+                )
+                changes.append(f"max_tokens {request.max_tokens} -> {grown}")
+                request = request.model_copy(update={"max_tokens": grown})
+        return request, changes
+
+    async def _wait_out_a_cooldown(
+        self, request: ModelRequest, attempt: int, exc: NoModelAvailable,
+    ) -> None:
+        """
+        Sits out a circuit breaker's cooldown rather than failing the request.
+
+        Every model that could have answered is in its breaker at once, and a
+        breaker is a *timed* state: `cooldown_s` and it is over. That was
+        reported as `NoModelAvailable` and propagated, because the selection ran
+        before the retry loop and raised out of the whole call. So a burst of
+        failures -- a flaky uplink, a provider shedding load, a key that briefly
+        stopped working -- turned into a window in which every request at that
+        tier failed instantly, with no attempt and no backoff, and the caller was
+        told no model could answer when one could have thirty seconds later.
+
+        Which is a bad thing to do to a tier with one model in it, because "all
+        eligible models" and "the only model" are the same set there. And it is
+        the tier consequential messages are deliberated at, so the messages that
+        most needed answering were exactly the ones that could not be.
+
+        The backoff curve is the right length on purpose: `max_backoff_s` is
+        larger than a cooldown, so the later attempts wait past one. The
+        permanent case does not come here at all -- nothing that could serve the
+        request exists, and waiting would change nothing -- so the distinction
+        the router now makes is doing real work rather than being available.
+        """
+        delay = self._delay_before_retry(attempt, None)
+        logger.warning(
+            "gateway.waiting_for_model",
+            attempt=attempt + 1,
+            of=1 + max(0, self.config.gateway.retry.max_retries),
+            purpose=request.purpose,
+            tier=request.tier.value,
+            reason=str(exc)[:200],
+            wait_in_s=round(delay, 2),
+        )
+        await asyncio.sleep(delay)
+
+    async def _sleep_before_retry(
+        self, delay: float, failed: Any, following: Any, *, rate_limited: bool,
+    ) -> None:
+        """
+        Waits before the next attempt -- but only if the next attempt is owed one.
+
+        The delay computed above is a debt to the model that just failed: backoff
+        exists to stop hammering a provider that asked for time, and it is that
+        provider's time being asked for. Once the retry has moved to a *different*
+        model, that debt has been paid by the move -- the new model has not been
+        asked, so it has asked for nothing, and the model that did ask is not
+        going to be asked again on this request.
+
+        Charging it anyway is time a person spent waiting on a provider that had
+        already been replaced, and it is paid on the request that writes a
+        person's reply, which is where the wait is felt. The split in the logs is
+        the whole argument for leaving the other case alone: retries that changed
+        model slept 2.0s each, retries that stayed slept 9.7s each and had nowhere
+        to go -- `_next_entry` only hands back the model that just failed when the
+        selection came back empty -- so the long sleeps are the ones owed and the
+        short ones are the ones wasted.
+
+        A rate limit is the exception and is the reason this is not simply "skip
+        it whenever the model changed". A 429 is the *provider* asking rather than
+        the model, so the model after it is frequently on the same provider and is
+        owed the same wait; skipping there would trade a silence for a rate limit,
+        which is a worse outcome than either.
+        """
+        if not delay:
+            return
+        if entry_key(following) != entry_key(failed) and not rate_limited:
+            return
+        await asyncio.sleep(delay)
+
+    async def _entry_for(self, request: ModelRequest, max_attempts: int) -> Any:
+        """
+        A model to try, having waited out a cooldown if that is what it took.
+
+        The one case this handles is a request that arrived while every eligible
+        model was in its circuit breaker. The selection is otherwise a pure
+        function of the request and the catalogue, and it is worth retrying only
+        in that case -- and only because a breaker is a *timed* state, so the
+        wait is not a hope but an interval with a known end.
+
+        This used to raise on the first selection, before the retry loop, so a
+        burst of provider failures turned into a window in which every request at
+        that tier failed instantly: no attempt, no backoff, and a caller told no
+        model could answer when one could have thirty seconds later. A tier with
+        a single model in it -- which is every deployment that configured a base
+        model, and therefore every deployment deliberating consequential messages
+        at T3 -- has no other model to fail over to, so "all of them" and "the
+        only one" are the same set and that window covers everything.
+
+        The permanent case never reaches this: nothing that could serve the
+        request exists, so there is no cooldown to sit out and waiting would
+        change nothing.
+        """
+        for attempt in range(max_attempts):
+            try:
+                return self.router.select(request, is_available=self._is_entry_available)
+            except NoModelAvailable as exc:
+                if not exc.transient:
+                    raise
+                if attempt == max_attempts - 1:
+                    raise
+                await self._wait_out_a_cooldown(request, attempt, exc)
+        raise RuntimeError("unreachable: _entry_for exhausted without returning or raising")
+
+    async def probe_models(
+        self, *, timeout_s: float = 25.0, max_tokens: int = 1,
+    ) -> list[dict[str, Any]]:
+        """
+        Ask every configured model whether it can actually answer, and report why not.
+
+        `available_providers` and `model_status` answer a different and much
+        weaker question: is there a key in the environment, and does an entry
+        declare the tiers. That is a claim about configuration, and configuration
+        is exactly what a dead key, a revoked token, an exhausted monthly quota
+        or a model the account has no access to all look perfectly healthy
+        through. So a health check built from those two reported a working
+        installation for a deployment that could not produce a single token,
+        which is the failure this incident had: everything configured, nothing
+        usable, and nothing to tell the difference.
+
+        So this sends one request per model and reports the answer. One token of
+        output, no retry, and a timeout, because a health check that costs a
+        cent a model and can hang is not one anybody runs.
+
+        The two facts are reported separately and never inferred from one
+        another, because they have different fixes: `key_present` is a line in a
+        file or an environment variable, and `usable` is whatever the provider
+        says about that credential.
+        """
+        self.sync_base_model()
+        # Identity for "is this the base model" is provider+model, not the
+        # endpoint-bearing `entry_key`: the catalogue can carry the same
+        # provider+model on a different address, and that row is still the
+        # model the deployment is pinned to.
+        base_key = (
+            f"{self._base.provider}:{self._base.model}"
+            if self._base is not None else None
+        )
+        results: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for entry in self.config.models.models:
+            key = entry_key(entry)
+            if key in seen:
+                continue
+            seen.add(key)
+            report = await self._probe_one(entry, timeout_s=timeout_s,
+                                           max_tokens=max_tokens)
+            # Marked here rather than by the caller, because "which model is the
+            # configured base model" is a fact about the resolved configuration
+            # and the only thing that knows it is the service. A health check
+            # that had to reach in for it would be reaching into a private field
+            # to decide whether an installation is broken.
+            report["is_base"] = (
+                bool(getattr(entry, "pinned", False))
+                or f"{entry.provider}:{entry.model}" == base_key
+            )
+            results.append(report)
+        return results
+
+    async def _probe_one(self, entry: Any, *, timeout_s: float, max_tokens: int) -> dict[str, Any]:
+        report: dict[str, Any] = {
+            "provider": entry.provider,
+            "model": entry.model,
+            "tiers": list(entry.tiers),
+            "base_url": entry.base_url or "",
+            "key_present": False,
+            "usable": False,
+            "status": "not probed",
+            "reason": "",
+        }
+        report["key_present"] = bool(self._api_key_for(entry))
+        if self.router.breaker_open(entry):
+            report["status"] = "in cooldown"
+            report["reason"] = "its circuit breaker is open; it has been failing"
+            return report
+        try:
+            provider = self._provider_for(entry)
+        except Exception as exc:
+            report["status"] = "misconfigured"
+            report["reason"] = exc_brief(exc)
+            return report
+        request = ModelRequest(
+            tier=Tier.T1,
+            purpose="doctor.probe",
+            budget_bucket="discretionary",
+            messages=[ModelMessage(role=Role.user, content="hi")],
+            max_tokens=max_tokens,
+        )
+        try:
+            response = await asyncio.wait_for(
+                provider.complete(request, entry.model), timeout=timeout_s,
+            )
+        except TimeoutError:
+            report["status"] = "timeout"
+            report["reason"] = f"no answer within {timeout_s:g}s"
+            return report
+        except ProviderError as exc:
+            # The status is the diagnosis, and each of these has its own remedy,
+            # so they are named rather than lumped together as "unavailable".
+            report["status"] = f"HTTP {exc.status}"
+            report["reason"] = _credential_diagnosis(exc)
+            report["usable"] = False
+            return report
+        except Exception as exc:
+            report["status"] = "unreachable"
+            report["reason"] = exc_brief(exc)
+            return report
+        # A reply that says nothing is still a reply: this call is asking whether
+        # the credential works and the provider is willing to serve it, and
+        # `max_tokens=1` on a reasoning model is guaranteed to produce nothing.
+        # Reading emptiness here would report a working key as a broken one,
+        # which is the same class of mistake as the one being fixed.
+        report["usable"] = True
+        report["status"] = "ok"
+        report["reason"] = ""
+        _ = response
+        return report
+
+    def _cheapest_expected_cost(self, request: ModelRequest) -> float:
+        """The least this request could cost across the whole catalogue.
+
+        The pre-flight check's job is to notice that there is no money left,
+        and the cheapest candidate is the right number for that: using anything
+        dearer would refuse requests the agent could still afford to answer
+        through a free model, which is how a deployment running entirely on
+        free routes ends up refusing to think at all.
+        """
+        entries = self.config.models.resolved()
+        if not entries:
+            return 0.0
+        costs = [
+            self.costs.estimate(
+                e.model, request, provider=e.provider, base_url=e.base_url or "",
+            )
+            for e in entries
+        ]
+        return min(costs) if costs else 0.0
+
+    def _cheapest_expected_tokens(self, request: ModelRequest) -> int:
+        """The token twin of `_cheapest_expected_cost`.
+
+        Token estimates do not vary by model, so this is the request's own
+        size estimate; kept as a method so the two pre-flight numbers stay
+        paired.
+        """
+        return self.costs.estimate_tokens(request)
+
+    async def complete(self, request: ModelRequest) -> NormalizedResponse:
+        if request.tier == Tier.T0:
+            raise ValueError("T0 (reflex) cognition must not call the model gateway")
+        self.sync_base_model()
+        # The base model's reasoning level is the default budget for a request
+        # that did not name one — never an override. The solver and the
+        # deliberation name a budget of their own, tuned for their own call,
+        # and replacing it here would spend answers the ceiling was sized for.
+        # `off` sends nothing, exactly as before this field existed.
+        if request.reasoning_budget is None and self._base is not None:
+            default_budget = REASONING_LEVEL_BUDGETS.get(self._base.reasoning_level)
+            if default_budget is not None:
+                request = request.model_copy(update={"reasoning_budget": default_budget})
+        if not self.config.models.models:
+            exhaustive.log_model_failure(
+                request, request_id=uuid4().hex, requested_at=datetime.now(UTC),
+                model=request.model_hint or "", provider=request.provider_hint or "",
+                error="gateway has no models configured",
+            )
+            raise RuntimeError("gateway has no models configured")
+
+        # Cheapest possible call on the cheapest configured route. This is not
+        # the per-attempt estimate -- that comes once a model is chosen -- it is
+        # a floor so a request against a completely exhausted budget fails here
+        # rather than after a round-trip. It was a flat $0.05, which is a real
+        # amount of money and a number with no connection to the request.
+        try:
+            await self.spend.check(
+                request.budget_bucket,
+                self._cheapest_expected_cost(request),
+                est_tokens=self._cheapest_expected_tokens(request),
+            )
+        except BudgetExceededError as exc:
+            exhaustive.log_model_failure(
+                request, request_id=uuid4().hex, requested_at=datetime.now(UTC),
+                model=request.model_hint or "", provider=request.provider_hint or "",
+                error=f"budget exceeded before dispatch: {exc}",
+            )
+            raise
+        retry = self.config.gateway.retry
+        max_attempts = 1 + max(0, retry.max_retries)
+        tried: set[str] = set()
+        # The entries that failed this request for a reason that clears on its
+        # own -- a rate limit, a timeout, a 5xx. Excluded while there is anywhere
+        # else to go, and pulled back in as a last resort rather than failing the
+        # request outright; see `_next_entry`.
+        transient: set[str] = set()
+        entry = await self._entry_for(request, max_attempts)
+        last_error: Exception | None = None
+        # The request the next attempt will send. Rebound whenever a failure is
+        # about the request rather than the provider, so that attempt n+1 is not
+        # the same bytes as attempt n.
+        attempt_request = request
+        # One id ties the request record to every attempt, response or failure
+        # recorded for it in the exhaustive log.
+        request_id = uuid4().hex
+        requested_at = datetime.now(UTC)
+
+        for attempt in range(max_attempts):
+            # Re-read per attempt rather than once: after a failure the entry can
+            # change, and each model has its own price and its own rate limits.
+            provider = self._provider_for(entry)
+            await self.spend.check(
+                attempt_request.budget_bucket,
+                self.costs.estimate(
+                    entry.model, attempt_request,
+                    provider=entry.provider, base_url=entry.base_url or "",
+                ),
+                est_tokens=self.costs.estimate_tokens(attempt_request),
+            )
+            await self.limiter.acquire(
+                entry.provider, entry.model, entry.rpm, entry.tpm, estimate_tokens(attempt_request)
+            )
+
+            start = time.monotonic()
+            response: NormalizedResponse | None = None
+            exhaustive.log_model_request(
+                attempt_request, request_id=request_id,
+                model=entry.model, provider=entry.provider,
+            )
+            try:
+                response = await provider.complete(attempt_request, entry.model)
+                self._readable(response)
+            except BudgetExceededError:
+                # Spending more is not a thing a retry fixes, and the spend guard
+                # is the last line of the H2 caps rather than a provider's mood.
+                raise
+            except Exception as exc:
+                scope = failure_scope(exc)
+                rate_limited = is_rate_limited(exc)
+                if scope == _PROVIDER_SCOPED:
+                    transient.add(entry_key(entry))
+                # Recorded before the decision to retry, not after. A key that
+                # does not work is not worth retrying but is very much worth
+                # remembering: that model is out until somebody fixes the key,
+                # and every request that keeps picking it is a request that will
+                # keep failing the same way. A credential failure is always
+                # recorded, whatever the exception's own opinion of itself --
+                # `counts_against_model` was written for replies that were not
+                # answers, and a 401 is not that.
+                #
+                # An ordinary rate limit is the one exception, and it is the one
+                # that mattered. `record_failure` is what opens the circuit
+                # breaker, so counting 429s meant a burst of "you are going too
+                # fast" -- which the ladder exists to wait out -- opened the
+                # breaker on the model that was answering and dropped it out of
+                # rotation. On a catalogue where one model is the only live one,
+                # that turns the provider asking for a moment into the agent
+                # having no model at all: `no_model_available`, arrived at from a
+                # 429. A spent quota is not this case -- it is model-scoped (see
+                # `_EXHAUSTED_QUOTA`) and is recorded precisely because it does
+                # not clear.
+                if scope == _MODEL_SCOPED or (
+                    getattr(exc, "counts_against_model", True) and not rate_limited
+                ):
+                    self.router.record_failure(entry, exc)
+                await self._note_failure(attempt_request, entry, exc, response)
+                exhaustive.log_model_failure(
+                    attempt_request, request_id=request_id, requested_at=requested_at,
+                    model=entry.model, provider=entry.provider,
+                    error=f"{type(exc).__name__}: {exc}", attempt=attempt + 1,
+                )
+                last_error = exc
+                # "Not retryable" is still fatal, with one exception: a
+                # credential failure is not retryable *as a retry*, but it is
+                # routable, because the request can be served by a different
+                # model. Raising straight through here is what turned a dead key
+                # on one candidate into a failure of every request at the tier,
+                # including on the deployments that had somewhere else to go.
+                if isinstance(exc, ProviderError) and not exc.retryable and scope != _MODEL_SCOPED:
+                    raise
+                if attempt == max_attempts - 1:
+                    raise
+                changes: list[str] = []
+                if isinstance(exc, UnusableResponse) and exc.request_scoped:
+                    # The lever that moves for a failure about the request is the
+                    # request. Not for a 400: a wider ceiling does not make an
+                    # unsupported parameter supported, and escalating on one
+                    # spends the budget to arrive at the same 400.
+                    attempt_request, changes = self._widen_request(attempt_request)
+                delay = self._delay_before_retry(
+                    attempt, retry_after_of(exc), rate_limited=rate_limited,
+                )
+                # A reply cut off by its own ceiling is a fact about the room,
+                # not about the model, so the widened request goes back to the
+                # same model. Moving to the next catalogue entry here turned
+                # every short caller-supplied `max_tokens` into a tour of the
+                # failover ladder: APEX's one-token connection probe was
+                # recorded as a truncated answer from the base model, then
+                # retried against an unrelated free endpoint and left to back
+                # off for a minute. The model has not failed; the ceiling has.
+                request_scoped = (
+                    isinstance(exc, UnusableResponse)
+                    and exc.request_scoped
+                    and bool(changes)
+                )
+                following = (
+                    entry if request_scoped
+                    else self._next_entry(
+                        attempt_request, entry, tried,
+                        model_scoped=scope == _MODEL_SCOPED,
+                        transient=frozenset(transient),
+                    )
+                )
+                if following is None:
+                    # Every model that could serve this one has now been excluded,
+                    # so there is nothing to wait for and nothing to re-ask. This
+                    # is the end of the road rather than another failure of it,
+                    # and it is reported as such: a 401 turned into
+                    # `NoModelAvailable` is a fact about the deployment, and the
+                    # caller can act on that where it could not act on an HTTP
+                    # status that meant nothing outside this module.
+                    logger.warning(
+                        "gateway.no_model_available",
+                        purpose=attempt_request.purpose,
+                        tier=attempt_request.tier.value,
+                        excluded=sorted(tried),
+                        cause=str(exc)[:200],
+                    )
+                    raise NoModelAvailable(
+                        f"no eligible model could serve purpose={attempt_request.purpose} "
+                        f"tier={attempt_request.tier.value} after excluding "
+                        f"{len(tried)} model(s): {exc}"
+                    ) from exc
+                if rate_limited:
+                    # This event is named for what it is. It used to fire for
+                    # any long wait and stamp `status: 429` on it, so a reply
+                    # that merely reasoned without answering was recorded as a
+                    # rate limit -- a fact about the provider that was not
+                    # true, in the one log somebody would use to decide whether
+                    # the provider was the problem.
+                    logger.warning(
+                        "gateway.rate_limited_waiting",
+                        attempt=attempt + 1,
+                        of=max_attempts,
+                        provider=entry.provider,
+                        model=entry.model,
+                        purpose=attempt_request.purpose,
+                        status=getattr(exc, "status", 429),
+                        retry_after_s=retry_after_of(exc),
+                        wait_in_s=round(delay, 2),
+                        waiting=True,
+                        error=str(exc)[:300],
+                    )
+                logger.warning(
+                    "gateway.retry",
+                    attempt=attempt + 1,
+                    of=max_attempts,
+                    provider=entry.provider,
+                    model=entry.model,
+                    purpose=attempt_request.purpose,
+                    scope=scope,
+                    changed_model=entry_key(following) != entry_key(entry),
+                    request_changes=changes,
+                    next_provider=following.provider,
+                    next_model=following.model,
+                    retry_in_s=round(delay, 2),
+                    waiting=delay >= LONG_WAIT_THRESHOLD_S,
+                    immediate=delay < LONG_WAIT_THRESHOLD_S,
+                    error=str(exc)[:300],
+                )
+                # Counted here and not at the next call, so a retry that moved no
+                # lever at all is visible as its own series rather than inferred
+                # from a gap between two successes.
+                metrics.observe_retry(
+                    scope, attempt_request.purpose,
+                    changed_request=bool(changes),
+                    changed_model=entry_key(following) != entry_key(entry),
+                )
+                await self._sleep_before_retry(
+                    delay, entry, following, rate_limited=rate_limited,
+                )
+                entry = following
+                continue
+
+            latency_ms = int((time.monotonic() - start) * 1000)
+            response.provider = entry.provider
+            response.model = entry.model
+            response.latency_ms = latency_ms
+            exhaustive.log_model_response(
+                attempt_request, response,
+                request_id=request_id, requested_at=requested_at,
+            )
+            breakdown = self.costs.compute(
+                entry.model, response.usage,
+                provider=entry.provider, base_url=entry.base_url or "",
+                billed_cost_usd=response.billed_cost_usd,
+            )
+            response.cost_usd = breakdown.total_usd
+            self.router.record_success(entry)
+            await self._record_success(request, entry, response, breakdown)
+            metrics.observe_model_call(
+                entry.provider, entry.model, request.tier.value, "ok",
+                response.cost_usd, request.budget_bucket, latency_ms / 1000.0,
+                purpose=request.purpose,
+                cost_source=breakdown.source,
+            )
+            if breakdown.source == "unknown":
+                # Already warned about by the price table, but this is the
+                # moment it becomes somebody's money: say how much was billed
+                # at a rate nobody chose, and against which cap.
+                logger.warning(
+                    "gateway.cost_at_high_water_mark",
+                    provider=entry.provider, model=entry.model,
+                    purpose=request.purpose, cost_usd=breakdown.total_usd,
+                    charged_per_million=breakdown.price.as_dict(),
+                )
+            return response
+
+        raise last_error or RuntimeError("gateway complete failed without error")
+
+    async def _note_failure(
+        self, request: ModelRequest, entry: Any, exc: Exception,
+        response: NormalizedResponse | None = None,
+    ) -> None:
+        """
+        Account for an attempt that did not produce an answer.
+
+        The tokens are still counted when there was a response to count them
+        from. An empty or truncated reply cost exactly as much as a good one and
+        a row saying it cost nothing is a row the next person debugging this
+        cannot trust.
+
+        `scope` goes onto the metric as well as into the row. The row is read
+        when somebody is already looking at one failure; the counter is what a
+        dashboard reads while the agent is failing, and the whole difference
+        between "planning is looping" and "the key is dead" was in a column the
+        counter did not have.
+        """
+        usage = response.usage if response is not None else Usage()
+        breakdown = (
+            self.costs.compute(
+                entry.model, usage, provider=entry.provider, base_url=entry.base_url or "",
+                billed_cost_usd=response.billed_cost_usd if response else None,
+            )
+            if response is not None
+            else None
+        )
+        cost = breakdown.total_usd if breakdown is not None else 0.0
+        # NA-P3.2: the disposition travels with the failure. The row's `status`
+        # already says "error"; the disposition says what *kind* of ending it
+        # was -- a limit reached, a model that stopped, or a plain error -- and
+        # it is counted and recorded under that name so the reason a task
+        # stopped is a fact in the record rather than a reconstruction.
+        disposition = disposition_from_exception(exc).value
+        metrics.observe_model_call(
+            entry.provider, entry.model, request.tier.value, "error", cost,
+            request.budget_bucket, 0.0, purpose=request.purpose,
+            scope=failure_scope(exc),
+            cost_source=breakdown.source if breakdown else "unknown",
+            disposition=disposition,
+        )
+        record = ModelCallRecord(
+            provider=entry.provider, model=entry.model, tier=request.tier.value,
+            purpose=request.purpose, thread_id=request.thread_id,
+            intention_id=request.intention_id, budget_bucket=request.budget_bucket,
+            input_tokens=usage.input_tokens, cached_input_tokens=usage.cached_input_tokens,
+            cache_write_tokens=usage.cache_write_tokens,
+            output_tokens=usage.output_tokens, reasoning_tokens=usage.reasoning_tokens,
+            cost_usd=cost, latency_ms=0, status="error",
+            error=f"[{disposition}] {str(exc)[:480]}",
+            price_source=breakdown.source if breakdown else "unknown",
+        )
+        await self.spend.record(record)
+
+    async def _record_success(
+        self, request: ModelRequest, entry: Any, response: NormalizedResponse,
+        breakdown: CostBreakdown | None = None,
+    ) -> None:
+        usage = response.usage
+        record = ModelCallRecord(
+            provider=entry.provider, model=entry.model, tier=request.tier.value,
+            purpose=request.purpose, thread_id=request.thread_id,
+            intention_id=request.intention_id, budget_bucket=request.budget_bucket,
+            input_tokens=usage.input_tokens,
+            cached_input_tokens=usage.cached_input_tokens,
+            cache_write_tokens=usage.cache_write_tokens,
+            output_tokens=usage.output_tokens,
+            reasoning_tokens=usage.reasoning_tokens,
+            cost_usd=response.cost_usd, latency_ms=response.latency_ms, status="ok",
+            price_source=breakdown.source if breakdown else "unknown",
+        )
+        await self.spend.record(record)
+
+    def embed(self, texts: Iterable[str]) -> list[list[float]]:
+        return self.embedder.embed(list(texts))
+
+    async def budget_state(self) -> dict[str, Any]:
+        spend = await self.spend.spend()
+        windows = await self.spend.window_spends()
+        limits = self.config.permissions.hard_limits
+        return {
+            **spend,
+            "daily_cap": self.spend.daily_cap,
+            "monthly_cap": self.spend.monthly_cap,
+            "commitment_cap": self.spend.commitment_cap,
+            "discretionary_cap": self.spend.discretionary_cap,
+            "budget_unit": self.spend.unit,
+            "caps": limits.spend_limits(),
+            "enabled_caps": limits.enabled_limits(),
+            "windows": windows,
+        }
+
+    async def load_live_prices(self, *, fetch: bool = False) -> int:
+        """Fetch vendor prices once at startup and keep them on the calculator.
+
+        Deliberately not awaited inside `__init__`: the gateway is constructed
+        in tests and in scripts with no event loop and no interest in reaching
+        the network. The checked-in table prices everything correctly without
+        this, so a deployment that never calls it is slower to notice a price
+        change and wrong about nothing.
+        """
+        loaded = await refresh_live_prices(self.config, self.costs.table, fetch=fetch)
+        if loaded:
+            logger.info("gateway.pricing_ready", live_models=loaded)
+        return loaded
+
+    async def aclose(self) -> None:
+        if self._owns_http:
+            await self.http.aclose()
+
+
+def create_gateway_app(service: GatewayService):
+    from fastapi import FastAPI, HTTPException, Request
+    from fastapi.responses import JSONResponse, StreamingResponse
+    from prometheus_client import make_asgi_app
+
+    from clio.gateway import compat
+
+    app = FastAPI(title=f"{PRODUCT_NAME} gateway", version=__version__)
+
+    @app.post("/v1/complete")
+    async def complete(request: ModelRequest) -> NormalizedResponse:
+        try:
+            return await service.complete(request)
+        except BudgetExceededError as exc:
+            raise HTTPException(status_code=402, detail=str(exc)) from exc
+        except Exception as exc:
+            # A 502 without a traceback is a dead end for the operator: the
+            # client sees one opaque sentence and the log has no record of
+            # which layer failed. The exception still travels as the 502, but
+            # it is also written where the process's own log is read.
+            logger.exception(
+                "gateway.request_failed", purpose=request.purpose,
+                tier=request.tier.value, error=str(exc)[:300],
+            )
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    # ---- OpenAI-compatible wire shim -----------------------------------------
+    # The native `/v1/complete` shape is this agent's own. The routes below are
+    # the shape Foundry and APEX (and any OpenAI-speaking client) already speak,
+    # so a sub-agent's single configured endpoint is backed by this deployment's
+    # whole catalogue: routing, spend guard, retries, failover, base model.
+    async def chat_completions(request):
+        # The signature carries no annotation on purpose: this module imports
+        # under `from __future__ import annotations`, which resolves a
+        # signature's names in module globals — where a locally imported
+        # `Request` does not exist, and FastAPI would read the parameter as a
+        # query field. The real annotation is attached before registration.
+        body = await request.json()
+        requested_model = str(body.get("model") or "")
+        # Read the catalogue per request rather than once at start-up: the base
+        # model can be replaced at runtime (`sync_base_model`), and a frozen set
+        # from boot then no longer contains the name every sub-agent is told to
+        # send. The request was treated as naming an unknown model, the router
+        # picked by tier instead, and a sub-agent that had been configured for
+        # this deployment's base model silently landed on a completely
+        # different catalogue entry.
+        known_models = frozenset(entry.model for entry in service.config.models.models)
+        model_request = compat.openai_chat_to_model_request(
+            body, known_models=known_models, purpose="compat.chat",
+        )
+        wants_stream = bool(body.get("stream"))
+
+        async def run() -> NormalizedResponse:
+            try:
+                return await service.complete(model_request)
+            except BudgetExceededError as exc:
+                raise HTTPException(status_code=402, detail=str(exc)) from exc
+            except Exception as exc:
+                logger.exception(
+                    "gateway.request_failed", purpose=model_request.purpose,
+                    tier=model_request.tier.value, error=str(exc)[:300],
+                )
+                raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+        if not wants_stream:
+            resp = await run()
+            return JSONResponse(compat.normalized_to_chat_response(resp, requested_model))
+
+        # Streaming: the OpenAI SSE shape. The completion is computed in full
+        # first — the point of the stream for these clients is per-chunk
+        # liveness past read timeouts on long reasoning, not token pipelining.
+        resp = await run()
+        chunks = compat.sse_bytes(compat.chat_stream_chunks(resp, requested_model))
+
+        async def gen():
+            for line in chunks:
+                yield line
+
+        return StreamingResponse(gen(), media_type="text/event-stream")
+
+    chat_completions.__annotations__["request"] = Request
+    app.post("/v1/chat/completions")(chat_completions)
+
+    @app.get("/v1/models")
+    async def list_models() -> dict[str, Any]:
+        return compat.catalogue_to_models_payload(service.config.models.models)
+
+    @app.post("/v1/embed")
+    async def embed(body: dict[str, Any]) -> dict[str, Any]:
+        texts = body.get("texts", [])
+        vectors = service.embed(texts)
+        return {"vectors": vectors, "dim": service.embedder.dim}
+
+    @app.get("/healthz")
+    async def healthz() -> dict[str, Any]:
+        service.sync_base_model()
+        return {
+            "status": "ok",
+            "providers": sorted(service.available_providers()),
+            "models": len(service.config.models.models),
+            "base_model": service.model_status()["base"],
+        }
+
+    @app.get("/budget")
+    async def budget() -> dict[str, Any]:
+        return await service.budget_state()
+
+    app.mount("/metrics", make_asgi_app())
+    return app
+
+
+def exc_brief(exc: BaseException, limit: int = 200) -> str:
+    """An exception as one clipped line: its kind, then what it said."""
+    return f"{type(exc).__name__}: {exc}"[:limit]
+
+
+async def serve(config: ClioConfig, db: Database | None = None) -> None:
+    import uvicorn
+
+    service = GatewayService(config, db=db)
+    # Before serving: the same reason the core asks first. A request that arrives
+    # over the socket is routed the moment it lands, and a dead local entry in
+    # the ladder is a 404 waiting for it.
+    await service.probe_local_endpoints()
+    app = create_gateway_app(service)
+    socket_path = config.gateway.socket_path
+    use_socket = os.name == "posix" and os.access(os.path.dirname(socket_path) or "/", os.W_OK)
+    # `uvicorn_loop()` rather than the literal "uvloop" in both branches. uvicorn
+    # resolves the name with `importlib` inside `Server.serve()`, so a loop that
+    # is not installed fails *there*: after the process has bound its address and
+    # written its "serving" line, which is the worst place to learn that the string
+    # was wrong. `uvloop` is not a Windows wheel at all — `pyproject.toml` marks it
+    # `sys_platform != 'win32'` — so on Windows this was an unconditional
+    # `ModuleNotFoundError` in the gateway, with the socket already bound.
+    #
+    # Both branches ask, and the TCP one most of all: that is the branch Windows
+    # takes, and the one place a hardcoded loop name would have taken the machine
+    # down on the path it was guaranteed to take.
+    if use_socket:
+        try:
+            os.unlink(socket_path)
+        except FileNotFoundError:
+            pass
+        os.makedirs(os.path.dirname(socket_path), exist_ok=True)
+        config_server = uvicorn.Config(
+            app, uds=socket_path, log_level="warning", loop=uvicorn_loop(),
+        )
+    else:
+        config_server = uvicorn.Config(
+            app, host=config.gateway.host, port=config.gateway.port, log_level="warning",
+            loop=uvicorn_loop(),
+        )
+    server = uvicorn.Server(config_server)
+    logger.info("gateway.serving", socket=socket_path if use_socket else f"{config.gateway.host}:{config.gateway.port}")
+    await server.serve()

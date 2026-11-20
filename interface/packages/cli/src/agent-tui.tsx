@@ -10,6 +10,7 @@ import {
   MAX_TERMINAL_TEXT_LENGTH,
   sanitizeTerminalText,
   stateTone,
+  type AgentApexSession,
   type AgentControlAction,
   type AgentConversation,
   type AgentDoor,
@@ -54,11 +55,14 @@ import {
 import {
   ActionsPanel,
   AgentSettingsPanel,
+  ApprovalsPanel,
+  ApexPanel,
   BudgetPanel,
   ChannelsPanel,
   CycleStrip,
   CycleStripLine,
   GuardianPanel,
+  HistoryPanel,
   IntentionsPanel,
   panelHeightFor,
   PresencePanel,
@@ -83,42 +87,56 @@ const WIDE_AT = 100;
 const CHAT_CHROME_ROWS = 7;
 const DEBUG_PANEL_ROWS = 8;
 
-const HELP_KEYS: Array<[string, string]> = [
-  ['Enter', 'Send the message. The agent decides whether to answer.'],
-  ['Tab / Ctrl-P', 'Step through the agent panels and back to the line.'],
-  ['PgUp / PgDn', 'Scroll the transcript — or the open panel — by a screen.'],
-  ['↑ / ↓', 'Scroll one line.'],
-  ['Esc', 'Close a panel, stop waiting, jump to the newest line, or open settings.'],
-  ['Ctrl-S', 'Open the setup.'],
-  ['Ctrl-K', 'Discard the composer.'],
-  ['Ctrl-Q / Ctrl-C', 'Leave the line.'],
-];
+function agentHelpKeys(t: ReturnType<typeof createTranslator>): Array<[string, string]> {
+  return [
+    ['Enter', t('kbdEnterSendAgent')],
+    ['Tab / Ctrl-P', t('kbdTabPanels')],
+    ['PgUp / PgDn', t('kbdScrollScreenPanel')],
+    ['↑ / ↓', t('kbdScrollLine')],
+    ['Esc', t('kbdEscAgent')],
+    ['Ctrl-S', t('kbdCtrlSAgent')],
+    ['Ctrl-K', t('kbdCtrlK')],
+    ['Ctrl-Q / Ctrl-C', t('kbdCtrlQ')],
+  ];
+}
 
-const HELP_COMMANDS: Array<[string, string]> = [
-  ['/help', 'Show or hide this panel.'],
-  ['/settings', 'The interface setup, and how to repoint it.'],
-  ['/link <url>', 'Point this terminal at a different agent.'],
-  ['/name [<name>]', 'What the agent is called, or what to call it.'],
-  ['/person <name>', 'The name the agent knows you by.'],
-  ['/model [<provider> <model>]', 'What the agent thinks with, or what it should.'],
-  ['/channel [<n>|<name>|<door:person>]', 'Which door to talk through, or which conversation to open.'],
-  ['/channels', 'Every door the agent has open, and who each can reach.'],
-  ['/presence', 'What the agent is doing right now.'],
-  ['/intentions', 'What it intends, as a tree.'],
-  ['/actions', 'What it has done, and what can be undone.'],
-  ['/thoughts', 'What it has been thinking.'],
-  ['/budget', 'What it has spent, against its caps.'],
-  ['/guardian', 'Trash, snapshots and the audit chain.'],
-  ['/hold | /resume', 'Pause everything, or start it again.'],
-  ['/preview on | off', 'Let the agent talk only, or give it its tools back.'],
-  ['/stop | /emergency', 'Stop the agent; the emergency stop arms first.'],
-  ['/undo [<id>]', 'Queue an undo — bare opens the journal, where the ids are.'],
-  ['/cancel [<id>]', 'Cancel an intention — bare opens the board.'],
-  ['/interrupt', 'Stop waiting for a reply.'],
-  ['/theme', 'Switch between dark and light.'],
-  ['/lang', 'Cycle the interface language.'],
-  ['/quit', 'Leave the line.'],
-];
+function agentHelpCommands(t: ReturnType<typeof createTranslator>): Array<[string, string]> {
+  return [
+    ['/help', t('cmdHelp')],
+    ['/settings', t('cmdSettingsAgent')],
+    ['/link <url>', t('cmdLink')],
+    ['/name [<name>|clear]', t('cmdName')],
+    ['/person <name>', t('cmdPerson')],
+    ['/model [<provider> <model>]', t('cmdModel')],
+    ['/channel [<n>|<name>|<door:person>]', t('cmdChannel')],
+    ['/channels', t('cmdChannels')],
+    ['/door <n> <field> <value>', t('cmdDoor')],
+    ['/approvals', t('cmdApprovals')],
+    ['/approve <id> | /deny <id>', t('cmdApprove')],
+    ['/safety [<1-4>|reset]', t('cmdSafety')],
+    ['/history | /find <text>', t('cmdHistory')],
+    ['/keys', t('cmdKeys')],
+    ['/apex', t('cmdApex')],
+    ['/presence', t('cmdPresence')],
+    ['/intentions', t('cmdIntentions')],
+    ['/actions', t('cmdActions')],
+    ['/thoughts', t('cmdThoughts')],
+    ['/budget', t('cmdBudget')],
+    ['/guardian', t('cmdGuardian')],
+    ['/hold | /pause-actions | /resume', t('cmdHold')],
+    ['/preview on | off', t('cmdPreview')],
+    ['/stop | /emergency', t('cmdStop')],
+    ['/undo [<id>]', t('cmdUndo')],
+    ['/cancel [<id>]', t('cmdCancel')],
+    ['/interrupt', t('cmdInterruptAgent')],
+    ['/theme', t('cmdTheme')],
+    ['/lang', t('cmdLang')],
+    ['/density [compact|comfortable]', t('cmdDensity')],
+    ['/timestamps [on|off]', t('cmdTimestamps')],
+    ['/sidebar [on|off]', t('cmdSidebar')],
+    ['/quit', t('cmdQuit')],
+  ];
+}
 
 /**
  * The terminal's agent interface.
@@ -154,13 +172,38 @@ export function AgentTui({ initialConfig, debug, width, height, depth }: AgentTu
   // of. Read off the session rather than kept here, so the two can never disagree.
   const { channel, conversationKey: currentKey, conversations } = session;
 
+  // The background screen's session, polled only while its panel is open: a
+  // relay that is not being watched should not be fetched, and a panel that is
+  // being watched wants the run's shape now, not at the next snapshot.
+  const [apex, setApex] = useState<AgentApexSession | null>(null);
+  useEffect(() => {
+    if (screen !== 'apex') return;
+    let cancelled = false;
+    const read = () => {
+      void session.agent.apexScreenSession()
+        .then((found) => {
+          if (!cancelled) setApex(found);
+        })
+        .catch(() => { /* the panel shows "no run" */ });
+    };
+    read();
+    const timer = setInterval(read, 5000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [screen, session.agent]);
+
   const t = useMemo(() => createTranslator(snapshot.settings.language), [snapshot.settings.language]);
   const palette = useMemo(
     () => createPalette(snapshot.settings.accent, snapshot.settings.theme, depth),
     [snapshot.settings.accent, snapshot.settings.theme, depth],
   );
 
-  const wide = width >= WIDE_AT;
+  // The instrument column is a preference as well as a width: a reader who has
+  // turned it off gets the narrow arrangement at any width — the conversation
+  // full width, the panels one at a time — which is what the setting means.
+  const wide = width >= WIDE_AT && snapshot.settings.showSidebar;
   const panelWidth = wide ? PANEL_WIDTH : width;
   const chatWidth = wide ? Math.max(20, width - PANEL_WIDTH - 1) : width;
   const debugRows = debug ? DEBUG_PANEL_ROWS : 0;
@@ -199,8 +242,13 @@ export function AgentTui({ initialConfig, debug, width, height, depth }: AgentTu
   );
 
   const lines = useMemo(
-    () => transcriptLines(shown, { width: chatWidth - 2, language: snapshot.settings.language }),
-    [shown, chatWidth, snapshot.settings.language],
+    () => transcriptLines(shown, {
+      width: chatWidth - 2,
+      language: snapshot.settings.language,
+      showTimestamps: snapshot.settings.showTimestamps,
+      density: snapshot.settings.density,
+    }),
+    [shown, chatWidth, snapshot.settings],
   );
   const visible = windowLines(lines, chatHeight, scroll);
   const limit = maxScroll(lines, chatHeight);
@@ -239,6 +287,7 @@ export function AgentTui({ initialConfig, debug, width, height, depth }: AgentTu
     overlay,
     settings: snapshot.settings,
     armed,
+    safetyLevel: view.control.safety_level,
   };
 
   /**
@@ -275,7 +324,7 @@ export function AgentTui({ initialConfig, debug, width, height, depth }: AgentTu
     clearConversation: () => {
       // The transcript is the agent's store. Clearing the local copy would only be
       // undone by the next event, so the honest thing is to decline and say why.
-      say(t('agentDeclined'), 'warning');
+      say(t('cliClearUnavailable'), 'warning');
     },
     interrupt: session.interrupt,
     quit: exit,
@@ -314,6 +363,40 @@ export function AgentTui({ initialConfig, debug, width, height, depth }: AgentTu
       }
       session.closeIntention(found.id, found.tool);
     },
+    agentApprove: (id: string) => {
+      if (!id) {
+        setScreen('approvals');
+        say(t('cliApprovalHint'), 'accent');
+        return;
+      }
+      const found = resolveByPrefix(
+        view.approvals.map((approval) => ({ id: approval.id, tool: approval.tool })),
+        id,
+      );
+      if (!found) {
+        say(t('cliApprovalGone'), 'warning');
+        return;
+      }
+      void session.approveOrDeny(found.id, 'approve', found.tool);
+    },
+    agentDeny: (id: string) => {
+      const found = resolveByPrefix(
+        view.approvals.map((approval) => ({ id: approval.id, tool: approval.tool })),
+        id,
+      );
+      if (!found) {
+        say(t('cliApprovalGone'), 'warning');
+        return;
+      }
+      void session.approveOrDeny(found.id, 'deny', found.tool);
+    },
+    agentHistory: (argument: string, mode: 'page' | 'search') => {
+      void session.loadHistory(argument, mode);
+    },
+    agentKeys: () => session.showEnvKeys(),
+    agentDoor: (argument: string) => {
+      void session.editDoor(argument);
+    },
     agentAddress: (field, value) => {
       // The kernel owns the rule and the normaliser: a bad address falls back to
       // the default rather than being stored, and the reader is told what it
@@ -350,9 +433,9 @@ export function AgentTui({ initialConfig, debug, width, height, depth }: AgentTu
     return (
       <Box flexDirection="column" height={height} paddingX={1} width={width}>
         <HelpOverlay
-          commands={HELP_COMMANDS}
+          commands={agentHelpCommands(t)}
           height={height - 2}
-          keys={HELP_KEYS}
+          keys={agentHelpKeys(t)}
           keyWidth={26}
           noteKey="agentSendHint"
           palette={palette}
@@ -384,6 +467,10 @@ export function AgentTui({ initialConfig, debug, width, height, depth }: AgentTu
     currentConversation: currentKey,
     scroll: panelScroll,
     bodyHeight: panelBodyHeight,
+    historyPage: session.historyPage,
+    historyQuery: session.historyPage?.query ?? '',
+    envKeys: session.envKeys,
+    apex,
   });
 
   return (
@@ -406,7 +493,6 @@ export function AgentTui({ initialConfig, debug, width, height, depth }: AgentTu
       <Divider palette={palette} width={width - 2} />
       <Box flexDirection="row" flexGrow={1} marginTop={0}>
         <Box flexDirection="column" flexGrow={1} width={chatWidth}>
-          {(!wide && panel) ?? null}
           {(!wide && panel) ? (
             panel
           ) : (
@@ -455,7 +541,12 @@ export function AgentTui({ initialConfig, debug, width, height, depth }: AgentTu
       {screen === 'chat' && blockedReason ? (
         <Box borderColor={palette.danger} borderStyle="round" flexDirection="column" paddingX={1} width={width - 2}>
           <Notice palette={palette} tone="warning">{blockedReason}</Notice>
-          <Text color={palette.inkFaint}>{'/channels'}</Text>
+          {/* The way out, named where the send is refused: a bare command with
+              no word around it is a string to type, not advice. */}
+          <Text color={palette.inkFaint}>
+            {`${t('cliChannelsSwitchHint')} `}
+            <Text bold color={palette.accent}>/channels</Text>
+          </Text>
         </Box>
       ) : (
         <Composer
@@ -505,6 +596,10 @@ function renderPanel({
   currentConversation,
   scroll,
   bodyHeight,
+  historyPage,
+  historyQuery,
+  envKeys,
+  apex,
 }: {
   screen: Screen;
   view: AgentView;
@@ -523,6 +618,10 @@ function renderPanel({
   currentConversation: string;
   scroll: number;
   bodyHeight: number;
+  historyPage: { page: { messages: AgentView['messages']; hasMore: boolean; oldest: string | null }; query: string } | null;
+  historyQuery: string;
+  envKeys: ReadonlyArray<{ provider: string; present: boolean; variable: string }>;
+  apex: AgentApexSession | null;
 }): React.ReactElement | null {
   const language = settings.language;
   const now = Date.now();
@@ -561,6 +660,41 @@ function renderPanel({
           palette={palette}
           personId={personId}
           scroll={scroll}
+          t={t}
+          width={width}
+        />
+      );
+    case 'approvals':
+      return (
+        <ApprovalsPanel
+          approvals={view.approvals}
+          envKeys={envKeys}
+          height={bodyHeight}
+          palette={palette}
+          scroll={scroll}
+          t={t}
+          width={width}
+        />
+      );
+    case 'history':
+      return (
+        <HistoryPanel
+          height={bodyHeight}
+          page={historyPage?.page ?? null}
+          palette={palette}
+          query={historyQuery}
+          scroll={scroll}
+          t={t}
+          width={width}
+        />
+      );
+    case 'apex':
+      return (
+        <ApexPanel
+          height={bodyHeight}
+          palette={palette}
+          scroll={scroll}
+          session={apex}
           t={t}
           width={width}
         />
@@ -607,6 +741,9 @@ function AgentHeader({
     budget: t('panelBudget'),
     guardian: t('panelGuardian'),
     channels: t('panelChannels'),
+    approvals: t('panelApprovals'),
+    history: t('historyTitle'),
+    apex: t('panelApex'),
   };
   return (
     <Box justifyContent="space-between" width={width}>

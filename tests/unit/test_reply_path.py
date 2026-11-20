@@ -9,23 +9,23 @@ from types import SimpleNamespace
 from typing import Any
 from uuid import uuid4
 
-from ethos.engine.attention import Attention
-from ethos.engine.drives import (
+from clio.engine.attention import Attention
+from clio.engine.drives import (
     DriveInputs,
     Motivation,
     propose_impulses,
     resolve_impulse_target,
 )
-from ethos.engine.life import Life, LifeDeps
-from ethos.engine.rhythm import RhythmController
-from ethos.gateway.embeddings import HashingEmbedder
-from ethos.prompts.deliberation import social_deliberation_messages
-from ethos.schemas.events import Appraisal, EventKind
-from ethos.schemas.gsl import Decision, Focus, IntentionRecord, Outcome
-from ethos.schemas.messages import Message, SocialDecision
-from ethos.social.deliberation import SocialCognition
-from ethos.social.etiquette import OutboundPipeline
-from ethos.social.relationships import RelationshipStore
+from clio.engine.life import Life, LifeDeps
+from clio.engine.rhythm import RhythmController
+from clio.gateway.embeddings import HashingEmbedder
+from clio.prompts.deliberation import social_deliberation_messages
+from clio.schemas.events import Appraisal, EventKind
+from clio.schemas.gsl import Decision, Focus, IntentionRecord, Outcome
+from clio.schemas.messages import Message, SocialDecision
+from clio.social.deliberation import SocialCognition
+from clio.social.etiquette import OutboundPipeline
+from clio.social.relationships import RelationshipStore
 from tests.conftest import ListAudit, ScriptedGateway, make_config
 
 """
@@ -105,7 +105,7 @@ class _StubDb:
 
 def _pipeline(sender: _RecordingSender, bus: _CollectingBus | None = None,
               db: Any = None) -> OutboundPipeline:
-    config = make_config(Path("/tmp/ethos-test-etiquette"))
+    config = make_config(Path("/tmp/clio-test-etiquette"))
     config.paths.ensure()
     # Quiet hours that are definitely not now, so a test failure means the
     # batching gate changed rather than that the clock crossed 22:00.
@@ -183,7 +183,7 @@ def test_reply_texts_leave_as_one_message_each() -> None:
     `in_reply_to`, so each one names the question it answers and no delivery is
     an answer to nothing.
     """
-    config = make_config(Path("/tmp/ethos-test-one-message"))
+    config = make_config(Path("/tmp/clio-test-one-message"))
     config.paths.ensure()
     bus = _CollectingBus()
     out = _RecordingOut()
@@ -238,7 +238,7 @@ def test_a_reply_of_any_length_is_delivered_message_by_message() -> None:
     it answers, and the question is finished with exactly once. One text, or
     three, or any other number, is the same path with less in it.
     """
-    config = make_config(Path("/tmp/ethos-test-ten-messages"))
+    config = make_config(Path("/tmp/clio-test-ten-messages"))
     config.paths.ensure()
     out = _RecordingOut()
     message = Message(person_id="owner", channel="web",
@@ -277,7 +277,7 @@ def test_a_reply_can_carry_a_gap_between_its_messages(monkeypatch: Any) -> None:
     marked handled only after the last text is out — so a restart mid-reply
     re-deliberates the question rather than forgetting the tail of the answer.
     """
-    config = make_config(Path("/tmp/ethos-test-paced"))
+    config = make_config(Path("/tmp/clio-test-paced"))
     config.paths.ensure()
     out = _RecordingOut()
     message = Message(person_id="owner", channel="web",
@@ -323,7 +323,7 @@ def test_a_reply_gap_is_clamped_to_the_configured_ceiling(monkeypatch: Any) -> N
     reply still arrives in full, only closer together, and a misread unit
     costs seconds rather than an afternoon.
     """
-    config = make_config(Path("/tmp/ethos-test-gap-clamp"))
+    config = make_config(Path("/tmp/clio-test-gap-clamp"))
     config.paths.ensure()
     config.social.reply_gap_max_s = 5.0
     out = _RecordingOut()
@@ -368,7 +368,7 @@ def test_a_gap_written_for_a_message_that_was_never_sent_is_not_inherited(monkey
     a delay before now, which is no delay, and a reply with no gaps written at
     all is sent as one burst, exactly as before this field existed.
     """
-    config = make_config(Path("/tmp/ethos-test-gap-alignment"))
+    config = make_config(Path("/tmp/clio-test-gap-alignment"))
     config.paths.ensure()
     out = _RecordingOut()
     message = Message(person_id="owner", channel="web",
@@ -425,7 +425,7 @@ def test_a_reply_of_nothing_but_whitespace_is_not_sent() -> None:
     the reply is treated as the silence it is: nothing goes out, and the question
     is declared.
     """
-    config = make_config(Path("/tmp/ethos-test-blank-reply"))
+    config = make_config(Path("/tmp/clio-test-blank-reply"))
     config.paths.ensure()
     bus = _CollectingBus()
     out = _RecordingOut()
@@ -475,7 +475,7 @@ def test_a_deadline_the_model_wrote_as_a_word_does_not_cost_a_second_answer() ->
     An unreadable deadline is the absence of one: the intention is still created,
     and the question is finished with exactly once.
     """
-    config = make_config(Path("/tmp/ethos-test-deadline-word"))
+    config = make_config(Path("/tmp/clio-test-deadline-word"))
     config.paths.ensure()
     out = _RecordingOut()
     message = Message(person_id="owner", channel="web",
@@ -538,7 +538,7 @@ def test_a_reply_is_delivered_outside_quiet_hours_too() -> None:
     conversation. A person who has just written is awake by definition, so the
     hour on the clock is not evidence about them.
     """
-    config = make_config(Path("/tmp/ethos-test-quiet"))
+    config = make_config(Path("/tmp/clio-test-quiet"))
     config.paths.ensure()
     config.permissions.interruption.quiet_hours = {"start": "00:00", "end": "23:59"}
     sender = _RecordingSender()
@@ -612,7 +612,7 @@ def test_a_progress_note_in_quiet_hours_waits_rather_than_vanishing() -> None:
     A send the day is not ready for goes to the digest and is flushed when the
     window is up, which is the difference between late and gone.
     """
-    config = make_config(Path("/tmp/ethos-test-midtask-quiet"))
+    config = make_config(Path("/tmp/clio-test-midtask-quiet"))
     config.paths.ensure()
     config.permissions.interruption.quiet_hours = {"start": "00:00", "end": "23:59"}
     sender = _RecordingSender()
@@ -676,7 +676,7 @@ def test_midtask_batching_can_be_turned_back_on() -> None:
     this false and get the old behaviour, without the code holding two opinions
     about which default is correct.
     """
-    config = make_config(Path("/tmp/ethos-test-midtask-off"))
+    config = make_config(Path("/tmp/clio-test-midtask-off"))
     config.paths.ensure()
     config.permissions.interruption.midtask_sends_immediate = False
     sender = _RecordingSender()
@@ -749,7 +749,7 @@ def test_a_deliberate_silence_is_declared_with_the_message_it_answers() -> None:
     before it can be reported as anything at all.
     """
     bus = _CollectingBus()
-    config = make_config(Path("/tmp/ethos-test-decline"))
+    config = make_config(Path("/tmp/clio-test-decline"))
     config.paths.ensure()
 
     class _Social:
@@ -815,7 +815,7 @@ def test_a_life_loop_survives_a_cycle_that_raises() -> None:
     the agent had gone quiet with nothing anywhere recording that the agent had
     stopped. A failed cycle is a failed cycle.
     """
-    config = make_config(Path("/tmp/ethos-test-survive"))
+    config = make_config(Path("/tmp/clio-test-survive"))
     config.paths.ensure()
     cycles = {"done": 0}
 
@@ -878,7 +878,7 @@ def test_a_declined_question_is_not_re_deliberated_forever() -> None:
     nobody else's mail in the meantime. An ignored message is still a message
     that was dealt with.
     """
-    config = make_config(Path("/tmp/ethos-test-queue"))
+    config = make_config(Path("/tmp/clio-test-queue"))
     config.paths.ensure()
     bus = _CollectingBus()
 
@@ -949,7 +949,7 @@ def test_an_ignored_message_is_finished_with_exactly_once() -> None:
     count to the second one, through the real cognition and the real streak
     counter rather than a stand-in for either.
     """
-    config = make_config(Path("/tmp/ethos-test-count-once"))
+    config = make_config(Path("/tmp/clio-test-count-once"))
     config.paths.ensure()
     bus = _CollectingBus()
     out = _RecordingOut()
@@ -1019,7 +1019,7 @@ def test_a_silence_the_agent_overrules_is_answered_not_declared() -> None:
     the digest. A question the review answered must not also be declared
     declined — the surface would take whichever arrived first.
     """
-    config = make_config(Path("/tmp/ethos-test-overrule"))
+    config = make_config(Path("/tmp/clio-test-overrule"))
     config.paths.ensure()
     bus = _CollectingBus()
     out = _RecordingOut()
@@ -1100,7 +1100,7 @@ def test_a_silence_the_review_upholds_is_still_declared() -> None:
     against the message it answers, so the wait ends as a decline with a reason
     rather than running out as a stall.
     """
-    config = make_config(Path("/tmp/ethos-test-uphold"))
+    config = make_config(Path("/tmp/clio-test-uphold"))
     config.paths.ensure()
     bus = _CollectingBus()
     out = _RecordingOut()
@@ -1167,7 +1167,7 @@ def test_a_review_that_promises_an_answer_and_has_none_changes_nothing() -> None
     and the person is told why rather than left waiting on an answer that was
     never going to arrive.
     """
-    config = make_config(Path("/tmp/ethos-test-empty-overrule"))
+    config = make_config(Path("/tmp/clio-test-empty-overrule"))
     config.paths.ensure()
     bus = _CollectingBus()
     out = _RecordingOut()
@@ -1237,8 +1237,8 @@ def test_a_paused_agent_keeps_reporting_that_it_is_there(monkeypatch: Any) -> No
     like — and reported the pause as a stall. So the parked wait is bounded, and
     each pass says the agent is still here and is waiting.
     """
-    monkeypatch.setattr("ethos.engine.life.PARKED_HEARTBEAT_S", 0.01)
-    config = make_config(Path("/tmp/ethos-test-parked"))
+    monkeypatch.setattr("clio.engine.life.PARKED_HEARTBEAT_S", 0.01)
+    config = make_config(Path("/tmp/clio-test-parked"))
     config.paths.ensure()
     bus = _CollectingBus()
 
@@ -1307,9 +1307,9 @@ def test_the_kill_switch_is_re_read_by_the_running_agent(
     The heartbeat is shortened because a file is noticed on that cadence, and half
     a minute of it is the test's wall clock rather than the behaviour under test.
     """
-    from ethos.core.control import ControlPlane
+    from clio.core.control import ControlPlane
 
-    monkeypatch.setattr("ethos.engine.life.PARKED_HEARTBEAT_S", 0.05)
+    monkeypatch.setattr("clio.engine.life.PARKED_HEARTBEAT_S", 0.05)
 
     config = make_config(tmp_path / "home")
     config.paths.ensure()
@@ -1449,7 +1449,7 @@ def test_a_deliberation_the_agent_never_had_is_not_answered_for_it() -> None:
         ("an answer that is one object and says nothing about the turn",
          ScriptedGateway(['{"note": "still deciding"}', '{"note": "still deciding"}'])),
     ):
-        decision = _deliberation(gateway, Path("/tmp/ethos-test-no-opinion"))
+        decision = _deliberation(gateway, Path("/tmp/clio-test-no-opinion"))
 
         assert decision.reply_texts == [], (
             f"{label} must not put words in the agent's mouth, but it sent "
@@ -1474,7 +1474,7 @@ def test_a_reply_action_with_no_text_under_it_ends_in_silence() -> None:
     """
     decision = _deliberation(
         ScriptedGateway(['{"action": "reply_now", "reason": "asked a direct question"}']),
-        Path("/tmp/ethos-test-no-text"),
+        Path("/tmp/clio-test-no-text"),
     )
 
     assert decision.reply_texts == [], "there was no reply to send, so none is sent"
@@ -1495,14 +1495,14 @@ def test_a_null_reply_is_a_silence_rather_than_a_crash() -> None:
     """
     decision = _deliberation(
         ScriptedGateway(['{"action": "reply_now", "reply_texts": null}']),
-        Path("/tmp/ethos-test-null-reply"),
+        Path("/tmp/clio-test-null-reply"),
     )
 
     assert decision.reply_texts == []
 
     decision = _deliberation(
         ScriptedGateway(['{"action": "reply_now", "reply_texts": "hello there"}']),
-        Path("/tmp/ethos-test-string-reply"),
+        Path("/tmp/clio-test-string-reply"),
     )
 
     assert decision.reply_texts == [], "a string is not a list of replies"
@@ -1510,7 +1510,7 @@ def test_a_null_reply_is_a_silence_rather_than_a_crash() -> None:
 
 def test_whitespace_and_overlong_replies_are_kept_or_dropped_not_invented() -> None:
     """The normalising of what the model wrote, and nothing beyond it."""
-    config = make_config(Path("/tmp/ethos-test-reply-shape"))
+    config = make_config(Path("/tmp/clio-test-reply-shape"))
     config.paths.ensure()
 
     decision = asyncio.run(SocialCognition(config=config, gateway=ScriptedGateway([
@@ -1547,7 +1547,7 @@ def test_reply_delays_are_read_with_the_texts_they_belong_to() -> None:
             '{"action": "reply_now", "reply_texts": ["a", "b", "c"], '
             '"reply_delays_s": [0, 2.5, 1]}',
         ]),
-        Path("/tmp/ethos-test-delays-read"),
+        Path("/tmp/clio-test-delays-read"),
     )
     assert decision.reply_texts == ["a", "b", "c"]
     assert decision.reply_delays_s == [0.0, 2.5, 1.0]
@@ -1557,7 +1557,7 @@ def test_reply_delays_are_read_with_the_texts_they_belong_to() -> None:
             '{"action": "reply_now", "reply_texts": ["a", "  ", "b"], '
             '"reply_delays_s": [0, 9, 3]}',
         ]),
-        Path("/tmp/ethos-test-delays-alignment"),
+        Path("/tmp/clio-test-delays-alignment"),
     )
     assert decision.reply_texts == ["a", "b"]
     assert decision.reply_delays_s == [0.0, 3.0], \
@@ -1567,7 +1567,7 @@ def test_reply_delays_are_read_with_the_texts_they_belong_to() -> None:
         ScriptedGateway([
             '{"action": "reply_now", "reply_texts": ["a", "b"], "reply_delays_s": null}',
         ]),
-        Path("/tmp/ethos-test-delays-null"),
+        Path("/tmp/clio-test-delays-null"),
     )
     assert decision.reply_delays_s == [0.0, 0.0], "no delays written is a reply sent at once"
 
@@ -1576,7 +1576,7 @@ def test_reply_delays_are_read_with_the_texts_they_belong_to() -> None:
             '{"action": "reply_now", "reply_texts": ["a", "b", "c", "d"], '
             '"reply_delays_s": [0, "x", true, -4]}',
         ]),
-        Path("/tmp/ethos-test-delays-junk"),
+        Path("/tmp/clio-test-delays-junk"),
     )
     assert decision.reply_delays_s == [0.0, 0.0, 0.0, 0.0], \
         "a word, a boolean and a negative are no duration at all"
@@ -1592,7 +1592,7 @@ def test_a_deliberation_that_reads_well_still_answers_the_question() -> None:
     """
     out = _RecordingOut()
     bus = _CollectingBus()
-    config = make_config(Path("/tmp/ethos-test-real-reply"))
+    config = make_config(Path("/tmp/clio-test-real-reply"))
     config.paths.ensure()
     message = _question("what did you make of the second pass?")
     social = _QueueSocial(message)
@@ -1638,13 +1638,13 @@ def test_a_failed_deliberation_is_not_reported_to_the_person_as_a_choice() -> No
     """
     out = _RecordingOut()
     bus = _CollectingBus()
-    config = make_config(Path("/tmp/ethos-test-failed-turn"))
+    config = make_config(Path("/tmp/clio-test-failed-turn"))
     config.paths.ensure()
     message = _question("are you still there?")
     social = _QueueSocial(message)
     life = _life_over(social, out, bus, config)
 
-    decision = _deliberation(_RaisingGateway(), Path("/tmp/ethos-test-failed-turn-2"))
+    decision = _deliberation(_RaisingGateway(), Path("/tmp/clio-test-failed-turn-2"))
     assert decision.decided is False, "no opinion was formed, and the decision says so"
     asyncio.run(life._act_social(decision.model_dump(mode="json")))
 
@@ -1673,7 +1673,7 @@ def test_a_considered_silence_is_still_a_choice() -> None:
     """
     out = _RecordingOut()
     bus = _CollectingBus()
-    config = make_config(Path("/tmp/ethos-test-chosen-silence"))
+    config = make_config(Path("/tmp/clio-test-chosen-silence"))
     config.paths.ensure()
     message = _question("are you still there?")
     social = _QueueSocial(message)
@@ -1727,7 +1727,7 @@ def test_a_deliberation_cut_off_after_the_reply_is_still_sent() -> None:
     """
     out = _RecordingOut()
     bus = _CollectingBus()
-    config = make_config(Path("/tmp/ethos-test-cut-off"))
+    config = make_config(Path("/tmp/clio-test-cut-off"))
     config.paths.ensure()
     message = _question("just write me the snake game, please")
     social = _QueueSocial(message)
@@ -1770,7 +1770,7 @@ def test_a_reply_the_ceiling_cut_in_half_is_never_delivered_as_a_fragment() -> N
             ['{"action":"reply_now","reply_texts":["Yes — the tempo was right, I took the second'],
             finish_reasons=["length"],
         ),
-        Path("/tmp/ethos-test-cut-mid-reply"),
+        Path("/tmp/clio-test-cut-mid-reply"),
     )
 
     assert decision.reply_texts == [], "half a sentence is not a reply"
@@ -1794,7 +1794,7 @@ def test_a_deliberation_cut_off_before_it_decided_anything_is_still_a_silence() 
     ):
         decision = _deliberation(
             ScriptedGateway([text], finish_reasons=["length"]),
-            Path("/tmp/ethos-test-cut-nothing"),
+            Path("/tmp/clio-test-cut-nothing"),
         )
 
         assert decision.reply_texts == [], f"{label} must not produce a reply"
@@ -1811,7 +1811,7 @@ def test_the_deliberation_asks_for_enough_room_to_finish() -> None:
     complete answers came in under 900 -- rather than left at a round number
     that happens to cut the envelope in half.
     """
-    config = make_config(Path("/tmp/ethos-test-ceiling"))
+    config = make_config(Path("/tmp/clio-test-ceiling"))
     config.paths.ensure()
     gateway = ScriptedGateway([
         '{"action": "reply_now", "reply_texts": ["hi"], "reason": "asked directly"}',
@@ -1829,8 +1829,8 @@ def test_the_deliberation_asks_for_enough_room_to_finish() -> None:
 # Nothing anywhere composes a message to send
 
 
-def _ethos_sources() -> list[Path]:
-    root = Path(__file__).resolve().parents[2] / "ethos"
+def _clio_sources() -> list[Path]:
+    root = Path(__file__).resolve().parents[2] / "clio"
     return sorted(p for p in root.rglob("*.py") if "__pycache__" not in p.parts)
 
 
@@ -1880,7 +1880,7 @@ def test_no_module_anywhere_invents_a_message_to_send() -> None:
     it would arrive in the transcript reading as the agent having said it.
     """
     offenders: list[str] = []
-    for path in _ethos_sources():
+    for path in _clio_sources():
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
@@ -1913,7 +1913,7 @@ def test_the_stand_in_sentences_are_gone_from_the_code() -> None:
         "Due process complete",
     )
     present: list[str] = []
-    for path in _ethos_sources():
+    for path in _clio_sources():
         code = _without_comments(path)
         for phrase in removed:
             if phrase in code:
@@ -1937,7 +1937,7 @@ def test_a_request_for_work_becomes_the_next_focus() -> None:
     So the commission travels out of the turn that made it and becomes that cycle's
     focus. Not arbitration's to discover — the agent already decided.
     """
-    config = make_config(Path("/tmp/ethos-test-commission-focus"))
+    config = make_config(Path("/tmp/clio-test-commission-focus"))
     config.paths.ensure()
     out = _RecordingOut()
     message = Message(
@@ -2027,7 +2027,7 @@ def test_asking_again_resumes_the_work_instead_of_opening_it_again() -> None:
     So the second ask adopts the open row, keeps its `resume_state`, and becomes
     the focus — and the person is still answered in the turn that asked.
     """
-    config = make_config(Path("/tmp/ethos-test-commission-resumed"))
+    config = make_config(Path("/tmp/clio-test-commission-resumed"))
     config.paths.ensure()
     out = _RecordingOut()
     existing = IntentionRecord(
@@ -2129,7 +2129,7 @@ def test_work_that_is_really_new_still_gets_its_own_row() -> None:
     actually asked for is the worse failure, and this runs in a cycle that has
     already answered somebody.
     """
-    config = make_config(Path("/tmp/ethos-test-commission-new-work"))
+    config = make_config(Path("/tmp/clio-test-commission-new-work"))
     config.paths.ensure()
 
     class _QueueSocial:
@@ -2186,7 +2186,7 @@ def test_a_message_that_asked_for_nothing_still_releases_its_focus() -> None:
     work the turn actually committed to earns a successor, so ordinary conversation
     and a deliberate silence both end the focus exactly as they did.
     """
-    config = make_config(Path("/tmp/ethos-test-no-commission"))
+    config = make_config(Path("/tmp/clio-test-no-commission"))
     config.paths.ensure()
     life = Life(LifeDeps(
         config=config, control=_Quiet(), bus=_CollectingBus(), memory=_Quiet(),
@@ -2224,7 +2224,7 @@ def test_an_interrupt_hands_the_pass_back_to_the_work_it_interrupted() -> None:
     comes back to the work rather than to whatever the drives would have
     invented next.
     """
-    config = make_config(Path("/tmp/ethos-test-interrupt-resume"))
+    config = make_config(Path("/tmp/clio-test-interrupt-resume"))
     config.paths.ensure()
     work = Focus(
         intention_id=uuid4(), title="add slugify() to code.py",
@@ -2355,7 +2355,7 @@ def test_work_suspended_for_an_interrupt_is_returned_when_the_cycle_settles_on_n
     cycle with `None` and the suspended work was stranded in a slot nothing
     would ever read again.
     """
-    config = make_config(Path("/tmp/ethos-test-suspended-net"))
+    config = make_config(Path("/tmp/clio-test-suspended-net"))
     config.paths.ensure()
     life = Life(LifeDeps(
         config=config, control=_Quiet(), bus=None, memory=_Quiet(),
@@ -2391,7 +2391,7 @@ def test_the_commitment_drive_can_see_work_somebody_is_waiting_on() -> None:
     than 0.4: `advance_commitment` was never proposed for exactly the work a
     commission creates, and a dropped promise was unfindable by design.
     """
-    config = make_config(Path("/tmp/ethos-test-drive-sees-promise"))
+    config = make_config(Path("/tmp/clio-test-drive-sees-promise"))
     config.paths.ensure()
     promised = IntentionRecord(
         kind="commitment", title="add slugify() to code.py", priority=0.5,
@@ -2454,6 +2454,62 @@ def test_the_deliberation_is_told_that_answering_is_not_doing() -> None:
         "or every greeting becomes a task"
 
 
+def test_deliberation_separates_shared_conversation_from_private_work() -> None:
+    """Knowing something is not the same as the person having been told it.
+
+    An autonomous agent can develop options, change its plan and do work between
+    messages. A reply that refers to those as though they were already in the
+    transcript leaves the person answering a message they never received. The
+    reply prompt must distinguish the two records and make the missing context
+    part of the reply.
+    """
+    prompts = social_deliberation_messages(
+        self_name="Clio",
+        message=Message(
+            person_id="owner", channel="web", conversation_key="web:owner",
+            text="Which one did you choose?",
+        ),
+        focus="choose a project name", now="2026-01-01T00:00:00+00:00", energy=0.8,
+        commitments="(none)", recent="owner: choose a project name",
+    )
+    system = " ".join(prompts[0]["content"].split())
+    user = " ".join(prompts[1]["content"].split())
+
+    assert "Read the whole Recent conversation context together with the current message" in system
+    assert "An explicit correction supersedes the earlier reading" in system
+    assert "ask a short, specific clarifying question" in system
+    assert "private records" in system
+    assert "autonomous decisions are likewise not shared" in system
+    assert "include the actual options, plan or result in the reply" in system
+    assert "briefly supply that context as new information" in user, (
+        "the rule is repeated after the message, where the reply is written"
+    )
+
+
+def test_recent_conversation_contains_only_messages_the_person_received() -> None:
+    """A held or suppressed outbound row is an attempt, not shared history."""
+
+    class _HistoryDb:
+        def __init__(self) -> None:
+            self.queries: list[tuple[str, tuple[Any, ...]]] = []
+
+        async def fetch(self, query: str, *args: Any) -> list[dict[str, Any]]:
+            self.queries.append((query, args))
+            return []
+
+    config = make_config(Path("/tmp/clio-test-shared-history"))
+    db = _HistoryDb()
+    social = SocialCognition(config=config, db=db)
+    message = _question("what did you decide?")
+
+    history = asyncio.run(social._recent_conversation(message))
+
+    assert history == ""
+    query, args = db.queries[0]
+    assert "COALESCE(delivery->>'status', 'sent') = 'sent'" in query
+    assert args[:2] == (message.conversation_key, message.id)
+
+
 # --------------------------------------------------------------------------
 # Finding the answer in an answer
 
@@ -2491,7 +2547,7 @@ def test_an_answer_written_after_its_own_thinking_is_still_the_answer() -> None:
          '{"action": "reply_now", "reply_texts": ["put {name} in the title"], "reason": "asked"}'),
     ):
         decision = _deliberation(
-            ScriptedGateway([response]), Path("/tmp/ethos-test-where-the-object-is"),
+            ScriptedGateway([response]), Path("/tmp/clio-test-where-the-object-is"),
         )
 
         assert decision.reply_texts, f"{label}: the answer was there and it was not read"
@@ -2518,7 +2574,7 @@ def test_an_answer_that_says_nothing_about_the_turn_is_not_a_silence_chosen() ->
     """
     decision = _deliberation(
         ScriptedGateway(['{"note": "still deciding"}', '{"draft": {"x": 1}}']),
-        Path("/tmp/ethos-test-answered-nothing"),
+        Path("/tmp/clio-test-answered-nothing"),
     )
 
     assert decision.action.value == "act_silently", "nothing goes out either way"
@@ -2538,7 +2594,7 @@ def test_the_answer_that_was_found_is_the_one_the_agent_wrote() -> None:
     """
     out = _RecordingOut()
     bus = _CollectingBus()
-    config = make_config(Path("/tmp/ethos-test-thinking-then-answering"))
+    config = make_config(Path("/tmp/clio-test-thinking-then-answering"))
     config.paths.ensure()
     message = _question("are you still there?")
     social = _QueueSocial(message)
@@ -2576,7 +2632,7 @@ def test_the_deliberation_bounds_thinking_so_the_answer_has_room() -> None:
     """
     gateway = ScriptedGateway([_THE_ANSWER])
     decision = asyncio.run(SocialCognition(
-        config=make_config(Path("/tmp/ethos-test-bounded-thinking")),
+        config=make_config(Path("/tmp/clio-test-bounded-thinking")),
         gateway=gateway,
     ).deliberate(_question()))
 
@@ -2601,7 +2657,7 @@ def test_an_answer_that_never_arrives_is_asked_for_again_with_more_room() -> Non
     """
     gateway = ScriptedGateway(["", _THE_ANSWER])
     decision = asyncio.run(SocialCognition(
-        config=make_config(Path("/tmp/ethos-test-asked-again")),
+        config=make_config(Path("/tmp/clio-test-asked-again")),
         gateway=gateway,
     ).deliberate(_question()))
 
@@ -2621,7 +2677,7 @@ def test_a_model_that_cannot_answer_at_all_is_not_asked_forever() -> None:
     """
     gateway = ScriptedGateway(["", "", "", ""])
     decision = asyncio.run(SocialCognition(
-        config=make_config(Path("/tmp/ethos-test-bounded-attempts")),
+        config=make_config(Path("/tmp/clio-test-bounded-attempts")),
         gateway=gateway,
     ).deliberate(_question()))
 
@@ -2651,7 +2707,7 @@ def test_a_provider_that_is_down_is_not_asked_twice_for_room() -> None:
 
     gateway = _Down()
     decision = asyncio.run(SocialCognition(
-        config=make_config(Path("/tmp/ethos-test-provider-down")),
+        config=make_config(Path("/tmp/clio-test-provider-down")),
         gateway=gateway,
     ).deliberate(_question()))
 
@@ -2694,7 +2750,7 @@ def test_an_answer_written_as_prose_is_the_reply_the_person_gets() -> None:
     """
     out = _RecordingOut()
     bus = _CollectingBus()
-    config = make_config(Path("/tmp/ethos-test-prose-answer"))
+    config = make_config(Path("/tmp/clio-test-prose-answer"))
     config.paths.ensure()
     message = _question("Here is what the coding agent has said. Give it a try, or counter it.")
     social = _QueueSocial(message)
@@ -2737,7 +2793,7 @@ def test_the_object_is_asked_for_again_before_prose_is_used() -> None:
     """
     gateway = ScriptedGateway([_PROSE_ANSWER, _THE_ANSWER])
     decision = asyncio.run(SocialCognition(
-        config=make_config(Path("/tmp/ethos-test-object-preferred")),
+        config=make_config(Path("/tmp/clio-test-object-preferred")),
         gateway=gateway,
     ).deliberate(_question()))
 
@@ -2757,7 +2813,7 @@ def test_the_second_ask_is_not_the_first_ask_again() -> None:
     """
     gateway = ScriptedGateway([_PROSE_ANSWER, _THE_ANSWER])
     asyncio.run(SocialCognition(
-        config=make_config(Path("/tmp/ethos-test-ask-again-differs")),
+        config=make_config(Path("/tmp/clio-test-ask-again-differs")),
         gateway=gateway,
     ).deliberate(_question()))
 
@@ -2813,7 +2869,7 @@ def test_a_cut_off_prose_answer_is_never_delivered_as_a_fragment() -> None:
              'The claim is sound: `edit: "allow"` already covers file cre'],
             finish_reasons=["length", "length"],
         ),
-        Path("/tmp/ethos-test-cut-off-prose"),
+        Path("/tmp/clio-test-cut-off-prose"),
     )
 
     assert decision.reply_texts == [], "half a sentence is not a reply"
@@ -2836,7 +2892,7 @@ def test_an_answer_of_one_object_is_not_read_as_prose() -> None:
     ):
         decision = _deliberation(
             ScriptedGateway([response, response]),
-            Path("/tmp/ethos-test-object-not-prose"),
+            Path("/tmp/clio-test-object-not-prose"),
         )
 
         assert decision.reply_texts == [], f"{label} must not be delivered as a reply"
@@ -2859,7 +2915,7 @@ No changes are needed -- the permission you're asking for is already in effect.
 
 ## What I found
 
-There is **no project-level config** in `/Users/somebody/Desktop/ethos-project`, and
+There is **no project-level config** in `/Users/somebody/Desktop/clio-project`, and
 the worktree root is the project dir itself, so nothing at project scope is
 restricting anything. The effective config comes from your global
 `~/.config/opencode/opencode.jsonc`:
@@ -2890,7 +2946,7 @@ def test_a_technical_message_is_not_consequential_because_of_a_dollar_sign() -> 
     counts when it is in front of a number, which is the only shape that means
     money.
     """
-    from ethos.social.deliberation import is_consequential_text
+    from clio.social.deliberation import is_consequential_text
 
     assert not is_consequential_text(_TECHNICAL_MESSAGE)
     for technical in (
@@ -2911,7 +2967,7 @@ def test_spending_is_still_consequential() -> None:
     loud rather than less frequent, and T3 is where consequential messages
     deliberate [P4].
     """
-    from ethos.social.deliberation import is_consequential_text
+    from clio.social.deliberation import is_consequential_text
 
     for real in (
         "pay the invoice",
@@ -2934,8 +2990,8 @@ def test_the_life_loop_and_the_deliberation_agree_on_the_tier() -> None:
     vocabularies, which is the arrangement where "the message is T3" and "the
     deliberation ran at T2" is a state the code permits.
     """
-    from ethos.engine.life import Life
-    from ethos.social.deliberation import is_consequential_text
+    from clio.engine.life import Life
+    from clio.social.deliberation import is_consequential_text
 
     judge = Life.__dict__["_message_is_consequential"]
     for text in (
@@ -2969,7 +3025,7 @@ def test_an_answer_keyed_wrongly_is_still_the_answer() -> None:
     ):
         decision = _deliberation(
             ScriptedGateway([response, response]),
-            Path("/tmp/ethos-test-wrong-keys"),
+            Path("/tmp/clio-test-wrong-keys"),
         )
 
         assert decision.reply_texts == [words], f"{label}: the words were there"
@@ -3004,7 +3060,7 @@ def test_an_object_that_says_nothing_to_the_person_is_still_not_a_reply() -> Non
     ):
         decision = _deliberation(
             ScriptedGateway([response, response]),
-            Path("/tmp/ethos-test-not-a-reply"),
+            Path("/tmp/clio-test-not-a-reply"),
         )
 
         assert decision.reply_texts == [], f"{label} must not be delivered as a reply"
@@ -3108,7 +3164,7 @@ def test_the_life_loop_hands_the_deliberation_the_real_catalog() -> None:
             return [{"name": "fs.write", "description": "", "input_schema": {}}]
 
     life = _life_over(_QueueSocial(_question()), _RecordingOut(), _CollectingBus(),
-                      make_config(Path("/tmp/ethos-test-tool-catalog")))
+                      make_config(Path("/tmp/clio-test-tool-catalog")))
     life.deps.toolhost = _Toolhost()
     assert life._tool_names() == [{"name": "fs.write", "description": "", "input_schema": {}}]
 
@@ -3126,7 +3182,7 @@ def test_a_stop_pressed_mid_cycle_ends_that_cycle_at_once(tmp_path: Path) -> Non
     person who pressed Stop watched a button that did nothing — which is not a
     slow agent, it is a kill switch wired only to the top of the loop.
     """
-    from ethos.core.control import ControlPlane
+    from clio.core.control import ControlPlane
 
     config = make_config(tmp_path / "home")
     config.paths.ensure()
@@ -3179,7 +3235,7 @@ def test_a_stop_pauses_the_agent_and_a_resume_starts_it_again(tmp_path: Path) ->
     Resume a button with nothing to resume. A stop parks now: the same process,
     still answering, waiting to be resumed.
     """
-    from ethos.core.control import ControlPlane
+    from clio.core.control import ControlPlane
 
     config = make_config(tmp_path / "home")
     config.paths.ensure()
@@ -3225,3 +3281,84 @@ def test_a_stop_pauses_the_agent_and_a_resume_starts_it_again(tmp_path: Path) ->
     assert state["cycles"] >= 3, \
         "the resume is the other half of the stop button: the agent is thinking again"
 
+
+
+def _bare_life(tmp: str) -> Life:
+    config = make_config(Path(tmp))
+    config.paths.ensure()
+    return Life(LifeDeps(
+        config=config, control=_Quiet(), bus=None, memory=_Quiet(),
+        self_model=_Quiet(), attention=None, motivation=None, rhythm=_Quiet(),
+        gateway=None, gsl=None, social=None, comms_out=None, toolhost=None,
+        audit=ListAudit(), continuity=_Quiet(), consolidation=None,
+        embedder=None, thread_id="self",
+    ))
+
+
+def test_a_new_commission_does_not_discard_the_suspended_goal() -> None:
+    """A commission taking the pass must not throw the suspended goal away.
+
+    2026-11-08: the CodeForge build was suspended for a status message, the
+    Helium review was commissioned, and `_settled_focus` cleared the one
+    suspended slot — the build stayed `in_progress` forever with no focus
+    and nothing to resume it. The stack keeps it owed the pass back.
+    """
+    life = _bare_life("/tmp/clio-test-suspended-stack")
+    prior = Focus(
+        intention_id=uuid4(), title="build the coding agent",
+        kind="commitment", why="work asked for in the message just answered",
+    )
+    life._push_suspended(prior)
+
+    new_id = uuid4()
+    settled = life.next_focus(
+        Decision(kind="social", tier="T2", social={"action": "reply_now"}),
+        Outcome(commission={"intention_id": str(new_id), "title": "review Helium"}),
+    )
+
+    assert settled is not None and settled.intention_id == new_id, \
+        "the new promise still takes the pass"
+    assert life._suspended_focus == prior, \
+        "but the suspended goal is preserved, not discarded"
+
+
+def test_suspended_goals_resume_in_lifo_order() -> None:
+    """Each suspended goal is owed the pass back, most recent first."""
+    life = _bare_life("/tmp/clio-test-suspended-lifo")
+    first = Focus(intention_id=uuid4(), title="first", kind="commitment", why="w")
+    second = Focus(intention_id=uuid4(), title="second", kind="commitment", why="w")
+    life._push_suspended(first)
+    life._push_suspended(second)
+    life._push_suspended(first)  # duplicate push is a no-op
+
+    assert life.next_focus(Decision(kind="none", tier="T0"), Outcome()) == second
+    assert life.next_focus(Decision(kind="none", tier="T0"), Outcome()) == first
+    assert life._suspended_focus is None
+
+
+def test_a_sequenced_commission_keeps_the_prior_goal_in_focus() -> None:
+    """'Once that is finished, review X' queues X behind the prior work.
+
+    The commission is recorded (and edged `depends_on` the prior goal at
+    commission time in `_act_social`); this turn returns the suspended
+    focus so the prior work resumes, and X is picked up by the commission
+    bypass once the prior work settles.
+    """
+    life = _bare_life("/tmp/clio-test-sequenced-commission")
+    prior = Focus(
+        intention_id=uuid4(), title="build the coding agent",
+        kind="commitment", why="work asked for in the message just answered",
+    )
+    life._push_suspended(prior)
+
+    new_id = uuid4()
+    settled = life.next_focus(
+        Decision(kind="social", tier="T2", social={"action": "reply_now"}),
+        Outcome(commission={
+            "intention_id": str(new_id), "title": "review Helium",
+            "sequenced": True,
+        }),
+    )
+
+    assert settled == prior, "the prior work keeps the pass until it settles"
+    assert life._suspended_focus is None, "and it is spent as the active focus"

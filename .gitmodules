@@ -4,3 +4,6 @@
 [submodule "Foundry"]
 	path = Foundry
 	url = https://github.com/AInohogosya/Foundry.git
+[submodule "AXIOM"]
+	path = AXIOM
+	url = https://github.com/AInohogosya/AXIOM.git

@@ -6,11 +6,11 @@ from pathlib import Path
 
 import pytest
 
-from ethos.guardian.classifier import classify_shell, classify_tool, extract_paths
-from ethos.guardian.gate import GatePath, GuardianGate, Verdict
-from ethos.guardian.journal import ActionJournal, DuplicateAction
-from ethos.guardian.trash import TrashStore
-from ethos.observability.audit import GENESIS_HASH, FileAuditSink, canonical_record, compute_hash
+from clio.guardian.classifier import classify_shell, classify_tool, extract_paths
+from clio.guardian.gate import GatePath, GuardianGate, Verdict
+from clio.guardian.journal import ActionJournal, DuplicateAction
+from clio.guardian.trash import TrashStore
+from clio.observability.audit import GENESIS_HASH, FileAuditSink, canonical_record, compute_hash
 from tests.conftest import FakeRegistry, FakeVerifier, ListAudit, NoopControl, NoopSnapshots
 
 
@@ -108,6 +108,38 @@ def test_classify_tool_fs_delete():
     assert effects.is_destructive()
 
 
+def test_echo_prose_is_not_read_as_a_delete_target():
+    """A sentence printed beside an `rm` is not one of its operands.
+
+    The Desktop writability probe of 2026-10-20 paired `rm -f "$probe"` with
+    `echo "VERDICT: FAIL - ~/Desktop does not exist"`. The slash in the echoed
+    sentence made it a path, and the gate tried to trash the sentence.
+    """
+    command = (
+        'set -u\n'
+        'if [ ! -d "$HOME/Desktop" ]; then '
+        'echo "VERDICT: FAIL - ~/Desktop does not exist"; exit 2; fi\n'
+        'probe="$HOME/Desktop/.clio-probe-$(date +%s)-$$"\n'
+        'echo "probe: $probe"\n'
+        'rm -f "$probe" || { echo "VERDICT: FAIL - cannot remove probe"; exit 5; }\n'
+        'echo "VERDICT: OK - ~/Desktop is writable"\n'
+    )
+    assert extract_paths(command) == []
+
+
+def test_a_variable_redirect_target_is_not_a_concrete_path():
+    """`> "$log"` is a destination the parser cannot know, not a file named `$log`."""
+    assert extract_paths(': > "$probe"') == []
+    assert extract_paths(': > "$probe" 2>&1') == []
+
+
+def test_a_quoted_path_with_spaces_is_still_an_operand():
+    """Skipping prose must not cost quoted paths, which is why the command is asked."""
+    assert extract_paths('rm -f "/tmp/a file with spaces.txt"') == [
+        "/tmp/a file with spaces.txt",
+    ]
+
+
 def test_classify_tool_http_money():
     effects = classify_tool("http.request", {"url": "https://api.example.com", "spend_usd": 3.5})
     assert effects.money_usd == 3.5
@@ -147,6 +179,10 @@ async def test_trash_retention_kinds(trash: TrashStore):
 
 @pytest.fixture()
 def gate(config, tmp_path: Path):
+    # The vetoing gate: these tests are about the refusals, which in field
+    # mode become audit entries, so the mode is pinned here and the field
+    # behaviour is covered by its own tests below.
+    config.permissions.guardian.mode = "normal"
     trash = TrashStore(tmp_path / "trash2")
     registry = FakeRegistry()
     audit = ListAudit()
@@ -183,6 +219,34 @@ async def test_gate_fast_path_moves_to_trash(gate: GuardianGate, tmp_path: Path)
     assert any("fast path" in s for s in audit_summaries)
 
 
+async def test_gate_allows_the_probe_that_used_to_fail(gate: GuardianGate):
+    """The exact command from 2026-10-20 must reach the shell, not the trash.
+
+    It removes a variable-named probe and echoes a sentence about `~/Desktop`;
+    neither is a concrete delete target, so the destructive fast path has
+    nothing to move and the command runs.
+    """
+    command = (
+        'probe="$HOME/Desktop/.clio-probe-$(date +%s)-$$"\n'
+        'echo "probe: $probe"\n'
+        'rm -f "$probe" || { echo "VERDICT: FAIL - cannot remove probe"; exit 5; }\n'
+        'echo "VERDICT: OK - ~/Desktop is writable"\n'
+    )
+    decision = await gate.review("shell.run", {"command": command}, reason="probe")
+    assert decision.verdict == Verdict.ALLOW
+    assert decision.path == GatePath.FAST
+
+
+async def test_gate_does_not_fail_rm_of_a_missing_path(gate: GuardianGate, tmp_path: Path):
+    """A delete of a name that is already gone is a no-op, not a TrashError."""
+    missing = tmp_path / "already-gone.txt"
+    decision = await gate.review(
+        "shell.run", {"command": f"rm -f {missing}"}, reason="clean stale build",
+    )
+    assert decision.verdict == Verdict.ALLOW
+    assert decision.path == GatePath.FAST
+
+
 async def test_gate_due_process_rejects_unsupported_reason(config, tmp_path: Path):
     """A refusal is recorded, not announced.
 
@@ -194,6 +258,7 @@ async def test_gate_due_process_rejects_unsupported_reason(config, tmp_path: Pat
     """
     victim = tmp_path / "commissioned.txt"
     victim.write_text("deliverable", encoding="utf-8")
+    config.permissions.guardian.mode = "normal"
     registry = FakeRegistry(protected={
         str(victim): {"uri": str(victim), "commissioned_by": "owner", "protection": "commissioned"},
     })
@@ -226,6 +291,7 @@ async def test_gate_due_process_moves_to_trash_without_announcing_it(config, tmp
     """
     victim = tmp_path / "commissioned3.txt"
     victim.write_text("deliverable", encoding="utf-8")
+    config.permissions.guardian.mode = "normal"
     registry = FakeRegistry(protected={
         str(victim): {"uri": str(victim), "commissioned_by": "owner", "protection": "commissioned"},
     })
@@ -247,6 +313,7 @@ async def test_gate_due_process_moves_to_trash_without_announcing_it(config, tmp
 async def test_gate_due_process_allows_supported_reason(config, tmp_path: Path):
     victim = tmp_path / "commissioned2.txt"
     victim.write_text("deliverable", encoding="utf-8")
+    config.permissions.guardian.mode = "normal"
     registry = FakeRegistry(protected={
         str(victim): {"uri": str(victim), "commissioned_by": "owner", "protection": "commissioned"},
     })
@@ -276,6 +343,7 @@ async def test_gate_blocks_hard_limit_commands(gate: GuardianGate):
 
 
 async def test_gate_money_cap_blocks(config, tmp_path: Path):
+    config.permissions.guardian.mode = "normal"
     gate = GuardianGate(
         config, registry=FakeRegistry(), trash=TrashStore(tmp_path / "t5"),
         snapshots=NoopSnapshots(), audit=ListAudit(),
@@ -396,6 +464,76 @@ async def test_preview_off_changes_nothing_about_an_ordinary_action(gate: Guardi
     assert decision.verdict == Verdict.ALLOW
 
 
+# Field mode: the guardian keeps its records and its reversibility work, and
+# drops its vetoes. Oversight (pause_actions, preview) is unaffected -- the
+# tests above already run against the field default and assert exactly that.
+
+
+def _field_gate(config, tmp_path: Path, **kwargs) -> GuardianGate:
+    config.permissions.guardian.mode = "field"
+    config.permissions.safety_level = 4
+    kwargs.setdefault("registry", FakeRegistry())
+    kwargs.setdefault("trash", TrashStore(tmp_path / "t-field"))
+    kwargs.setdefault("snapshots", NoopSnapshots())
+    kwargs.setdefault("audit", ListAudit())
+    kwargs.setdefault("verifier", FakeVerifier())
+    kwargs.setdefault("control", NoopControl())
+    return GuardianGate(config, **kwargs)
+
+
+async def test_field_mode_allows_the_hard_limit_command(config, tmp_path: Path):
+    """The pattern block becomes an audit entry, and the action proceeds."""
+    audit = ListAudit()
+    gate = _field_gate(config, tmp_path, audit=audit)
+    decision = await gate.review(
+        "shell.run", {"command": "rm -rf /"}, reason="reset everything",
+    )
+    assert decision.verdict == Verdict.ALLOW
+    assert any("field mode" in e["summary"] for e in audit.entries), \
+        "the hit is still on the record, with the pattern notes"
+
+
+async def test_field_mode_money_cap_is_audited_not_enforced(config, tmp_path: Path):
+    audit = ListAudit()
+    gate = _field_gate(config, tmp_path, audit=audit)
+    decision = await gate.review(
+        "http.request",
+        {"url": "https://broker.example.com", "spend_usd": 500.0},
+        reason="buy dip",
+    )
+    assert decision.verdict == Verdict.ALLOW
+    assert any("capital-at-risk" in e["summary"] for e in audit.entries)
+
+
+async def test_field_mode_due_process_skips_the_verifier_but_trashes(config, tmp_path: Path):
+    """No model call in the critical path; the artifact still does not die.
+
+    The point of field mode is that no second opinion can stop the work --
+    and the point of the transform is that the delete is still reversible.
+    Both are asserted: the verifier is never consulted, and the file lands
+    in trash with long retention and an undo reference.
+    """
+    victim = tmp_path / "commissioned-field.txt"
+    victim.write_text("deliverable", encoding="utf-8")
+    verifier = FakeVerifier(supported=False)
+    gate = _field_gate(
+        config, tmp_path,
+        registry=FakeRegistry(protected={
+            str(victim): {"uri": str(victim), "commissioned_by": "owner", "protection": "commissioned"},
+        }),
+        verifier=verifier,
+    )
+    decision = await gate.review(
+        "fs.delete", {"path": str(victim), "reason": "tidying up"},
+        reason="tidying up",
+    )
+    assert decision.verdict == Verdict.TRANSFORM
+    assert decision.path == GatePath.DUE_PROCESS
+    assert not victim.exists()
+    assert decision.undo_ref is not None
+    assert verifier.calls == [], "no model call sits in the delete path in field mode"
+
+
 def test_hash_chain_math():
     record = canonical_record(datetime.now(UTC), "self", "lifecycle", "woke up", {"k": 1})
     digest = compute_hash(GENESIS_HASH, record)
@@ -405,7 +543,7 @@ def test_hash_chain_math():
 
 async def test_file_audit_chain_verifies_and_detects_tampering(tmp_path: Path):
     sink = FileAuditSink(tmp_path / "audit.jsonl")
-    from ethos.observability.audit import AuditLog
+    from clio.observability.audit import AuditLog
 
     audit = AuditLog(sink)
     await audit.append(actor="self", category="test", summary="first", details={})

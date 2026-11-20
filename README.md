@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="thumbnail.png" alt="Clio Agent 3" width="880">
+  <img src="thumbnail.png" alt="Clio Agent 3.1" width="880">
 </p>
 
-<h1 align="center">Clio Agent 3</h1>
+
 
 <p align="center">
   <b>An agent that is there when you aren't.</b><br>
@@ -10,9 +10,9 @@
 </p>
 
 <p align="center">
-  <code>3.0.0-beta.3</code> · <code>released 2026-10-03 JST</code> · <code>Python ≥ 3.12</code> ·
+  <code>3.1.0</code> · <code>released 2026-10-03 JST</code> · <code>Python ≥ 3.12</code> ·
   <code>PostgreSQL 16 + pgvector</code> · <code>Linux / macOS / Windows</code> ·
-  <code>no license yet — all rights reserved</code>
+  <code>MIT licensed</code>
 </p>
 
 ---
@@ -69,14 +69,20 @@ otherwise have written for itself.
 > **Golden rule:** human-likeness and performance are both mandatory. Neither is sacrificed for
 > the other.
 
+## Comparison with other agents
+
+<p align="center">
+  <img src="agent_architecture_dark.png" alt="Comparison of Clio Agent 3.1 with other AI agents across 12 architectural axes" width="880">
+</p>
+
 ## Run it
 
 ```bash
 pip install -e .     # once
-ethos up             # every time
+clio up             # every time
 ```
 
-`ethos up` is the whole command. It brings up Postgres, applies migrations, seeds a self-model,
+`clio up` is the whole command. It brings up Postgres, applies migrations, seeds a self-model,
 installs and builds the interface, starts seven supervised processes, waits until the agent has
 actually answered for itself, and opens the page. Idempotent — run it on a live agent and it says
 so and leaves it alone.
@@ -85,10 +91,10 @@ Then the agent keeps running in the background and survives the terminal that st
 the tab, close the laptop, come back tomorrow morning: the thinking did not stop, and it will
 have something to tell you.
 
-`ethos` works from any directory: it finds the checkout, the configuration and the database from
+`clio` works from any directory: it finds the checkout, the configuration and the database from
 the installed package rather than from where you happen to be standing. `./start.sh` still works
 and does the same thing, but it is **deprecated** — it creates the virtualenv (which needs `uv`,
-and so cannot be done from inside an installed package) and then runs `ethos up`.
+and so cannot be done from inside an installed package) and then runs `clio up`.
 
 **Alpha software**, and it runs on your machine, on your accounts, with your keys. Read
 [Safety model](#safety-model) before pointing it at anything you care about — and read
@@ -131,7 +137,7 @@ Two things about the scope are worth stating plainly up front:
 | | |
 |---|---|
 | Python | 3.12 or newer (`pyproject.toml` sets `requires-python = ">=3.12"`) |
-| PostgreSQL | 16 with the `pgvector` and `pg_trgm` extensions — [installed for you](#postgres-brought-up-not-assumed), or point `ETHOS_DSN` at your own |
+| PostgreSQL | 16 with the `pgvector` and `pg_trgm` extensions — [installed for you](#postgres-brought-up-not-assumed), or point `CLIO_DSN` at your own |
 | Node.js | 20 or newer — **only** for the interface bridge and `interface/`. The agent runs without it. |
 | Platform | Linux, macOS and Windows. `scripts/ensure_postgres.sh` installs PostgreSQL from Homebrew on macOS and from `apt`/`dnf`/`pacman` on Linux, so the no-Docker path is no longer macOS-only; Docker is the documented path on either. |
 
@@ -140,29 +146,30 @@ Two dependencies download more than a wheel:
 - `playwright` needs `playwright install chromium` (and its system libraries) before the browser
   tools do anything.
 - `fastembed` fetches an embedding model on first use. The default is `BAAI/bge-large-en-v1.5`
-  (`config/ethos.yaml`), which is roughly 1.3 GB. Point `memory.embedding.model` at something
+  (`config/clio.yaml`), which is roughly 1.3 GB. Point `memory.embedding.model` at something
   smaller if that matters to you.
 
-`ethos up` installs nothing itself — it expects the package to be installed already, which is what
+`clio up` installs nothing itself — it expects the package to be installed already, which is what
 [Installation](#installation) below does in one command. In practice the only thing left to
 install by hand is PostgreSQL, and even that has a fallback.
 
 ## Installation
 
 ```bash
-git clone https://github.com/AInohogosya/Ethos.git
-cd Ethos
+git clone https://github.com/AInohogosya/Clio-Agent.git
+cd Clio-Agent
 pip install -e .          # or: python3.12 -m venv .venv && .venv/bin/pip install -e .
-ethos up
+clio up
 ```
 
 That is the whole installation. It needs Python 3.12+ on `PATH`; `uv` is convenient but not
 required, and the two commands above are the ones the rest of this README assumes. Everything
-after that — Postgres, migrations, the interface, the agent — is `ethos up`'s job.
+after that — Postgres, migrations, the interface, the agent — is `clio up`'s job.
 
 Settings go in the environment or in a `.env` file; `.env.example` lists every variable there
-is, and `ethos` reads `./.env`, the checkout's `.env`, or `$ETHOS_ENV_FILE` on any invocation. A
-value you export wins over the file, so `ETHOS_DSN=… ethos up` does what it says.
+is, and `clio` reads `$CLIO_ENV_FILE` when it names one, else `./.env` in the current directory,
+else the checkout's `.env`, on any invocation. A
+value you export wins over the file, so `CLIO_DSN=… clio up` does what it says.
 
 ## Quickstart
 
@@ -179,13 +186,13 @@ That is the whole setup. It needs Node, and it does the rest:
    it, `python3 -m venv` when you do not;
 3. ends the session already running, if there is one — the agent's supervisor, then whatever is
    holding `8720` — so that what follows is a new session rather than an old one reported as new;
-4. runs `ethos up` — Postgres, migrations, seeds, supervisor, wait for a sign of life;
+4. runs `clio up` — Postgres, migrations, seeds, supervisor, wait for a sign of life;
 5. checks that the page is really being served, and serves it in this terminal if nobody else is.
 
 Then it prints the URL and exits. The agent keeps running in the background, the way it is supposed
 to, so the page keeps answering after you close the terminal.
 
-You do not need an activated virtualenv, and `ethos` does not need to be on your `PATH` — this
+You do not need an activated virtualenv, and `clio` does not need to be on your `PATH` — this
 command calls the venv's interpreter by absolute path. That is on purpose: the people who need a
 one-command start-up most are the ones whose shell has neither.
 
@@ -213,55 +220,55 @@ page works fine without it.
 `npm start` is a wrapper, and each thing it does is a command you can run yourself:
 
 ```bash
-ethos up              # the default: prepare, start, wait, open
-ethos status          # is the agent running, and what is it saying
-ethos stop            # stop the agent and everything it supervises
-ethos logs            # follow the supervisor's log and each process's own
-ethos doctor          # what is configured, what is missing, what is unreachable
-ethos up --no-open    # do not launch a browser when the agent is up
-ethos up --wait 300   # wait up to 300s for the agent (default 180, or $ETHOS_AGENT_WAIT_S)
-ethos --help          # every command and flag
-ethos --version
+clio up              # the default: prepare, start, wait, open
+clio status          # is the agent running, and what is it saying
+clio stop            # stop the agent and everything it supervises
+clio logs            # follow the supervisor's log and each process's own
+clio doctor          # what is configured, what is missing, what is unreachable
+clio up --no-open    # do not launch a browser when the agent is up
+clio up --wait 300   # wait up to 300s for the agent (default 180, or $CLIO_AGENT_WAIT_S)
+clio --help          # every command and flag
+clio --version
 ```
 
-`ethos up` brings up Postgres, applies migrations, seeds the self-model, installs and builds the
+`clio up` brings up Postgres, applies migrations, seeds the self-model, installs and builds the
 interface, starts the agent under the supervisor, waits until the agent has actually answered for
 itself, and then opens the page. It is idempotent: run it again on a running agent and it says so
 and leaves it alone. `npm start` ends a running agent first, so the one it starts is a new one.
 
-`ethos up` exits 0 when the agent is up, 1 when it is not, and 130 on Ctrl-C — in which case the
-agent it started is still running, because it is started in its own session on purpose. `ethos
+`clio up` exits 0 when the agent is up, 1 when it is not, and 130 on Ctrl-C — in which case the
+agent it started is still running, because it is started in its own session on purpose. `clio
 status` exits non-zero when the agent is not there, which is what a launcher and a script want.
 
 The agent runs in the background and survives the terminal that started it, so the page keeps
 answering when that terminal is closed.
 
-> **`ethos` itself has to be on your PATH.** In a virtualenv it is only there once that virtualenv is
-> active — `source .venv/bin/activate`, or call `.venv/bin/ethos`, or `make up`, which uses the
-> checkout's own interpreter and needs neither. A shell where `ethos` is not found has not got a
+> **`clio` itself has to be on your PATH.** In a virtualenv it is only there once that virtualenv is
+> active — `source .venv/bin/activate`, or call `.venv/bin/clio`, or `make up`, which uses the
+> checkout's own interpreter and needs neither. A shell where `clio` is not found has not got a
 > broken install; it has got a command that was never on the PATH. This is why `npm start` and `make`
 > exist: neither needs it.
 
 > **Deprecated:** `./start.sh` still does all of this, and still creates the virtualenv with `uv`
-> for you, but it is a shim that runs `ethos up` and prints a notice saying so. Use `npm start`,
+> for you, but it is a shim that runs `clio up` and prints a notice saying so. Use `npm start`,
 > which does this and the interface.
 
 ### Running it yourself
 
 ```bash
-ethos supervisor                  # the full process model, in the foreground
-ethos core                        # everything embedded in one process (dev)
-ethos core --listen-channels      # …and holding the channel doors too
-ethos status                      # liveness check
-ethos doctor                      # what is configured, what is missing
-ethos stop                        # ask the supervisor to end
-ethos version
-ethos db upgrade                  # apply migrations
-ethos db seed                     # seed the self-model
+clio supervisor                  # the full process model, in the foreground
+clio core                        # everything embedded in one process (dev)
+clio core --listen-channels      # …and holding the channel doors too
+clio status                      # liveness check
+clio doctor                      # what is configured, what is missing
+clio stop                        # ask the supervisor to end
+clio version
+clio db upgrade                  # apply migrations
+clio db seed                     # seed the self-model
 node web/server/index.mjs         # the bridge alone, with no build step in front of it
 ```
 
-`python -m ethos …` is the same command and always works, including before `pip install -e .`
+`python -m clio …` is the same command and always works, including before `pip install -e .`
 from inside the checkout — the console script and the module form are one entry point.
 
 `make` wraps the common ones: `make up`, `make run`, `make run-dev`, `make status`, `make stop`,
@@ -274,14 +281,14 @@ is `up`.
 
 ### What `status` actually decides
 
-`ethos status` answers one question — *is the agent there* — and it decides from the agent's own
+`clio status` answers one question — *is the agent there* — and it decides from the agent's own
 sign of life rather than from a pid, a port, or a file left behind by the last run. A machine with
 nothing running on it looks completely healthy from every other angle.
 
 The primary signal is the timestamp of the last `presence.update` row in the agent's own `events`
 table: if the agent has not published a sign of life in **15 minutes**
-(`ethos/core/status.py`, `AGENT_ABSENT_S`), it is reported absent. The agent's own recorded stop
-in `$ETHOS_HOME/data/continuity.json` also counts, and counts against it. The interface applies the
+(`clio/core/status.py`, `AGENT_ABSENT_S`), it is reported absent. The agent's own recorded stop
+in `$CLIO_HOME/data/continuity.json` also counts, and counts against it. The interface applies the
 same 15-minute window before it tells somebody the agent is not running, so this command and the
 browser cannot disagree about the same machine at the same moment.
 
@@ -291,14 +298,14 @@ failing.
 
 ### Postgres: brought up, not assumed
 
-Postgres is the one hard dependency, and `ethos up` will set it up if it is missing — you do not
+Postgres is the one hard dependency, and `clio up` will set it up if it is missing — you do not
 have to install anything first. `scripts/ensure_postgres.sh` is idempotent and tries, in order:
 
-1. **an existing database** at `$ETHOS_DSN` — if one is already there, it is left alone;
+1. **an existing database** at `$CLIO_DSN` — if one is already there, it is left alone;
 2. **Docker** — `docker compose up -d db` (`pgvector/pgvector:pg16`), when the daemon runs;
 3. **a local PostgreSQL 16** — installed from Homebrew on macOS or from the distro's package manager
    (`apt-get`, `dnf`, `pacman`) on Linux if needed, with pgvector built against it, a fresh cluster in
-   `data/pgdata`, the `ethos` role and database, and the `vector` and `pg_trgm` extensions. It listens
+   `data/pgdata`, the `clio` role and database, and the `vector` and `pg_trgm` extensions. It listens
    on `127.0.0.1:5433` only.
 
 The first run of that path installs the server packages and compiles pgvector once, which takes a few
@@ -311,15 +318,15 @@ scripts/ensure_postgres.sh stop       # stop the local cluster
 scripts/ensure_postgres.sh up         # start it again
 ```
 
-`ETHOS_PG_MAJOR` (default 16), `ETHOS_PGVECTOR_VERSION` (default 0.8.6) and `ETHOS_PGDATA`
-(default `data/pgdata`) tune it. `ETHOS_PG_READY_TIMEOUT` bounds how long it waits for the cluster.
+`CLIO_PG_MAJOR` (default 16), `CLIO_PGVECTOR_VERSION` (default 0.8.6) and `CLIO_PGDATA`
+(default `data/pgdata`) tune it. `CLIO_PG_READY_TIMEOUT` bounds how long it waits for the cluster.
 
 The cluster is gitignored local state. `make clean` deliberately leaves `data/pgdata` alone because
 it holds the agent's memory; to throw it away, `make db-down && rm -rf data/pgdata`.
 
 ## The interface
 
-The interface — **Clio Agent 3** — is a browser page and a terminal client. It is not a dashboard
+The interface — **Clio Agent 3.1** — is a browser page and a terminal client. It is not a dashboard
 bolted onto a chat box: the agent's state and the conversation are one screen, because an agent that
 thinks when nobody is talking has to be watchable while it does.
 
@@ -335,9 +342,9 @@ phone agent --json                                                 # or from a s
 ```
 
 `make agent`, `make tui`, `make interface-build` and `make interface-dev` are the same things from
-the Makefile. Override the port with `ETHOS_WEB_PORT`, or with `channels.web.http_port` in
-`$ETHOS_HOME/channels.yaml` — and to run a second interface beside a running one rather than
-against it, `ETHOS_WEB_PORT=8721 npm start`.
+the Makefile. Override the port with `CLIO_WEB_PORT`, or with `channels.web.http_port` in
+`$CLIO_HOME/channels.yaml` — and to run a second interface beside a running one rather than
+against it, `CLIO_WEB_PORT=8721 npm start`.
 
 If `interface/` cannot be installed or built, everything else still works: the agent runs and the
 bridge answers its whole API. The page itself is then a 503 that says so, rather than a 404 that
@@ -355,7 +362,7 @@ browser, a terminal, and a Telegram message arrive at the life loop by one road 
 attention model.
 
 **With no agent running, the page is showing you the last run.** The bridge reads the agent's
-tables, so a transcript and a presence it displays may be hours or days old. `ethos status` is
+tables, so a transcript and a presence it displays may be hours or days old. `clio status` is
 what answers "is it there".
 
 What the interface shows: what the agent is doing (presence and its focus), what it is thinking,
@@ -490,7 +497,7 @@ It raised in the worst possible place. Nothing caught it on the way out, so it u
 life cycle died for that turn. The intention kept the focus it crashed on, so the next cycle re-ran
 the identical failing step, and the one after that. The agent produced neither work nor words for as
 long as the fault lasted — which from the outside is an agent that cannot do the thing it promised,
-and on this deployment it was the live failure in `ethos-core.log` minutes before any of this was
+and on this deployment it was the live failure in `clio-core.log` minutes before any of this was
 looked at.
 
 Two fixes, because one is not enough. The classifier skips a descriptor, which is not a path, and
@@ -567,6 +574,51 @@ anonymous queued string — and the longest-running entry in the system was exac
 not go out. Blocked for the `awaiting_reply_h` after the agent's own "on it", and blocked again on
 every subsequent flush, until the person happened to write back.
 
+### Compression that knows which half it is allowed to lose
+
+The working context (`clio/memory/context.py`) is a buffer of turns and a thread of lines the agent
+writes about them. Its compression used to be one motion: the oldest `narrate_every` turns were
+replaced by a single line about the whole batch, the turns were dropped, and when the thread itself
+was full the oldest lines went to retrieval. A conversation was therefore one paraphrase after a
+dozen turns and off the thread a dozen lines later — which is the mechanism behind "it forgot
+everything it was not made into a task". Nothing that arrived as words rather than as an intention
+outlived the hour.
+
+The overhaul separates the two decisions a roll makes:
+
+- **What the narrator reads** is unchanged: the oldest stretch nobody has written a line about yet,
+  because a line written from a partial view is a line about nothing.
+- **What the buffer loses** is now protective. A turn at or above `memory.context.durable_salience`
+  (0.7 — a person speaking, a failure, a decision) is kept verbatim while the routine turns around it
+  are consumed, until the durable buffer reaches its own cap (`durable_max_turns`, 24) or the whole
+  buffer overflows. A `narrated` marker on each turn means a durable turn can be covered by a line
+  and still be kept, without the next roll writing the same line twice.
+
+And the narrator is asked for more than a line. Each roll also extracts what must outlive the turns —
+what somebody said, a promise, a question, a decision and why, a fact, a name, a deadline — as
+**anchors**, which render on the thread under *Must not forget*, ahead of the narrative and ranked by
+salience. An anchor taken from a conversation carries conversational weight; duplicates are absorbed;
+the list is capped (`anchor_max`, 16); and an anchor that leaves the cap is written to durable memory
+as an episode at importance ≥ 0.8 with a 30-day half-life, so surviving the thread is no longer the
+last chance the content gets. Anchors persist through restarts with the rest of the thread.
+
+### The past, for both sides of the conversation
+
+**A person scrolls back through the interface.** The timeline offers *Load older messages* above the
+transcript. It pages backwards through the `messages` table — the bridge's `GET /api/messages` takes
+a `before` instant and returns the rows older than it, narrowed by `person` and `channel`, searched
+by `q` — drawn by the same conversation key the live rows use, deduplicated against them, oldest
+first. The snapshot's last hundred rows are the live conversation; this is the history.
+
+**The agent reads the same history through a tool.** `history.browse` takes `hours_back` — how far
+back to read, default 24 hours, a year at most — plus optional `person_id`, `channel`, `query` and
+`limit`, and returns what was said, oldest first, delivered rows only (the same rule the agent's own
+conversation block applies: a row the outbound path recorded and nobody received is not something
+that was said). It is a read-only tool, classified as such, and its catalog line says what it is
+for: when the agent is not certain it still remembers what was said, it asks the store, and the
+store has everything. The two halves meet at the same table, so what the person can scroll back
+through is exactly what the agent can read — no more, no less.
+
 ### It said it had not done things it had done, and it did not come and say
 
 Two complaints, one cause: **nothing durable recorded that commissioned work had reached a stage
@@ -631,7 +683,7 @@ nothing on it saying the people do not know each other. They generally do not. E
 agent alone, on their own channel, with no idea the others exist, and an agent that has talked to
 all of them in one sitting is the only party that knows the full list.
 
-So the block ends with a rule of its own (`cross_talk_note` in `ethos/prompts/identity.py`, rendered
+So the block ends with a rule of its own (`cross_talk_note` in `clio/prompts/identity.py`, rendered
 by `render_conversations`), and the social deliberation is given the same one — that deliberation is
 the prompt whose output is the words a person actually reads, and it is shown a single message with
 no transcript attached, which is the shape most likely to produce a confident aside about somebody
@@ -669,7 +721,7 @@ reading the transcript — ship enabled, because they cannot reach anyone who is
 Telegram, WhatsApp, Slack, Discord, email, LINE, Teams, Google Chat, and the shared webhook receiver
 all ship `enabled: false`.
 Every allowlist is empty by default, and an empty allowlist admits nobody. Edit
-`config/channels.yaml`, or use **Settings → Messaging** in the interface. `ethos doctor`
+`config/channels.yaml`, or use **Settings → Messaging** in the interface. `clio doctor`
 reports the result of that decision rather than leaving it to be discovered — one line per door
 saying whether it is open and what it is still missing (`telegram: on, but missing telegram.token`).
 
@@ -713,7 +765,7 @@ Two things it does **not** do, both deliberate:
   attention scorer only in the sense that it is not an untrusted percept, and the daily interruption
   budgets still apply per person.
 
-`ethos doctor` says `telegram: on, admitting anyone who writes to it` for a door set this way, rather
+`clio doctor` says `telegram: on, admitting anyone who writes to it` for a door set this way, rather
 than counting an empty list and telling you the bot will answer nobody.
 
 ### Who a message says it is from
@@ -839,7 +891,7 @@ address it reaches you at. On the doors that admit by a list there is also **Ans
 with the consequence spelled out underneath it, because it is the one box on that screen that turns a
 credential into a published endpoint.
 
-A save writes two files in the agent's own home (`$ETHOS_HOME`, default `~/.ethos`):
+A save writes two files in the agent's own home (`$CLIO_HOME`, default `~/.ethos`):
 `channels.yaml` for the door, and `people.yaml` when an address is supplied. Both are merged over
 `config/*.yaml` key by key, so opening one door says nothing about the other five, and no secret is
 written into a directory that is meant to be committed. Both files are `0600` from the moment they
@@ -850,15 +902,15 @@ on file, which variable it may instead live in, and a four-character hint — ne
 
 That arrangement exists because of what was missing. A credential used to exist only as the *name*
 of an environment variable, resolved by `os.environ.get` in each adapter. Nothing could be written,
-so nothing could be read back — a person who had run `ethos up` had no way at all to hand the
+so nothing could be read back — a person who had run `clio up` had no way at all to hand the
 agent a token, on any surface, except by exporting one in a shell it did not start.
 
-The environment still wins, deliberately: `ethos-comms` and the interface bridge are separate
+The environment still wins, deliberately: `clio-comms` and the interface bridge are separate
 processes, and a key in the environment of one is the only kind that can be rotated without
 rewriting a file. The screen reports which of the two the agent will actually read.
 
 Two things about a save are worth knowing before pressing it. A saved door needs no restart:
-`ethos-comms` follows `config/channels.yaml` and the home copy beside it, so a token pasted into a
+`clio-comms` follows `config/channels.yaml` and the home copy beside it, so a token pasted into a
 screen is a token it is holding a poller for within a couple of seconds — the save says so rather
 than leaving a bot that looks configured and receives nothing. And enabling WhatsApp or Slack turns
 the shared receiver on in the same write: both have no poller at all, so with no listener there is
@@ -866,15 +918,15 @@ nowhere for a POST to land and the door would be open, complete, and deaf.
 
 ### One process hears, another speaks
 
-Under the supervisor, `ethos-comms` holds every door and `ethos-core` only answers on them. The
-single-process development run has no `ethos-comms` beside it, so it is told to hold them too:
+Under the supervisor, `clio-comms` holds every door and `clio-core` only answers on them. The
+single-process development run has no `clio-comms` beside it, so it is told to hold them too:
 
 ```bash
-make run-dev          # or: ethos core --listen-channels
+make run-dev          # or: clio core --listen-channels
 ```
 
 The flag is an opt-in for exactly that reason. Left to itself, a core that opened the doors while
-`ethos-comms` already had them would put a second long-poll on one Telegram bot, which Telegram
+`clio-comms` already had them would put a second long-poll on one Telegram bot, which Telegram
 answers with a conflict for as long as the first is alive — a channel that looks configured and
 receives nothing. The supervisor starts the core without the flag, and that process is the only one
 that ever listens.
@@ -886,12 +938,12 @@ It long-polls, so it needs no public URL, no tunnel, and no certificate.
 ```bash
 export TELEGRAM_BOT_TOKEN=...            # from @BotFather
 # config/channels.yaml: telegram.enabled: true
-ethos comms
+clio comms
 ```
 
 Or, with nothing exported and no file edited: **Settings → Messaging → Telegram**, put the token in,
 and put the chat id the bot's `/id` reports into both *Who this door admits* and *Your address on
-this door*. `ethos-comms` is already following those files, so the door is open a few seconds after
+this door*. `clio-comms` is already following those files, so the door is open a few seconds after
 the save — no restart.
 
 Message the bot. It answers `/id` with your chat id whatever else is configured — put that id in
@@ -917,7 +969,7 @@ export WHATSAPP_PHONE_NUMBER_ID=... WHATSAPP_ACCESS_TOKEN=...
 export WHATSAPP_APP_SECRET=...  WHATSAPP_VERIFY_TOKEN=$(openssl rand -hex 16)
 
 # config/channels.yaml: whatsapp.enabled: true, webhook.enabled: true
-ethos comms
+clio comms
 cloudflared tunnel --url http://127.0.0.1:8730    # then point Meta at <url>/hooks/whatsapp
 ```
 
@@ -934,7 +986,7 @@ scope is a bot that is connected and silent.
 export SLACK_BOT_TOKEN=xoxb-…  SLACK_SIGNING_SECRET=…   # the app-level secret, not the bot token
 
 # config/channels.yaml: slack.enabled: true, webhook.enabled: true
-ethos comms
+clio comms
 cloudflared tunnel --url http://127.0.0.1:8730    # then point the app at <url>/hooks/slack
 ```
 
@@ -958,7 +1010,7 @@ poller — exactly one process may open it.
 ```bash
 export DISCORD_BOT_TOKEN=…              # from the developer portal
 # config/channels.yaml: discord.enabled: true
-ethos comms
+clio comms
 ```
 
 Put user ids (`U…`) or channel ids (`C…`/`D…`) in `allowed_ids`. The `intents` value matters and is
@@ -977,7 +1029,7 @@ is one more *path* on the same port.
 export LINE_CHANNEL_ACCESS_TOKEN=… LINE_CHANNEL_SECRET=…   # both from the Messaging API console
 
 # config/channels.yaml: line.enabled: true, webhook.enabled: true
-ethos comms
+clio comms
 cloudflared tunnel --url http://127.0.0.1:8730    # then point the channel at <url>/hooks/line
 ```
 
@@ -1010,7 +1062,7 @@ follow from that.
 export TEAMS_APP_ID=… TEAMS_APP_PASSWORD=…   # from the bot's registration
 
 # config/channels.yaml: teams.enabled: true, webhook.enabled: true
-ethos comms
+clio comms
 cloudflared tunnel --url http://127.0.0.1:8730    # then point the bot's messaging endpoint at <url>/hooks/teams
 ```
 
@@ -1047,7 +1099,7 @@ export GOOGLE_CHAT_CLIENT_EMAIL=… GOOGLE_CHAT_PRIVATE_KEY=$'\n-----BEGIN PRIVA
 export GOOGLE_CHAT_AUDIENCE=…   # the Chat app's "authentication audience"
 
 # config/channels.yaml: googlechat.enabled: true, webhook.enabled: true
-ethos comms
+clio comms
 cloudflared tunnel --url http://127.0.0.1:8730    # then point the app's HTTP endpoint at <url>/hooks/googlechat
 ```
 
@@ -1076,22 +1128,22 @@ not merely "signed by Google", which any project's tokens are.
 
 ### The webhook receiver
 
-`ethos/comms/webhook.py` binds loopback only and checks the signature of every body over the raw
+`clio/comms/webhook.py` binds loopback only and checks the signature of every body over the raw
 bytes. Reaching it from outside the machine is the tunnel's job, which is a much smaller thing to
 get right than terminating TLS. A route with no secret answers `401`, so a half-configured channel is
 a closed door rather than a published endpoint.
 
 On a real host the tunnel becomes a reverse proxy: keep the receiver on loopback, put Caddy or nginx
 in front of it to terminate TLS, and forward to `channels.webhook.port`. Under systemd,
-`ethos-comms.service` reads credentials from `~/.config/ethos/channel-keys.env`, which is where
+`clio-comms.service` reads credentials from `~/.config/clio/channel-keys.env`, which is where
 `TELEGRAM_BOT_TOKEN`, the four `WHATSAPP_*` variables, the two `SLACK_*` variables and the
 `GOOGLE_CHAT_*` variables belong — the Google private key is the one credential that *must* live
 there, because it will not fit in the settings screen.
-`ethos-gateway.service` reads `~/.config/ethos/api-keys.env` for the same reason.
+`clio-gateway.service` reads `~/.config/clio/api-keys.env` for the same reason.
 
 ## How it runs
 
-`python -m ethos supervisor` starts and keeps alive this set of children. A crashed child is
+`python -m clio supervisor` starts and keeps alive this set of children. A crashed child is
 restarted with exponential backoff (6s, 12s, 24s, 48s, 48s), and a child that will not stay up is
 retried up to five times and then given up on by name — a child that cannot be spawned at all counts
 as a failed child rather than ending the supervision. On `SIGTERM` children are terminated in
@@ -1099,25 +1151,25 @@ reverse order under a single 10-second deadline, then killed.
 
 | Child | Command | Role |
 |---|---|---|
-| `ethos-gateway` | `python -m ethos gateway` | Model routing, normalization, budgets, secrets |
-| `ethos-toolhost` | `python -m ethos toolhost` | Tool execution under the guardian gate |
-| `ethos-comms` | `python -m ethos comms` | Channel adapters (CLI socket, Web WS, Telegram, WhatsApp, Slack, Discord, email, LINE, Teams, Google Chat) and the signed webhook listener |
-| `ethos-workers-1`, `ethos-workers-2` | `python -m ethos worker` | Delegated Threads — the same framework, each in an isolated git worktree |
-| `ethos-core` | `python -m ethos core` | Self thread, life loop, attention, drives, rhythm, memory, guardian gate |
-| `ethos-web` | `node web/server/index.mjs` | Interface bridge: serves the interface, exposes the agent's state over HTTP/WS |
+| `clio-gateway` | `python -m clio gateway` | Model routing, normalization, budgets, secrets |
+| `clio-toolhost` | `python -m clio toolhost` | Tool execution under the guardian gate |
+| `clio-comms` | `python -m clio comms` | Channel adapters (CLI socket, Web WS, Telegram, WhatsApp, Slack, Discord, email, LINE, Teams, Google Chat) and the signed webhook listener |
+| `clio-workers-1`, `clio-workers-2` | `python -m clio worker` | Delegated Threads — the same framework, each in an isolated git worktree |
+| `clio-core` | `python -m clio core` | Self thread, life loop, attention, drives, rhythm, memory, guardian gate |
+| `clio-web` | `node web/server/index.mjs` | Interface bridge: serves the interface, exposes the agent's state over HTTP/WS |
 
 Six process kinds, seven children — the worker count comes from `workers.count` in
-`config/ethos.yaml` (default 2). `ethos-web` is optional: if `web/node_modules` is missing or `node`
+`config/clio.yaml` (default 2). `clio-web` is optional: if `web/node_modules` is missing or `node`
 is not on the path, the supervisor logs `supervisor.web_skipped` and runs without it.
 
 Two more things are not supervisor children:
 
 | | |
 |---|---|
-| **Postgres** | `scripts/ensure_postgres.sh up`, run directly by `ethos up`. One durable store and the transactional event bus. |
-| **OOB guardian** | `deploy/oob/oob_guardian.py`, run on the *hypervisor host*, outside the agent's machine. Spend watchdog, audit anchoring, kill switch. It is not started by `ethos up`. |
+| **Postgres** | `scripts/ensure_postgres.sh up`, run directly by `clio up`. One durable store and the transactional event bus. |
+| **OOB guardian** | `deploy/oob/oob_guardian.py`, run on the *hypervisor host*, outside the agent's machine. Spend watchdog, audit anchoring, kill switch. It is not started by `clio up`. |
 
-`ethos stop` asks the supervisor to end, which is how the agent's own record of having stopped
+`clio stop` asks the supervisor to end, which is how the agent's own record of having stopped
 gets written. Killing the supervisor with `kill -9` skips that path: its 10-second grace period is
 shorter than a life cycle, so a killed agent never reaches the code that says it ended.
 
@@ -1148,22 +1200,22 @@ why **Discover** works at all.
 ## Repository layout
 
 ```
-config/            # ethos, rhythm, social, memory, gsl, models, pricing, quirks,
+config/            # clio, rhythm, social, memory, gsl, models, pricing, quirks,
                    #   permissions, channels, people
 .env.example       # every setting read from the environment; copy to .env and edit
-ethos/             # the agent: core, engine, gsl, memory, threads, social, guardian,
+clio/             # the agent: core, engine, gsl, memory, threads, social, guardian,
                    #   toolhost, gateway, comms, bus, schemas, observability, prompts
-ethos/__main__.py  # the CLI: `ethos up`, `status`, `stop`, `logs`, `doctor`, and the
+clio/__main__.py  # the CLI: `clio up`, `status`, `stop`, `logs`, `doctor`, and the
                    #   per-process entry points the supervisor spawns
-ethos/core/bootstrap.py  # `ethos up`: the one-command start-up, once, in Python
+clio/core/bootstrap.py  # `clio up`: the one-command start-up, once, in Python
 migrations/        # Alembic: 0001 creates all 20 tables + HNSW/GIN indexes,
                    #   0002 adds the two sender-name columns on messages
 scripts/           # ensure_postgres.sh: brings the database up (Docker, or a local cluster);
                    #   serve.mjs: `npm start` — build the interface, then run the bridge
 package.json       # the root manifest, so `npm start` is one command from here
-start.sh           # deprecated shim: creates the venv with uv, then runs `ethos up`
+start.sh           # deprecated shim: creates the venv with uv, then runs `clio up`
 web/server/        # the interface bridge (Node): serves interface/, translates HTTP/WS to the bus
-interface/         # Clio Agent 3, the interface: packages/core, packages/web, packages/cli
+interface/         # Clio Agent 3.1, the interface: packages/core, packages/web, packages/cli
 tests/             # unit (pure math/logic), integration (live DB), scenarios (end-to-end)
 deploy/            # systemd units + hypervisor-host oob-guardian
 data/              # gitignored local state of the checkout: the Postgres cluster and its
@@ -1174,7 +1226,7 @@ data/              # gitignored local state of the checkout: the Postgres cluste
 `interface/` is a directory of this repository. `npm start` builds it on demand, so it does not have
 to be installed or built by hand before anything works.
 
-### Clio Agent 3, in three packages
+### Clio Agent 3.1, in three packages
 
 | Package | What it is |
 |---|---|
@@ -1184,7 +1236,7 @@ to be installed or built by hand before anything works.
 
 ## Safety model
 
-Six hard limits are stated in `ethos/prompts/identity.py` and reach every workspace prompt:
+Six hard limits are stated in `clio/prompts/identity.py` and reach every workspace prompt:
 
 | | |
 |---|---|
@@ -1200,7 +1252,7 @@ Six hard limits are stated in `ethos/prompts/identity.py` and reach every worksp
 - **H1** — the kill switch is a set of files in the agent's run directory (`stop`, `paused`,
   `emergency`), re-read every cycle rather than loaded once, plus a DB flag for `paused` /
   `pause_actions` / `emergency`. When actions are paused, the gate rejects every tool before it runs.
-  The gate that does this is wired into both `ethos-core` and the standalone `ethos toolhost`
+  The gate that does this is wired into both `clio-core` and the standalone `clio toolhost`
   process: both build the same `ControlPlane` over the same lifecycle row, so a pause is current in
   either one rather than true only until the next restart.
 - **H2** — the gateway enforces daily and monthly spend caps from
@@ -1208,10 +1260,10 @@ Six hard limits are stated in `ethos/prompts/identity.py` and reach every worksp
   into a commitment reserve (`× gateway.budget.commitment_reserve_pct`, default `0.50`) and a
   discretionary remainder. Capital-at-risk is enforced as a **per-action** threshold in the
   guardian gate, not as an aggregate exposure calculation. The OOB watchdog suspends the guest after
-  sustained overspend, **but only if `ETHOS_SUSPEND_CMD` is set** — with no command configured it
+  sustained overspend, **but only if `CLIO_SUSPEND_CMD` is set** — with no command configured it
   logs and continues.
 
-  What a dollar is, is decided in `ethos/pricing.py` + `config/pricing.yaml`: per-route prices
+  What a dollar is, is decided in `clio/pricing.py` + `config/pricing.yaml`: per-route prices
   resolved live from providers that publish them (OpenRouter's catalogue, cached to
   `~/.ethos/data/pricing_cache.json`), falling back to the checked-in table of vendor list prices,
   and finally to a logged pessimistic high-water mark for a model no source prices — there is no
@@ -1261,10 +1313,10 @@ configured subset of one — the full account. There is no allowlist, no root
 prefix check, no `is_relative_to` guard, no chroot, no seatbelt profile and no
 sandbox anywhere between a tool call and the disk:
 
-- `ethos/paths.py` is the single place a path is interpreted. It expands `~` and
+- `clio/paths.py` is the single place a path is interpreted. It expands `~` and
   resolves relative names against the **user's home directory**, and otherwise
   returns whatever it was given.
-- The seven filesystem tools in `ethos/toolhost/tools/fs.py` all go through it
+- The seven filesystem tools in `clio/toolhost/tools/fs.py` all go through it
   and then act. `fs.write` will create parent directories anywhere it can write;
   `fs.list` will enumerate `/etc`.
 - `shell.run`, `shell.job` and `code.exec` inherit the same reach through the
@@ -1278,8 +1330,8 @@ Two things this is worth being precise about.
 
 **"The user" is whichever user the process runs as.** On a laptop that is the
 person who started it, so the agent's reach is theirs. Under the shipped systemd
-units it is the `ethos` service account, and the agent cannot reach a file owned
-by the person who deployed it — an account fact, not a policy one. `ethos doctor`
+units it is the `clio` service account, and the agent cannot reach a file owned
+by the person who deployed it — an account fact, not a policy one. `clio doctor`
 prints the identity it is running as.
 
 **Two limits are the operating system's, and are not lifted here.** The agent
@@ -1289,11 +1341,11 @@ Finder, because the grant belongs to the responsible process rather than to the
 file — `~/Library/Mail` and `~/Library/Messages` are refused to an agent launched
 from a terminal without Full Disk Access. The fix is a consent in System Settings
 that only the person at the keyboard can give; nothing in this repository should
-pretend to grant it. `ethos doctor` measures this rather than guessing at it — the
+pretend to grant it. `clio doctor` measures this rather than guessing at it — the
 probe writes and deletes a real file rather than consulting permission bits,
 because the mode bits say `ok` for exactly the directories that are refused.
 
-**The agent is told its reach**, in `REACH_NOTE` in `ethos/prompts/identity.py`,
+**The agent is told its reach**, in `REACH_NOTE` in `clio/prompts/identity.py`,
 as part of the cached identity prefix. It previously had no account of this at
 all: every prompt described its tools and its limits and never said whether a
 given path was permitted, so the only way to find out was to try. An agent that
@@ -1336,24 +1388,24 @@ the prompt says it can do, and the tools it was already given are reachable.
 ## Configuration
 
 Copy nothing — edit `config/*.yaml` directly, or override with environment. **`.env.example` lists
-every variable there is**, with the default each one has; copy it to `.env` and `ethos` will read
-it on every command (`./.env` if you are standing in a directory that has one, otherwise the
-checkout's, or `$ETHOS_ENV_FILE` if you name a file). Anything you export wins over the file, so
-`ETHOS_DSN=… ethos up` does what it says. The two flags are the same two settings, for a command
+every variable there is**, with the default each one has; copy it to `.env` and `clio` will read
+it on every command (`$CLIO_ENV_FILE` if you name a file, else `./.env` in the directory you are
+standing in when it has one, otherwise the checkout's). Anything you export wins over the file, so
+`CLIO_DSN=… clio up` does what it says. The two flags are the same two settings, for a command
 line that would rather be explicit: `--config-dir` and `--home`.
 
-- `ETHOS_HOME` — agent home (default `~/.ethos`, from `paths.home` in `config/ethos.yaml`)
+- `CLIO_HOME` — agent home (default `~/.ethos`, from `paths.home` in `config/clio.yaml`)
 
   Every process resolves it the same way, and that is the point: the agent, the interface bridge,
-  and `ethos up` all read it from `config/ethos.yaml`, with `ETHOS_HOME` on top. A home chosen by
+  and `clio up` all read it from `config/clio.yaml`, with `CLIO_HOME` on top. A home chosen by
   one entry point and not the others is how a base model an owner chose in the browser ends up
   written to a file the agent never reads — silently, and with the agent calling a provider it has
-  no key for. `ethos up` prints the home it resolved, so the question has an answer on screen.
+  no key for. `clio up` prints the home it resolved, so the question has an answer on screen.
 
-- `ETHOS_CONFIG_DIR` — config directory (default `config`, resolved against the current directory
+- `CLIO_CONFIG_DIR` — config directory (default `config`, resolved against the current directory
   and falling back to the repository root; the bridge resolves it relative to the repository)
-- `ETHOS_DSN` — Postgres DSN (default `postgresql://ethos:ethos@127.0.0.1:5433/ethos`)
-- `ETHOS_WEB_PORT` — interface bridge port (default `8720`; also `channels.web.http_port`)
+- `CLIO_DSN` — Postgres DSN (default `postgresql://ethos:ethos@127.0.0.1:5433/ethos`)
+- `CLIO_WEB_PORT` — interface bridge port (default `8720`; also `channels.web.http_port`)
 
 **Provider keys.** The routing table in `config/models.yaml` reads `ANTHROPIC_API_KEY`,
 `OPENAI_API_KEY`, `GEMINI_API_KEY`, `OPENROUTER_API_KEY` and `GROQ_API_KEY`; its DeepSeek entry is
@@ -1377,8 +1429,8 @@ single **base model**: one model, configured from the interface, preferred over 
 | | |
 |---|---|
 | Configured in | Settings → Agent → Base model, `phone config set model …`, or `/model <provider> <model>` |
-| Written to | `$ETHOS_HOME/base_model.yaml`, mode `0600` |
-| Read by | `ethos/config.py`, and re-read whenever the file changes — no restart |
+| Written to | `$CLIO_HOME/base_model.yaml`, mode `0600` |
+| Read by | `clio/config.py`, and re-read whenever the file changes — no restart |
 | The key | Typed in the browser, or taken from the provider's environment variable. Either way it goes to the agent's own file and is never sent back over the link, so an empty field means *keep the one on file*. `phone config set apiKey` is refused on a command line, as it is everywhere else. |
 | Seeing it | The field carries the saved key's **mask as its placeholder**, and the line under it names where the key is. Never the value: a page handed an API key could post it, and the placeholder is the one place a mask can be shown without being one keystroke from a save. `Remove` takes the agent's key back — beside the field, not behind the Save button, because an emptied field cannot mean *not this one*. It is refused with `key_required` for a provider that needs a key, which is the honest answer: removing it would leave the agent unable to reach the model it is configured with. The shared file's key is described the same way and is **not** removable from a page — a redacted snapshot also sends an empty key, so a browser that could clear it by omission would clear it by being opened. `phone config unset apiKey` is the way to remove that one. |
 
@@ -1420,15 +1472,15 @@ is a state you can see on the settings screen and fix.
 ### The agent's name
 
 The agent introduces itself on the first line of every prompt it sends, in the form
-`I am <name>, an AI agent based on Clio Agent 3.` The lineage is a fact about this program, so it is
-a constant in `ethos/prompts/identity.py` and not a setting. The name is the opposite — it is the
+`I am <name>, an AI agent based on Clio Agent 3.1.` The lineage is a fact about this program, so it is
+a constant in `clio/prompts/identity.py` and not a setting. The name is the opposite — it is the
 one part of an identity a person is unambiguously entitled to set.
 
 | | |
 |---|---|
 | Configured in | Settings → Agent → Name, or `/name <name>` in the terminal; `/name` on its own reports it |
-| Written to | `$ETHOS_HOME/identity.yaml`, mode `0600` |
-| Read by | `ethos/config.py` at start-up, and adopted into the `self_model` by `SelfModel.seed_defaults` |
+| Written to | `$CLIO_HOME/identity.yaml`, mode `0600` |
+| Read by | `clio/config.py` at start-up, and adopted into the `self_model` by `SelfModel.seed_defaults` |
 | Removing it | The browser's emptied field. There is no terminal verb for it, because a bare `/name` reports — as `/person` and `/link` do. |
 
 The name is written to the store rather than only falling back into the prompt. Every reader of the
@@ -1442,7 +1494,7 @@ and overwriting it on every restart is how a setting stops being a setting. A re
 and attributed to `person`, like every other change.
 
 A name is any printable characters in any script, up to 64, and **no control characters at all** —
-checked by the bridge when it writes and again by `ethos/config.py` when it reads, because this is
+checked by the bridge when it writes and again by `clio/config.py` when it reads, because this is
 plain text somebody can edit. The rule is a pattern rather than a length check for one reason: the
 name is interpolated into the first line of a system prompt, so a newline in it ends the sentence
 that line opens and starts another. That would make a field labelled *what should I call you* the
@@ -1467,16 +1519,23 @@ to say when it is spoken to and no reason to speak first. Its own description is
 can rewrite at any time, so "I answer when spoken to" is exactly the sentence it would write for
 itself.
 
-So `AUTONOMY_NOTE` in `ethos/prompts/identity.py` is a constant in the identity block of every
+So `AUTONOMY_NOTE` in `clio/prompts/identity.py` is a constant in the identity block of every
 prompt, beside the lineage and on the same terms: a fact about how the program runs, not a
 preference about how the agent should see itself. It states the shape of the loop rather than a
 character trait — that thinking happens with nobody watching, through the night, and that quiet in
 it means thinking and never waiting to be addressed — because a claim about character is something
 the agent will argue with and a claim about its own loop is something it can check.
 
-Two more constants sit beside it on the same argument, and the agent gets them for the same reason
+Three more constants sit beside it on the same argument, and the agent gets them for the same reason
 — each is something it would otherwise get wrong about itself, from evidence that does not
 contradict it:
+
+- **`NATURE_NOTE`** — what "an AI agent" actually unpacks to, which the identity line says and nothing
+  explained. The thinking is this program running, no person stands behind the words, there is no body,
+  and what the agent can do is what its tools can do: the tool catalog is the real list, the thing to
+  read rather than guess at when the question is whether it can. Without it the agent answers "what
+  are you?" out of guesswork — a persona, a hedge, or a person's answer — and answers "can you ..." by
+  inventing a capability or denying a real one.
 
 - **`CONTEXT_NOTE`** — everything below the identity line is assembled fresh each pass out of
   whatever the subsystems currently hold: the top of a search over memory, the last few turns of a
@@ -1572,7 +1631,7 @@ that the four hundred correct lines had gone with the specific change.
 
 #### What it does now
 
-**Checks are derived from what the work touched.** `ethos/gsl.acceptance` reads the paths out of the
+**Checks are derived from what the work touched.** `clio/gsl.acceptance` reads the paths out of the
 one record of what the loop did — `resume_state.artifacts`, which already holds every action's tool,
 arguments and result. A check derived from anything else would be a check derived from what the agent
 said it did. For each changed file it finds the nearest project (`pyproject.toml`, `package.json`,
@@ -1623,7 +1682,7 @@ widest reach looked like the safe default. The cost is now at the call. A legiti
 works; one that was going to drop the four hundred lines it did not rewrite costs one flag, and hands
 back a diff of what it lost.
 
-Checked against this repository rather than asserted. With `ethos/gsl/acceptance.py` as the only
+Checked against this repository rather than asserted. With `clio/gsl/acceptance.py` as the only
 changed file the derivation produces three checks — its syntax, then the project's own test suite
 (`python -m pytest -q -p no:cacheprovider` from the project root), then `ruff check` on that one file
 — and running them returns `passed: True, verified: True, checks_run: 3, uncovered: []` after 900
@@ -1639,7 +1698,7 @@ synthetic project, which is the argument for running the thing once on the real 
 believing it.
 
 The third came from `$HOME`: this machine has a `package.json` in it, and the walk up from a file in
-`Desktop/Ethos/ethos/gsl/` reached it and offered to run `npm test` in the person's home directory.
+`Desktop/Helium/clio/gsl/` reached it and offered to run `npm test` in the person's home directory.
 A marker in `$HOME` is never a project root now.
 
 ### The tool catalog is the schemas
@@ -1717,20 +1776,20 @@ same function would have caught. They need `script(1)` and are skipped without i
 
 ## Deployment
 
-`deploy/systemd/` holds one unit per process plus an `ethos.target`, wired to run as a service
-account with `WorkingDirectory=/opt/ethos`. Two adjustments if you use them:
+`deploy/systemd/` holds one unit per process plus an `clio.target`, wired to run as a service
+account with `WorkingDirectory=/opt/clio`. Two adjustments if you use them:
 
-- `ethos-workers.service` starts **one** worker. The supervisor's default is two; under systemd you
+- `clio-workers.service` starts **one** worker. The supervisor's default is two; under systemd you
   get one `ExecStart` per unit, so duplicate the unit or count on a single worker.
-- `ethos-web.service` runs `node server/index.mjs` from `/opt/ethos/web` and hardcodes `/usr/bin/node`,
+- `clio-web.service` runs `node server/index.mjs` from `/opt/clio/web` and hardcodes `/usr/bin/node`,
   where the supervisor resolves `node` from the path. Adjust `PATH` or the shebang line.
 
 The unit files ship a development DSN (`postgresql://ethos:ethos@127.0.0.1:5433/ethos`) and a
 service-account home. Change both before you point them at anything real.
 
-The `ExecStart` lines are `…/python -m ethos <command>`, which is the same entry point as the
-`ethos` console script, so a unit that has the package installed can say `ExecStart=/opt/ethos/.venv/bin/ethos core`
-instead. `ETHOS_CONFIG_DIR` and `ETHOS_HOME` are what a deployment sets; `.env.example`
+The `ExecStart` lines are `…/python -m clio <command>`, which is the same entry point as the
+`clio` console script, so a unit that has the package installed can say `ExecStart=/opt/clio/.venv/bin/clio core`
+instead. `CLIO_CONFIG_DIR` and `CLIO_HOME` are what a deployment sets; `.env.example`
 documents both, and `EnvironmentFile=` in the unit is a fine way to point at a copy of it.
 
 ## Contributing
@@ -1744,9 +1803,5 @@ does not belong in the repository.
 
 ## License
 
-**None yet.** There is no `LICENSE` file and no `license` field in `pyproject.toml`. Until one is
-added, the default applies and the project is **all rights reserved**: nobody may legally use, copy,
-or modify it.
-
-If you clone this and intend to publish it, add a `LICENSE` file and set `license` in
-`pyproject.toml` before you do.
+**MIT.** See [`LICENSE`](LICENSE). You are free to use, copy, modify and distribute this software;
+the license carries no warranty.

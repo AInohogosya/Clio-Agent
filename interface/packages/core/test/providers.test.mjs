@@ -3,8 +3,10 @@ import { test } from 'node:test';
 import {
   createSettings,
   DuplexClient,
+  effectiveReasoningLevel,
   isProviderId,
   LANGUAGES,
+  levelsForModel,
   PROVIDER_DEFAULTS,
   PROVIDER_DEFINITIONS,
   PROVIDER_IDS,
@@ -190,4 +192,30 @@ test('keyless local providers complete without an API key', async () => {
     assert.equal(request?.headers?.Authorization, undefined);
     assert.equal(reply, `local ${id}`);
   }
+});
+
+test('a model the provider did not describe is offered every reasoning level', () => {
+  // The default when there is no report at all: the offer can only be
+  // narrowed by something the provider said, never by the gap where a
+  // report should have been.
+  assert.deepEqual(levelsForModel(undefined, 'anything'), ['off', 'low', 'medium', 'high']);
+  assert.deepEqual(levelsForModel({}, 'anything'), ['off', 'low', 'medium', 'high']);
+  assert.deepEqual(
+    levelsForModel({ 'other/model': ['off'] }, 'anything'),
+    ['off', 'low', 'medium', 'high'],
+  );
+});
+
+test('a reported offer narrows the levels, and `off` is always present', () => {
+  assert.deepEqual(levelsForModel({ 'm/a': ['low', 'medium'] }, 'm/a'), ['off', 'low', 'medium']);
+  assert.deepEqual(levelsForModel({ 'm/b': ['off'] }, 'm/b'), ['off']);
+  // A report with something unknown in it is filtered, not believed.
+  assert.deepEqual(levelsForModel({ 'm/c': ['low', 'ultra'] }, 'm/c'), ['off', 'low']);
+});
+
+test('a level a model cannot take reads as off at save time', () => {
+  assert.equal(effectiveReasoningLevel({ 'm/a': ['off'] }, 'm/a', 'high'), 'off');
+  assert.equal(effectiveReasoningLevel({ 'm/a': ['off', 'low'] }, 'm/a', 'high'), 'off');
+  assert.equal(effectiveReasoningLevel({ 'm/a': ['off', 'low'] }, 'm/a', 'low'), 'low');
+  assert.equal(effectiveReasoningLevel(undefined, 'm/a', 'high'), 'high');
 });

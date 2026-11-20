@@ -6,19 +6,19 @@ from uuid import uuid4
 
 import pytest
 
-from ethos.engine.attention import Attention, estimate_salience, focus_from_percept
-from ethos.engine.drives import (
+from clio.engine.attention import Attention, estimate_salience, focus_from_percept
+from clio.engine.drives import (
     DriveInputs,
     Impulse,
     propose_impulses,
     softmax_sample,
     utility,
 )
-from ethos.engine.states import State, StateMachine
-from ethos.gateway.embeddings import HashingEmbedder
-from ethos.schemas.events import Percept
-from ethos.schemas.gsl import Focus
-from ethos.schemas.messages import Message
+from clio.engine.states import State, StateMachine
+from clio.gateway.embeddings import HashingEmbedder
+from clio.schemas.events import Percept
+from clio.schemas.gsl import Focus
+from clio.schemas.messages import Message
 
 
 def percept(sender="owner", urgency=0.3, summary="a message", kind="msg.inbound"):
@@ -174,11 +174,11 @@ def test_drive_pressures_formula(config):
                      "deadline": (datetime.now(UTC) - timedelta(hours=1)).isoformat()}],
         open_questions=5, failed_recent=2,
     )
-    from ethos.engine.drives import commitment_gain, curiosity_gain
+    from clio.engine.drives import commitment_gain, curiosity_gain
 
     assert commitment_gain(inputs) == pytest.approx(0.9 * 0.5 + 1.0 * 0.5)
     assert curiosity_gain(inputs) == pytest.approx(0.5 * 0.6)
-    from ethos.engine.drives import pressures
+    from clio.engine.drives import pressures
 
     p = pressures(inputs, config.rhythm.drives.base)
     assert p["commitment"] == pytest.approx(min(1.0, config.rhythm.drives.base["commitment"] + 0.95))
@@ -242,7 +242,7 @@ async def test_choose_focus_deadline_bypass(config):
     and produced the same nothing. A deadline was the one condition guaranteed
     to waste a cycle.
     """
-    from ethos.engine.drives import Motivation
+    from clio.engine.drives import Motivation
 
     motivation = Motivation(config, rng=random.Random(7))
     deadline_soon = (datetime.now(UTC) + timedelta(hours=6)).isoformat()
@@ -269,7 +269,7 @@ async def test_choose_focus_deadline_bypass(config):
 
 async def test_the_bypass_picks_the_most_urgent_deadline_not_the_first(config):
     """It says it takes the most urgent; it has to take the most urgent."""
-    from ethos.engine.drives import Motivation
+    from clio.engine.drives import Motivation
 
     motivation = Motivation(config, rng=random.Random(7))
     soon = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
@@ -297,7 +297,7 @@ async def test_an_unreadable_deadline_does_not_stop_the_loop(config):
     1,524 cycles. A date nobody can read is not a date that has passed; it is
     arbitration's problem to handle, not a reason to hold still.
     """
-    from ethos.engine.drives import Motivation
+    from clio.engine.drives import Motivation
 
     motivation = Motivation(config, rng=random.Random(7))
     real = uuid4()
@@ -330,7 +330,7 @@ async def test_the_commitment_impulse_advances_a_commitment_rather_than_another_
     then does not: the promise was recorded as an intention and no code path
     could ever select that intention for work.
     """
-    from ethos.engine.drives import Motivation
+    from clio.engine.drives import Motivation
 
     real_id = uuid4()
     inputs = DriveInputs(intentions=[
@@ -363,7 +363,7 @@ async def test_the_commitment_impulse_advances_a_commitment_rather_than_another_
 
 async def test_the_venture_impulse_advances_a_venture(config):
     """`push_venture` has the same shape and the same defect."""
-    from ethos.engine.drives import Motivation
+    from clio.engine.drives import Motivation
 
     venture_id = uuid4()
     inputs = DriveInputs(intentions=[
@@ -393,7 +393,7 @@ async def test_an_impulse_with_no_existing_subject_still_opens_its_own_work(conf
     `reach_out` and `maintenance` would silently stop being possible the moment
     the fix landed.
     """
-    from ethos.engine.drives import Motivation
+    from clio.engine.drives import Motivation
 
     created = []
 
@@ -417,12 +417,21 @@ async def test_an_impulse_with_no_existing_subject_still_opens_its_own_work(conf
     assert focus.intention_id is not None, "and the new work is bound to the focus"
 
 
-async def test_a_commitment_impulse_with_nothing_committed_still_acts(config):
-    """Nothing committed is not a reason to do nothing.
+async def test_a_commitment_impulse_with_nothing_committed_mints_nothing(config):
+    """Nothing committed is nothing to advance, and no way to fake it.
 
-    It is a reason to open something, which is what the impulse asked for.
+    The fallback used to open an intention titled after the drive whenever the
+    resolver found no open commitment -- which is exactly the state the drive
+    reaches in the gap between real work parking and the sweep reopening it.
+    Observed live on 2026-10-25: twelve such placeholders in one night, each
+    planned against its own self-referential sentence, so the solver produced
+    bookkeeping theatre (capture a hash, mkdir a directory, append an
+    "evidence" line) that passed trivially satisfiable checks and left the
+    intention in_progress forever -- while the agent told its owner it was
+    picking up the work it had actually promised. An impulse whose subject is
+    existing work has no subject, so it gets no focus and opens nothing.
     """
-    from ethos.engine.drives import Motivation
+    from clio.engine.drives import Motivation
 
     created = []
 
@@ -444,8 +453,33 @@ async def test_a_commitment_impulse_with_nothing_committed_still_acts(config):
                                  "priority": 0.5, "deadline": None}]),
         energy=0.9, create_intention_fn=create_intention)
 
-    assert len(created) == 1
-    assert focus is not None
+    assert created == [], "a drive with no subject must not mint one"
+    assert focus is None, "and it must not hold a focus over fake work"
+
+
+async def test_a_venture_impulse_with_no_open_venture_mints_nothing(config):
+    """`push_venture` has the same shape and the same defect."""
+    from clio.engine.drives import Motivation
+
+    created = []
+
+    async def create_intention(**kwargs):
+        created.append(kwargs)
+        return uuid4()
+
+    motivation = Motivation(config, rng=random.Random(11))
+    motivation.arbitrate = lambda inputs, energy: (  # type: ignore[method-assign]
+        Impulse(name="push_venture", drive="creation", relevance=0.9,
+                value_hat=0.75, cost_hat=0.2,
+                description="Move the most promising venture one step."),
+        motivation.drive_pressures(inputs),
+    )
+
+    focus, _ = await motivation.choose_focus(DriveInputs(), energy=0.9,
+                                             create_intention_fn=create_intention)
+
+    assert created == []
+    assert focus is None
 
 
 def test_drive_inputs_carry_the_id_of_the_work_they_describe():
@@ -457,8 +491,8 @@ def test_drive_inputs_carry_the_id_of_the_work_they_describe():
     holding a title with nothing behind it -- which is exactly what the focus
     dead end above was made of.
     """
-    from ethos.engine.drives import DriveInputs as _Inputs
-    from ethos.schemas.gsl import IntentionRecord
+    from clio.engine.drives import DriveInputs as _Inputs
+    from clio.schemas.gsl import IntentionRecord
 
     intention = IntentionRecord(id=uuid4(), title="Build the game", kind="commitment")
     projected = _Inputs.from_intentions([intention])
@@ -468,7 +502,7 @@ def test_drive_inputs_carry_the_id_of_the_work_they_describe():
 
 
 async def test_choose_focus_none_when_all_drives_low(config):
-    from ethos.engine.drives import Motivation
+    from clio.engine.drives import Motivation
 
     motivation = Motivation(config, rng=random.Random(7))
     inputs = DriveInputs(energy=1.0)
@@ -540,7 +574,7 @@ async def test_a_stale_backlog_cannot_starve_a_deadline_that_can_still_be_met(co
     Letting stale work outrank live work turns an old failure into the cause of
     a new one, because the overdue item wins again on every single cycle.
     """
-    from ethos.engine.drives import Motivation
+    from clio.engine.drives import Motivation
 
     now = datetime.now(UTC)
     live = uuid4()
@@ -578,7 +612,7 @@ async def test_an_overdue_backlog_drains_newest_first_and_never_livelocks(config
     Newest-first empties the queue from the front, gives the most recent miss its
     turn soonest while it is still actionable, and always reaches new work.
     """
-    from ethos.engine.drives import Motivation
+    from clio.engine.drives import Motivation
 
     now = datetime.now(UTC)
     older, newer = uuid4(), uuid4()
@@ -602,7 +636,7 @@ async def test_an_overdue_backlog_drains_newest_first_and_never_livelocks(config
 
 async def test_an_undated_intention_never_outranks_a_dated_one(config):
     """Priority on its own is not a deadline."""
-    from ethos.engine.drives import Motivation
+    from clio.engine.drives import Motivation
 
     dated = uuid4()
     inputs = DriveInputs(intentions=[

@@ -43,7 +43,7 @@ async function freePort() {
 }
 
 before(async () => {
-  home = mkdtempSync(join(tmpdir(), 'ethos-bridge-'));
+  home = mkdtempSync(join(tmpdir(), 'clio-bridge-'));
   const port = await freePort();
   base = `http://127.0.0.1:${port}`;
   child = spawn(process.execPath, [SERVER], {
@@ -53,13 +53,13 @@ before(async () => {
     // see, and only this process can answer that.
     env: {
       ...process.env,
-      ETHOS_HOME: home,
-      ETHOS_CONFIG_DIR: CONFIG_DIR,
-      ETHOS_WEB_PORT: String(port),
+      CLIO_HOME: home,
+      CLIO_CONFIG_DIR: CONFIG_DIR,
+      CLIO_WEB_PORT: String(port),
       OPENAI_API_KEY: 'sk-openai-from-env-1234',
       GOOGLE_API_KEY: 'google-from-env-5678',
       DEEPSEEK_API_KEY: '',
-      ETHOS_TEST_VENDOR_KEY: 'sk-custom-vendor-4321',
+      CLIO_TEST_VENDOR_KEY: 'sk-custom-vendor-4321',
     },
     stdio: 'ignore',
   });
@@ -102,6 +102,7 @@ test('nothing configured reads as nothing', async () => {
   const body = await (await read()).json();
   assert.deepEqual(body, {
     configured: false, provider: '', protocol: '', model: '', base_url: '',
+    reasoning_level: 'off',
     key_present: false, key_hint: '', key_env: '', key_env_present: false,
   });
 });
@@ -323,6 +324,31 @@ test('a catalogue is fetched from the provider, and the key never comes back', a
     // Sorted, so the list does not reshuffle between two fetches of the same thing.
     assert.deepEqual(body.models, ['a/1', 'b/2']);
     assert.equal(JSON.stringify(body).includes(key), false);
+  } finally {
+    await provider.close();
+  }
+});
+
+test('the reasoning offer a catalogue reports is carried through', async () => {
+  // OpenRouter's shape: `reasoning` on the models that think, on every entry
+  // a `supported_parameters` list that names whether `reasoning` is in it.
+  // The screen narrows the levels it offers to what each model reported; a
+  // model absent from the map stays offered every level.
+  const provider = await startProvider((response) => {
+    response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({
+      data: [
+        { id: 'openai/o3', reasoning: { mandatory: true }, supported_parameters: ['max_tokens', 'reasoning'] },
+        { id: 'deepseek/deepseek-chat', supported_parameters: ['max_tokens'] },
+        { id: 'undeclared/model' },
+      ],
+    }));
+  });
+  try {
+    const { body } = await discover({ provider: 'openrouter', base_url: provider.baseUrl, api_key: key });
+    assert.equal(body.source, 'remote');
+    assert.deepEqual(body.reasoning?.['openai/o3'], ['off', 'low', 'medium', 'high']);
+    assert.deepEqual(body.reasoning?.['deepseek/deepseek-chat'], ['off']);
+    assert.equal(body.reasoning?.['undeclared/model'], undefined);
   } finally {
     await provider.close();
   }
@@ -708,7 +734,7 @@ test('the variable a stored base model names is the one a catalogue is fetched w
     'model: gpt-4o',
     'base_url: https://api.openai.com/v1',
     "api_key: ''",
-    'api_key_env: ETHOS_TEST_VENDOR_KEY',
+    'api_key_env: CLIO_TEST_VENDOR_KEY',
     'tiers: [T1]',
   ].join('\n'), { mode: 0o600 });
   const provider = await startProvider(openAiShape(['a/1']));
@@ -717,7 +743,7 @@ test('the variable a stored base model names is the one a catalogue is fetched w
     assert.equal(body.source, 'remote');
     assert.equal(provider.seen.at(-1).headers.authorization, 'Bearer sk-custom-vendor-4321');
     // And the stored file says so, so the form can name it under the field.
-    assert.equal((await (await read()).json()).key_env, 'ETHOS_TEST_VENDOR_KEY');
+    assert.equal((await (await read()).json()).key_env, 'CLIO_TEST_VENDOR_KEY');
   } finally {
     await provider.close();
   }
@@ -739,19 +765,19 @@ test('a named variable this process cannot see is reported as absent, not as a k
 
 // ------------------------------------------------------- where the agent lives
 //
-// `paths.home` in `config/ethos.yaml` is `~/.ethos`, and the agent expands that
+// `paths.home` in `config/clio.yaml` is `~/.ethos`, and the agent expands that
 // with `os.path.expanduser`. This bridge has to land on the same directory, or it
 // reads and writes a file the agent never looks at — and a base model saved into
 // the wrong place fails in a way that says nothing about where the wrong place
 // was. So the expansion is checked against a home of our own, with no
-// `ETHOS_HOME` to short-circuit it.
+// `CLIO_HOME` to short-circuit it.
 
 /** A bridge with a `HOME` we chose, so nothing here can touch a real account. */
 async function startWithHome(configDir, home) {
   const port = await freePort();
   const origin = `http://127.0.0.1:${port}`;
   const started = spawn(process.execPath, [SERVER], {
-    env: { ...process.env, HOME: home, ETHOS_CONFIG_DIR: configDir, ETHOS_WEB_PORT: String(port) },
+    env: { ...process.env, HOME: home, CLIO_CONFIG_DIR: configDir, CLIO_WEB_PORT: String(port) },
     stdio: 'ignore',
   });
   for (let attempt = 0; attempt < 100; attempt += 1) {
@@ -768,8 +794,8 @@ async function startWithHome(configDir, home) {
 
 /** A config directory carrying only `paths.home`, and the config it needs to run. */
 function configWithHome(value) {
-  const dir = mkdtempSync(join(tmpdir(), 'ethos-bridge-config-'));
-  writeFileSync(join(dir, 'ethos.yaml'), `paths:\n  home: ${value}\n`, 'utf8');
+  const dir = mkdtempSync(join(tmpdir(), 'clio-bridge-config-'));
+  writeFileSync(join(dir, 'clio.yaml'), `paths:\n  home: ${value}\n`, 'utf8');
   for (const name of ['permissions.yaml', 'models.yaml', 'rhythm.yaml']) {
     copyFileSync(join(CONFIG_DIR, name), join(dir, name));
   }
@@ -782,7 +808,7 @@ const saveTo = (origin, body) => fetch(`${origin}/api/model`, {
   body: JSON.stringify(body),
 });
 
-const temporary = (label) => mkdtempSync(join(tmpdir(), `ethos-bridge-${label}-`));
+const temporary = (label) => mkdtempSync(join(tmpdir(), `clio-bridge-${label}-`));
 const discard = (...paths) => paths.forEach((path) => rmSync(path, { recursive: true, force: true }));
 
 test('a tilde in paths.home is the home directory, not the root of the filesystem', async () => {

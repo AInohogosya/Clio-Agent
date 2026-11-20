@@ -30,15 +30,16 @@ from typing import Any
 
 import pytest
 
-from ethos.config import PathsConfig
-from ethos.guardian.gate import GuardianGate
-from ethos.guardian.registry import ArtifactRegistry
-from ethos.paths import ReachEntry, agent_home, probe_reach, resolve, user_home
-from ethos.prompts.identity import build_identity_kernel
-from ethos.toolhost.server import ToolContext
-from ethos.toolhost.tools.fs import (
+from clio.config import PathsConfig
+from clio.guardian.gate import GuardianGate
+from clio.guardian.registry import ArtifactRegistry
+from clio.paths import ReachEntry, agent_home, probe_reach, resolve, user_home
+from clio.prompts.identity import build_identity_kernel
+from clio.toolhost.server import ToolContext
+from clio.toolhost.tools.fs import (
     FsEditTool,
     FsListTool,
+    FsMkdirTool,
     FsMoveTool,
     FsReadTool,
     FsStatTool,
@@ -113,6 +114,61 @@ async def test_a_tool_reaches_a_directory_outside_every_configured_root(
     elif name == "read":
         assert result["text"] == "body"
     assert result is not None
+
+
+async def test_mkdir_creates_a_directory_and_its_parents(tmp_path: Path) -> None:
+    host = _host(tmp_path / "agent-home")
+    target = tmp_path / "desktop" / "Docs" / "nested"
+    result = await FsMkdirTool().run({"path": str(target)}, CTX, host)
+    assert result == {"path": str(target), "created": True, "is_dir": True}
+    assert target.is_dir()
+
+
+async def test_mkdir_on_an_existing_directory_is_idempotent(tmp_path: Path) -> None:
+    host = _host(tmp_path / "agent-home")
+    target = tmp_path / "Docs"
+    target.mkdir()
+    result = await FsMkdirTool().run({"path": str(target)}, CTX, host)
+    assert result["created"] is False
+    assert target.is_dir()
+
+
+async def test_mkdir_refuses_to_stand_in_for_a_file(tmp_path: Path) -> None:
+    """The exact Docs failure: a file named like the wanted folder.
+
+    Creating the directory silently over the file would destroy it, and
+    treating the file as the directory is how the next write produced
+    ``FileExistsError`` instead of work.
+    """
+    host = _host(tmp_path / "agent-home")
+    target = tmp_path / "Docs"
+    target.write_text("not a folder", encoding="utf-8")
+    with pytest.raises(FileExistsError) as raised:
+        await FsMkdirTool().run({"path": str(target)}, CTX, host)
+    assert "fs.write" in str(raised.value)
+    assert target.is_file()
+    assert target.read_text(encoding="utf-8") == "not a folder"
+
+
+async def test_write_refuses_a_directory_path_with_a_usable_error(tmp_path: Path) -> None:
+    host = _host(tmp_path / "agent-home")
+    target = tmp_path / "Docs"
+    target.mkdir()
+    with pytest.raises(IsADirectoryError) as raised:
+        await FsWriteTool().run({"path": str(target), "content": "x"}, CTX, host)
+    assert "fs.mkdir" in str(raised.value)
+
+
+async def test_write_refuses_a_file_as_parent_with_a_usable_error(tmp_path: Path) -> None:
+    host = _host(tmp_path / "agent-home")
+    parent = tmp_path / "Docs"
+    parent.write_text("file", encoding="utf-8")
+    with pytest.raises(NotADirectoryError) as raised:
+        await FsWriteTool().run(
+            {"path": str(parent / "README.md"), "content": "x"}, CTX, host,
+        )
+    assert "parent" in str(raised.value)
+    assert parent.is_file()
 
 
 async def test_write_creates_directories_it_has_never_seen(tmp_path: Path) -> None:
@@ -225,7 +281,7 @@ def test_a_relative_base_can_be_overridden_for_the_rare_caller_that_needs_it() -
 def test_the_fs_tools_use_the_shared_rule() -> None:
     """One rule, not seven copies of it.
 
-    Each tool resolves through `ethos.paths.resolve`; this asserts the helper it
+    Each tool resolves through `clio.paths.resolve`; this asserts the helper it
     delegates to is the shared one, so a future edit cannot quietly give one tool
     a private base directory and leave the other six on the user's home.
     """
@@ -258,7 +314,7 @@ def test_the_toolhost_stops_passing_a_home_dir_to_the_gate() -> None:
     a parameter added back to the signature and threaded through again by
     someone who has read this file and disagreed with it.
     """
-    import ethos.toolhost.server as server_module
+    import clio.toolhost.server as server_module
 
     assert "home_dir" not in inspect.getsource(server_module)
 
@@ -276,7 +332,7 @@ def test_nothing_in_the_fs_tools_compares_a_path_against_a_root() -> None:
     directory, and backups are part of the permission model rather than a
     boundary within it.
     """
-    import ethos.toolhost.tools.fs as fs_module
+    import clio.toolhost.tools.fs as fs_module
 
     source = inspect.getsource(fs_module)
     for containment in (
@@ -294,7 +350,7 @@ def test_the_reach_note_is_part_of_the_identity_block() -> None:
     that is asserted too: `STABLE_BLOCKS` is where the prompt cache is cut, and
     moving it changes the price of every call in every thread.
     """
-    from ethos.engine.workspace import BLOCK_ORDER, STABLE_BLOCKS
+    from clio.engine.workspace import BLOCK_ORDER, STABLE_BLOCKS
 
     kernel = build_identity_kernel("Aria", user_home_dir="/home/ana",
                                    agent_home_dir="/home/ana/.ethos")
@@ -348,7 +404,7 @@ def test_probe_reach_reports_a_directory_it_can_use() -> None:
 def test_probe_reach_leaves_nothing_behind() -> None:
     """`doctor` is run when somebody least expects their filesystem touched."""
     for entry in probe_reach(extra=(str(Path.home()),)):
-        leftovers = [p.name for p in Path(entry.path).glob(".ethos-reach-probe-*")] \
+        leftovers = [p.name for p in Path(entry.path).glob(".clio-reach-probe-*")] \
             if entry.exists else []
         assert leftovers == []
 
@@ -388,3 +444,20 @@ def test_a_directory_that_is_read_only_still_counts_as_reachable() -> None:
     """`/usr` is normal, not a gap. A gap is the user reaching it and me not."""
     read_only = ReachEntry("/usr", True, True, False, True, "")
     assert read_only.reachable
+
+
+async def test_list_with_an_empty_glob_lists_the_directory(tmp_path: Path) -> None:
+    """`glob: ""` is "no filter", not a pattern `Path.glob` should choke on.
+
+    A model that fills every schema field with an empty string is common
+    enough that the tool has to read it that way; before this, the step failed
+    with "Unacceptable pattern: ''" and the model could not tell why.
+    """
+    directory = tmp_path / "notes"
+    directory.mkdir()
+    (directory / "a.txt").write_text("x", encoding="utf-8")
+    host = _host(tmp_path / "agent-home")
+
+    out = await FsListTool().run({"path": str(directory), "glob": ""}, CTX, host)
+
+    assert any(entry.endswith("a.txt") for entry in out["entries"])

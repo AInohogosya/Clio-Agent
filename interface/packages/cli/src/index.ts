@@ -16,9 +16,12 @@ import {
   DuplexClient,
   findIntention,
   flattenIntentions,
+  isProviderId,
   MAX_PROMPT_LENGTH,
   sanitizeTerminalText,
+  shouldShowProviderSetupOnLaunch,
   toChatMessages,
+  type AgentBaseModel,
   type AgentControlAction,
   type AgentView,
   type Language,
@@ -37,6 +40,7 @@ import {
   type DoorChoice,
 } from './channels.js';
 import {
+  configFileExists,
   configPath,
   createPhoneClient,
   hasEnvironmentApiKey,
@@ -72,7 +76,7 @@ import { AgentTui } from './agent-tui.js';
 // `--version` answer all follow. The date is a fact about the build rather than
 // something read from the clock, because a copy of it on another machine has that
 // machine's clock and this machine's contents.
-export const VERSION = '3';
+export const VERSION = '3.1';
 export const PRODUCT_NAME = `Clio Agent ${VERSION}`;
 export const RELEASE_DATE = '2026-10-03';
 export const RELEASE_TIMEZONE = 'JST';
@@ -565,7 +569,7 @@ async function runModels(runtime: Runtime): Promise<void> {
  * shared file alone would have the terminal report a change the gateway never
  * sees, which is the one outcome worse than refusing the command.
  */
-const BASE_MODEL_FIELDS = new Set<ConfigField>(['provider', 'model', 'baseUrl', 'apiKey']);
+const BASE_MODEL_FIELDS = new Set<ConfigField>(['provider', 'model', 'baseUrl', 'reasoningLevel', 'apiKey']);
 
 async function runConfig(runtime: Runtime): Promise<number> {
   const { options, config, render } = runtime;
@@ -592,7 +596,7 @@ async function runConfig(runtime: Runtime): Promise<number> {
   const next = options.configAction === 'set'
     ? setConfigField(fresh, field, options.value ?? '')
     : unsetConfigField(fresh, field);
-  const saved = saveConfig(next, { origin: 'cli' });
+  let saved = saveConfig(next, { origin: 'cli' });
   if (options.json) {
     out(jsonPayload(saved));
     return 0;
@@ -604,7 +608,11 @@ async function runConfig(runtime: Runtime): Promise<number> {
   // an endpoint or a vendor, and it leaves the stored key where it is.
   if (saved.settings.interface === 'agent' && BASE_MODEL_FIELDS.has(field as ConfigField)) {
     const t = createTranslator(render.language);
-    const pushed = await pushBaseModel(runtime, saved.settings, options.configAction === 'unset' && field === 'apiKey');
+    const pushed = await pushBaseModel(
+      saved.settings,
+      field as ConfigField,
+      options.configAction === 'unset' && field === 'apiKey',
+    );
     if (!pushed.ok) {
       out(renderLines([`  ${pushed.key === 'baseModelKeyRequired' ? t('baseModelKeyFromCli') : t(pushed.key)}`, '']));
       // The file is written either way, and it is right; what did not happen is
@@ -612,6 +620,10 @@ async function runConfig(runtime: Runtime): Promise<number> {
       // setting that took effect and one that silently did not.
       return 1;
     }
+    // The shared file is a mirror of the agent's base model in agent mode, and it
+    // is written from the agent's own answer rather than from what was typed
+    // into it. See `mirrorBaseModel` for why the difference matters.
+    saved = mirrorBaseModel(pushed.base);
   }
 
   const t = createTranslator(render.language);
@@ -633,26 +645,108 @@ async function runConfig(runtime: Runtime): Promise<number> {
  * `http_404` is not something a person can act on. A 404 in particular means the
  * interface service answering is an older build without this route, which is a
  * different thing from an agent that is merely down.
+ *
+ * **The tuple that is pushed is the agent's, with the one field that was
+ * changed.** The base model lives in the agent's own home, and the shared file
+ * keeps a *copy* of it so the terminal and the browser can show the same thing.
+ * A copy drifts: it is written by `phone config set` in either mode, it is
+ * written by the settings screen, and it is not written at all when the agent's
+ * base model is changed somewhere else. So the copy in the file can name a
+ * vendor and a model the agent stopped using a week ago.
+ *
+ * Pushing that copy is how a base model somebody chose by hand is replaced by
+ * another vendor's model, with another vendor's endpoint, at a moment that has
+ * nothing to do with the change that was asked for: the symptom is a base model
+ * that reads as reverted to a vendor nobody picked. So the agent is asked what it
+ * is using, and the field that was changed is applied to *that* — the agent's
+ * answer is the base model, and this command changes one part of it.
  */
 async function pushBaseModel(
-  runtime: Runtime,
   settings: Settings,
+  field: ConfigField,
   clearKey: boolean,
-): Promise<{ ok: true } | { ok: false; key: TranslationKey }> {
+): Promise<{ ok: true; base: AgentBaseModel } | { ok: false; key: TranslationKey }> {
   return withAgentClient(settings, async (agent) => {
     try {
-      await agent.saveBaseModel({
-        provider: settings.provider,
-        model: settings.model,
-        baseUrl: settings.baseUrl,
-        apiKey: settings.apiKey,
-        clearKey,
+      // `null` here is "no base model, or none that could be asked about", and
+      // both are answered the same way: the file's own tuple is the starting
+      // point. A push that fails says so in its own right, so the difference
+      // does not have to be guessed at here.
+      const current = await agent.readBaseModel();
+      const base = current?.configured ? current : null;
+      const written = await agent.saveBaseModel({
+        // The vendor and the endpoint belong to the model that is already being
+        // served, and the one exception is the field being changed: a new
+        // vendor brings its own endpoint, and a new model is served by the
+        // vendor that is already there.
+        provider: field === 'provider' ? settings.provider : (base?.provider || settings.provider),
+        model: field === 'model' ? settings.model : (base?.model || settings.model),
+        baseUrl: field === 'provider'
+          ? settings.baseUrl
+          : field === 'baseUrl'
+            ? settings.baseUrl
+            : (base?.baseUrl || settings.baseUrl),
+        // The level travels with the tuple like the three above it: the agent's
+        // for every field but itself, the one being changed for this one.
+        reasoningLevel: field === 'reasoningLevel' ? settings.reasoningLevel : (base?.reasoningLevel || settings.reasoningLevel),
+        // The key is not sent. The agent's file holds its own — a literal one or
+        // the name of a variable — and an empty field means "keep what is
+        // there". The shared file's key belongs to the direct interface and to
+        // whichever vendor it was given to, so it is never posted to the agent.
+        ...(clearKey ? { clearKey: true } : {}),
       });
-      return { ok: true };
+      return { ok: true, base: written };
     } catch (error) {
       return { ok: false, key: baseModelFailureKey(error) };
     }
   });
+}
+
+/**
+ * The shared file, written from what the agent reports.
+ *
+ * In agent mode the base model belongs to the agent, and the shared file holds a
+ * copy of it so the terminal and the browser can show the same answer without
+ * asking anybody. A copy that is not refreshed is worse than no copy at all: it
+ * is a second answer to the same question, and the one that is read more often
+ * — by `phone config get`, by the settings screen on the way in, and by every
+ * command that changes one base-model field. So the copy is written from the
+ * agent's answer after every change, rather than from whatever was typed into
+ * it.
+ *
+ * The key is the one thing that cannot be copied: the agent never gives it back.
+ * And it is dropped when the vendor changes, because a key belongs to the vendor
+ * it was given to — the rule the file itself follows when the provider changes.
+ *
+ * The state it leaves behind is returned, so that what is printed is what is on
+ * disk: a mirror that is written and then not reported is a file and a screen
+ * that disagree.
+ */
+function mirrorBaseModel(base: AgentBaseModel): PhoneConfig {
+  const current = readConfig();
+  // A vendor this kit does not know is not one it can file: the file keeps the
+  // one it has rather than writing a name nothing else would recognise.
+  const provider = isProviderId(base.provider) ? base.provider : current.settings.provider;
+  const model = base.model || current.settings.model;
+  const baseUrl = base.baseUrl || current.settings.baseUrl;
+  const reasoningLevel = base.reasoningLevel;
+  if (provider === current.settings.provider
+    && model === current.settings.model
+    && baseUrl === current.settings.baseUrl
+    && reasoningLevel === current.settings.reasoningLevel) {
+    return current;
+  }
+  return saveConfig({
+    ...current,
+    settings: createSettings({
+      ...current.settings,
+      provider,
+      model,
+      baseUrl,
+      reasoningLevel,
+      apiKey: provider === current.settings.provider ? current.settings.apiKey : '',
+    }),
+  }, { origin: 'cli' });
 }
 
 function runHistory(runtime: Runtime): void {
@@ -705,7 +799,29 @@ function runHelp(runtime: Runtime): void {
   out(renderLines(helpScreen(render, VERSION)));
 }
 
-async function launchTui(runtime: Runtime, mode: 'chat' | 'setup'): Promise<void> {
+/**
+ * Which surface a plain `phone` opens on: the chat, or the provider and LLM
+ * settings first.
+ *
+ * `phone setup` needs no decision — the command named the thing. For the
+ * default launch the decision is about whether setup ever happened: a file
+ * that was never written, or one that still does not leave a usable
+ * provider behind, never opens on the chat. The answer is the shared
+ * first-launch rule, read off the same file the surface is about to load.
+ */
+export function resolveLaunchMode(config: PhoneConfig, requested: 'chat' | 'setup' | 'firstRun', firstLaunch?: boolean): 'chat' | 'setup' | 'firstRun' {
+  const launchIsFirst = firstLaunch ?? !configFileExists();
+  if (requested === 'chat' || requested === 'firstRun') {
+    if (shouldShowProviderSetupOnLaunch({
+      firstLaunch: launchIsFirst,
+    })) {
+      return 'firstRun';
+    }
+  }
+  return requested;
+}
+
+async function launchTui(runtime: Runtime, mode: 'chat' | 'setup' | 'firstRun'): Promise<void> {
   if (!isInteractive()) {
     if (mode === 'setup') {
       out(renderLines(helpScreen(runtime.render, VERSION)));
@@ -724,7 +840,7 @@ async function launchTui(runtime: Runtime, mode: 'chat' | 'setup'): Promise<void
     // One full-screen surface, chosen by the setting rather than by the command.
     // `phone setup` is the one case that overrides it: a first run must be able
     // to reach the setup before it has an agent to talk to.
-    const useAgent = runtime.config.settings.interface === 'agent' && mode !== 'setup';
+    const useAgent = runtime.config.settings.interface === 'agent' && mode === 'chat';
     const element = useAgent
       ? React.createElement(AgentTui, {
         debug: runtime.options.debug,
@@ -848,7 +964,7 @@ async function run(options: CliOptions): Promise<number> {
       await launchTui(runtime, 'setup');
       return 0;
     default:
-      await launchTui(runtime, 'chat');
+      await launchTui(runtime, resolveLaunchMode(runtime.config, 'chat'));
       return 0;
   }
 }

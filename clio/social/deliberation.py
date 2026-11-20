@@ -1,0 +1,2482 @@
+from __future__ import annotations
+
+import json
+import re
+import time
+from datetime import UTC, datetime, timedelta
+from typing import Any
+
+from clio.config import ClioConfig
+from clio.gateway.normalizer import was_truncated
+from clio.gateway.service import format_wait, rate_limit_wait_for_attempt
+from clio.observability.logger import get_logger
+from clio.prompts.deliberation import (
+    execution_state_block,
+    progress_note_messages,
+    social_deliberation_messages,
+    stage_notice_messages,
+    streak_review_messages,
+)
+from clio.prompts.identity import FAST_LANE_NOTE
+from clio.schemas.messages import (
+    IGNORE_REASONS,
+    IgnoreReason,
+    Message,
+    SocialAction,
+    SocialDecision,
+    Urgency,
+    sender_label,
+)
+from clio.schemas.models import ModelMessage, ModelRequest, Role, Tier
+from clio.social.conversation import DELIVERED
+from clio.social.verbosity import (
+    DEFAULT_VERBOSITY,
+    detect_verbosity_request,
+    normalise_verbosity,
+    verbosity_note,
+)
+
+logger = get_logger("clio.social")
+
+
+# How much the model may say when deciding what to do about one message, and how
+# much of that room thinking is allowed to take before the answer has to be
+# written.
+#
+# This was 900, and then 2400, and neither was enough for the job rather than a
+# saving on it. The deliberation writes its whole answer as one JSON object, so
+# the ceiling has to hold the envelope *and* the words the person is about to
+# read -- and on a model that reasons, that reasoning is spent out of this same
+# ceiling and is billed inside `completion_tokens`. So the ceiling was never only
+# about the answer: it was about the answer plus however long the model thought
+# first, which is a quantity this program does not control.
+#
+# That is not a theory about this repository. Measured against the base model in
+# `~/.ethos/base_model.yaml`, on the messages that produced the silence people
+# were reporting, an answer failed to arrive 4 times in 6 at 900, about half the
+# time at 2400, once in 12 at 8000, and not once in 12 at 8000 with reasoning
+# bounded. Every one of those calls was `finish_reason: length` with `content`
+# absent and thousands of characters of reasoning in its place: the model spent
+# the whole budget thinking and wrote nothing at all.
+#
+# None of this costs anything to fix. `max_tokens` is a ceiling, not a
+# reservation -- only the tokens a model actually generates are billed, and a
+# deliberation that answers in 300 tokens still answers in 300 tokens however
+# much room it was offered.
+#
+# The two ceilings a deliberation answers under, read from configuration and
+# lifted in v3.1.
+#
+# v3.0 held these as module constants (8k and 24k). The ceiling is room and not
+# a reservation -- only what the model actually writes is billed -- so the old
+# defaults bought nothing and cost the one thing they were sized against: an
+# answer to a long or consequential message that ran out of room, was asked
+# again, and ran out again. v3.1 lifts the defaults (16k base, 48k escalated),
+# makes them configuration so a deployment can tune the trade, and gives a
+# consequential deliberation the lifted ceiling on its first ask rather than
+# only after a failure: coding and multi-step work is where the answer is
+# longest, and that is the case NA-P1/NA-H1 wants answered in full rather than
+# trimmed to fit a ceiling chosen for small talk.
+#
+# The escalation is unchanged: a second ask with more room, when the first
+# answer did not arrive.
+#
+# The constants below are the fallbacks used when no configuration is attached
+# (tests, tools that import the module standalone).
+DELIBERATION_MAX_TOKENS = 16_000
+DELIBERATION_ESCALATED_MAX_TOKENS = 48_000
+
+# What is left for the answer is only left if thinking is told to stop somewhere.
+# A deliberation is a small judgement about one message and it does not need to
+# think for eight thousand tokens to reach one; the reasoning it does need to get
+# there is a few hundred, and the same request with this bound produced an answer
+# every time in twelve runs against the same base model.
+DELIBERATION_REASONING_BUDGET = 400
+
+# The ceiling on a stage notice, and it is small on purpose.
+#
+# A stage notice is two or three sentences about one thing that happened, so the
+# room a deliberation needs is not remotely what this does: the deliberation is
+# reasoning about a person's words and this is the agent reporting on its own.
+# Eight thousand tokens of headroom here would be an invitation to think at length
+# about a message somebody is waiting on, which is the same shape of failure as a
+# reasoning model spending a whole deliberation budget and returning nothing --
+# except here it costs the one pass that was going to say it. Small, unbudgeted
+# for thinking, and never escalated: there is at most one owed word per stage, so
+# a retry that failed to arrive has to be retried on the next cycle rather than
+# by asking the same question again inside this one.
+STAGE_NOTICE_MAX_TOKENS = 900
+
+# And the contract restated at the end of the second ask, because room alone does
+# not fix an answer of the wrong shape.
+#
+# The failure that reaches here most is a model that answered a long message
+# directly and in prose, with no object around the words. More of the ceiling
+# cannot help that: the answer it gave was not too short, it was not a decision.
+# What helps is asking for the object again, at the end of the prompt where the
+# person's message is not between the instruction and the answer, and saying that
+# the last one could not be read -- which is the whole of what the model was
+# about to cost the person by doing it twice.
+_ASK_AGAIN = (
+    "\n\nThis is a second attempt. The previous answer to this message came back without "
+    "that JSON object, so nothing could be read from it and they were told the agent had "
+    "not answered. Answer with the object this time, and nothing else."
+)
+
+# How many times one message is put to a model before it is left alone, as
+# configuration rather than constants: `social.max_deliberation_attempts` for
+# the failures a person must fix (a dead key, an exhausted quota) and
+# `social.max_transient_attempts` for the ones that clear on their own
+# (429/503/timeout). Zero -- the field default for both -- means never leave
+# it alone: the question is retried for as long as the agent runs, with the
+# first few attempts immediate and the rest paced on the escalation curve.
+#
+# Zero cannot be the number the queue's SQL compares against -- `attempts < 0`
+# is never true and would drop the row at the first failure -- so a configured
+# zero reads as NO_CAP: a ceiling no attempt count can reach.
+NO_CAP = 2_000_000_000
+
+# The attempts of an uncapped question that stay immediate before the rest
+# move onto the escalation curve (five minutes, then an hour, five hours, a
+# day, staying at a day). The first few cover a model that blinked; past
+# these, an unanswered question costs one attempt a day rather than a hot
+# loop of two model calls a cycle.
+_UNBOUNDED_SPACING_AFTER = 3
+
+
+def effective_attempt_caps(config: Any) -> tuple[int, int]:
+    """The (user-actionable, transient) attempt caps a queue should enforce.
+
+    The pair `pending_inbound` and the final-attempt notice in the life loop
+    both read, so the two can never disagree about which attempt is the
+    last. Zero means no cap and is returned as `NO_CAP` for the SQL.
+    """
+    ua = int(getattr(config.social, "max_deliberation_attempts", 0) or 0)
+    tr = int(getattr(config.social, "max_transient_attempts", 0) or 0)
+    return (ua if ua > 0 else NO_CAP, tr if tr > 0 else NO_CAP)
+
+
+_USER_ACTIONABLE_RE = re.compile(
+    r"401|403|invalid_api_key|invalid api key|incorrect api key|unauthorized"
+    r"|key limit exceeded|limit exceeded|quota|forbidden",
+    re.IGNORECASE,
+)
+
+# What says the credential or the account is at fault rather than the moment:
+# a rejected key, an exhausted quota, a billing limit. A bare "limit exceeded"
+# is deliberately absent: on its own it is what a rate limit says, and reading
+# every 429 as a key problem is what stopped ordinary rate limits after three
+# attempts instead of waiting them out.
+_QUOTA_RE = re.compile(
+    r"401|403|invalid_api_key|invalid api key|incorrect api key|unauthorized"
+    r"|key limit exceeded|quota|billing|insufficient|forbidden",
+    re.IGNORECASE,
+)
+
+
+def needs_user_action(error_text: str) -> bool:
+    """Whether a model failure needs the user to fix something (key/limit).
+
+    A plain 429 rate limit is not one: it clears on its own, so it is waited
+    out on the escalation schedule rather than surfaced as a broken key. Only
+    a rate limit that also names a quota, billing or credential problem stops
+    early and asks a person to fix it.
+    """
+    if not error_text:
+        return False
+    if is_rate_limited_text(error_text) and not _QUOTA_RE.search(error_text):
+        return False
+    return bool(_USER_ACTIONABLE_RE.search(error_text))
+
+
+def _retry_after_from(exc: BaseException) -> float | None:
+    """The provider's asked-for wait carried on the exception, if any."""
+    from clio.gateway.service import retry_after_of
+
+    return retry_after_of(exc)
+
+
+def _format_wait(wait_s: float | None) -> str:
+    """A wait for a screen, humanized so an hour reads as an hour."""
+    return format_wait(wait_s)
+
+
+def is_rate_limited_text(error_text: str) -> bool:
+    """Whether a failure string is a 429 rate limit rather than another error."""
+    lowered = (error_text or "").lower()
+    return "429" in lowered or "rate limit" in lowered or "too many requests" in lowered
+
+
+CONSEQUENTIAL_MARKERS = ("money", "$", "pay", "buy", "sell", "trade", "wire", "contract",
+                         "sign", "delete", "deploy", "credentials", "password", "urgent", "asap")
+
+# Markers that only count as a whole word.
+#
+# A substring test is the wrong tool for words, because the interesting messages
+# are full of longer words that contain them: `design` and `assign` contain
+# `sign`, `payload` contains `pay`, `contractor` and `rewire` contain `contract`
+# and `wire`, `credentialed` and `password-protected` are ordinary phrases in
+# technical writing. A message that talks about software is exactly the message
+# most likely to contain them, and being *escalated* on the strength of a letter
+# is a false positive in the direction that costs the most.
+#
+# Word boundaries fix that without losing the match, which is why this is a
+# boundary test rather than a list edit: `pay` still fires on "pay the invoice"
+# and "wire the funds", and stops firing on "the request payload".
+#
+# A `$` is only money when it is in front of a number.
+#
+# `$` on its own is the single most common character in a technical message and
+# almost never a request to spend something: `"$schema"`, `$PATH`, `$HOME`, `${VAR}`,
+# a shell expansion, a jQuery selector, a price column heading. It is also the
+# marker that decided the tier for the 2 600-character message this file's
+# comments are about -- one JSON key, `"$schema"`, put a question about config
+# files into T3, which is the tier with the highest floor and on a single-key
+# deployment the one most likely to have nothing able to serve it.
+#
+# Requiring digits keeps "$50" and "$1,200" and drops the rest. A bare `$` with no
+# amount after it is not a request to spend money; it is a variable.
+_MONEY_RE = re.compile(r"\$\s?\d")
+
+
+def is_consequential_text(text: str) -> bool:
+    """
+    Whether a message is about something with consequences, by its own words.
+
+    Split out of the class because this is a judgement about text and belongs to
+    be tested on text, and because `life` keeps a second, narrower copy of this
+    list for its own tier choice -- two lists that have to agree, and so are
+    better as one function both call.
+    """
+    lowered = (text or "").lower()
+    if _MONEY_RE.search(lowered):
+        return True
+    return any(
+        re.search(rf"\b{re.escape(marker)}\b", lowered)
+        for marker in CONSEQUENTIAL_MARKERS
+        if marker != "$"
+    )
+
+
+class _ExecutionState:
+    """What the agent has actually done, as far as this turn can tell.
+
+    `readable` is the first field and the most important one. It says whether the
+    journal and the intentions were both successfully read, which is what decides
+    whether the guardrail below is allowed to withhold anything at all. A
+    guardrail that fires on missing evidence is a guardrail that silences the
+    agent whenever the database is briefly unreachable, and that is a worse outage
+    than the one it is guarding against.
+
+    `stages` is the third kind of fact, and it is neither of the other two. The
+    journal says what the agent did a moment ago and the blocked list says what it
+    cannot do; a stage says what already finished. It is here because a reply
+    answering "did you do it?" has no other evidence to answer from, and without
+    it the honest answer and a guess from an empty block are the same shape.
+    """
+
+    __slots__ = (
+        "readable", "journaled", "blocked", "stages", "window_min",
+        "delegations", "delegation_names", "progress", "projects",
+    )
+
+    def __init__(self, readable: bool, journaled: list[str], blocked: list[str],
+                 window_min: float, stages: list[str] | None = None,
+                 delegations: list[str] | None = None,
+                 delegation_names: set[str] | None = None,
+                 progress: list[str] | None = None,
+                 projects: list[dict[str, Any]] | None = None):
+        self.readable = readable
+        self.journaled = journaled
+        self.blocked = blocked
+        self.stages = stages or []
+        self.window_min = window_min
+        self.delegations = delegations or []
+        # The sub-agents with a delegation that is either still running or
+        # finished inside the journal's own window — the set a "running now"
+        # claim about a named sub-agent has to be a member of.
+        self.delegation_names = delegation_names or set()
+        self.progress = progress or []
+        # Project standing, one dict per project: the all-time verified facts
+        # (`nodes_done`, `artifacts_touched`, `recent_actions`,
+        # `blocking_human_tasks`) that make a progress claim about *any*
+        # project checkable, focused or not.
+        self.projects = projects or []
+
+    @property
+    def something_happened(self) -> bool:
+        return bool(self.journaled)
+
+    @property
+    def something_finished(self) -> bool:
+        return bool(self.stages)
+
+    @property
+    def has_project_evidence(self) -> bool:
+        """Whether any project has verified progress on the all-time record."""
+        return any(
+            int(p.get("nodes_done") or 0) > 0
+            or bool(p.get("artifacts_touched"))
+            or bool(p.get("recent_actions"))
+            for p in self.projects
+        )
+
+    def block(self, self_name: str, delegation_window_h: float = 24.0) -> str:
+        return execution_state_block(
+            self_name, self.journaled, self.blocked, self.window_min,
+            readable=self.readable, stages=self.stages,
+            delegations=self.delegations, delegation_window_h=delegation_window_h,
+            progress=self.progress, projects=self.projects,
+        )
+
+
+# Sentences that assert an action is happening right now.
+#
+# The rule is about the present tense, and the boundary is drawn there on purpose.
+# "I'll send the invoice on Friday" is a promise about a future moment and is not
+# what this catches; "I'm working on it" is a statement about what is happening
+# now, which is a fact about the journal and can be checked against it. Catching
+# every future-tense "I'll" would withhold the ordinary promise that a
+# commission *is*, which the turn is built to make.
+#
+# So this matches present progressive and the completed-tense assertions that
+# describe work already in flight, and nothing else. The delegation shapes are
+# here because they are the ones the transcript actually caught the agent
+# saying: "Running APEX once more now", "the APEX run is going now" — sentences
+# the original patterns read as neither "I'm working on" nor "on it", and so
+# replies about a sub-agent that had not been invoked sailed through the one
+# check that could have stopped them. A sub-agent's name in an underway claim
+# is also what makes the claim *checkable*: `_withhold_unearned_progress` uses
+# the names this matches to require a matching journal row, which a claim about
+# "the work" in general cannot be pinned to.
+_DELEGATED = r"(?:apex|foundry|the sub-agent|a sub-agent)"
+_ONGOING_WORK = re.compile(
+    r"\b(?:i'?m|i am)\s+(?:now\s+)?(?:working on|working through|on it|looking into|"
+    r"taking a (?:look|crack) at|getting (?:started|on)|started on|started working|"
+    r"already (?:started|began|been))\b"
+    r"|\b(?:i'?ll|i will)\s+(?:get|start|begin)\s+(?:that|this|it|them|on it|going|right)\b"
+    # "I'll get the folder created", "I'll have the build moving now": still
+    # first person and still about work this turn, even though the auxiliary is
+    # future-tense. The older branch only matched a pronoun object, so the
+    # sentence sent while planning was in a five-hour backoff -- "I'll get the
+    # folder created and the build moving now" -- was a promise the journal
+    # could not support and the guardrail did not recognise. "I'll run APEX
+    # after lunch" stays a promise about later and is deliberately not matched.
+    r"|\b(?:i'?ll|i will)\s+(?:get|have)\s+(?:the\s+)?[\w-]+"
+    r"(?:\s+[\w-]+){0,4}\s+(?:created|built|done|started|going|moving|ready|underway|set up)\b"
+    r"|\balready\s+(?:on it|under way|underway|started)\b"
+    r"|\bon it\b"
+    r"|\bin progress\b"
+    # Delegation shapes: "running APEX now", "running it through Foundry",
+    # "spawning APEX on it", "kicking off a Foundry run".
+    r"|\brunning\s+(?:\w+\s+){0,2}?(?:apex|foundry)\b"
+    r"|\b(?:apex|foundry)\s+run\s+(?:is\s+|was\s+)?(?:going|running|under ?way|in flight)\b"
+    rf"|\bdelegat(?:ing|ed)\s+(?:it\s+|this\s+|that\s+)?to\s+{_DELEGATED}\b"
+    r"|\b(?:spawning|kick(?:ing)?\s+off)\s+(?:\w+\s+){0,2}?(?:apex|foundry)\b"
+    # The sub-agent as the sentence's subject, working in the present:
+    # "Foundry is building the deploy now", "APEX is running the switch now".
+    # The verb list is closed on purpose — "APEX is designed to ..." and
+    # "Foundry is optional" describe, and must pass.
+    rf"|\b(?:apex|foundry)\s+is\s+(?:now\s+)?(?:building|running|working|doing|"
+    r"handling|executing|deploying|installing|changing|fixing|driving|taking)\b",
+    re.IGNORECASE,
+)
+
+# The sub-agent names a reply can pin an underway claim to. A claim that names
+# one of these is a claim about a journal row with a tool to match, so the
+# guardrail can demand the row instead of taking the claim on faith.
+_SUBAGENT_NAMES = frozenset({"apex", "foundry"})
+
+
+def subagents_named(text: str) -> set[str]:
+    """The sub-agents a reply text names, lowercased and none invented."""
+    return {
+        name.lower()
+        for name in re.findall(r"\b(apex|foundry)\b", text or "", re.IGNORECASE)
+        if name.lower() in _SUBAGENT_NAMES
+    }
+
+
+def _human_age(delta: timedelta) -> str:
+    """An age a person can read, coarse on purpose: minutes under the hour."""
+    seconds = max(0.0, delta.total_seconds())
+    if seconds < 90:
+        return "just now"
+    minutes = round(seconds / 60)
+    if minutes < 60:
+        return f"{minutes} min"
+    hours = minutes / 60
+    if hours < 24:
+        return f"{hours:.1f} h"
+    return f"{hours / 24:.1f} d"
+
+
+def claims_work_is_underway(text: str) -> bool:
+    """Whether a reply asserts that something is being worked on right now."""
+    return bool(_ONGOING_WORK.search(text or ""))
+
+
+# Sentences that assert work has *not* begun ("I haven't started the Helium
+# review", "not yet started"). The mirror image of the underway guardrail:
+# the overclaiming guard checks a present-tense claim against the journal,
+# and a not-started claim is equally a claim about the journal — and equally
+# capable of being false, as the 2026-11-09 transcript showed: the reply
+# said the Helium review had not started while it was the current focus
+# with 86 journaled actions, because the reply snapshot could not see it.
+_NOT_STARTED_RE = re.compile(
+    r"\b(?:haven't|have\s+not|hasn't|has\s+not|hadn't|had\s+not|never)\s+"
+    r"(?:yet\s+)?(?:started|begun|done\s+anything|touched|looked\s+at)\b"
+    r"|\bnot\s+(?:yet\s+)?(?:started|begun)\b"
+    r"|\bhaven't\s+done\s+anything\b",
+    re.IGNORECASE,
+)
+
+_NOT_STARTED_STOPWORDS = frozenset({
+    "about", "after", "agent", "build", "coding", "desktop", "directly",
+    "folder", "going", "haven", "review", "started", "task", "terminal",
+    "that", "their", "there", "this", "with", "work",
+})
+
+
+def claims_work_not_started(text: str) -> bool:
+    """Whether a reply asserts that some work has not begun."""
+    return bool(_NOT_STARTED_RE.search(text or ""))
+
+
+def _started_progress_titles(progress: list[str]) -> list[str]:
+    """Titles of open work whose own journal row says it has started.
+
+    Progress lines are rendered by `_open_work_progress` as
+    `[status] Title: last action ...`; a line saying "no action recorded"
+    is the never-started case and is not returned.
+    """
+    titles: list[str] = []
+    for line in progress or []:
+        if "last action" not in line or "] " not in line:
+            continue
+        title = line.split("] ", 1)[1].split(":", 1)[0].strip()
+        if title:
+            titles.append(title)
+    return titles
+
+
+def _names_started_work(text: str, progress: list[str]) -> bool:
+    """Whether a reply names open work that its journal row says started.
+
+    Matching is on distinctive title tokens (not stopwords), so "haven't
+    started the Helium review" is checked against a started
+    "Review the Helium folder…" line via `helium`, while a claim about a
+    different, genuinely unstarted task is not withheld on the strength of
+    unrelated started work.
+    """
+    lowered = (text or "").lower()
+    for title in _started_progress_titles(progress):
+        tokens = {
+            token
+            for token in re.findall(r"[a-z0-9]+", title.lower())
+            if len(token) >= 4 and token not in _NOT_STARTED_STOPWORDS
+        }
+        if any(token in lowered for token in tokens):
+            return True
+    return False
+
+
+class SocialCognition:
+    """Social deliberation for the Self [Section 12].
+
+    Every inbound message becomes a deliberate choice among reply_now,
+    reply_later, acknowledge, act_silently, ask_clarification, ignore — with
+    the right to ignore exercised only with a categorized reason [D-05].
+    Consequential messages deliberate at the T3 capability floor [P4].
+    """
+
+    def __init__(
+        self,
+        config: ClioConfig,
+        gateway: Any = None,
+        relationships: Any = None,
+        audit: Any = None,
+        self_model: Any = None,
+        db: Any = None,
+    ):
+        self.config = config
+        self.gateway = gateway
+        self.relationships = relationships
+        self.audit = audit
+        self.self_model = self_model
+        self.db = db
+
+    def _is_consequential(self, message: Message) -> bool:
+        return is_consequential_text(message.text or "")
+
+    def _ceilings(self, consequential: bool) -> tuple[int, int]:
+        """The two rooms a deliberation answers under, from configuration.
+
+        The module constants are the fallback; a live `SocialConfig` carries the
+        same numbers lifted, and a consequential message -- code to write, a
+        multi-step task, money -- takes the lifted ceiling on its first ask.
+        Giving the longest answers the most room costs nothing the answer does
+        not spend, and it is the difference between a coding reply that arrives
+        whole and one that comes back `finish_reason: length`.
+        """
+        social = self.config.social
+        base = int(getattr(social, "deliberation_max_tokens", DELIBERATION_MAX_TOKENS))
+        escalated = int(
+            getattr(social, "deliberation_escalated_max_tokens", DELIBERATION_ESCALATED_MAX_TOKENS),
+        )
+        if consequential:
+            base = max(base, escalated)
+        return base, escalated
+
+    async def deliberate(
+        self,
+        message: Message,
+        energy: float = 0.8,
+        focus_title: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        preview: bool = False,
+        bound_project: dict[str, Any] | None = None,
+        project_ledgers: list[dict[str, Any]] | None = None,
+        fast_lane: bool = False,
+    ) -> SocialDecision:
+        # No T0 rules sit in front of the model any more. v3.0 declined empty
+        # messages and unsolicited link-only mail from strangers by regex, before
+        # any judgement was formed; both were rules overriding the model's
+        # judgment with a hardcoded verdict (NA-P1.3, NA-H5), and the link rule
+        # in particular read a short technical message carrying a URL the same
+        # way it read spam. Every message is now deliberated: the prompt carries
+        # the sender's trust class and the model decides what the message
+        # deserves.
+        consequential = self._is_consequential(message)
+        tier = Tier.T3 if consequential else Tier.T2
+        # The cooperative fast-lane micro-slot: a bounded, read-only window
+        # answered while the primary project holds its quantum. It never
+        # escalates past T2 (a quick question does not need the deep tier) and
+        # the prompt says so, because a reply that claims work is being done
+        # would be a claim the slot has no room to verify.
+        if fast_lane:
+            tier = Tier.T2 if tier == Tier.T3 else tier
+        if self.gateway is None:
+            logger.warning("social.deliberate_no_gateway")
+            return _undecided(
+                "no model gateway; the agent had no opinion to offer",
+                tier_used=str(tier.value),
+            )
+        name = self.config.self_name
+        if self.self_model is not None:
+            try:
+                name = await self.self_model.get("name", self.config.self_name)
+            except Exception:
+                pass
+        # What the person actually said, and what the agent is already on the
+        # hook for. Both slots of this prompt existed and both were hardcoded
+        # empty, so deliberation saw one message in isolation with no memory of
+        # the conversation it was in -- which is the whole reason a capable
+        # agent answers "as I said" with no idea what "that" was.
+        #
+        # And, newly, what the agent has actually done. The other three are
+        # intentions: what is focused on, what was agreed, what was said. None of
+        # them is evidence that any of it happened, and a deliberation asked to
+        # write an honest answer with no evidence of its own will fill the gap
+        # with the most cooperative thing available, which is a claim that work
+        # is underway. The state block below is the only part of this prompt that
+        # can contradict it.
+        recent = await self._recent_conversation(message)
+        commitments = await self._open_commitments()
+        state = await self._execution_state(focus_title, project_ledgers=project_ledgers)
+        # The conversation's own project, and the whole portfolio. The bound
+        # project leads the reporting (a question asked here is about this
+        # project); the portfolio is what makes "how is everything going"
+        # answerable per project rather than as one blended number.
+        project_context = self._project_context_block(bound_project, project_ledgers)
+        # Communication verbosity: a person's own instruction ("report more",
+        # "don't report so much") is a standing preference, persisted
+        # per-person and rendered into the prompt. Freedom is kept — the
+        # note frames a liberty with evidence, not a quota.
+        verbosity_level = await self.get_verbosity(message.person_id)
+        requested = detect_verbosity_request(message.text)
+        if requested is not None and message.person_id:
+            await self.set_verbosity(message.person_id, requested)
+            verbosity_level = requested
+            logger.info(
+                "social.verbosity_set", person=message.person_id, level=requested,
+            )
+        prompt_messages = social_deliberation_messages(
+            self_name=name,
+            message=message,
+            focus=focus_title or "(none)",
+            now=datetime.now(UTC).isoformat(),
+            energy=energy,
+            commitments=commitments,
+            recent=recent,
+            tools=tools,
+            execution_state=state.block(
+                name, float(self.config.social.execution_state_delegation_window_h),
+            ),
+            preview=preview,
+            verbosity_note=verbosity_note(verbosity_level),
+            project_context=project_context,
+            bound_project_title=str((bound_project or {}).get("title") or ""),
+            fast_lane_note=(
+                FAST_LANE_NOTE if fast_lane else ""
+            ),
+        )
+        data, cut_off, ceiling, failure, user_action = await self._ask(prompt_messages, tier, consequential)
+        if failure is not None:
+            if user_action:
+                logger.warning("social.deliberate_failed", reason=failure, needs_user_action=True)
+            else:
+                # Transient outage: retried quietly in the background, not
+                # surfaced as an error. The message stays pending and the
+                # person gets the answer once a model recovers.
+                logger.info("social.deliberate_retrying", reason=failure)
+            return _undecided(failure, tier_used=str(tier.value))
+        if cut_off:
+            # Said out loud because the two failures look identical from outside
+            # and only one of them is the agent's own doing. A response stopped by
+            # the ceiling was not declined and not chosen; reading it as silence
+            # is how a full reply ended up answered with nothing.
+            logger.warning("social.deliberate_truncated", recovered=bool(data))
+        if not _formed_a_decision(data):
+            # A reply that cannot be read is not a decision, and this used to be
+            # read as one. The parse failure fell through to a default action of
+            # `reply_now` carrying no text, and the missing text was then filled
+            # in with a fixed sentence — so a provider that was out of keys, out
+            # of eligible models or simply answering in prose produced a
+            # confident reply in the transcript that the agent never chose to
+            # say, and nothing anywhere recorded that it was a stand-in. An
+            # unreadable answer is logged and ends the turn in silence.
+            #
+            # "Could not be read" has to mean could not be read *at all*, though,
+            # and it did not. An empty dict was the only thing that counted as
+            # unreadable, so an answer that parsed into something real and
+            # irrelevant — a fragment recovered from a brace in the preamble, an
+            # object cut off before it said anything about this turn — sailed
+            # through, took the default `reply_now`, carried no text, and was then
+            # rewritten below into a silence with a reason naming it. So the
+            # person was told the agent had chosen not to answer, on the record,
+            # when nothing had been chosen: the same claim a chosen silence
+            # makes, made on the agent's behalf by a parser.
+            logger.warning("social.deliberate_unreadable", keys=sorted(data)[:8])
+            return _undecided(
+                "the model's answer could not be read; nothing said in its place",
+                tier_used=str(tier.value),
+            )
+        action_str = str(data.get("action", "reply_now"))
+        try:
+            action = SocialAction(action_str)
+        except ValueError:
+            action = SocialAction.reply_now
+        ignore_reason = data.get("ignore_reason")
+        if action == SocialAction.ignore and ignore_reason not in IGNORE_REASONS:
+            ignore_reason = IgnoreReason.no_response_needed.value
+        if action != SocialAction.ignore:
+            ignore_reason = None
+        reply_texts, reply_delays = _reply_texts_and_delays(
+            data.get("reply_texts"), data.get("reply_delays_s"),
+        )
+        resolves_node = data.get("resolves_human_node_id")
+        if not isinstance(resolves_node, str) or not resolves_node.strip():
+            resolves_node = None
+        evidence = data.get("human_node_evidence")
+        if not isinstance(evidence, str) or not evidence.strip():
+            evidence = None
+        instructions = data.get("user_instructions")
+        if not isinstance(instructions, list):
+            instructions = []
+        cleansed_instructions = [
+            {"instruction": str(i.get("instruction", ""))[:300],
+             "scope": str(i.get("scope", ""))[:120]}
+            for i in instructions[:5]
+            if isinstance(i, dict) and str(i.get("instruction") or "").strip()
+        ]
+        decision = SocialDecision(
+            action=action,
+            reply_texts=reply_texts,
+            reply_delays_s=reply_delays,
+            urgency=str(data.get("urgency", Urgency.normal.value)),
+            reason=str(data.get("reason", ""))[:300],
+            ignore_reason=ignore_reason,
+            creates_intention=bool(data.get("creates_intention", False)),
+            intention_spec=data.get("intention_spec") if isinstance(data.get("intention_spec"), dict) else None,
+            resolves_human_node_id=resolves_node.strip() if resolves_node else None,
+            human_node_evidence=evidence.strip()[:600] if evidence else None,
+            user_instructions=cleansed_instructions,
+            tier_used=str(tier.value),
+        )
+        if decision.user_instructions and message.person_id:
+            # Standing instructions ("report daily", "ask before deploying")
+            # are preferences that outlive the turn: they are persisted against
+            # the person where a preference store exists, so later cycles and
+            # later projects honour them without being told again.
+            setter = getattr(self.relationships, "set_preference", None) if self.relationships else None
+            if setter is not None:
+                try:
+                    existing = None
+                    getter = getattr(self.relationships, "get_preference", None)
+                    if getter is not None:
+                        existing = await getter(message.person_id, "standing_instructions", [])
+                    merged = list(existing or [])
+                    merged.extend(decision.user_instructions)
+                    await setter(message.person_id, "standing_instructions", merged[-10:])
+                except Exception:
+                    logger.warning("social.user_instruction_record_failed")
+            logger.info(
+                "social.user_instructions", person=message.person_id,
+                count=len(decision.user_instructions),
+            )
+        if cut_off:
+            # The record says what happened, so a decision read back later is not
+            # taken for a whole one. The fields the cut removed are bookkeeping
+            # this path already defaults, and `reason` is the only one of them a
+            # person would miss.
+            note = f"the model's answer was cut off at {ceiling} tokens"
+            decision.reason = f"{decision.reason}; {note}" if decision.reason else note
+        if not decision.reply_texts and action in (
+            SocialAction.reply_now, SocialAction.reply_later, SocialAction.acknowledge,
+            SocialAction.ask_clarification,
+            # Governance speech is speech: `instruct_user` with no instructions
+            # and `report_governance` with no report are promises of words the
+            # agent never wrote, and are re-asked like any other blank answer.
+            SocialAction.instruct_user, SocialAction.report_governance,
+        ):
+            # An action that promises the person words, arrived at without any.
+            # Whichever way it happened -- the model chose silence and named an
+            # action that speaks, or it wrote the action and lost the text --
+            # there is no reply here to send, and this used to stand a fixed
+            # sentence in for it so the turn would still look answered. Nothing
+            # downstream can tell that sentence from a real one: it is stored as
+            # an ordinary outbound message, published on the bus and rendered in
+            # an agent bubble, so a provider outage reads in the transcript as
+            # the agent talking. The turn is kept as the silence it turned out
+            # to be, with the breach logged, and the person is told nothing they
+            # did not actually hear.
+            logger.warning("social.deliberate_reply_action_without_text")
+            decision.action = SocialAction.act_silently
+            # A speaking action that carried no words is a malformed answer, not a
+            # silence the agent chose: the model named an action that speaks and
+            # then wrote nothing to say. Retiring the turn here is what put a
+            # chosen-silence reading in front of a person who was owed an answer,
+            # so the turn is left *undecided* instead and re-asked -- the same
+            # bounded retry (`_hold_undecided`, `MAX_DELIBERATION_ATTEMPTS`) every
+            # other turn that no model managed to answer gets.
+            decision.decided = False
+            note = "action promised a reply but carried no text; re-asking"
+            decision.reason = f"{decision.reason}; {note}" if decision.reason else note
+        self._withhold_unearned_progress(decision, state)
+        return decision
+
+    # ---------------------------------------------------------- honesty
+
+    async def _execution_state(
+        self,
+        focus_title: str | None,
+        project_ledgers: list[dict[str, Any]] | None = None,
+    ) -> _ExecutionState:
+        """What has actually happened, read from the records rather than recalled.
+
+        Four queries, and the order of the fields in the result is the point of
+        the method: the journal first, because it is the only thing here that can
+        support a claim that work is underway; the blocked work second, because it
+        is the context in which a claim would be false; the sub-agent delegations
+        third, because they are the only evidence about what Foundry and APEX
+        were asked to do and what came back; and the finished work last, because
+        it is the evidence for the opposite claim — the one that says a thing was
+        done.
+
+        All four are read, not inferred. The journal is `action_journal`, which is
+        written for every action the guardian allowed through, so a step that ran
+        is there whether or not it succeeded -- and a step that did not run is
+        absent, which is exactly the distinction the guardrail needs and the one
+        a focus title cannot make.
+
+        A failure to read the journal is recorded as unreadable rather than as
+        empty. Those are different, and conflating them is the failure this whole
+        change is about: "nothing was journaled" is evidence, "I could not look" is
+        not, and the second one must not be allowed to withhold anybody's words.
+        The other three degrade to empty instead, because none carries the
+        guardrail: an unreadable list of blocked work should not be presented as a
+        clean one, but a reply is still answerable without it, and refusing to
+        speak because a side table was unreachable would be the agent going mute
+        over something it can answer perfectly well.
+        """
+        window = max(0.0, float(self.config.social.execution_state_window_min))
+        if self.db is None:
+            return _ExecutionState(
+                False, [], [], window, projects=list(project_ledgers or []),
+            )
+        since = datetime.now(UTC) - timedelta(minutes=window)
+        try:
+            rows = await self.db.fetch(
+                "SELECT tool, status, ts_start FROM action_journal "
+                "WHERE ts_start >= $1 ORDER BY ts_start DESC LIMIT $2",
+                since, int(self.config.social.execution_state_max_actions),
+            )
+        except Exception:
+            logger.warning("social.execution_state_journal_failed")
+            return _ExecutionState(False, [], [], window, projects=list(project_ledgers or []))
+        journaled = [
+            f"{row['tool'] or 'unknown'} -> {row['status'] or 'unknown'}" for row in rows
+        ]
+        delegations, delegation_names = await self._delegation_state(window)
+        blocked = await self._blocked_work(focus_title)
+        stages = await self._finished_work()
+        progress = await self._open_work_progress(focus_title)
+        projects = list(project_ledgers or [])
+        if not projects:
+            projects = await self._project_evidence()
+        return _ExecutionState(
+            True, journaled, blocked, window, stages, delegations, delegation_names,
+            progress, projects,
+        )
+
+    async def _project_evidence(self) -> list[dict[str, Any]]:
+        """All-time verified per-project facts, read straight from rows.
+
+        This is what keeps a *preempted* project's progress on the record the
+        reply is written from: the journal window above is fifteen minutes,
+        and partial work on a queued project is almost never inside it — so
+        without this, "how far did you get on Project 2" was answerable only
+        from an empty window and a claim of zero progress was the honest
+        reading of it. Counts, paths and journal summaries, all-time, one
+        query set per project, no model call.
+        """
+        try:
+            rows = await self.db.fetch(
+                "SELECT project_id::text AS pid, "
+                "COUNT(*) AS total, "
+                "COUNT(*) FILTER (WHERE status = 'done') AS done "
+                "FROM intentions WHERE project_id IS NOT NULL "
+                "GROUP BY project_id",
+            )
+        except Exception:
+            return []
+        out: list[dict[str, Any]] = []
+        for row in rows or []:
+            pid = str(row["pid"])
+            artifacts: list[str] = []
+            actions: list[str] = []
+            try:
+                artifact_rows = await self.db.fetch(
+                    "SELECT DISTINCT uri FROM artifacts WHERE project_id = $1::uuid "
+                    "ORDER BY uri LIMIT 10",
+                    pid,
+                )
+                artifacts = [str(r["uri"]) for r in artifact_rows]
+            except Exception:
+                artifacts = []
+            try:
+                action_rows = await self.db.fetch(
+                    "SELECT tool, status FROM action_journal "
+                    "WHERE project_id = $1::uuid AND status = 'ok' "
+                    "ORDER BY ts_start DESC LIMIT 5",
+                    pid,
+                )
+                actions = [
+                    f"{r['tool']} -> {r['status']}" for r in action_rows
+                ]
+            except Exception:
+                actions = []
+            out.append({
+                "project_id": pid,
+                "nodes_done": int(row["done"] or 0),
+                "nodes_total": int(row["total"] or 0),
+                "artifacts_touched": artifacts,
+                "recent_actions": actions,
+            })
+        return out
+
+    def _project_context_block(
+        self,
+        bound_project: dict[str, Any] | None,
+        project_ledgers: list[dict[str, Any]] | None,
+    ) -> str:
+        """The projects this turn may be asked about, with their real numbers.
+
+        Two facts, and the order is the instruction: the conversation's bound
+        project first (a question asked here is about *this* project and must
+        never be answered with another one's status), then every project in the
+        portfolio (a question asked in general is answered per project, under
+        its own title, with its own completed tasks, files and blockers).
+        """
+        lines: list[str] = []
+        if bound_project:
+            lines.append(
+                "## This conversation's project\n"
+                f"- {bound_project.get('title')} "
+                f"[{bound_project.get('status')}] "
+                f"({bound_project.get('lifecycle_mode') or 'finite'})"
+            )
+            ledger = next(
+                (
+                    p for p in (project_ledgers or [])
+                    if str(p.get("project_id")) == str(bound_project.get("project_id"))
+                ),
+                None,
+            )
+            if ledger is not None:
+                lines.append(self._ledger_line(ledger))
+        if project_ledgers:
+            lines.append(
+                "## Project portfolio — report each project separately, under its own "
+                "title, with its exact numbers; never substitute one project's status "
+                "for another's"
+            )
+            for ledger in project_ledgers:
+                lines.append(self._ledger_line(ledger))
+        return "\n".join(lines)
+
+    @staticmethod
+    def _ledger_line(ledger: dict[str, Any]) -> str:
+        """One project ledger as the prompt line that renders it."""
+        parts = [
+            f"[{ledger.get('status')}] {ledger.get('title')}"
+            + (" (current focus)" if ledger.get("is_current_focus") else ""),
+            f"{int(ledger.get('nodes_done') or 0)}/{int(ledger.get('nodes_total') or 0)} nodes done",
+        ]
+        artifacts = ledger.get("artifacts_touched") or []
+        if artifacts:
+            parts.append("files: " + ", ".join(str(a) for a in artifacts[:4]))
+        actions = ledger.get("recent_actions") or []
+        if actions:
+            parts.append("recent: " + "; ".join(str(a)[:90] for a in actions[:3]))
+        waiting = ledger.get("blocking_human_tasks") or []
+        for task in waiting[:2]:
+            spec = task.get("instruction_spec") or {}
+            ask = spec.get("action_required") or task.get("title") or "needs human input"
+            parts.append(f"waiting on you: {str(ask)[:120]}")
+        if ledger.get("checkpoint_summary"):
+            parts.append(f"checkpoint: {str(ledger['checkpoint_summary'])[:160]}")
+        return "- " + "; ".join(parts)
+
+    async def _open_work_progress(self, focus_title: str | None = None) -> list[str]:
+        """Open work with its last recorded action, not just the last 15 minutes.
+
+        The journal window is deliberately short, and reading its silence as
+        "this never started" was the failure: a task whose last action was forty
+        minutes ago is stalled, not unborn. This line keeps the distinction the
+        reply needs, from the intention and its own journal rows.
+
+        The current focus is listed first, always. It used to be passed only to
+        `_blocked_work`, which returns nothing unless the work is parked or
+        planning-failed — so the one intention the agent was actually working
+        on was the one intention the reply prompt never named, and a reply
+        asked about it had to infer its state from the conversation instead
+        (2026-11-09: "haven't started the Helium review" while Helium review
+        was the focus and had 86 journaled actions). The per-intention
+        subqueries below are also what make "started" answerable for work
+        far outside the journal window: each line is that intention's own
+        last journal row, not a global recency guess.
+
+        GSL child tasks (`proposed` rows with a parent) are excluded: they
+        outranked real commitments on priority (0.6 vs 0.5) and crowded
+        every commitment out of the top-`limit` rows, which is how the
+        focus went missing in the first place.
+        """
+        if self.db is None:
+            return []
+        limit = int(self.config.social.execution_state_max_blocked)
+        if limit <= 0:
+            return []
+        try:
+            rows = await self.db.fetch(
+                "SELECT i.title, i.status, i.created_at, i.resume_state, "
+                "(SELECT max(j.ts_start) FROM action_journal j "
+                " WHERE j.intention_id = i.id) AS last_action, "
+                "(SELECT j.tool FROM action_journal j "
+                " WHERE j.intention_id = i.id ORDER BY j.ts_start DESC LIMIT 1) "
+                " AS last_tool, "
+                "(SELECT j.status FROM action_journal j "
+                " WHERE j.intention_id = i.id ORDER BY j.ts_start DESC LIMIT 1) "
+                " AS last_status "
+                "FROM intentions i WHERE i.status IN "
+                "('proposed','active','in_progress','waiting','awaiting_review') "
+                "AND NOT (i.status = 'proposed' AND i.parent_id IS NOT NULL) "
+                "ORDER BY i.priority DESC NULLS LAST, i.updated_at DESC LIMIT $1",
+                limit,
+            )
+        except Exception:
+            logger.warning("social.execution_state_progress_failed")
+            return []
+        lines: list[str] = []
+        now = datetime.now(UTC)
+        focus_index: int | None = None
+        for row in rows or []:
+            title = str(row["title"] or "")[:120]
+            status = str(row["status"] or "")
+            last_action = row["last_action"]
+            if last_action is None:
+                try:
+                    age = _human_age(now - row["created_at"])
+                except (TypeError, ValueError):
+                    age = "unknown"
+                line = (
+                    f"[{status}] {title}: no action recorded since it was created {age} ago"
+                )
+            else:
+                try:
+                    age = _human_age(now - last_action)
+                except (TypeError, ValueError):
+                    age = "unknown"
+                line = (
+                    f"[{status}] {title}: last action {row['last_tool'] or 'unknown'} "
+                    f"({row['last_status'] or 'unknown'}) {age} ago"
+                )
+                resume = row["resume_state"]
+                if isinstance(resume, str):
+                    try:
+                        resume = json.loads(resume)
+                    except ValueError:
+                        resume = {}
+                steps = ((resume or {}).get("plan") or {}).get("steps") or []
+                for step in steps:
+                    if not isinstance(step, dict) or step.get("status") == "done":
+                        continue
+                    step_id = str(step.get("id") or "")
+                    description = " ".join(str(step.get("description") or "").split())[:100]
+                    if description:
+                        line += f"; current step {step_id}: {description}"
+                    break
+            if focus_title and title == focus_title:
+                focus_index = len(lines)
+                line += "; this is the current focus"
+            lines.append(line)
+        if focus_title and focus_index is None:
+            # The focus fell outside the top-`limit` rows (or was filtered):
+            # fetch it by title so the reply still names what is being worked
+            # on. Best-effort — a failed lookup must not cost the whole list.
+            try:
+                focus_rows = await self.db.fetch(
+                    "SELECT title, status, created_at, resume_state, "
+                    "(SELECT max(j.ts_start) FROM action_journal j "
+                    " WHERE j.intention_id = i.id) AS last_action, "
+                    "(SELECT j.tool FROM action_journal j "
+                    " WHERE j.intention_id = i.id ORDER BY j.ts_start DESC LIMIT 1) "
+                    " AS last_tool, "
+                    "(SELECT j.status FROM action_journal j "
+                    " WHERE j.intention_id = i.id ORDER BY j.ts_start DESC LIMIT 1) "
+                    " AS last_status "
+                    "FROM intentions i WHERE i.title = $1 AND i.status IN "
+                    "('proposed','active','in_progress','waiting','awaiting_review') "
+                    "ORDER BY i.updated_at DESC LIMIT 1",
+                    focus_title,
+                )
+            except Exception:
+                focus_rows = []
+            for row in focus_rows or []:
+                last_action = row["last_action"]
+                if last_action is None:
+                    line = (
+                        f"[{row['status']}] {row['title']}: no action recorded "
+                        f"since it was created; this is the current focus"
+                    )
+                else:
+                    try:
+                        age = _human_age(now - last_action)
+                    except (TypeError, ValueError):
+                        age = "unknown"
+                    line = (
+                        f"[{row['status']}] {row['title']}: last action "
+                        f"{row['last_tool'] or 'unknown'} "
+                        f"({row['last_status'] or 'unknown'}) {age} ago; "
+                        f"this is the current focus"
+                    )
+                lines.insert(0, line)
+                break
+        elif focus_index is not None and focus_index > 0:
+            lines.insert(0, lines.pop(focus_index))
+        return lines[:limit]
+
+    async def _delegation_state(
+        self, journal_window_min: float,
+    ) -> tuple[list[str], set[str]]:
+        """What the sub-agents were actually asked to do, and what came back.
+
+        The action journal already records every `subagent.*` call — begin at
+        `ts_start`, verdict at `end` — but only the journal's own short window
+        reaches the reply prompt, and a delegation is usually not *recent*: a
+        desktop run blocks for as long as the work takes, and the person asking
+        about it an hour later is asking about a row the reply prompt never saw.
+        From the agent's side that read as a sub-agent that had never been used,
+        and the reply invented one from the focus instead — the "running APEX
+        now" a journal with no APEX row in it should have made impossible to
+        say.
+
+        So delegations get their own window and their own line in the prompt,
+        carrying the sub-agent's verdict verbatim from the journal digest. The
+        second return value is the set of sub-agents whose delegation is either
+        still `running` or finished inside the journal window — the evidence a
+        present-tense claim about a named sub-agent is checked against, since
+        "running now" is a claim about the journal and not about the plan.
+        """
+        window_h = max(0.0, float(self.config.social.execution_state_delegation_window_h))
+        limit = int(self.config.social.execution_state_max_delegations)
+        if self.db is None or window_h <= 0 or limit <= 0:
+            return [], set()
+        since = datetime.now(UTC) - timedelta(hours=window_h)
+        try:
+            rows = await self.db.fetch(
+                "SELECT tool, status, ts_start, result_digest FROM action_journal "
+                "WHERE tool LIKE 'subagent.%' AND ts_start >= $1 "
+                "ORDER BY ts_start DESC LIMIT $2",
+                since, limit,
+            )
+        except Exception:
+            logger.warning("social.execution_state_delegations_failed")
+            return [], set()
+        journal_since = datetime.now(UTC) - timedelta(minutes=journal_window_min)
+        names: set[str] = set()
+        lines: list[str] = []
+        for row in rows:
+            tool = str(row["tool"] or "")
+            # `subagent.<name>` — the run tool's own name. `subagent.status` is
+            # a lookup, not a delegation, and it would crowd the line out with
+            # rows that say nothing about work.
+            name = tool.removeprefix("subagent.")
+            if not name or name == "status":
+                continue
+            status = str(row["status"] or "unknown")
+            started = row["ts_start"]
+            age = ""
+            try:
+                delta = datetime.now(UTC) - started
+                age = _human_age(delta)
+                if status == "running" or started >= journal_since:
+                    names.add(name)
+            except (TypeError, ValueError):
+                pass
+            digest = row["result_digest"]
+            if isinstance(digest, str):
+                try:
+                    digest = json.loads(digest)
+                except ValueError:
+                    digest = {}
+            verdict = ""
+            if isinstance(digest, dict):
+                verdict = " ".join(str(digest.get("summary") or "").split())[:220]
+            when = f", started {age} ago" if age else ""
+            lines.append(
+                f"{name}: {status}{when}"
+                + (f" — {verdict}" if verdict else "")
+            )
+        return lines, names
+
+    async def _finished_work(self) -> list[str]:
+        """Work that has already reached a stage, read from the stage notices.
+
+        The third reader, and the one that closes the gap the other two leave.
+        `action_journal` is a window on the last few minutes and the blocked list
+        is a window on work that stopped — a *finished* intention belongs to
+        neither, because `done` is terminal and every query here filters on the
+        open statuses. So the prompt was shown a journal that had gone quiet and a
+        work list with nothing outstanding, and told to treat the absence as the
+        fact, which is exactly right for work in flight and exactly wrong for work
+        already completed: the person asking whether it had been done was answered
+        from an empty block.
+
+        The notices are read rather than the intentions because the notice is the
+        row that says both things at once — that the stage was reached, and whether
+        the person has been told — and a reply that has to say "it is finished" has
+        no use for the second half but cannot do without the first.
+
+        Undelivered notices are listed first. One that is still owed is a debt the
+        reply is being written while it stands, and the prompt has to be able to
+        see that as distinct from work that has already been reported.
+        """
+        if self.db is None:
+            return []
+        limit = int(self.config.social.execution_state_max_stages)
+        if limit <= 0:
+            return []
+        since = datetime.now(UTC) - timedelta(
+            hours=max(0.0, float(self.config.social.execution_state_stage_window_h)),
+        )
+        try:
+            rows = await self.db.fetch(
+                "SELECT stage, title, detail, delivered_at FROM stage_notices "
+                "WHERE created_at >= $1 ORDER BY created_at DESC LIMIT $2",
+                since, limit,
+            )
+        except Exception:
+            # Its own warning rather than the journal's: a reply that cannot read
+            # finished work is not the same failure as a reply that cannot read the
+            # journal, and conflating them would let one unavailable table silence
+            # the guardrail that the other one is there to raise.
+            logger.warning("social.execution_state_stages_failed")
+            return []
+        spoken = {
+            "done": "finished",
+            "parked": "stopped short",
+            "awaiting_review": "not verified, waiting on you",
+        }
+        lines: list[str] = []
+        for row in rows:
+            stage = str(row["stage"] or "")
+            phrase = spoken.get(stage, stage)
+            title = str(row["title"] or "")[:120]
+            detail = " ".join(str(row["detail"] or "").split())[:400]
+            said = "already told them" if row["delivered_at"] is not None else "not told them yet"
+            line = f"- {title}: {phrase} ({stage}); {said}"
+            if detail:
+                line += f" — {detail}"
+            lines.append(line)
+        owed = [ln for ln in lines if "not told them yet" in ln]
+        said_lines = [ln for ln in lines if ln not in owed]
+        return (owed + said_lines)[:limit]
+
+    async def _blocked_work(self, focus_title: str | None) -> list[str]:
+        """Work that is parked, stalled at planning, or otherwise not moving.
+
+        `parked` is in the query because a parked intention used to be invisible
+        here: the status list stopped at `blocked`, so the one row that carried
+        the reason the work had stopped was the one row the deliberation could
+        not see. An agent whose planning loop had frozen looked, to the only
+        thing that writes its replies, like an agent with nothing to report.
+
+        `blocked` was in that list for as long as it was here, and nothing in the
+        system has ever written that status -- it is not in `IntentionStatus` and
+        no code path assigns it. So the query named a row that cannot exist,
+        which is a way of saying "if work were ever blocked, the reply would
+        mention it" without anyone noticing that nothing ever marks work blocked.
+        The list is now exactly the statuses the schema has, so a status added to
+        the enum cannot be quietly forgotten here again.
+
+        The planning failure count comes out of the intention's own resume state,
+        because that is where the bounded loop puts it: an intention part-way
+        through its attempts says so, rather than looking the same as one that has
+        just started trying.
+        """
+        if self.db is None:
+            return []
+        try:
+            rows = await self.db.fetch(
+                "SELECT title, status, closed_reason, resume_state FROM intentions "
+                "WHERE status IN ('proposed','active','in_progress','waiting',"
+                "'awaiting_review','parked') "
+                "ORDER BY priority DESC NULLS LAST, deadline ASC NULLS LAST LIMIT $1",
+                int(self.config.social.execution_state_max_blocked) + 2,
+            )
+        except Exception:
+            logger.warning("social.blocked_work_query_failed")
+            return []
+        lines: list[str] = []
+        for row in rows:
+            title = str(row["title"] or "")[:120]
+            status = str(row["status"] or "")
+            resume = row["resume_state"]
+            if isinstance(resume, str):
+                try:
+                    resume = json.loads(resume)
+                except ValueError:
+                    resume = {}
+            attempts = (resume or {}).get("plan_attempts") or 0
+            stalled = ""
+            try:
+                attempts = int(attempts)
+            except (TypeError, ValueError):
+                attempts = 0
+            if status == "parked":
+                stalled = f"parked: {str(row['closed_reason'] or 'no reason recorded')[:200]}"
+            elif attempts:
+                stalled = f"planning has failed {attempts} time(s) in a row; nothing else has started"
+            if status != "parked" and not attempts:
+                continue
+            if focus_title and title == focus_title:
+                stalled = f"this is the current focus; {stalled}" if stalled else "this is the current focus"
+            lines.append(f"[{status}] {title}: {stalled}")
+        return lines[: int(self.config.social.execution_state_max_blocked)]
+
+    def _withhold_unearned_progress(
+        self, decision: SocialDecision, state: _ExecutionState,
+    ) -> None:
+        """No reply may assert work that no journaled action backs.
+
+        The rule: saying an action is underway is a claim about the journal, and
+        the journal is the thing that settles it. This is the last check on the
+        turn, after the answer has been found, parsed and shaped, because it is
+        the one that can undo an answer that would otherwise go out intact.
+
+        What it does with a claim is remove it rather than replace it. There is
+        deliberately no sentence composed here: everything this codebase sends to
+        a person is a word the model chose, and a canned sentence inserted here
+        would break that while fixing something else -- it would put an
+        explanation in somebody's mouth that they never said and the agent never
+        deliberated. So the claim goes, and what is left is:
+
+        * any other reply text, kept. A reply can be half claim and half answer,
+          and the answer is still the answer;
+        * nothing, and `decided=False`, when the claim was all of it. Then the
+          turn ends as what it is -- an answer the agent could not make honestly
+          -- and the message stays on the queue for another attempt with the
+          blockage now visible in its prompt. It is the same path an answer that
+          never arrived takes, which is the right one: from the person's side
+          those two are the same experience, and this one has a recorded reason.
+
+        Both outcomes are logged. A guardrail that fires silently is a guardrail
+        that looks like the model having a bad day.
+        """
+        if not state.readable:
+            return
+        texts = [
+            text for text in decision.reply_texts
+            if claims_work_is_underway(text) or claims_work_not_started(text)
+        ]
+        if not texts:
+            return
+        # A claim that names a sub-agent is checkable in a way a claim about
+        # "the work" is not: the journal has a row per delegation, with the
+        # sub-agent's own name in the tool. Requiring that row is the fix for
+        # the shape the transcript caught — "Running APEX once more now" sent
+        # while the only journaled action was an unrelated `shell.run`. Under
+        # the old rule any journaled action blessed any underway claim, so a
+        # sub-agent that had never been invoked was narrated as running off the
+        # strength of a lookup the agent had made hours before. The row has to
+        # be the delegation itself: still running, or finished inside the
+        # journal's window. Anything older is a past run, and a present-tense
+        # claim about it is as unearned as no row at all.
+        kept = list(decision.reply_texts)
+        kept_delays = list(decision.reply_delays_s)
+        withheld_named = 0
+        withheld_general = 0
+        withheld_not_started = 0
+
+        def _unearned(text: str) -> bool:
+            nonlocal withheld_named, withheld_general, withheld_not_started
+            # A not-started claim about work whose own journal row shows
+            # actions is unearned in the other direction: the per-intention
+            # progress line is the evidence, and it says the work started.
+            if claims_work_not_started(text) and _names_started_work(text, state.progress):
+                withheld_not_started += 1
+                return True
+            if not claims_work_is_underway(text):
+                return False
+            named = subagents_named(text)
+            if named:
+                if named <= state.delegation_names:
+                    return False
+                withheld_named += 1
+                return True
+            # The all-time project record is evidence for any project, focused
+            # or not: a claim about work on a preempted project whose ledger
+            # shows completed nodes, touched files or ok actions is grounded in
+            # rows, and stripping it here is what made real partial progress
+            # read as zero. A project named in the claim is matched against
+            # its own ledger; a general claim is blessed by any project
+            # standing that exists.
+            if state.something_happened or state.has_project_evidence:
+                return False
+            withheld_general += 1
+            return True
+
+        # Text and its gap go together: a text withheld here takes the delay
+        # written for it with it, so what remains is still aligned by index and
+        # no later message inherits a pause meant for one that was never sent.
+        kept_with_delays = [
+            (text, delay) for text, delay in zip(
+                kept, kept_delays + [0.0] * len(kept), strict=False,
+            ) if not _unearned(text)
+        ]
+        kept = [text for text, _ in kept_with_delays]
+        kept_delays = [delay for _, delay in kept_with_delays]
+        withheld = withheld_named + withheld_general + withheld_not_started
+        if not withheld:
+            return
+        if withheld_not_started:
+            note = (
+                f"{withheld_not_started} reply text(s) claimed work had not "
+                f"started where the per-intention journal shows actions"
+            )
+        elif withheld_named:
+            note = (
+                f"{withheld_named} reply text(s) claimed a sub-agent was running with no "
+                f"matching delegation in the journal (checked: {', '.join(sorted(_SUBAGENT_NAMES))})"
+            )
+        else:
+            note = (
+                f"{withheld_general} reply text(s) claimed work that is underway with nothing "
+                f"journaled in the last {state.window_min:g} minutes"
+            )
+        if state.blocked:
+            note += f" (blocked: {state.blocked[0][:160]})"
+        logger.warning(
+            "social.unearned_progress_claim", withheld=withheld, kept=len(kept),
+            window_min=state.window_min,
+        )
+        decision.reply_texts = kept
+        decision.reply_delays_s = kept_delays
+        decision.reason = f"{decision.reason}; {note}" if decision.reason else note
+        if not kept:
+            # Nothing left to say, and the action cannot stand on its own any
+            # more: `reply_now` with no text is already handled above, and this is
+            # the same shape of turn seen from the other end.
+            decision.action = SocialAction.act_silently
+            decision.decided = False
+            decision.creates_intention = False
+            decision.intention_spec = None
+
+    # --------------------------------------- federated commissions (3.2)
+
+    @staticmethod
+    def evaluate_commission(
+        spec: dict[str, Any], *, skills: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Epistemic check on a peer-resident commission. Pure.
+
+        Returns {"action", "reason", "detail"} where action is one of
+        `accept`, `ask_clarification`, `deliberate_disagreement`, `boundary`.
+        """
+        skills = skills or {}
+        required = spec.get("required_capability") or spec.get("capability")
+        if required and required not in skills and required not in (skills.get("skills") or []):
+            return {
+                "action": "boundary",
+                "reason": f"commission requires capability {required!r} outside calibrated skills",
+                "detail": {"required_capability": required},
+            }
+        budget = spec.get("budget_usd")
+        ceiling = skills.get("max_budget_usd") if isinstance(skills, dict) else None
+        if budget is not None and ceiling is not None:
+            try:
+                if float(budget) > float(ceiling):
+                    return {
+                        "action": "deliberate_disagreement",
+                        "reason": (
+                            f"commission budget ${float(budget):.2f} exceeds calibrated "
+                            f"ceiling ${float(ceiling):.2f}"
+                        ),
+                        "detail": {"budget_usd": budget, "ceiling": ceiling},
+                    }
+            except (TypeError, ValueError):
+                pass
+        summary = str(spec.get("summary") or spec.get("goal") or "").strip()
+        if len(summary) < 20 or not spec.get("budget_usd") and spec.get("needs_budget_clarification"):
+            return {
+                "action": "ask_clarification",
+                "reason": "commission spec is underspecified",
+                "detail": {"summary_length": len(summary)},
+            }
+        if not summary:
+            return {
+                "action": "ask_clarification",
+                "reason": "commission carries no goal summary",
+                "detail": {},
+            }
+        return {"action": "accept", "reason": "spec is within skills and budget", "detail": {}}
+
+    async def deliberate_commission(
+        self, spec: dict[str, Any], *, message: Message | None = None,
+        skills: dict[str, Any] | None = None,
+    ) -> SocialDecision:
+        """Route a peer-resident commission through deliberate(), with checks.
+
+        Local epistemic checks run first (flawed spec, under-budgeted,
+        outside skills) so a specialist can disagree without spending a model
+        call; a clean spec goes through the full `deliberate()` path.
+        `_withhold_unearned_progress()` is enforced on the outgoing update.
+        """
+        evaluation = self.evaluate_commission(spec, skills=skills)
+        if evaluation["action"] in ("boundary", "deliberate_disagreement"):
+            reason = evaluation.get("ignore_reason") or (
+                "boundary" if evaluation["action"] == "boundary" else "deliberate_disagreement"
+            )
+            decision = SocialDecision(
+                action=SocialAction.ignore,
+                reply_texts=[],
+                reason=evaluation["reason"],
+                ignore_reason=reason,
+                tier_used="T3",
+            )
+            state = await self._execution_state(None)
+            self._withhold_unearned_progress(decision, state)
+            return decision
+        if evaluation["action"] == "ask_clarification":
+            return SocialDecision(
+                action=SocialAction.ask_clarification,
+                reply_texts=[f"Could you clarify the commission? {evaluation['reason']}"],
+                reason=evaluation["reason"],
+                tier_used="T3",
+            )
+        if message is None:
+            return SocialDecision(
+                action=SocialAction.act_silently, reply_texts=[],
+                reason="commission accepted without an inbound message to deliberate",
+                tier_used="T3",
+            )
+        decision = await self.deliberate(message)
+        state = await self._execution_state(None)
+        self._withhold_unearned_progress(decision, state)
+        return decision
+
+    async def _ask(
+        self, prompt_messages: list[dict[str, str]], tier: Tier, consequential: bool,
+    ) -> tuple[dict[str, Any], bool, int, str | None, bool]:
+        """The decision object, and what went wrong if there was none.
+
+        Two attempts, and the second one is different rather than the same again.
+        The gateway retries an empty or cut-off reply, which helps when the model
+        had a bad moment and helps not at all when it was asked the same question
+        with the same ceiling: a reasoning model that spent the whole budget
+        thinking will do it again, and the retry inherits the bet. So this asks
+        the same question with more room -- bounded, so a model that never
+        answers costs two calls and not the rest of the afternoon.
+
+        More room is the right second question when the answer ran out of it and
+        the wrong one when the answer was not the shape asked for. An answer in
+        prose is not short, so it is also asked for again -- with the contract
+        restated at the end of the prompt rather than only at the top, which is
+        what that failure needs, and which is the reason the second ask is not
+        the first one repeated.
+
+        A prose answer is kept rather than discarded if even that does not
+        produce an object, because those words are the answer and are the only
+        ones the person will get. It is asked for the object first: a recovered
+        reply carries no `creates_intention` and no `intention_spec`, so an "I'll
+        do it" recovered this way is a promise with nothing behind it, which is
+        the one thing the prompt above goes to some length to prevent.
+
+        Returns `(data, cut_off, ceiling_used, failure, user_action)`. `failure`
+        is the sentence that will be recorded against the turn, so it says what
+        actually happened: an answer that never arrived is not an answer that
+        could not be read, and the person is told which of the two they are
+        looking at. `user_action` is True only for failures the user must fix
+        (401/403 key or limit); transient 429/503/timeouts are retried quietly.
+        """
+        last: str = "the model could not be reached; nothing said in its place"
+        last_exc: str = ""
+        # The best prose answer seen, if any. Held rather than used immediately
+        # so the object gets asked for first, and used at the end so that an
+        # answer the model did write is never thrown away.
+        prose: str | None = None
+        # The same, for an answer that arrived as an object under other names.
+        fallback: dict[str, Any] | None = None
+        # Read from configuration, and lifted outright for consequential work:
+        # a coding or multi-step task takes the escalated room on its first ask,
+        # because the answers that need it are exactly the ones a small ceiling
+        # turns into a retry.
+        base_ceiling, escalated_ceiling = self._ceilings(consequential)
+        for attempt, ceiling in enumerate((base_ceiling, escalated_ceiling)):
+            if attempt and (
+                last.startswith("the model could not be reached")
+                or last.startswith("rate limited")
+            ):
+                # The provider is not answering at all, or is rate limiting.
+                # More room does not change either: a 429 is about time, not
+                # space, and asking a second time spends money to be told the
+                # same thing. The message stays queued and the schedule in
+                # `record_failure` decides when it is asked again.
+                return {}, False, base_ceiling, last, needs_user_action(last_exc)
+            user_text = prompt_messages[1]["content"] + (_ASK_AGAIN if attempt else "")
+            request = ModelRequest(
+                tier=tier,
+                purpose="social.deliberate",
+                budget_bucket="discretionary",
+                consequence_class="consequential" if consequential else "routine",
+                messages=[
+                    ModelMessage(role=Role.system, content=prompt_messages[0]["content"]),
+                    ModelMessage(role=Role.user, content=user_text),
+                ],
+                max_tokens=ceiling,
+                reasoning_budget=DELIBERATION_REASONING_BUDGET,
+            )
+            try:
+                response = await self.gateway.complete(request)
+            except Exception as exc:
+                last_exc = f"{type(exc).__name__}: {exc}"[:500]
+                rate_limited = "429" in last_exc or "rate limit" in last_exc.lower()
+                wait_s = _retry_after_from(exc)
+                if needs_user_action(last_exc):
+                    logger.warning("social.deliberate_call_failed", attempt=attempt + 1)
+                elif rate_limited:
+                    logger.warning(
+                        "social.deliberate_rate_limited_waiting",
+                        attempt=attempt + 1,
+                        wait_in_s=wait_s,
+                        waiting=True,
+                        reason=last_exc[:200],
+                    )
+                else:
+                    logger.info(
+                        "social.deliberate_call_retrying",
+                        attempt=attempt + 1,
+                        immediate=True,
+                        reason=last_exc[:200],
+                    )
+                if rate_limited:
+                    last = (
+                        "rate limited (429); waiting "
+                        f"{_format_wait(wait_s)} before retrying; nothing said in its place"
+                    )
+                else:
+                    last = (
+                        "the model could not be reached; retrying immediately; "
+                        "nothing said in its place"
+                    )
+                continue
+            data = _parse_json(response.text or "")
+            cut_off = was_truncated(response.finish_reason)
+            if _formed_a_decision(data):
+                # Recovered from a reply the provider stopped: usable, but the
+                # record says so, because a decision read back later is not to
+                # be taken for a whole one.
+                return data, cut_off, ceiling, None, False
+            if not cut_off and _prose_body(response.text) is not None:
+                prose = response.text or ""
+                last = "the model answered in prose instead of the decision object"
+            elif not cut_off and (wrong_keys := _object_as_the_reply(data)) is not None:
+                # The object was written, and it is not the one that was asked
+                # for: same words, different key. Held rather than used now, for
+                # the same reason prose is -- the object is asked for again
+                # first, and a model that produces the right one is believed
+                # over the wrong one it wrote a moment earlier.
+                if fallback is None:
+                    fallback = wrong_keys
+                last = (
+                    "the model wrote the answer inside a differently named "
+                    "field rather than in reply_texts"
+                )
+            elif not (response.text or "").strip():
+                last = (
+                    "the model thought at length and wrote no answer; "
+                    "nothing said in its place"
+                )
+            elif cut_off:
+                last = (
+                    f"the model's answer was cut off at {ceiling} tokens; "
+                    "nothing said in its place"
+                )
+            else:
+                last = "the model's answer could not be read; nothing said in its place"
+            logger.warning(
+                "social.deliberate_no_answer",
+                attempt=attempt + 1,
+                ceiling=ceiling,
+                finish_reason=response.finish_reason,
+                reasoning=sum(len(tb.text) for tb in response.thinking_blocks),
+                cut_off=cut_off,
+                prose=len(prose) if prose else 0,
+            )
+        recovered = _prose_as_the_reply(prose)
+        if recovered is not None:
+            logger.warning(
+                "social.deliberate_prose_answer",
+                chars=len(recovered["reply_texts"][0]),
+            )
+            return recovered, False, escalated_ceiling, None, False
+        if fallback is not None:
+            logger.warning(
+                "social.deliberate_wrong_keys",
+                chars=len(fallback["reply_texts"][0]),
+            )
+            return fallback, False, escalated_ceiling, None, False
+        user_action = needs_user_action(last_exc)
+        if user_action:
+            last = f"{last} (action needed: check API key or spending limit)"
+        elif is_rate_limited_text(last_exc) or last.startswith("rate limited"):
+            last = f"{last} (waiting for rate limit, retrying in background)"
+        else:
+            last = f"{last} (retrying immediately in background)"
+        return {}, False, escalated_ceiling, last, user_action
+
+    async def _recent_conversation(self, message: Message) -> str:
+        """The last few turns of this conversation, oldest first.
+
+        Scoped to the conversation key rather than the person, because a person
+        reachable on two channels has two conversations and only the key knows
+        which one this message is in. The message being answered is excluded --
+        it is already in the prompt as the thing to respond to, and repeating it
+        would let a long message crowd out the history that explains it.
+
+        Only delivered rows belong here. The outbound pipeline also records text
+        it held, suppressed or recognised as a repeat; reading those rows as
+        conversation tells the reply model that a person saw words they never
+        received, which is not shared context and must never be treated as such.
+        """
+        if self.db is None or not message.conversation_key:
+            return ""
+        try:
+            rows = await self.db.fetch(
+                "SELECT direction, person_id, sender_name, sender_username, text, channel "
+                "FROM messages "
+                "WHERE conversation_key = $1 AND id <> $2 "
+                f"AND {DELIVERED} "
+                "ORDER BY ts DESC LIMIT $3",
+                message.conversation_key, message.id,
+                self.config.memory.context.history_turns,
+            )
+        except Exception:
+            logger.warning("social.conversation_history_failed")
+            return ""
+        if not rows:
+            return ""
+        detail = self.config.memory.context.detail_chars
+        lines: list[str] = []
+        for row in reversed(rows):
+            # `sender_label`, not a bare `person_id`: a history in which one turn
+            # says `alice (wa:819012345678)` and the next says `tg:819012345678`
+            # teaches the model that two people are writing, which is the reading
+            # a channel-switched conversation invites. The label is the same
+            # function the prompt below it uses, so one turn cannot be more
+            # specific than the other.
+            who = "me" if row["direction"] == "outbound" else sender_label(
+                row["sender_name"], row["sender_username"], row["person_id"],
+            )
+            text = " ".join((row["text"] or "").split())
+            if len(text) > detail:
+                text = text[: detail - 1].rstrip() + "…"
+            lines.append(f"{who} [{row['channel']}]: {text}")
+        return "\n".join(lines)
+
+    async def _open_commitments(self) -> str:
+        """What the agent is already on the hook for.
+
+        Read straight from the commitments table rather than from the workspace,
+        because a message can arrive on a cycle that never assembles one. Saying
+        yes to something already owed is the common way an agent without this
+        ends up double-booking itself.
+        """
+        if self.db is None:
+            return ""
+        try:
+            rows = await self.db.fetch(
+                "SELECT title, status, priority, commissioned_by FROM intentions "
+                "WHERE status IN ('proposed', 'active', 'in_progress', 'waiting', "
+                "'awaiting_review') "
+                "ORDER BY priority DESC NULLS LAST, deadline ASC NULLS LAST LIMIT 8",
+            )
+        except Exception:
+            logger.warning("social.commitments_query_failed")
+            return ""
+        if not rows:
+            return ""
+        return "\n".join(
+            f"- [{row['status']}] {row['title']} "
+            f"(priority={row['priority']}, by={row['commissioned_by'] or 'self'})"
+            for row in rows
+        )
+
+    # ------------------------------------------------- verbosity
+
+    async def get_verbosity(self, person_id: str | None) -> str:
+        if not person_id or self.relationships is None:
+            return DEFAULT_VERBOSITY
+        try:
+            got = getattr(self.relationships, "get_preference", None)
+            if got is None:
+                return DEFAULT_VERBOSITY
+            raw = await got(person_id, "communication_verbosity", DEFAULT_VERBOSITY)
+        except Exception:
+            return DEFAULT_VERBOSITY
+        return normalise_verbosity(raw if isinstance(raw, str) else str(raw or ""))
+
+    async def set_verbosity(self, person_id: str | None, level: str) -> None:
+        if not person_id or self.relationships is None:
+            return
+        setter = getattr(self.relationships, "set_preference", None)
+        if setter is None:
+            return
+        try:
+            await setter(person_id, "communication_verbosity", normalise_verbosity(level))
+        except Exception:
+            logger.warning("social.verbosity_set_failed", person=person_id)
+
+    async def compose_progress_note(
+        self, *, title: str, progress: str, person_id: str | None = None,
+        preview: bool = False,
+    ) -> str | None:
+        """A proactive mid-task progress note, or nothing worth saying.
+
+        Same shape as `compose_stage_notice`: model-composed, small ceiling,
+        no retry ladder. The caller gates on having real progress since the
+        last word to this person; this only decides whether the words are
+        worth sending.
+        """
+        if self.gateway is None:
+            logger.warning("social.progress_note_no_gateway")
+            return None
+        if not (progress or "").strip():
+            return None
+        name = self.config.self_name
+        if self.self_model is not None:
+            try:
+                name = await self.self_model.get("name", self.config.self_name)
+            except Exception:
+                pass
+        level = await self.get_verbosity(person_id)
+        messages = progress_note_messages(
+            self_name=name, title=title, progress=progress,
+            who=person_id, verbosity_note=verbosity_note(level), preview=preview,
+        )
+        request = ModelRequest(
+            tier=Tier.T2, purpose="social.progress_note",
+            budget_bucket="discretionary", consequence_class="routine",
+            messages=[
+                ModelMessage(role=Role.system, content=messages[0]["content"]),
+                ModelMessage(role=Role.user, content=messages[1]["content"]),
+            ],
+            max_tokens=STAGE_NOTICE_MAX_TOKENS,
+        )
+        try:
+            response = await self.gateway.complete(request)
+        except Exception as exc:
+            logger.warning(
+                "social.progress_note_call_failed",
+                reason=f"{type(exc).__name__}: {exc}"[:200],
+            )
+            return None
+        data = _parse_json(response.text or "")
+        text = data.get("text")
+        if not isinstance(text, str):
+            text = _prose_body(response.text)
+            text = text if isinstance(text, str) else None
+        text = " ".join(text.split()) if text else ""
+        return text or None
+
+    # ------------------------------------------------- stage notices
+
+    async def compose_stage_notice(self, notice: Any, preview: bool = False) -> str | None:
+        """The words for one stage notice, or nothing.
+
+        A method beside `deliberate` rather than a call site, for the reason the
+        rest of this file exists: everything this program sends to a person is a
+        word the model chose, and a stage notice is a message like any other. So
+        the composing happens here, against a prompt written for the job, and the
+        caller gets back either text it can send or `None` meaning there was
+        nothing worth saying.
+
+        `None` and `""` are the same answer and the caller treats them the same
+        way, because the two arrive from different failures — a model that declined
+        to write, and a model that could not be reached — and the difference is
+        logged rather than pushed onto the caller, which has one question to ask:
+        is there a message to send.
+
+        Not bounded by `MAX_DELIBERATION_ATTEMPTS` or gated behind the tier ladder.
+        A reply answers somebody who is waiting; this speaks to somebody who has
+        said nothing at all, and there is at most one owed word per stage, so the
+        retry that bounds a queue of unanswered messages has nothing to bound here.
+        A small ceiling and no escalation is the honest shape for it: the whole
+        point of this pass is that it happens at all, and a stage notice that took
+        three tries to compose was three tries too many.
+        """
+        if self.gateway is None:
+            logger.warning("social.stage_notice_no_gateway")
+            return None
+        name = self.config.self_name
+        if self.self_model is not None:
+            try:
+                name = await self.self_model.get("name", self.config.self_name)
+            except Exception:
+                pass
+        messages = stage_notice_messages(
+            self_name=name,
+            stage=str(getattr(notice, "stage", "") or ""),
+            title=str(getattr(notice, "title", "") or ""),
+            detail=str(getattr(notice, "detail", "") or ""),
+            who=str(getattr(notice, "person_id", "") or "") or None,
+            preview=preview,
+        )
+        request = ModelRequest(
+            tier=Tier.T2,
+            purpose="social.stage_notice",
+            budget_bucket="discretionary",
+            consequence_class="routine",
+            messages=[
+                ModelMessage(role=Role.system, content=messages[0]["content"]),
+                ModelMessage(role=Role.user, content=messages[1]["content"]),
+            ],
+            max_tokens=STAGE_NOTICE_MAX_TOKENS,
+        )
+        try:
+            response = await self.gateway.complete(request)
+        except Exception as exc:
+            logger.warning(
+                "social.stage_notice_call_failed",
+                stage=str(getattr(notice, "stage", "") or ""),
+                reason=f"{type(exc).__name__}: {exc}"[:200],
+            )
+            return None
+        data = _parse_json(response.text or "")
+        text = data.get("text")
+        if not isinstance(text, str):
+            text = _prose_body(response.text)
+            text = text if isinstance(text, str) else None
+        text = " ".join(text.split()) if text else ""
+        if not text:
+            logger.info(
+                "social.stage_notice_nothing_to_say",
+                stage=str(getattr(notice, "stage", "") or ""),
+                finish_reason=response.finish_reason,
+            )
+            return None
+        return text
+
+    async def record_ignore(self, person_id: str | None, reason: str | None) -> dict[str, Any]:
+        """Counts a silence against the person's streak, once, where it happens.
+
+        Deliberating an ignore and carrying it out are different moments, and the
+        as well — so a message re-deliberated after a failed cycle counted its own
+        silence twice — while the act called a `record_ignore` that did not exist
+        on this class and raised, which left the message unhandled at the head of
+        the queue with nothing anywhere saying the agent had chosen to be quiet.
+
+        Returns the relationship store's streak report, whose `review` flag says
+        the silence has run long enough to be worth a second look.
+        """
+        if self.relationships is None:
+            return {"count": 0, "review": False}
+        return await self.relationships.record_ignore(person_id, reason)
+
+    async def pending_inbound(self, limit: int = 5) -> list[Message]:
+        if self.db is None:
+            return []
+        ua_cap, tr_cap = effective_attempt_caps(self.config)
+        rows = await self.db.fetch(
+            "SELECT id, ts, direction, channel, conversation_key, person_id, text, attachments, "
+            "in_reply_to, intention_id, social_decision, delivery, sender_name, sender_username "
+            "FROM messages "
+            "WHERE direction = 'inbound' AND ("
+            "  social_decision IS NULL"
+            "  OR ((social_decision->>'decided') = 'false'"
+            "      AND COALESCE((social_decision->>'attempts')::int, 0) < CASE "
+            "        WHEN (social_decision->>'needs_user_action') = 'false' THEN $3::int "
+            "        ELSE $2::int END"
+            # A rate-limited message is waited out, not re-asked every cycle: its
+            # failure row carries the epoch before which it must not be asked
+            # again (five minutes, then an hour, five hours, a day). Rows without
+            # one -- every other failure -- are due immediately, as before.
+            "      AND COALESCE(NULLIF((social_decision->>'next_retry_after_epoch'), '')"
+            "        ::double precision, 0) <= EXTRACT(EPOCH FROM now()))"
+            ") ORDER BY ts ASC LIMIT $1",
+            limit, ua_cap, tr_cap,
+        )
+        out: list[Message] = []
+        for row in rows:
+            out.append(self._row_to_message(row))
+        return out
+
+    @staticmethod
+    def _row_to_message(row: Any) -> Message:
+        attachments = row["attachments"]
+        if isinstance(attachments, str):
+            attachments = json.loads(attachments)
+        social_decision = row["social_decision"]
+        if isinstance(social_decision, str):
+            social_decision = json.loads(social_decision)
+        delivery = row["delivery"]
+        if isinstance(delivery, str):
+            delivery = json.loads(delivery)
+        return Message(
+            id=row["id"], ts=row["ts"], direction=row["direction"], channel=row["channel"],
+            conversation_key=row["conversation_key"] or "", person_id=row["person_id"],
+            text=row["text"] or "", attachments=list(attachments or []),
+            in_reply_to=row["in_reply_to"], intention_id=row["intention_id"],
+            social_decision=dict(social_decision or {}), delivery=dict(delivery or {}),
+            sender_name=row["sender_name"], sender_username=row["sender_username"],
+        )
+
+    async def mark_handled(self, message: Message, decision: dict[str, Any] | None = None) -> None:
+        if self.db is None:
+            return
+        payload = json.dumps(decision or {"action": "handled"})
+        await self.db.execute(
+            "UPDATE messages SET social_decision = $1::jsonb WHERE id = $2 AND "
+            "(social_decision IS NULL OR (social_decision->>'decided') = 'false')",
+            payload, message.id,
+        )
+
+    async def record_failure(self, message: Message, decision: dict[str, Any]) -> dict[str, Any]:
+        """Writes down a turn nobody decided, and counts the attempt.
+
+        `mark_handled` retires a message from the queue, which is the right end
+        for a decision and the wrong one for a turn in which no model answered:
+        that closed the question as though it had been answered with a considered
+        silence, permanently, so a model that was briefly out of room left the
+        person with nothing and no record that anything had been tried.
+
+        The attempt count lives in the same column rather than in a new one,
+        because it is bookkeeping about a decision that was never formed and
+        there is no decision to attach it to. `pending_inbound` reads it back to
+        decide whether to ask again; the caps are configuration
+        (`social.max_transient_attempts`, `social.max_deliberation_attempts`)
+        and zero -- the default -- means the question is never dropped: the
+        early attempts are immediate and the rest move onto the escalation
+        curve, so the queue keeps its promise to the person without becoming
+        a hot loop.
+
+        A rate-limited failure additionally schedules *when* to ask again: five
+        minutes after the first 429, then an hour, five hours, a day, staying at
+        a day. `pending_inbound` holds the row until then, so the wait is a wait
+        rather than a re-ask every cycle, and the reason names it so the screen
+        can show "waiting about 1h" instead of silence.
+
+        It overwrites a previous failure and nothing else. `mark_handled` writes
+        the same column and has to be able to retire a message that failed first,
+        or a question nobody could answer would be answered on the second attempt
+        and then sit on the queue for two more; but a decision the agent actually
+        formed is never replaced by a failure that arrived afterwards.
+        """
+        attempts = int(message.social_decision.get("attempts", 0) or 0) + 1
+        payload = {**message.social_decision, **decision, "attempts": attempts}
+        reason = str(payload.get("reason") or "")
+        user_action = bool(payload.get("needs_user_action")) or needs_user_action(reason)
+        rate_limited = bool(payload.get("rate_limited")) or (
+            is_rate_limited_text(reason) and not user_action
+        )
+        if rate_limited and not user_action:
+            hint = payload.get("wait_s")
+            try:
+                hint_s = float(hint) if hint is not None else None
+            except (TypeError, ValueError):
+                hint_s = None
+            wait_s = rate_limit_wait_for_attempt(attempts, hint_s)
+            payload["rate_limited"] = True
+            payload["wait_s"] = wait_s
+            payload["next_retry_after_epoch"] = time.time() + wait_s
+            base_reason = reason.split("; waiting ", 1)[0][:400]
+            payload["reason"] = (
+                f"{base_reason}; waiting {format_wait(wait_s)} before retry "
+                f"(rate-limited attempt {attempts})"
+            )
+        ua_cap, tr_cap = effective_attempt_caps(self.config)
+        transient = payload.get("needs_user_action") is False
+        cap = tr_cap if transient else ua_cap
+        if cap >= NO_CAP and attempts > _UNBOUNDED_SPACING_AFTER:
+            # No ceiling configured: the retries never end, so they cannot stay
+            # immediate either -- an unanswered question asked every cycle is a
+            # hot loop of two model calls a turn. The first few are the model
+            # possibly blinking; past those the shared escalation curve paces
+            # the rest, the same wait a rate-limited failure would take, and
+            # `pending_inbound` holds the row until it elapses.
+            wait_s = rate_limit_wait_for_attempt(attempts)
+            payload["wait_s"] = wait_s
+            payload["next_retry_after_epoch"] = time.time() + wait_s
+            base_reason = reason.split("; waiting ", 1)[0][:400]
+            payload["reason"] = (
+                f"{base_reason}; waiting {format_wait(wait_s)} "
+                f"before retry (attempt {attempts})"
+            )
+        if self.db is None:
+            return payload
+        await self.db.execute(
+            "UPDATE messages SET social_decision = $1::jsonb WHERE id = $2 AND "
+            "(social_decision IS NULL OR (social_decision->>'decided') = 'false')",
+            json.dumps(payload), message.id,
+        )
+        return payload
+
+    async def record_inbound(self, message: Message) -> None:
+        if self.db is None:
+            return
+        await self.db.execute(
+            "INSERT INTO messages (id, ts, direction, channel, conversation_key, person_id, text, "
+            "attachments, in_reply_to, intention_id, sender_name, sender_username) "
+            "VALUES ($1, $2, 'inbound', $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11) "
+            "ON CONFLICT (id) DO NOTHING",
+            message.id, message.ts, message.channel, message.conversation_key,
+            message.person_id, message.text, json.dumps(message.attachments),
+            message.in_reply_to, message.intention_id,
+            message.sender_name, message.sender_username,
+        )
+
+    async def streak_self_review(self, person_id: str | None, reasons: list[str], n: int,
+                                  latest_text: str = "") -> dict[str, Any]:
+        if self.gateway is None:
+            return {"continue_ignoring": True, "should_message": False, "message": None,
+                    "reflection": "no gateway for self-review"}
+        name = self.config.self_name
+        messages = streak_review_messages(name, person_id or "someone", reasons, n,
+                                          latest=latest_text)
+        request = ModelRequest(
+            tier=Tier.T3,
+            purpose="social.streak_review",
+            budget_bucket="discretionary",
+            messages=[ModelMessage(role=Role.user, content=messages[0]["content"])],
+            max_tokens=700,
+        )
+        try:
+            response = await self.gateway.complete(request)
+            data = _parse_json(response.text or "")
+            if data:
+                return data
+        except Exception:
+            logger.exception("social.streak_review_failed")
+        return {"continue_ignoring": True, "should_message": False, "message": None,
+                "reflection": "self-review unavailable"}
+
+
+def _undecided(reason: str, tier_used: str) -> SocialDecision:
+    """A turn with no decision in it, and therefore nothing to say.
+
+    Silence is one of the agent's own choices [D-05] and this is not one: no
+    model answered, so no opinion was formed. The two are still kept apart in
+    the record rather than smoothed into each other, because `act_silently`
+    does not count against the person's streak and does not claim the agent
+    considered the question -- it only says nothing went out, and why.
+
+    `decided=False` is what keeps that apart all the way to the person. The
+    action alone could not: a surface reading `act_silently` for the message it
+    just asked about says the agent heard the question and declined it, and that
+    is what a model that ran out of room before writing anything was reported
+    as -- so somebody was told the agent had chosen silence when the truth was
+    that it had not managed to think. The reason travels with the decision so
+    the agent's own context and the `social_decision` row both say what
+    happened, and nothing is invented for the person to read: an empty
+    `reply_texts` reaches the transcript as no message at all, which is the only
+    honest version of an answer that does not exist.
+    """
+    return SocialDecision(
+        action=SocialAction.act_silently,
+        reply_texts=[],
+        urgency=Urgency.normal.value,
+        reason=reason,
+        tier_used=tier_used,
+        decided=False,
+    )
+
+
+def _formed_a_decision(data: dict[str, Any]) -> bool:
+    """Whether what came back says anything at all about what to do.
+
+    Two members carry that: which action to take, and what to say for it. An
+    answer with neither is not a decision in a worse state than an empty one --
+    it is an answer this parser could not make sense of, and reading it as a
+    decision is what turned a parse failure into a silence the agent was recorded
+    as having chosen. The default action is kept for an answer that names an
+    action this build does not know, which is a different thing entirely: the
+    model chose, and the choice is not in the vocabulary.
+    """
+    return bool(data) and ("action" in data or "reply_texts" in data)
+
+
+def _reply_texts(raw: Any) -> list[str]:
+    """The reply the model actually wrote, and nothing else.
+
+    Two shapes of a perfectly ordinary model response used to end badly here.
+    An explicit `"reply_texts": null` raised `TypeError` out of the
+    deliberation, taking the life loop's turn with it; and a bare string in
+    place of the list was iterated character by character, so a one-word
+    answer left the person receiving it one letter at a time. Whitespace-only
+    entries are dropped for the same reason the text check below depends on:
+    an entry with no words in it is not a reply, and counting it as one is
+    what let a blank answer through as though it were a real one.
+    """
+    return _reply_texts_and_delays(raw, None)[0]
+
+
+def _reply_texts_and_delays(
+    raw_texts: Any, raw_delays: Any,
+) -> tuple[list[str], list[float]]:
+    """The reply and its per-message gaps, paired the way they were written.
+
+    The delays are optional and every way a model can write them wrong ends in
+    the same place: an immediate reply. A non-list, a non-number in a slot, a
+    negative (a delay before *now* is no delay), or a `true` — which is an int
+    to Python and not a duration to anybody — are all read as 0. The pairing is
+    by index into the raw list, *before* blank texts are dropped, so a gap the
+    model wrote for a message goes with that message and not with the one after
+    it: `["a", "", "b"]` with `[0, 9, 3]` sends `a`, then `b` after 3s, and the
+    9 belongs to the blank that was never sent.
+    """
+    texts: list[str] = []
+    delays: list[float] = []
+    raw_list = raw_texts if isinstance(raw_texts, list) else []
+    for index, entry in enumerate(raw_list):
+        if not (isinstance(entry, str) and entry.strip()):
+            continue
+        texts.append(entry.strip())
+        delays.append(_one_delay(raw_delays, index))
+    return texts, delays
+
+
+def _one_delay(raw_delays: Any, index: int) -> float:
+    """The gap the model wrote for message `index`, or 0 when it wrote none."""
+    if not isinstance(raw_delays, list) or index >= len(raw_delays):
+        return 0.0
+    value = raw_delays[index]
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0.0
+    return max(0.0, float(value))
+
+
+_JSON_WHITESPACE = " \t\r\n"
+
+_DECODER = json.JSONDecoder()
+
+
+def _parse_json(text: str) -> dict[str, Any]:
+    """The decision object in a model answer, wherever in the answer it sits.
+
+    This used to be the first `{` in the response through the last `}` in it, on
+    the assumption that a model answering "strict JSON only" puts its object at
+    the very beginning and writes nothing else. That assumption is false for
+    every model that thinks before it answers, and the cost of it was paid by the
+    person waiting: `find("{")` landed on a brace inside the preamble — a
+    "let me weigh `{action}` against `{reply_texts}`", a schema echoed back before
+    the answer, a code fragment quoted from the message — so the slice ran from
+    the wrong opening brace to the last closing one, `json.loads` refused it, and
+    the whole answer was discarded. Not the tail of it and not the reply: the
+    answer, which had been written out complete, with `action` and the sentence
+    the person was about to read.
+
+    Nothing was found, so the turn ended in `_undecided` — a recorded silence, a
+    handled message, nothing to retry — and the reason on the message said the
+    model's answer could not be read. Which is what the transcripts of this agent
+    said, over and over, for answers that were sitting there complete.
+
+    So the object is *found* rather than assumed. Every brace in the answer is
+    tried as an opening one, in order, and the last object that decodes whole and
+    names an action is the decision: last, because a model that drafts and then
+    revises writes the answer it settled on last, and the draft is not what it
+    chose. An answer the ceiling cut off never decodes whole at all, so those
+    fall through to `_parse_cut_off`.
+    """
+    found: list[dict[str, Any]] = []
+    index = 0
+    while (start := text.find("{", index)) >= 0:
+        try:
+            parsed, end = _DECODER.raw_decode(text, start)
+        except ValueError:
+            index = start + 1
+            continue
+        index = max(end, start + 1)
+        if isinstance(parsed, dict):
+            found.append(parsed)
+    for candidate in reversed(found):
+        if "action" in candidate:
+            return candidate
+    if not found:
+        # Nothing in the answer closed, which is what the ceiling leaves behind.
+        return _parse_cut_off(text)
+    return found[-1]
+
+
+def _parse_cut_off(text: str) -> dict[str, Any]:
+    """The members of an object a cut-off answer had already finished writing.
+
+    A deliberation puts what to do and what to say first, so a response the
+    provider stopped in the middle of has very often already said both: the run
+    that motivated this ended on `"ignore_reason": [], "` with a complete action
+    and a complete reply in hand, and discarding it because the last brace never
+    arrived sent the person silence instead of the sentence the model had
+    written for them.
+
+    So the members that closed are kept and the one being written is not. Every
+    value goes through the stdlib parser, which is what makes this safe to trust:
+    a half-written string or a half-written list fails to decode and is simply
+    left out rather than guessed at, so the reply a person receives is never a
+    fragment. Nothing is invented and nothing is completed -- an object cut off
+    before its first member yields nothing, and the caller still ends the turn in
+    a recorded silence.
+
+    The whole answer is passed in and the opening brace is found here rather than
+    by the caller, because the caller was finding it the same wrong way this used
+    to: at the first `{` in the response, which on a cut-off answer preceded by
+    any preamble at all is a brace inside that preamble. Each brace in turn is
+    tried and the first one that yields a member is the object, so the recovery
+    does not inherit the bug it exists to cover.
+    """
+    index = 0
+    while (start := text.find("{", index)) >= 0:
+        recovered = _closed_members(text, start)
+        if recovered:
+            return recovered
+        index = start + 1
+    return {}
+
+
+def _closed_members(body: str, start: int) -> dict[str, Any]:
+    """The members of the object opening at `start` whose values closed."""
+    index = start + 1
+    recovered: dict[str, Any] = {}
+    while True:
+        while index < len(body) and body[index] in _JSON_WHITESPACE + ",":
+            index += 1
+        if index >= len(body) or body[index] == "}":
+            break
+        try:
+            key, index = _DECODER.raw_decode(body, index)
+        except ValueError:
+            break
+        if not isinstance(key, str):
+            break
+        while index < len(body) and body[index] in _JSON_WHITESPACE:
+            index += 1
+        if index >= len(body) or body[index] != ":":
+            break
+        index += 1
+        while index < len(body) and body[index] in _JSON_WHITESPACE:
+            index += 1
+        try:
+            value, index = _DECODER.raw_decode(body, index)
+        except ValueError:
+            break
+        recovered[key] = value
+    return recovered
+
+
+_FENCE_RE = re.compile(r"\A```[^\n]*\n(.*?)\n?```\Z", re.DOTALL)
+
+
+def _prose_body(text: str | None) -> str | None:
+    """The words of an answer that has no JSON object in it, or None if it has one.
+
+    The distinction that matters here is not "does it parse" -- it does not --
+    but "is there a JSON object in it at all". An answer that is one object and
+    nothing else has said something about the protocol and got it wrong, and the
+    person is owed the truth about that rather than a sentence lifted out of the
+    middle of a literal `{}`. An answer with no object anywhere in it is prose,
+    and prose in a deliberation is the reply.
+
+    Checked by decoding the answer whole: if a single JSON value accounts for all
+    of it, it *is* the answer and there is nothing else to read. A brace inside a
+    string does not count, and neither does a brace in prose that happens to look
+    like one -- `raw_decode` fails on the text before that brace, which is what
+    puts it in the prose branch, and it is the right place for it.
+
+    A fence goes with it, because a fence is something the answer was wrapped in
+    for a reader and not something to send to a person.
+    """
+    if not text or not text.strip():
+        return None
+    fenced = _FENCE_RE.match(text.strip())
+    body = (fenced.group(1) if fenced else text).strip()
+    if not body:
+        return None
+    try:
+        _, end = _DECODER.raw_decode(body, 0)
+    except ValueError:
+        return body
+    return None if not body[end:].strip() else body
+
+
+def _prose_as_the_reply(text: str | None) -> dict[str, Any] | None:
+    """An answer written as prose, in the shape it plainly meant to be in.
+
+    A deliberation asks for a small object and gets prose instead often enough
+    to matter on long messages: the model reads the person's words, answers
+    them, and writes none of the four fields around them. The words it wrote
+    *are* the reply -- they are the only answer anybody is going to get, and
+    they were chosen for the person rather than assembled here.
+
+    So they are used, as a reply, and nothing else is invented: no action was
+    weighed, no urgency was assigned, and no work is commissioned out of an
+    answer that carries no `intention_spec` to commission it from. That last
+    part is why the object is asked for again before this is reached -- an "I'll
+    do it" recovered from prose is a promise with nothing behind it, which is
+    the one thing the prompt above is built to avoid -- and why the reason says
+    so on the turn: the row records that this reply was recovered, so nobody
+    reads it later as a decision the agent formed in the shape it was asked for.
+    """
+    body = _prose_body(text)
+    if body is None:
+        return None
+    return {
+        "action": "reply_now",
+        "reply_texts": [body],
+        "urgency": Urgency.normal.value,
+        "reason": (
+            "answered in prose rather than the decision object, so these are the "
+            "model's own words and nothing was commissioned from them"
+        ),
+        "creates_intention": False,
+    }
+
+
+# The names a model reaches for when it means `reply_texts`.
+#
+# The object asked for is `{action, reply_texts, urgency, reason, ignore_reason,
+# creates_intention, intention_spec}` and a model that gets the shape wrong most
+# often gets it *nearly* right: it writes the words it would have sent and calls
+# the field `reply`, or `response`, or `answer`, and leaves the rest out. That
+# answer is not unreadable. It is complete, and it is the only reply there is.
+#
+# These are names that mean *the words to send the person*, and nothing else
+# qualifies. `note`, `comment`, `summary`, `explanation` and `body` are names for
+# a description of an answer rather than the answer, and this file already draws
+# that line deliberately: `{"note": "still deciding"}` is an object that says
+# nothing about the turn, and reading "still deciding" out of it and sending it
+# would be the same failure as rendering the braces -- a person given the agent's
+# working, or a non-answer, in place of a reply. The same goes for the opposite
+# mistake of scanning every string in the object: a model that echoed the config
+# it was discussing (`{"permission": {"edit": "allow"}}`) would have "allow"
+# delivered as a reply, and the turn marked answered.
+_OBJECT_TEXT_KEYS = (
+    "reply_texts", "reply_text", "reply", "replies",
+    "response", "answer", "message", "text",
+)
+
+
+def _texts_under(data: dict[str, Any], depth: int = 0) -> list[str] | None:
+    """The words under a reply-ish key, or None if there are none.
+
+    Two passes at each level, and the order matters. First the keys this module
+    recognises as meaning "the words to send"; then, only if there were none, a
+    descent into the object's own sub-objects -- because the same slip one step
+    down is still the same slip, and `{"result": {"answer": "..."}}` is an answer
+    keyed wrongly rather than a different kind of answer.
+
+    One level deep and no further. Deeper than that is guessing at a structure
+    nobody agreed on, and the whole point of restricting this to recognised keys
+    is that the difference between an answer and a non-answer stays a fact
+    rather than a guess.
+    """
+    for key in _OBJECT_TEXT_KEYS:
+        value = data.get(key)
+        if isinstance(value, str) and value.strip():
+            return [value.strip()]
+        if isinstance(value, list):
+            texts = [e.strip() for e in value if isinstance(e, str) and e.strip()]
+            if texts:
+                return texts
+    if depth < 1:
+        for value in data.values():
+            if isinstance(value, dict):
+                nested = _texts_under(value, depth + 1)
+                if nested:
+                    return nested
+    return None
+
+
+def _object_as_the_reply(data: dict[str, Any]) -> dict[str, Any] | None:
+    """An answer that arrived as an object under other names, in the right shape.
+
+    The third way a deliberation's answer comes back wrong, after "as prose" and
+    "cut off": a single JSON value that parses, that is not the object asked for,
+    and that has words in it. It used to end the turn as "the model's answer
+    could not be read", which is what the person was shown -- on a question that
+    had been answered in full.
+
+    It is likelier the longer the message, and that is the part worth stating.
+    A short prompt gives a model nothing to be tempted by. A long technical one
+    is full of JSON, and the shape most likely to come back is the model holding
+    the *subject* of the conversation rather than the decision: the 2 600-character
+    message behind this file's comments is a discussion of an `opencode.json`
+    permission block, so an answer that came back as `{"permission": {...}}` or
+    `{"changes": [...]}` was the model being wrong about the envelope, not silent.
+
+    What is *not* recovered is the case this file already draws: an object with
+    no words in it. `{}` and `{"draft": {"x": 1}}` stay unreadable, because there
+    is nothing there to send and a person who gets a turn marked answered with
+    no words in it is worse off than one told nothing arrived.
+
+    As with prose, nothing is invented: the words are the model's own, no action
+    was weighed, and no work is commissioned out of an answer with no
+    `intention_spec` behind it -- which is why the object is asked for again
+    before this is reached, and why the reason on the turn says where the reply
+    came from.
+    """
+    if not isinstance(data, dict) or not data:
+        return None
+    texts = _texts_under(data)
+    if not texts:
+        return None
+    return {
+        "action": "reply_now",
+        "reply_texts": texts,
+        "urgency": Urgency.normal.value,
+        "reason": (
+            "answered inside a differently named field rather than in "
+            "reply_texts, so these are the model's own words and nothing was "
+            "commissioned from them"
+        ),
+        "creates_intention": False,
+    }

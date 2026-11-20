@@ -1,7 +1,7 @@
 # How Clio Agent 3 Works
 
-**Clio Agent 3** — Python package `ethos`, `3.0.0-beta.3`, released
-2026-10-03 JST (`ethos/__init__.py`, `pyproject.toml:7-8`).
+**Clio Agent 3** — Python package `clio`, `3.0.0-beta.3`, released
+2026-10-03 JST (`clio/__init__.py`, `pyproject.toml:7-8`).
 
 > *An agent that is there when you aren't. Not a function that maps a prompt
 > to a reply.*
@@ -15,7 +15,7 @@ silently / decline with reason), and is safe by reversibility rather than by
 refusal.
 
 Identity constant rendered into every prompt: *"Silence from people is when
-I am most myself."* (`ethos/prompts/identity.py`) — because an agent that
+I am most myself."* (`clio/prompts/identity.py`) — because an agent that
 believes it is idle has no reason to ever speak first.
 
 This document describes the whole program as built: runtime, life loop,
@@ -28,10 +28,10 @@ File references are `path:line`.
 
 ```bash
 pip install -e .   # once — Python >=3.12
-ethos up           # every time — from any directory
+clio up           # every time — from any directory
 ```
 
-`ethos up` (`ethos/__main__.py:110`, `ethos/core/bootstrap.py`) is the whole
+`clio up` (`clio/__main__.py:110`, `clio/core/bootstrap.py`) is the whole
 command. It:
 
 1. brings up PostgreSQL 16 + pgvector + pg_trgm if missing
@@ -41,7 +41,7 @@ command. It:
 3. installs/builds the interface if missing,
 4. starts **seven supervised processes** detached from the terminal,
 5. waits until the agent has published a sign of life *after* start
-   (`ethos await-agent`, not merely a pid),
+   (`clio await-agent`, not merely a pid),
 6. opens the page.
 
 Idempotent: run it on a live agent and it says so and leaves it alone.
@@ -49,30 +49,30 @@ Exits 0 when supervisor + bridge are up (even with no usable model, so
 Settings stays available), 1 on failure, 130 on Ctrl-C — the agent keeps
 running in its own session by design.
 
-Other commands (`ethos/__main__.py`, `Makefile`):
+Other commands (`clio/__main__.py`, `Makefile`):
 
 ```bash
-ethos status          # is the agent there? (sign of life, not pid)
-ethos stop            # SIGTERM supervisor (POSIX) / stop-file + taskkill (Windows)
-ethos logs            # supervisor + children in one prefixed stream
-ethos doctor          # config, DB, pgvector, migrations, keys, model probes, doors, filesystem
-ethos supervisor      # full 7-process model in foreground (agent development)
-ethos core            # everything embedded in one process (loop development)
-ethos core --listen-channels  # + hold channel doors (single-process dev only)
-ethos gateway | ethos toolhost | ethos comms | ethos worker
-ethos db upgrade | ethos db seed | ethos version
+clio status          # is the agent there? (sign of life, not pid)
+clio stop            # SIGTERM supervisor (POSIX) / stop-file + taskkill (Windows)
+clio logs            # supervisor + children in one prefixed stream
+clio doctor          # config, DB, pgvector, migrations, keys, model probes, doors, filesystem
+clio supervisor      # full 7-process model in foreground (agent development)
+clio core            # everything embedded in one process (loop development)
+clio core --listen-channels  # + hold channel doors (single-process dev only)
+clio gateway | clio toolhost | clio comms | clio worker
+clio db upgrade | clio db seed | clio version
 make up|run|run-dev|status|stop|logs|doctor|migrate|seed|test|lint|clean
 ```
 
-`ethos status` answers one question from the agent's own `presence.update`
-row in `events` (15-min window, `ethos/core/status.py:AGENT_ABSENT_S`): a
+`clio status` answers one question from the agent's own `presence.update`
+row in `events` (15-min window, `clio/core/status.py:AGENT_ABSENT_S`): a
 supervisor with dead children and a bridge serving last-known state both look
 healthy otherwise. The browser uses the same window, so they cannot disagree.
 
 Requirements: Python 3.12+, PostgreSQL 16 (+`vector`, `pg_trgm`) — the one
 hard dependency — Node 20+ only for `interface/` + `web/` bridge. The agent
 runs headless without them. `playwright install chromium` and the fastembed
-model `BAAI/bge-large-en-v1.5` (~1.2 GB, `config/ethos.yaml:49`) download more
+model `BAAI/bge-large-en-v1.5` (~1.2 GB, `config/clio.yaml:49`) download more
 than a wheel.
 
 ---
@@ -86,11 +86,11 @@ than a wheel.
                 │  intentions · cycles · journal · audit · models  │
                 └──────▲──────────────▲──────────────▲─────────────┘
                        │ SQL / events │ SQL / events │ SQL / events
-   Telegram etc. ──► ethos-comms ─────┘              │              ┌─ browser / terminal
+   Telegram etc. ──► clio-comms ─────┘              │              ┌─ browser / terminal
    WhatsApp/Slack/                                   │              │  interface/ (@project-phone/*)
    Discord/Email ──► (doors, hear)                   │              ▼  web/server/index.mjs (stateless bridge)
                                                      │              ── HTTP/WS ──► Postgres/events
-   ethos-core (Life: pace→perceive→attend→decide→act→record)
+   clio-core (Life: pace→perceive→attend→decide→act→record)
      ├─ engine  (rhythm, attention, states, drives, reverie)
      ├─ social  (deliberation → etiquette → comms_out.send)
      ├─ gsl     (understand→devise→plan→execute→verify)
@@ -99,20 +99,20 @@ than a wheel.
      │     └─ spend guard, breaker, retry, embeddings, secrets
      └─► toolhost (in-process or toolhost.sock / TCP)
            └─ guardian gate → journal → 52 tools → FS / browser / net
-   ethos-worker ×2 ── thread.request ──► threads/worker ──► gateway/toolhost
+   clio-worker ×2 ── thread.request ──► threads/worker ──► gateway/toolhost
    Foundry / APEX subagents ── OpenAI-compat shim (gateway/compat.py) ──► gateway
 ```
 
 Coordination is **not RPC**. It is a **transactional event bus**:
-`events` table + `LISTEN/NOTIFY` (`ethos/bus/event_bus.py:40`).
+`events` table + `LISTEN/NOTIFY` (`clio/bus/event_bus.py:40`).
 `EventBus.publish()` (`event_bus.py:171`) does `INSERT events … RETURNING id`
-+ `pg_notify(ethos_events,{id})` on the **same connection** — atomic with the
++ `pg_notify(clio_events,{id})` on the **same connection** — atomic with the
 business row when a `conn` is passed, `NOTIFY` delivered only on commit.
 Receivers `_on_notify → _fetch_and_enqueue → _dispatch_loop`
 (`event_bus.py:86,95,140`) with a 16384-id seen-window dedupe and per-kind +
 wildcard handlers whose exceptions are logged, never propagated.
 `drain()` (`event_bus.py:203`) recovers startup gaps via
-`consumed_by` array. 21 kinds (`ethos/schemas/events.py:10`):
+`consumed_by` array. 21 kinds (`clio/schemas/events.py:10`):
 `percept, msg.inbound/outbound, timer.fired, thread.request/result,
 control.update, guardian.undo, presence.update, message.handled,
 budget.update`, etc. `percept_from_event()` (`events.py:79`) splits
@@ -122,11 +122,11 @@ budget.update`, etc. `percept_from_event()` (`events.py:79`) splits
 Perception is event-driven (arrives immediately) but processing is
 **tick-driven** (drained at the top of each cycle). Hybrid.
 
-### The seven processes (`ethos/core/supervisor.py:163`)
+### The seven processes (`clio/core/supervisor.py:163`)
 
-Built by `build_specs()`: `ethos-gateway`, `ethos-toolhost`, `ethos-comms`,
-`ethos-worker-1..N` (`config.workers.count`, default 2), `ethos-core`
-(**without** `--listen-channels`), optionally `ethos-web`
+Built by `build_specs()`: `clio-gateway`, `clio-toolhost`, `clio-comms`,
+`clio-worker-1..N` (`config.workers.count`, default 2), `clio-core`
+(**without** `--listen-channels`), optionally `clio-web`
 (`node web/server/index.mjs` by absolute path, only if `web/node_modules`
 exists and `node` is found — optional child, never restarted once exited).
 
@@ -136,13 +136,13 @@ Supervisor (`supervisor.py:113`): starts all, polls every 2.0s
 count, gives up at 5 (`MAX_RESTARTS`). Shutdown reverses children with
 10s grace then `kill()` (`supervisor.py:364`).
 
-`ethos-comms` holds every door; `ethos-core` only answers on them
-(`ethos/core/runner.py:60,299`). The dev flag `--listen-channels`
-(`ethos/__main__.py:179`) is opt-in for the single-process run
+`clio-comms` holds every door; `clio-core` only answers on them
+(`clio/core/runner.py:60,299`). The dev flag `--listen-channels`
+(`clio/__main__.py:179`) is opt-in for the single-process run
 (`make run-dev`): two long-polls on one Telegram bot = Telegram conflict and
 a channel that looks configured and receives nothing.
 
-Control plane (`ethos/core/control.py:63`): stop/pause/emergency files +
+Control plane (`clio/core/control.py:63`): stop/pause/emergency files +
 DB lifecycle row. `load()` merges DB + files (stopped never inherited,
 preview inherited); `apply_command()` handles
 `pause_all/pause_actions/resume/stop/emergency_stop/preview_on/off`;
@@ -151,7 +151,7 @@ gate reads the **same row** with `owns_row=False` (`__main__.py:267`) so a
 toolhost restart cannot clear a real stop — a gate that cannot see stop or
 preview gates nothing.
 
-Scheduler (`ethos/core/scheduler.py:17`): persisted timers in
+Scheduler (`clio/core/scheduler.py:17`): persisted timers in
 `env_entities kind=schedule`, 1s poll, `schedule_at/schedule_every(≥1s)/
 cancel`, fires as `timer.fired` with `urgency 0.5, salience 0.5`.
 
@@ -159,7 +159,7 @@ cancel`, fires as `timer.fired` with `urgency 0.5, salience 0.5`.
 
 ## 3. The life loop
 
-`ethos/engine/life.py:109`: `perceive → attend → reflect → decide → act →
+`clio/engine/life.py:109`: `perceive → attend → reflect → decide → act →
 record`, never exits. `LifeDeps` wired by `CoreRuntime` (`runner.py:187`).
 Starts `RESUMING`, `wake_up()` (`life.py:152`) restores `Focus` from the
 continuity snapshot if its intention is still open, restores context,
@@ -206,7 +206,7 @@ rhythm.after_cycle → wait_until_next`.
 
 ### Rhythm, states, attention, drives
 
-- **Rhythm** (`ethos/engine/rhythm.py:184`): `tick = base[state] ±15%
+- **Rhythm** (`clio/engine/rhythm.py:184`): `tick = base[state] ±15%
   jitter, min 0.2s`. Defaults (`config/rhythm.yaml:76`):
   `FOCUSED 2, REFLECTING 4, ACTING 1, WAITING 8, NOTIFYING 2, RESTING 60,
   RESUMING 1, PAUSED 5`. Energy (`rhythm.py:109`):
@@ -214,12 +214,12 @@ rhythm.after_cycle → wait_until_next`.
   around `peak_hour 10`, `night_floor 0.55` — a floor, not a countdown to a
   bed it never goes to. `mind_wandering 20/40/3`, `reverie 12/45`,
   `gap/backoff/due_daily` helpers, `PARKED_HEARTBEAT_S 30`.
-- **States** (`ethos/engine/states.py:10`): 8 —
+- **States** (`clio/engine/states.py:10`): 8 —
   `THINKING_FOCUSED, THINKING_REFLECTING, ACTING, WAITING, NOTIFYING,
   RESTING, PAUSED, RESUMING`. All `AWAKE` except `RESTING/PAUSED`;
   all-to-all transitions except `PAUSED → RESUMING` only. History
   `deque(200)`.
-- **Attention** (`ethos/engine/attention.py:35`):
+- **Attention** (`clio/engine/attention.py:35`):
   `sal = clip(ws·src + wu·urg + wr·rel + wn·nov)`,
   weights `src .35 urg .30 rel .20 nov .15` (`rhythm.yaml:1`);
   senders `owner .9 known .6 unknown .3 system .4`.
@@ -243,7 +243,7 @@ rhythm.after_cycle → wait_until_next`.
 
 ## 4. Social cognition: deciding what to say
 
-### Deliberation (`ethos/social/deliberation.py`, `ethos/prompts/deliberation.py`)
+### Deliberation (`clio/social/deliberation.py`, `clio/prompts/deliberation.py`)
 
 Every inbound message is INSERTed (`record_inbound`) then deliberated.
 Contract (`deliberation.py prompts:118`): strict JSON only —
@@ -305,7 +305,7 @@ decided=false AND attempts<3|12 AND next_retry_after<=now`,
 `deliberation.py:866`; `record_failure` merges attempts and rate-limit waits,
 `mark_handled` never overwrites `decided=false`).
 
-### Etiquette: the sending pipeline (`ethos/social/etiquette.py`)
+### Etiquette: the sending pipeline (`clio/social/etiquette.py`)
 
 `OutboundPipeline` (`etiquette.py:40`): `can_contact()` (critical bypasses
 quiet hours with audit; high respects them; else quiet → hold; per-relation
@@ -331,7 +331,7 @@ gate refuses on) forbids even confirming another conversation exists.
 
 ## 5. Work: GSL, tools, verification
 
-`GeneralSolverLoop.advance()` (`ethos/gsl/loop.py:298`) advances
+`GeneralSolverLoop.advance()` (`clio/gsl/loop.py:298`) advances
 `intention.resume_state` (JSONB — survives restarts) through
 `understand → devise(3) → pick_approach → make_plan(3–7) → try_step →
 evaluate → verify → reflect/revise` (`loop.py:70`).
@@ -342,7 +342,7 @@ advance; budget-exhausted parks; `_park()` writes `parked_reason`,
 `close_intention(parked)`, `open_question(0.7)`; `_save_resume` keeps
 bookmark + last 8 artifacts.
 
-Planning (`ethos/gsl/planner.py`, `prompts/gsl.py:181,201,222`):
+Planning (`clio/gsl/planner.py`, `prompts/gsl.py:181,201,222`):
 `understand` (T3 if `commissioned_by`/venture/commitment, else T2;
 `commitment/discretionary` buckets), `devise` exactly 3, `pick_approach`
 `max(expected_value − .05·cost)`, `make_plan` 3–7 steps (degraded 1–3, checks
@@ -365,19 +365,20 @@ can fail the step with stderr/stdout; results → `SolverResult.actions`,
 `resume_state.artifacts` (cap 20), `ContextLayer.note_actions()`
 (`memory/context.py:144`); `_reflect()` saves lessons/knowhow(2)/questions(2).
 
-`Toolhost.execute()` (`ethos/toolhost/server.py:189`):
+`Toolhost.execute()` (`clio/toolhost/server.py:189`):
 unknown → NOT_FOUND → `ActionJournal.begin` WAL (`guardian/journal.py:82`,
 `idempotency_key` unique; `DuplicateAction → ok:true{idempotent,prior}`) →
 `GuardianGate.review()` → timeout execution → `journal.end`
 (`ok/rejected/timeout/failed`); reject → `guardian_reject`; digest capped
 2000ch; `auto_register_commission`; `ACTION_UPDATE` publish.
 `GET /healthz`, `GET /tools` (catalog), `POST /execute`.
-52 builtins (`server.py:103`; categories `classifier.py:473`):
+51 builtins (`server.py:103`; categories `classifier.py:473`):
 `shell.run/job/session{open,write,read,close}` (6),
 `fs.{read,write,edit,move,delete,list,stat}` (7), `code.{exec,reset}` (2,
 persistent `KernelSession`, 60k caps, `kernels.py:29`),
 `http.request`, `comm.send`,
 `memory.{record,search,remember_fact}+open_question+random` (5),
+`history.browse` (the transcript, `hours_back` back),
 `intent.{create,get,list,update,close}` (5), `thread.spawn`,
 `schedule.{at,every,cancel}` (3), `tools.{register,run,list}` (3, toolshed:
 `~/toolshed/<name>/tool.yaml` + stdin/stdout JSON subprocess — the eleventh
@@ -413,14 +414,14 @@ Rung 3 human criteria → `awaiting_review` (audit only, no composed message).
 
 ## 6. Gateway: thinking as a routed, budgeted utility
 
-`GatewayService.complete()` (`ethos/gateway/service.py:627`):
+`GatewayService.complete()` (`clio/gateway/service.py:627`):
 `SpendGuard` check → `ModelRouter.select()` → `provider.complete()` →
 record/billing. T0 reflex never calls the gateway (`service.py:713`).
 
-- **Routing** (`ethos/gateway/router.py:94,138`):
+- **Routing** (`clio/gateway/router.py:94,138`):
   `m* = argmax_m [ q_m(class) − μ·ĉ − ν·l̂at ]`, `-inf` if `quality < floor`;
   `ĉ = costs.estimate` (default 5000in+800out), `μ .002 ν .01`
-  (`config/ethos.yaml:25`). Floors (`models.yaml:1`): T1 .50 T2 .70 T3 .90.
+  (`config/clio.yaml:25`). Floors (`models.yaml:1`): T1 .50 T2 .70 T3 .90.
   Eligibility (`router.py:165`): tier membership, provider/model hints,
   `diversity_family`, `tools→supports_tools`,
   `thinking_budget→supports_thinking`, excludes, `is_available`
@@ -456,7 +457,7 @@ record/billing. T0 reflex never calls the gateway (`service.py:713`).
   `RATE_LIMIT_MAX_WAIT 300`, `LONG_WAIT 10`. `_next_entry()`
   (`service.py:439`): exclude failed, honor `fail_over`; client retries
   transport only, not 502.
-- **Cost (H2)** (`ethos/gateway/cost.py` + `ethos/pricing.py`):
+- **Cost (H2)** (`clio/gateway/cost.py` + `clio/pricing.py`):
   five disjoint token buckets, five rates:
   `(in·pin + cached·pcached + writtens·pwrite + (out+reasoning)·pout)/1M, round6`.
   Prices resolve per route: a live provider price first (OpenRouter's
@@ -477,7 +478,7 @@ record/billing. T0 reflex never calls the gateway (`service.py:713`).
   two agree). Backfill migration `0004` repriced historical rows from their
   token counts. Out-of-band `deploy/oob/oob_guardian.py` (hypervisor side)
   watches the same $20/$400 with kill switch.
-- **Embeddings** (`ethos/gateway/embeddings.py:112`): `FastembedEmbedder`
+- **Embeddings** (`clio/gateway/embeddings.py:112`): `FastembedEmbedder`
   ONNX local, L2-normed, `BAAI/bge-large-en-v1.5` dim 1024 (1.2 GB;
   `bge-small 384/.067GB` needs `dim:384` + widening migration —
   `assert_model_dim`, `embeddings.py:87`). `HashingEmbedder` (blake2b
@@ -486,10 +487,10 @@ record/billing. T0 reflex never calls the gateway (`service.py:713`).
   except dim-mismatch raises. `toolhost/worker` never own ONNX arenas —
   `RemoteEmbedder` over gateway `/v1/embed → {vectors,dim}`
   (`embeddings.py:164,279`; `service.py:1001`).
-- **Secrets** (`ethos/gateway/secrets.py:109`): agent sees only
+- **Secrets** (`clio/gateway/secrets.py:109`): agent sees only
   `{{secret:KEY}}` handles; `SecretVault.substitute()` expands real values
   only on HTTP to allowed hosts.
-- **Compat shim** (`ethos/gateway/compat.py:166`): OpenAI-compatible
+- **Compat shim** (`clio/gateway/compat.py:166`): OpenAI-compatible
   `/v1` for Foundry/APEX — defaults Tier T2, `max_tokens 4096 cap 32768`,
   catalogue model as `model_hint`, `response_format` → system instruction.
   Native `ModelRequest.tools → NormalizedResponse.tool_calls` fully
@@ -511,36 +512,46 @@ messages{id,ts,direction,channel,conversation_key,person_id,text,
 social_decision,delivery}, audit_log (hash-chained), experiments,
 value_ledger`.
 
-- **Write/read** (`ethos/memory/store.py`): spacing on access
+- **Write/read** (`clio/memory/store.py`): spacing on access
   (`strength+=.3 cap1.0, halflife×1.5`); decay
   (`strength×.5^(h/halflife)`, demote if `strength<.05 & importance<.3`,
   commitments exempt); archive >365d to monthly Parquet (never delete).
-- **Retrieval** (`ethos/memory/retrieval.py:83`; `config/memory.yaml:1`):
+- **Retrieval** (`clio/memory/retrieval.py:83`; `config/memory.yaml:1`):
   `S = .40·cos + .15·BM25̂ + .15·recency + .20·importance + .10·strength`;
   recency `.5^(dh/168h)`; BM25 `k1=1.5 b=.75` max-normalized; MMR `λ.7`
   rerank; `candidate_k 48 → top 24`; 4-table pgvector `<=>` prefilter
   (episodes/facts/knowhow/questions).
-- **Working memory** (`ethos/memory/context.py:54`): rolling buffer
+- **Working memory** (`clio/memory/context.py:54`): rolling buffer
   (`max_turns 48`) + first-person narrative thread (`narrate_every 12, max
-  12 lines`; overflow → episode `importance .6/336h`); narrator T1 300tok,
-  fail → mechanical tally; ordering `index + salience·2N`; render
-  `thread 60% / recent 40%`, `max 6000 / detail 600 chars`; snapshot persists
-  narrative + last 30 turns + 3 loops; `note_actions()` feeds tool results
-  into next-cycle context. The agent reads the recent tail of every live
-  conversation plus this context every cycle — steps as well as deliberations.
-- **Continuity** (`ethos/memory/continuity.py:16`): state-not-transcript;
+  12 lines`; overflow → episode `importance .6/336h`) + **anchors** — the
+  narrator's extraction of what must outlive the turns (`important` in the
+  narration JSON, ≤ `narration_important_max 4` per roll), rendered on the
+  thread under *Must not forget*, ranked by salience, capped
+  (`anchor_max 16`); an anchor that leaves the cap → episode
+  `importance ≥ .8/720h`. Compression is lossy only for the routine: a turn at
+  or above `durable_salience .7` (social .85, failure .75) is kept verbatim
+  until the durable buffer reaches `durable_max_turns 24` or the buffer
+  overflows, and a `narrated` marker stops the next roll from narrating the
+  same turn twice. Narrator T1 300tok, fail → mechanical tally; ordering
+  `index + salience·2N`; render `thread 60% / recent 40%`,
+  `max 6000 / detail 600 chars`; snapshot persists narrative + last 30 turns +
+  anchors + 3 loops; `note_actions()` feeds tool results into next-cycle
+  context. The agent reads the recent tail of every live conversation plus
+  this context every cycle — steps as well as deliberations — and reads
+  further back through the `history.browse` tool (`hours_back` sets how far).
+- **Continuity** (`clio/memory/continuity.py:16`): state-not-transcript;
   atomic `continuity.json` (tmp+fsync+rename) + `checkpoints` row **every
   cycle**. `wake_up()` (`continuity.py:63`): reload snapshot/focus, mark
   `running → interrupted` journal rows, `stale → unverified` env,
   `bus.drain(core-wake)`; reports `reconciled/missed/focus/env_checks`.
   Kill the process; the reasoning comes back.
-- **Consolidation** (`ethos/memory/consolidate.py:176`, the 04:00 DAG):
+- **Consolidation** (`clio/memory/consolidate.py:176`, the 04:00 DAG):
   last-24h episodes (max 400) → `hdbscan_like_cluster(min3,
   mutual-reachability+MST+stability)` → per-cluster T2 distill →
   `record_fact` → pairwise T3 contradiction (`keep_a/b/merge/both`) →
   last-2d attempts → knowhow → decay/demote/archive → T3 autobiography
   (≤200w, traits clamped 0–1, keep last 30) → day-plan md.
-- **Self-model** (`ethos/memory/self_model.py:21`, identity never in model):
+- **Self-model** (`clio/memory/self_model.py:21`, identity never in model):
   versioned `self_model` table
   (`name/identity(values+description)/voice/traits{open .8 consc .7 cur .85
   calm .6}/skills/calibration/self_knowledge`); every `set()` bumps
@@ -553,10 +564,10 @@ value_ledger`.
 ## 8. Safety: reversibility, not refusal
 
 No sandbox. Filesystem reach = the running user's (probed by writing real
-files — mode bits lie under macOS privacy; `ethos doctor` names `DENIED`
+files — mode bits lie under macOS privacy; `clio doctor` names `DENIED`
 paths and the Full-Disk-Access remedy, `__main__.py:910`).
 
-`GuardianGate` (`ethos/guardian/gate.py:118`) makes actions **undoable**, not
+`GuardianGate` (`clio/guardian/gate.py:118`) makes actions **undoable**, not
 denied. `review()` (`gate.py:143`):
 
 - `pause_actions → REJECT BLOCKED H1`; `preview → REJECT` (same
@@ -572,7 +583,7 @@ Hard limits (`config/permissions.yaml:43`, text `prompts/identity.py:484`):
 threshold 5), H3 destructive-control, H4 persistence, H5 commissioned due
 process, H6 auth-scope` — all true/enforced outside the mind.
 
-Classification (`ethos/guardian/classifier.py`):
+Classification (`clio/guardian/classifier.py`):
 `COMMAND_TABLE` (posix+windows: `rm/del/erase/Remove-Item → delete`,
 `mkfs/format/diskpart/cipher → irreversible`, `chmod/icacls/takeown →
 permission`); `DANGEROUS_PATTERNS` (`rm -rf /`, `dd /dev/`, `mkfs`,
@@ -633,7 +644,7 @@ still apply; unknown senders score `urgency .2` vs known `.3`,
   `reconcile()` close-before-open by fingerprint; `watch_channels()` 2s /
   rescan 8s — a saved door needs no restart.
 - `ChannelAdapter` (`comms/adapters/base.py:93`): `start` = speak, `listen` =
-  hear (only `ethos-comms` listens). `_accepts_id`: empty → False,
+  hear (only `clio-comms` listens). `_accepts_id`: empty → False,
   `accept_from_anyone → True`, else member. `_destination` prefix-enforced.
   Telegram (`adapters/telegram.py:62,330`): groups need `allow_groups` even
   under anyone; refuses with id; `send` requires `tg:`; poll 5s;
@@ -682,23 +693,23 @@ One screen for state + conversation (an agent that thinks unobserved must be
 watchable): presence/focus, thought, intention tree (deadlines/budgets),
 undoable history, spend vs caps, guardian coverage. Actions: send, hold /
 resume / stop / emergency-stop, undo, close intention, open/close doors, name
-the agent. With no agent running it shows the **last** run — `ethos status`
+the agent. With no agent running it shows the **last** run — `clio status`
 answers "is it there".
 
 ---
 
 ## 11. Threads and subagents
 
-- **Threads** (`ethos/threads/`): same framework, same identity+memory, only
+- **Threads** (`clio/threads/`): same framework, same identity+memory, only
   Self speaks (`manager.py:33`). `spawn_spec` enforces `max_concurrent 4 /
-  max_depth 2` (`config/ethos.yaml:61`), budget = parent's remaining / 2,
+  max_depth 2` (`config/clio.yaml:61`), budget = parent's remaining / 2,
   intention `origin=thread` (except verifier); `process → THREAD_REQUEST`
   else in-task + `THREAD_RESULT` (`manager.py:143`). `worker.py` runs
   `run_thread` (or `foundry/apex` roles via registry +
   `record_episode thread_result importance .6`).
-- **Subagents** (`ethos/subagents/`): `SubAgent` ABC (`base.py:52`,
+- **Subagents** (`clio/subagents/`): `SubAgent` ABC (`base.py:52`,
   `SubAgentResult{agent,status,duration,mode}`); `SubagentRegistry`
-  (`__init__.py:41`) builds only `enabled` from `ethos.yaml:subagents`
+  (`__init__.py:41`) builds only `enabled` from `clio.yaml:subagents`
   (`tier T2`, `gateway_url/model` empty = inherit, foundry `timeout 3600`
   `repo_root` empty = worktree, apex `timeout 900`). Every model call they
   make routes through this agent's gateway — models, spend guard, retries,
@@ -717,30 +728,30 @@ answers "is it there".
 
 ## 12. Configuration, observability, tests, deployment
 
-- **Config**: 12 files in `config/` (`ethos, base_model, models, pricing,
+- **Config**: 12 files in `config/` (`clio, base_model, models, pricing,
   quirks, memory, rhythm, social, gsl, permissions, channels, people`) merged
   by `load_config()` (`ethos/config.py:1596`); `~/.ethos/{channels,people,
   base_model,identity}.yaml` override-merge; `.env` (`./.env`, checkout
   `.env`, `$ETHOS_ENV_FILE`; export wins; `ETHOS_ENV_LOADED` once).
-  `ethos doctor` checks DB + `vector` + Alembic head vs `alembic_version` +
+  `clio doctor` checks DB + `vector` + Alembic head vs `alembic_version` +
   keys + **live one-token model probes** (a present key ≠ a working one;
   only base-model failure fails the exit; `--no-probe-models` degrades
   honestly) + per-door lines + socket + measured filesystem reach.
 - **Observability**: structlog JSON, Prometheus
   (`observe_cycle/observe_action`, spend counters), hash-chained audit +
   600s anchor (`runner.py:273`), 60s digest flush (`runner.py:287`).
-  `ethos logs [--from-start]`, `make logs`.
+  `clio logs [--from-start]`, `make logs`.
 - **Tests**: pytest (`asyncio_mode=auto`, 120s): `tests/unit` (29 files, no
   DB), `tests/integration` (live Postgres, `integration` marker),
   `tests/scenarios` (E2E); JS `node --test` (`make test-bridge`); `make
   test*`; `make lint` (ruff, line-length 110 — format deliberately not in
   lint).
-- **Deployment**: `deploy/systemd/` units + `config/ethos.yaml` sockets;
+- **Deployment**: `deploy/systemd/` units + `config/clio.yaml` sockets;
   `deploy/oob/oob_guardian.py` band-out $20/day · $400/mo kill-switch;
   `data/pgdata` gitignored (memory survives `make clean`; `make db-down &&
   rm -rf data/pgdata` to throw away); `./start.sh` deprecated shim over
-  `ethos up`; `npm start` wrapper (install bridge+UI, venv via uv/fallback,
-  end stale session unless `--keep`, `ethos up`, verify page, `--no-open /
+  `clio up`; `npm start` wrapper (install bridge+UI, venv via uv/fallback,
+  end stale session unless `--keep`, `clio up`, verify page, `--no-open /
   --interface` variants).
 
 ---
@@ -752,20 +763,20 @@ answers "is it there".
 | **Tool** | Subclass `Tool` ABC (`toolhost/server.py:45`), one line in `_register_builtin_tools()` (`server.py:103`) — catalog + prompts follow. Or runtime: `~/toolshed/<name>/tool.yaml` + stdin/stdout JSON (`tools/toolshed.py`). |
 | **Provider** | Implement `Provider` ABC (`gateway/providers/base.py:103`) + `normalizer.py` pair + `PROVIDER_CLASSES` (`service.py:40`) + `models/quirks/pricing.yaml` entries. |
 | **Channel** | Implement `ChannelAdapter` (`comms/adapters/base.py:93`: start/listen/send) → `CommsHost.plan()` + `channels.yaml` creds. |
-| **Subagent** | Subclass `SubAgent` (`subagents/base.py:52`) → `SubagentRegistry._load` (`subagents/__init__.py:41`) → `ethos.yaml:subagents:` (+ `subagents/tools.py` delegation tools). |
+| **Subagent** | Subclass `SubAgent` (`subagents/base.py:52`) → `SubagentRegistry._load` (`subagents/__init__.py:41`) → `clio.yaml:subagents:` (+ `subagents/tools.py` delegation tools). |
 | **UI** | Replace freely — it only translates Postgres ⇄ HTTP/WS; never writes agent state except inbound rows + `events`. |
 
 Open questions the code does not settle: `@project-phone/*` + `phone`
 binary vs `Clio Agent 3` naming (migration in progress?); no `uv.lock`
 (pins are ranges); JSON-contract (Self) vs native `tool_calls`
-(subagents) duality intentional?; `ethos-core --listen-channels` + comms
+(subagents) duality intentional?; `clio-core --listen-channels` + comms
 co-listening undocumented; no license text (README: "no license yet — all
 rights reserved"); submodule internals (APEX/Foundry) verified only via
 bridge + their docs.
 
 ---
 
-*Rewritten from a full read of `/Users/sasakikousei/Desktop/Ethos`
-(`ethos/`, `config/*.yaml`, `migrations/`, `interface/`, `web/`,
+*Rewritten from a full read of this repository
+(`clio/`, `config/*.yaml`, `migrations/`, `interface/`, `web/`,
 `deploy/`, `README.md`, `pyproject.toml`). Prior Japanese record:
 `clio-agent-3-architecture.md`.*

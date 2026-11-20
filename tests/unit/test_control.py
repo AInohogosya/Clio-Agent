@@ -3,8 +3,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from ethos.core.control import ControlPlane
-from ethos.core.runner import CoreRuntime
+from clio.core.control import ControlPlane
+from clio.core.runner import CoreRuntime
 from tests.conftest import make_config
 
 
@@ -351,7 +351,7 @@ def test_a_verb_a_surface_sends_reaches_the_control_plane(tmp_path: Any) -> None
     """
     import asyncio
 
-    from ethos.schemas.events import Event
+    from clio.schemas.events import Event
 
     _, control, _, handler = _runtime_stub()
     asyncio.run(handler(Event(kind="control.update", payload={"action": "pause_all", "by": "phone"})))
@@ -368,7 +368,7 @@ def test_a_verb_is_still_something_the_agent_notices(tmp_path: Any) -> None:
     """
     import asyncio
 
-    from ethos.schemas.events import Event
+    from clio.schemas.events import Event
 
     runtime, _, _, handler = _runtime_stub()
     asyncio.run(handler(Event(kind="control.update", payload={"action": "stop", "by": "phone"})))
@@ -387,7 +387,7 @@ def test_an_undo_asked_for_on_a_surface_is_carried_out(tmp_path: Any) -> None:
     """
     import asyncio
 
-    from ethos.schemas.events import Event
+    from clio.schemas.events import Event
 
     _, _, undone, handler = _runtime_stub()
     asyncio.run(handler(Event(kind="guardian.undo", payload={"action_id": "a-1"})))
@@ -478,3 +478,58 @@ def test_only_a_signal_ends_the_loop(tmp_path: Any) -> None:
 
     plane.end("signal:SIGTERM")
     assert plane.ending and plane.stopped, "a signal ends the process, and stops it too"
+
+
+def test_the_row_re_reach_the_loop_when_the_bus_cannot(tmp_path: Any, monkeypatch: Any) -> None:
+    """`refresh` re-reads the lifecycle row, not only the files.
+
+    The bus event is the fast path and this is the backstop: a pause a
+    surface writes where no notify can follow used to reach the agent never
+    -- and, the worse direction, a resume could not lift one, which is a
+    pause that outlives its reason with no button left that works. The
+    interval is squashed here so the test does not wait thirty seconds.
+    """
+    import asyncio
+
+    db = _FakeDB()
+    plane = _plane(db, tmp_path)
+
+    async def scenario() -> None:
+        await plane.load()
+        assert not plane.paused
+
+        monkeypatch.setattr("clio.core.control.ROW_RECHECK_S", 0.0)
+
+        # What a surface's bridge writes when the notify is lost: the row,
+        # and nothing else. The re-read has to be enough.
+        db.rows["lifecycle"] = {"paused": True, "pause_actions": True, "stopped": False}
+        await plane.refresh()
+        assert plane.paused and plane.pause_actions, "a pause the bus could not carry still lands"
+
+        db.rows["lifecycle"] = {"paused": False, "pause_actions": False, "stopped": False}
+        await plane.refresh()
+        assert not plane.paused and not plane.pause_actions, \
+            "and the same path is how a resume reaches a loop whose bus is wedged"
+
+    asyncio.run(scenario())
+
+
+def test_a_stop_file_outranks_the_row_even_in_the_re_read(tmp_path: Any, monkeypatch: Any) -> None:
+    """The hard file is the channel the agent does not own [H1], and the
+    periodic re-read of the row must not quietly release it."""
+    import asyncio
+
+    db = _FakeDB()
+    plane = _plane(db, tmp_path)
+
+    async def scenario() -> None:
+        await plane.load()
+        monkeypatch.setattr("clio.core.control.ROW_RECHECK_S", 0.0)
+        with open(plane.stop_file, "w", encoding="utf-8"):
+            pass
+        # A row that says the opposite of the file.
+        db.rows["lifecycle"] = {"stopped": False}
+        await plane.refresh()
+        assert plane.stopped, "the file set the stop, and the row cannot lift it"
+
+    asyncio.run(scenario())

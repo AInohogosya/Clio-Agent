@@ -8,11 +8,17 @@ import { AgentRequestError, isBaseModelRefusal, isChannelRefusal, isIdentityRefu
  * Each code is a *different* situation with a *different next step*, so they do
  * not share a sentence: a link that is not running, an interface service that is
  * not answering, a machine with no agent on it, an agent that has been stopped,
- * an agent that chose not to reply, one that never managed to answer, and one
- * that went quiet mid-thought all look identical under "something went wrong" —
- * and the actions they call for are opposites. A stopped agent needs `resume`; a
- * machine with nothing running on it needs the agent started; a declined
- * question needs nothing; an unreachable service needs the agent started.
+ * one that never managed to answer, and one that went quiet mid-thought all look
+ * identical under "something went wrong" — and the actions they call for are
+ * opposites. A stopped agent needs `resume`; a machine with nothing running on
+ * it needs the agent started; an unreachable service needs the agent started.
+ *
+ * A question the agent has finished with in silence (`agent_declined`) is not
+ * among them on purpose. No reply in this turn is not evidence the agent will
+ * not reply: it may have received the message, done something, and reply later.
+ * Showing a decision not to reply for it would present an unsettled
+ * turn as a decision, so a decline is shown as nothing at all — the transcript
+ * simply holds the question until a reply, if one comes, lands in it.
  */
 
 /** The translation each refusal reads as. */
@@ -22,7 +28,6 @@ const REASONS: Record<string, Parameters<ReturnType<typeof createTranslator>>[0]
   agent_invalid_endpoint: 'agentBadEndpoint',
   agent_not_running: 'agentNotRunning',
   agent_stopped: 'agentStopped',
-  agent_declined: 'agentDeclined',
   agent_unanswered: 'agentUnanswered',
   agent_timeout: 'agentTimeout',
   agent_aborted: 'agentInterrupted',
@@ -36,6 +41,9 @@ const REASONS: Record<string, Parameters<ReturnType<typeof createTranslator>>[0]
  */
 export function describeAgentFailure(error: unknown, language: Language): string | null {
   if (!(error instanceof AgentRequestError)) return null;
+  // A decline is not shown. A turn with no reply yet may still be answered
+  // later, and a turn that is never answered needs no notice either.
+  if (error.code === 'agent_declined') return null;
   const t = createTranslator(language);
   const key = REASONS[error.code];
   const reason = key ? t(key) : t('agentRefused');
@@ -50,6 +58,7 @@ export const BASE_MODEL_REFUSAL_KEYS: Record<BaseModelRefusal, TranslationKey> =
   unknown_provider: 'baseModelUnknownProvider',
   invalid_model: 'baseModelInvalidModel',
   invalid_endpoint: 'baseModelInvalidEndpoint',
+  invalid_reasoning_level: 'baseModelInvalidReasoningLevel',
   key_required: 'baseModelKeyRequired',
   env_key_missing: 'baseModelEnvKeyMissing',
   home_unwritable: 'baseModelHomeUnwritable',

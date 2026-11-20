@@ -1,22 +1,99 @@
-name: ethos-main
+name: clio-main
 
+# The local database compose file. `clio up` uses this when Docker is the
+# available PostgreSQL; the agent's own services under the `full` profile are
+# for the containerized deployment (the personal workstation path runs them
+# under `clio-supervisor` instead, which is the same seven processes without
+# a container boundary between them).
 services:
   db:
     image: pgvector/pgvector:pg16
-    container_name: ethos-db
+    container_name: clio-db
     environment:
-      POSTGRES_USER: ethos
-      POSTGRES_PASSWORD: ethos
-      POSTGRES_DB: ethos
+      POSTGRES_USER: clio
+      POSTGRES_PASSWORD: clio
+      POSTGRES_DB: clio
     ports:
       - "127.0.0.1:5433:5432"
     volumes:
-      - ethos_main_pgdata:/var/lib/postgresql/data
+      - clio_main_pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ethos -d ethos"]
+      test: ["CMD-SHELL", "pg_isready -U clio -d clio"]
       interval: 5s
       timeout: 3s
       retries: 20
 
+  # ---- the agent, containerized: docker compose --profile full up ----
+  gateway:
+    profiles: ["full"]
+    image: ghcr.io/ainohogosya/clio:3.1
+    command: ["python", "-m", "clio", "gateway"]
+    environment: &clio-env
+      CLIO_DSN: postgresql://clio:clio@db:5432/clio
+      CLIO_MASTER_KEY: ${CLIO_MASTER_KEY:-}
+      CLIO_HOME: /home/clio/.ethos
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+    volumes:
+      - clio_home:/home/clio/.ethos
+    depends_on:
+      db: { condition: service_healthy }
+
+  toolhost:
+    profiles: ["full"]
+    image: ghcr.io/ainohogosya/clio:3.1
+    command: ["python", "-m", "clio", "toolhost"]
+    environment: *clio-env
+    volumes:
+      - clio_home:/home/clio/.ethos
+    depends_on:
+      db: { condition: service_healthy }
+
+  comms:
+    profiles: ["full"]
+    image: ghcr.io/ainohogosya/clio:3.1
+    command: ["python", "-m", "clio", "comms"]
+    environment: *clio-env
+    volumes:
+      - clio_home:/home/clio/.ethos
+    depends_on:
+      db: { condition: service_healthy }
+
+  workers:
+    profiles: ["full"]
+    image: ghcr.io/ainohogosya/clio:3.1
+    command: ["python", "-m", "clio", "worker"]
+    # One job per process; scale with `docker compose up --scale workers=N`.
+    deploy:
+      replicas: 2
+    environment: *clio-env
+    volumes:
+      - clio_home:/home/clio/.ethos
+    depends_on:
+      db: { condition: service_healthy }
+
+  api:
+    profiles: ["full"]
+    image: ghcr.io/ainohogosya/clio:3.1
+    command: ["python", "-m", "clio", "api"]
+    environment: *clio-env
+    ports:
+      - "127.0.0.1:8721:8721"
+    depends_on:
+      db: { condition: service_healthy }
+
+  core:
+    profiles: ["full"]
+    image: ghcr.io/ainohogosya/clio:3.1
+    command: ["python", "-m", "clio", "core"]
+    environment:
+      <<: *clio-env
+      CLIO_SANDBOX_BACKEND: rootless_docker
+    volumes:
+      - clio_home:/home/clio/.ethos
+    depends_on:
+      db: { condition: service_healthy }
+
 volumes:
-  ethos_main_pgdata:
+  clio_main_pgdata:
+  clio_home:

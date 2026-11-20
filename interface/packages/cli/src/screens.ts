@@ -235,9 +235,11 @@ const FIELD_PAINTERS: Record<ConfigField, (value: string, state: SharedState, pa
   provider: (value, _state, palette) => palette.inkText(value),
   model: (value, _state, palette) => palette.inkText(value),
   baseUrl: (value, _state, palette) => palette.muted(value),
-  apiKey: (value, _state, palette) => (value
-    ? `${palette.good('set')} ${palette.faint(value)}`
-    : palette.warn('unset')),
+  reasoningLevel: (value, _state, palette) => palette.muted(value),
+  apiKey: (value, state, palette) => {
+    const t = createTranslator(state.settings.language);
+    return value ? `${palette.good(t('on'))} ${palette.faint(value)}` : palette.warn(t('off'));
+  },
   language: (value, state, palette) => palette.muted(`${value} (${languageLabel(state.settings.language)})`),
   theme: (value, _state, palette) => palette.muted(value),
   accent: (value, _state, palette) => palette.accentText(value),

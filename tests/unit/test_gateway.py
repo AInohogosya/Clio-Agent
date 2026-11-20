@@ -6,16 +6,16 @@ import json
 import httpx
 import pytest
 
-from ethos.config import load_base_model, load_config
-from ethos.gateway.client import GatewayClient
-from ethos.gateway.cost import BudgetExceededError, CostCalculator
-from ethos.gateway.normalizer import estimate_tokens
-from ethos.gateway.providers.anthropic_native import AnthropicNativeProvider
-from ethos.gateway.providers.base import ProviderError
-from ethos.gateway.ratelimit import RateLimiter
-from ethos.gateway.router import PIN_STREAK_LIMIT, CircuitBreaker, ModelRouter, NoModelAvailable
-from ethos.gateway.service import GatewayService, UnusableResponse
-from ethos.schemas.models import NormalizedResponse, ThinkingBlock, Tier, Usage
+from clio.config import load_base_model, load_config
+from clio.gateway.client import GatewayClient
+from clio.gateway.cost import BudgetExceededError, CostCalculator, SpendGuard
+from clio.gateway.normalizer import estimate_tokens
+from clio.gateway.providers.anthropic_native import AnthropicNativeProvider
+from clio.gateway.providers.base import ProviderError
+from clio.gateway.ratelimit import RateLimiter
+from clio.gateway.router import PIN_STREAK_LIMIT, CircuitBreaker, ModelRouter, NoModelAvailable
+from clio.gateway.service import GatewayService, UnusableResponse
+from clio.schemas.models import NormalizedResponse, ThinkingBlock, Tier, Usage
 from tests.conftest import FakeProvider, simple_request
 
 
@@ -56,10 +56,22 @@ def full_config(tmp_path, monkeypatch):
     # the routing table, and on a machine with a local model running the three
     # tests below called it over HTTP instead of using the provider they were
     # handed, and failed.
-    monkeypatch.setenv("ETHOS_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("CLIO_HOME", str(tmp_path / "home"))
     cfg = load_config("config")
     cfg.models.base = None
-    cfg.models.models = [e for e in cfg.models.models if not e.pinned]
+    # A loopback base_url is the machine answering, not the catalogue under
+    # test: whether 127.0.0.1:something is listening is a property of this
+    # laptop, and the guard below exists so no test ever finds out.
+    from urllib.parse import urlsplit
+
+    def _remote(entry):
+        host = urlsplit(entry.base_url or "").hostname or ""
+        return host not in ("localhost",) and not host.endswith(".localhost") and host != "127.0.0.1"
+
+    cfg.models.models = [
+        e for e in cfg.models.models
+        if not e.pinned and (e.provider != "openai_compat" or _remote(e))
+    ]
     return cfg
 
 
@@ -143,9 +155,11 @@ def test_a_catalogue_that_cannot_serve_the_tier_is_not_transient(full_config):
     to arrive at the same answer every time. And the error has to say which it
     was, so a caller can log the two differently.
     """
+    from clio.gateway.router import entry_key
+
     costs = CostCalculator(full_config)
     router = ModelRouter(full_config, costs)
-    everything = frozenset(f"{m.provider}:{m.model}" for m in full_config.models.models)
+    everything = frozenset(entry_key(m) for m in full_config.models.models)
     with pytest.raises(NoModelAvailable) as raised:
         router.select(
             simple_request(tier=Tier.T2), is_available=lambda e: True, exclude=everything,
@@ -181,7 +195,7 @@ def test_a_pinned_model_is_still_exempt_from_the_quality_floor(full_config):
     it. So the floor is still decided where it always was, and this holds the
     line.
     """
-    from ethos.config import BaseModelConfig
+    from clio.config import BaseModelConfig
 
     base = BaseModelConfig(
         provider="openai_compat", model="pinned/below-the-floor",
@@ -342,6 +356,111 @@ def test_budget_exception_carries_details():
     assert exc.cap == 20.0
 
 
+class _OverCapDB:
+    """Answers every spend query as if every cap had been crossed."""
+
+    def __init__(self, usd: float = 999.0):
+        self.usd = usd
+
+    async def fetchval(self, sql, *args):
+        return self.usd
+
+
+async def test_block_mode_refuses_the_call_when_the_caps_are_crossed(full_config):
+    full_config.permissions.hard_limits.on_exceed = "block"
+    full_config.permissions.hard_limits.H2_daily_spend_usd = 20.0
+    guard = SpendGuard(_OverCapDB(), full_config)
+    with pytest.raises(BudgetExceededError):
+        await guard.check("discretionary", est_cost=0.50)
+
+
+async def test_warn_mode_keeps_the_agent_working_past_the_cap(full_config):
+    """The field contract: the cap is a loud line on the dashboard, not a stop.
+
+    A budget that raises stops the agent for the rest of the day, which for a
+    tool meant to carry someone's whole working day is the one failure the
+    money was supposed to prevent. In warn mode the same breach is logged and
+    the call proceeds.
+    """
+    full_config.permissions.hard_limits.on_exceed = "warn"
+    full_config.permissions.hard_limits.H2_daily_spend_usd = 20.0
+    guard = SpendGuard(_OverCapDB(), full_config)
+    await guard.check("discretionary", est_cost=0.50)  # must not raise
+
+
+async def test_the_budget_env_var_overrides_the_file(full_config, monkeypatch):
+    full_config.permissions.hard_limits.on_exceed = "warn"
+    full_config.permissions.hard_limits.H2_daily_spend_usd = 20.0
+    monkeypatch.setenv("CLIO_BUDGET_MODE", "block")
+    guard = SpendGuard(_OverCapDB(), full_config)
+    with pytest.raises(BudgetExceededError):
+        await guard.check("discretionary", est_cost=0.50)
+
+
+class _TokenDB:
+    """Answers USD queries from `usd` and token queries from `tokens`."""
+
+    def __init__(self, usd: float, tokens: float):
+        self.usd = usd
+        self.tokens = tokens
+
+    async def fetchval(self, sql, *args):
+        return self.tokens if "input_tokens" in sql else self.usd
+
+
+async def test_all_windows_disabled_by_default_enforces_nothing(full_config):
+    """With every window unset, even massive spend passes."""
+    full_config.permissions.hard_limits.on_exceed = "block"
+    # The shipped config caps the day ($20) and the month ($400) — the unattended
+    # frontier-model deployment wants real numbers with "block" — so the shipped
+    # values are cleared here to test the all-disabled case itself.
+    full_config.permissions.hard_limits.H2_daily_spend_usd = None
+    full_config.permissions.hard_limits.H2_monthly_spend_usd = None
+    assert full_config.permissions.hard_limits.enabled_limits() == {}
+    guard = SpendGuard(_OverCapDB(), full_config)
+    await guard.check("discretionary", est_cost=9999.0, est_tokens=999_999_999)
+
+
+async def test_the_shipped_config_caps_the_day_and_the_month(full_config):
+    """The deployment's own numbers: $20 a day, $400 a month, enforced."""
+    assert full_config.permissions.hard_limits.enabled_limits() == {
+        "daily": 20.0, "monthly": 400.0,
+    }
+    guard = SpendGuard(_OverCapDB(usd=25.0), full_config)
+    with pytest.raises(BudgetExceededError) as raised:
+        await guard.check("discretionary", est_cost=0.01)
+    assert raised.value.window == "daily"
+
+
+async def test_each_window_is_independently_enableable(full_config):
+    """Only the enabled window is enforced: hourly on, the shipped day/month off."""
+    full_config.permissions.hard_limits.on_exceed = "block"
+    # The shipped day/month caps are cleared so the test isolates the one window
+    # it is about, the way it did when the shipped config shipped no caps at all.
+    full_config.permissions.hard_limits.H2_daily_spend_usd = None
+    full_config.permissions.hard_limits.H2_monthly_spend_usd = None
+    full_config.permissions.hard_limits.H2_per_hour_limit = 5.0
+    assert full_config.permissions.hard_limits.enabled_limits() == {"per_hour": 5.0}
+    guard = SpendGuard(_TokenDB(usd=4.0, tokens=0), full_config)
+    await guard.check("discretionary", est_cost=0.50)
+    with pytest.raises(BudgetExceededError) as raised:
+        await guard.check("discretionary", est_cost=2.0)
+    assert raised.value.window == "per hour"
+
+
+async def test_token_unit_enforces_token_caps(full_config):
+    """With `budget_unit: tokens` the same caps are read as token counts."""
+    full_config.permissions.hard_limits.on_exceed = "block"
+    full_config.permissions.hard_limits.H2_daily_spend_usd = None
+    full_config.permissions.hard_limits.H2_monthly_spend_usd = None
+    full_config.permissions.hard_limits.budget_unit = "tokens"
+    full_config.permissions.hard_limits.H2_per_hour_limit = 1000.0
+    guard = SpendGuard(_TokenDB(usd=999.0, tokens=900.0), full_config)
+    await guard.check("discretionary", est_cost=0.01, est_tokens=50)
+    with pytest.raises(BudgetExceededError):
+        await guard.check("discretionary", est_cost=0.01, est_tokens=200)
+
+
 def test_estimate_tokens_positive(full_config):
     request = simple_request()
     assert estimate_tokens(request) >= 64
@@ -379,6 +498,77 @@ async def test_gateway_retries_retryable_errors(full_config):
     assert response.text == "recovered"
     assert provider.calls == 2
     del MagicMock
+
+
+async def test_a_long_wait_is_not_logged_as_a_rate_limit(full_config, monkeypatch):
+    """`rate_limited_waiting` is a fact about a 429, not about a slow retry.
+
+    The event used to fire for any wait at or above the long-wait threshold and
+    hardcode `status: 429`. A reply that reasoned without answering therefore
+    appeared in the log as a provider rate limit.
+    """
+    from clio.gateway import service as service_module
+
+    events: list[tuple[str, dict]] = []
+
+    def _capture(event, **fields):
+        events.append((event, fields))
+
+    monkeypatch.setattr(service_module.logger, "warning", _capture)
+    provider = FakeProvider(errors=[
+        UnusableResponse("the model reasoned without answering", counts_against_model=False),
+        None,
+    ])
+    provider.responses = [
+        NormalizedResponse(text="recovered", usage=Usage(input_tokens=50, output_tokens=5)),
+    ]
+    service = GatewayService(full_config, db=None, providers={"anthropic": provider})
+    monkeypatch.setattr(service, "_delay_before_retry", lambda *a, **k: 15.0)
+
+    async def _no_sleep(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(service, "_sleep_before_retry", _no_sleep)
+
+    response = await service.complete(simple_request(tier=Tier.T3))
+
+    assert response.text == "recovered"
+    names = [name for name, _ in events]
+    assert "gateway.rate_limited_waiting" not in names
+    retry = next(fields for name, fields in events if name == "gateway.retry")
+    assert retry["waiting"] is True
+    assert retry["retry_in_s"] == 15.0
+
+
+async def test_a_rate_limit_is_logged_as_one(full_config, monkeypatch):
+    """The other direction: a real 429 still produces the waiting event."""
+    from clio.gateway import service as service_module
+
+    events: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        service_module.logger, "warning",
+        lambda event, **fields: events.append((event, fields)),
+    )
+    provider = FakeProvider(errors=[
+        ProviderError("anthropic", 429, "slow down", retryable=True),
+        None,
+    ])
+    provider.responses = [
+        NormalizedResponse(text="recovered", usage=Usage(input_tokens=50, output_tokens=5)),
+    ]
+    service = GatewayService(full_config, db=None, providers={"anthropic": provider})
+    monkeypatch.setattr(service, "_delay_before_retry", lambda *a, **k: 1.0)
+
+    async def _no_sleep(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(service, "_sleep_before_retry", _no_sleep)
+
+    response = await service.complete(simple_request(tier=Tier.T3))
+
+    assert response.text == "recovered"
+    waiting = next(fields for name, fields in events if name == "gateway.rate_limited_waiting")
+    assert waiting["status"] == 429
 
 
 async def test_gateway_no_retry_on_hard_errors(full_config):
@@ -427,6 +617,78 @@ async def test_a_rejected_key_fails_over_instead_of_failing_the_request(full_con
     response = await service.complete(simple_request(tier=Tier.T2))
 
     assert dead.calls == 1, "the model with the dead key is asked once"
+    assert healthy.calls == 1, "and the request is served by the model that could"
+    assert response.text == "answered elsewhere"
+
+
+async def test_a_model_not_found_on_this_endpoint_fails_over(full_config):
+    """A 404 is a model/endpoint pairing, not a request the ladder must stop at.
+
+    The shape that stalled a goal for hours: a model name carried over from
+    one provider was pointed at another provider's endpoint, which answered
+    "model not found" on every attempt. As provider-scoped and not
+    retryable, that raised straight through the retry loop, the planner
+    called it an unusable request, and the goal re-asked the same broken
+    pairing on backoff indefinitely while live candidates went unasked.
+    Model-scoped like a retired model (410), it fails over instead.
+    """
+    assert ProviderError(
+        "openai_compat", 404, "model 'x' not found", retryable=False,
+    ).scope == "model"
+    missing = FakeProvider(errors=[ProviderError(
+        "anthropic", 404, "model 'x' not found", retryable=False,
+    )])
+    healthy = FakeProvider(responses=[
+        NormalizedResponse(text="answered elsewhere", usage=Usage(input_tokens=10, output_tokens=2)),
+    ])
+    service = GatewayService(
+        full_config, db=None, providers={"anthropic": missing, "openai": healthy},
+    )
+    _no_waiting(full_config)
+
+    response = await service.complete(simple_request(tier=Tier.T2))
+
+    assert missing.calls == 1, "the endpoint that does not serve the model is asked once"
+    assert healthy.calls == 1, "and the request is served by a model that exists there"
+    assert response.text == "answered elsewhere"
+
+
+async def test_an_unpaid_plan_fails_over_instead_of_failing_the_request(full_config):
+    """A 402 is the money, not the mood: it fails over instead of ending the turn.
+
+    The shape that ate the replies: a catalogue entry on an endpoint whose plan
+    was out of credits answered "402 Payment Required -- Add usage credits or
+    subscribe" to everything. As provider-scoped *and* not retryable, it raised
+    straight through the retry loop on the first attempt, so every deliberation
+    that picked the unpaid entry first died on the spot and the message was
+    parked as a silence -- while live candidates one slot down went unasked.
+    Model-scoped like a dead key (401), it is asked once and the request is
+    served elsewhere.
+    """
+    assert ProviderError(
+        "openai_compat", 402, "Add usage credits or subscribe and save up to 66%",
+        retryable=False,
+    ).scope == "model"
+    # Narrowed to the two providers under test, so the entry the router picks
+    # first is a fact of this test and not of whichever key happens to be in
+    # the environment.
+    full_config.models.models = [
+        e for e in full_config.models.models if e.provider in ("anthropic", "openai")
+    ]
+    unpaid = FakeProvider(errors=[ProviderError(
+        "anthropic", 402, "Add usage credits or subscribe", retryable=False,
+    )])
+    healthy = FakeProvider(responses=[
+        NormalizedResponse(text="answered elsewhere", usage=Usage(input_tokens=10, output_tokens=2)),
+    ])
+    service = GatewayService(
+        full_config, db=None, providers={"anthropic": unpaid, "openai": healthy},
+    )
+    _no_waiting(full_config)
+
+    response = await service.complete(simple_request(tier=Tier.T2))
+
+    assert unpaid.calls == 1, "the endpoint out of credits is asked once"
     assert healthy.calls == 1, "and the request is served by the model that could"
     assert response.text == "answered elsewhere"
 
@@ -847,7 +1109,7 @@ def _pinned_plus_best_catalogue(full_config):
     other entry scored highest would be testing the score instead, and would go
     on passing after a change to the pin had broken it.
     """
-    from ethos.config import BaseModelConfig
+    from clio.config import BaseModelConfig
 
     base = BaseModelConfig(
         provider="openai_compat", model="pinned/base",
@@ -920,7 +1182,7 @@ def test_a_demoted_pin_is_still_used_when_nothing_else_can_answer(full_config):
     only candidate is still the answer, floor and all: answering badly is not the
     same as not answering, and the retry ladder in front of it is unchanged.
     """
-    from ethos.config import BaseModelConfig
+    from clio.config import BaseModelConfig
 
     base = BaseModelConfig(
         provider="openai_compat", model="pinned/only",
@@ -945,7 +1207,7 @@ def test_a_demoted_pin_is_preferred_to_a_tier_nobody_can_serve(full_config):
     cost the deployment the only model that could answer, which is a worse
     outcome than the one the demotion was for.
     """
-    from ethos.config import BaseModelConfig
+    from clio.config import BaseModelConfig
 
     base = BaseModelConfig(
         provider="openai_compat", model="pinned/below-the-floor",
@@ -1031,18 +1293,22 @@ def test_router_can_be_asked_to_leave_a_model_out(full_config):
     costs = CostCalculator(full_config)
     router = ModelRouter(full_config, costs)
     request = simple_request(tier=Tier.T2)
+    from clio.gateway.router import entry_key
+
     chosen = router.select(request, is_available=lambda e: True)
     assert chosen.provider == "anthropic"
     second = router.select(request, is_available=lambda e: True,
-                           exclude=frozenset({f"{chosen.provider}:{chosen.model}"}))
+                           exclude=frozenset({entry_key(chosen)}))
     assert second.provider != chosen.provider
 
 
 def test_router_exclusion_of_everything_has_no_answer(full_config):
+    from clio.gateway.router import entry_key
+
     costs = CostCalculator(full_config)
     router = ModelRouter(full_config, costs)
     request = simple_request(tier=Tier.T2)
-    everything = frozenset(f"{m.provider}:{m.model}" for m in full_config.models.models)
+    everything = frozenset(entry_key(m) for m in full_config.models.models)
     with pytest.raises(NoModelAvailable):
         router.select(request, is_available=lambda e: True, exclude=everything)
 
@@ -1149,8 +1415,8 @@ async def test_a_model_that_has_no_reasoning_parameter_stops_being_sent_it(full_
     time it comes back the provider knows not to ask that model again -- while
     still asking the ones beside it.
     """
-    from ethos.config import QuirksConfig
-    from ethos.gateway.providers.openai_compat import OpenAICompatProvider
+    from clio.config import QuirksConfig
+    from clio.gateway.providers.openai_compat import OpenAICompatProvider
 
     sent: list[dict] = []
 
@@ -1217,8 +1483,8 @@ async def test_a_default_thinking_model_gets_its_thinking_switched_off(full_conf
     what endpoints like NVIDIA NIM actually accept. A model beside it that does
     not behave this way is left alone.
     """
-    from ethos.config import QuirksConfig
-    from ethos.gateway.providers.openai_compat import OpenAICompatProvider
+    from clio.config import QuirksConfig
+    from clio.gateway.providers.openai_compat import OpenAICompatProvider
 
     sent: list[dict] = []
 
@@ -1261,8 +1527,8 @@ async def test_an_endpoint_that_refused_the_bound_still_gets_thinking_bounded(fu
     endpoint that cannot honour it still gets an answer, on the third attempt
     and not never.
     """
-    from ethos.config import QuirksConfig
-    from ethos.gateway.providers.openai_compat import OpenAICompatProvider
+    from clio.config import QuirksConfig
+    from clio.gateway.providers.openai_compat import OpenAICompatProvider
 
     sent: list[dict] = []
 
@@ -1308,8 +1574,8 @@ async def test_an_endpoint_that_refuses_the_toggle_stops_being_sent_it(full_conf
     thinker, so the retry loop's escalation of `max_tokens` is what carries the
     request instead of a parameter that has nowhere to land.
     """
-    from ethos.config import QuirksConfig
-    from ethos.gateway.providers.openai_compat import OpenAICompatProvider
+    from clio.config import QuirksConfig
+    from clio.gateway.providers.openai_compat import OpenAICompatProvider
 
     sent: list[dict] = []
 
@@ -1578,7 +1844,7 @@ async def test_a_dead_loopback_entry_is_removed_from_the_ladder(full_config, mon
     deliberately not allowed to route around, so the whole request failed with
     a candidate still sitting in the catalogue that had never worked once.
     """
-    from ethos.config import ModelEntry
+    from clio.config import ModelEntry
 
     cfg = full_config
     common = {"latency_s": 3.0, "rpm": 10, "tpm": 1000}
@@ -1631,7 +1897,7 @@ async def test_a_pinned_loopback_entry_is_reported_not_removed(full_config, monk
     failure has to stay visible at the point the person who made it can see,
     which is the request that fails, not the catalogue that quietly shrank.
     """
-    from ethos.config import BaseModelConfig, ModelEntry
+    from clio.config import BaseModelConfig, ModelEntry
 
     cfg = full_config
     common = {"latency_s": 3.0, "rpm": 10, "tpm": 1000}
@@ -1660,6 +1926,100 @@ async def test_a_pinned_loopback_entry_is_reported_not_removed(full_config, monk
     assert "local-vllm" not in [e.model for e in cfg.models.models]
 
 
+def test_entry_key_distinguishes_the_same_model_on_different_endpoints():
+    """A pinned NVIDIA name on Ollama and the catalogue entry serving it on
+    NVIDIA share provider and model but not endpoint. Keyed alike, failing
+    the pinned entry excluded the working catalogue entry with it."""
+    from clio.config import ModelEntry
+    from clio.gateway.router import entry_key
+
+    common = {"latency_s": 3.0, "rpm": 10, "tpm": 1000, "quality": 0.9}
+    pinned = ModelEntry(provider="openai_compat", model="vendor/model",
+                        base_url="http://localhost:11434/v1", tiers=["T1"],
+                        pinned=True, **common)
+    catalogue = ModelEntry(provider="openai_compat", model="vendor/model",
+                           base_url="https://integrate.api.nvidia.com/v1",
+                           tiers=["T1"], **common)
+    assert entry_key(pinned) != entry_key(catalogue)
+
+
+async def test_a_404_on_the_pin_fails_over_to_the_same_model_on_its_real_endpoint(
+    full_config, monkeypatch,
+):
+    """The 2026-11-08 outage: `minimaxai/minimax-m3.1-flash` pinned on a local
+    Ollama server answered 404 on every solver call. The catalogue serves
+    that same model name from NVIDIA, but a 404 that is not model-scoped
+    raised straight through the retry loop, so no failover was ever tried.
+    """
+    from clio.config import BaseModelConfig, ModelEntry
+
+    cfg = full_config
+    common = {"latency_s": 3.0, "rpm": 10, "tpm": 100000, "quality": 0.9}
+    cfg.models.base = BaseModelConfig(
+        provider="openai_compat", model="vendor/model",
+        base_url="http://localhost:11434/v1", api_key="",
+        quality=1.0, tiers=["T1", "T2", "T3"],
+    )
+    catalogue = ModelEntry(provider="openai_compat", model="vendor/model",
+                           base_url="https://integrate.api.nvidia.com/v1",
+                           tiers=["T1", "T2", "T3"], **common)
+    cfg.models.models = [cfg.models.base.entry(), catalogue]
+    monkeypatch.setenv("CLIO_HOME", str(cfg.paths.home))
+
+    failing = FakeProvider(errors=[
+        ProviderError("openai_compat", 404, "model 'vendor/model' not found",
+                      retryable=False),
+    ])
+    working = FakeProvider()
+    working.responses = [
+        NormalizedResponse(text="ok", usage=Usage(input_tokens=10, output_tokens=2)),
+    ]
+    # Providers are cached per (provider, base_url), so the two endpoints get
+    # two instances even though they share a provider name.
+    service = GatewayService(cfg, db=None)
+    service.providers[("openai_compat", "http://localhost:11434/v1")] = failing
+    service.providers[("openai_compat", "https://integrate.api.nvidia.com/v1")] = working
+    cfg.gateway.retry.jitter = 0.0
+    cfg.gateway.retry.backoff_s = 0.01
+    monkeypatch.setattr(asyncio, "sleep", lambda *_: asyncio.sleep(0))
+
+    response = await service.complete(simple_request(tier=Tier.T2))
+    assert response.text == "ok"
+    assert failing.calls == 1 and working.calls == 1
+
+
+async def test_a_pinned_loopback_model_on_a_dead_endpoint_is_benched(
+    full_config, monkeypatch,
+):
+    """A pinned keyless loopback entry must not be asked first forever when
+    its endpoint is not there. This probe used to skip pinned entries
+    entirely, leaving a dead local pin in front of every request."""
+    from clio.config import BaseModelConfig
+
+    cfg = full_config
+    cfg.models.base = BaseModelConfig(
+        provider="openai_compat", model="vendor/model",
+        base_url="http://localhost:11434/v1", api_key="",
+    )
+    cfg.models.models = [cfg.models.base.entry()]
+    service = GatewayService(cfg)
+
+    class _Reply:
+        status_code = 404
+
+        def json(self):
+            return {}
+
+    async def _answer(url, timeout=None):
+        return _Reply()
+
+    monkeypatch.setattr(service.http, "get", _answer)
+    await service.probe_local_endpoints()
+
+    assert "vendor/model" in [e.model for e in cfg.models.models], "benched, not removed"
+    assert service.router.breaker_open(cfg.models.models[0])
+
+
 async def test_a_learned_trait_survives_a_new_provider_instance(full_config, tmp_path):
     """The lesson was paid for; a restart must not unlearn it.
 
@@ -1670,8 +2030,8 @@ async def test_a_learned_trait_survives_a_new_provider_instance(full_config, tmp
     agent's own data directory carries the lessons across, and a second
     instance on the same endpoint starts with them already known.
     """
-    from ethos.config import QuirksConfig
-    from ethos.gateway.providers.openai_compat import OpenAICompatProvider
+    from clio.config import QuirksConfig
+    from clio.gateway.providers.openai_compat import OpenAICompatProvider
 
     state_path = tmp_path / "learned_model_traits.json"
 
@@ -1706,8 +2066,8 @@ async def test_a_learned_trait_survives_a_new_provider_instance(full_config, tmp
 
 async def test_a_learned_refusal_survives_a_new_provider_instance(full_config, tmp_path):
     """The same guarantee, for the trait learned from a 400."""
-    from ethos.config import QuirksConfig
-    from ethos.gateway.providers.openai_compat import OpenAICompatProvider
+    from clio.config import QuirksConfig
+    from clio.gateway.providers.openai_compat import OpenAICompatProvider
 
     state_path = tmp_path / "learned_model_traits.json"
 
@@ -1736,8 +2096,8 @@ async def test_a_learned_refusal_survives_a_new_provider_instance(full_config, t
 
 async def test_a_corrupt_trait_file_is_a_missing_one(full_config, tmp_path):
     """A state file that will not parse is a lesson not yet learned, not an error."""
-    from ethos.config import QuirksConfig
-    from ethos.gateway.providers.openai_compat import OpenAICompatProvider
+    from clio.config import QuirksConfig
+    from clio.gateway.providers.openai_compat import OpenAICompatProvider
 
     state_path = tmp_path / "learned_model_traits.json"
     state_path.write_text("{not json", encoding="utf-8")

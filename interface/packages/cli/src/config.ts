@@ -18,6 +18,7 @@ export type PhoneConfig = SharedState;
 export type { ChatMessage, Settings, SharedState } from '@project-phone/core';
 export {
   configPath,
+  configFileExists,
   constantTimeEquals,
   emptyConfig,
   hasEnvironmentApiKey,

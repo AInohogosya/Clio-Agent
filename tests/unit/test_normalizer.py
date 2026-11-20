@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import json
 
-from ethos.config import QuirksConfig
-from ethos.gateway.normalizer import (
+from clio.config import QuirksConfig
+from clio.gateway.normalizer import (
     build_name_map,
     estimate_tokens,
     messages_to_anthropic,
@@ -17,12 +17,12 @@ from ethos.gateway.normalizer import (
     sanitize_declarations_for_google,
     sanitize_tool_name,
 )
-from ethos.schemas.models import (
+from clio.schemas.models import (
     ModelMessage,
     Role,
     ThinkingBlock,
 )
-from ethos.schemas.tools import ToolCall
+from clio.schemas.tools import ToolCall
 from tests.conftest import simple_request, tool_specs
 
 QUIRKS = QuirksConfig()
@@ -164,7 +164,7 @@ def test_openai_responses_payload():
 
 
 def test_openai_reasoning_effort_mapping():
-    from ethos.gateway.normalizer import _effort_for_budget
+    from clio.gateway.normalizer import _effort_for_budget
 
     assert _effort_for_budget(100) == "low"
     assert _effort_for_budget(4000) == "medium"
@@ -198,7 +198,7 @@ def test_openai_responses_response_normalization():
 
 
 def test_google_sanitizes_declarations():
-    from ethos.config import load_config
+    from clio.config import load_config
 
     quirks = load_config("config").quirks.google
     tools = tool_specs()
@@ -374,6 +374,27 @@ def test_a_reasoning_budget_becomes_the_endpoints_own_parameter():
     assert payload["reasoning"] == {"max_tokens": 400}
     assert payload["max_tokens"] == 8000, \
         "the ceiling stays whole; only what thinking may take of it is bounded"
+
+
+def test_a_reasoning_budget_over_the_ceiling_cannot_swallow_the_answer():
+    """A thinking budget at or over `max_tokens` is the empty-body failure.
+
+    The gateway fills an unnamed budget from the base model's reasoning level
+    (8192 at `medium`), so a caller with a small ceiling of its own — the
+    verification judge at 1200, the reverie's chooser at 400 — received a
+    thinking budget far larger than its answer room. The endpoint spends the
+    whole ceiling thinking and returns `finish_reason: length` with no content:
+    `reasoned without answering` on every attempt.
+    """
+    swallowed = simple_request(reasoning_budget=8192, max_tokens=1200)
+    payload = messages_to_openai_compat(swallowed, "thinking-model", QUIRKS.openai_compat)
+    thinking = payload["reasoning"]["max_tokens"]
+    assert thinking < 1200, "thinking is bounded below the ceiling"
+    assert 1200 - thinking >= 256, "and the answer keeps a room of its own"
+
+    tiny = simple_request(reasoning_budget=8192, max_tokens=400)
+    payload = messages_to_openai_compat(tiny, "thinking-model", QUIRKS.openai_compat)
+    assert payload["reasoning"]["max_tokens"] < 400
 
 
 def test_no_reasoning_budget_sends_no_reasoning_parameter():

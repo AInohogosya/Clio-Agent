@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import pytest
 
-from ethos.config import channels_path, load_config, people_path
+from clio.config import channels_path, load_config, people_path
 
 
 def write_overlay(home, name: str, body: str) -> None:
@@ -31,7 +31,7 @@ def write_overlay(home, name: str, body: str) -> None:
 def config_for():
     """The shipped configuration, with the agent's home overlaid on it.
 
-    Read through `ETHOS_HOME` rather than by passing the home, because that is
+    Read through `CLIO_HOME` rather than by passing the home, because that is
     how every process reads it: an interface writes to the home the environment
     names, and the agent reads the home the environment names. Passing one here
     and setting the other would test a configuration nothing runs.
@@ -42,8 +42,8 @@ def config_for():
 @pytest.fixture(autouse=True)
 def agent_home(tmp_path, monkeypatch):
     """Every test in this file is about one home, and it is a temporary one."""
-    monkeypatch.setenv("ETHOS_HOME", str(tmp_path))
-    for name in ("TELEGRAM_BOT_TOKEN", "SLACK_BOT_TOKEN", "DISCORD_BOT_TOKEN", "ETHOS_WEB_TOKEN"):
+    monkeypatch.setenv("CLIO_HOME", str(tmp_path))
+    for name in ("TELEGRAM_BOT_TOKEN", "SLACK_BOT_TOKEN", "DISCORD_BOT_TOKEN", "CLIO_WEB_TOKEN"):
         monkeypatch.delenv(name, raising=False)
     return tmp_path
 
@@ -145,7 +145,7 @@ def test_the_environment_wins_over_the_file(agent_home, monkeypatch):
     """
     A deployment that exports its keys keeps working.
 
-    The environment first is not a preference: `ethos-comms` and the interface
+    The environment first is not a preference: `clio-comms` and the interface
     bridge are separate processes, and a key in the environment of one is the only
     kind that can be rotated without rewriting a file. A person who pastes a token
     into a settings screen afterwards must not silently take that away.
@@ -202,7 +202,7 @@ def test_one_rule_serves_every_door(agent_home):
 
 def test_doctor_can_say_why_a_door_is_silent(agent_home):
     """
-    The question a person runs `ethos doctor` to ask.
+    The question a person runs `clio doctor` to ask.
 
     A channel that is configured in a file nobody has opened and is not working
     is exactly the failure a health check exists to name — and a bot that answers
@@ -281,7 +281,7 @@ def test_opening_a_door_to_anybody_reaches_the_adapter(agent_home):
     """
     import asyncio
 
-    from ethos.comms.host import CommsHost
+    from clio.comms.host import CommsHost
 
     write_overlay(
         agent_home,

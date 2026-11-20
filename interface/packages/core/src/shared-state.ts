@@ -112,9 +112,14 @@ export function publicSettingsEqual(left: Settings, right: Settings): boolean {
     && a.provider === b.provider
     && a.baseUrl === b.baseUrl
     && a.model === b.model
+    && a.reasoningLevel === b.reasoningLevel
     && a.language === b.language
     && a.theme === b.theme
-    && a.accent === b.accent;
+    && a.accent === b.accent
+    && a.showTimestamps === b.showTimestamps
+    && a.density === b.density
+    && a.showSidebar === b.showSidebar
+    && a.enterToSend === b.enterToSend;
 }
 
 export function nextRevision(state: Pick<SharedState, 'revision'>): number {
@@ -261,7 +266,7 @@ export function diffSettings(next: Settings, current: Settings): SettingsDelta {
   const fields: Array<keyof Settings> = [];
   const keys: Array<keyof Settings> = [
     'interface', 'agentUrl', 'agentPerson',
-    'provider', 'apiKey', 'baseUrl', 'model', 'language', 'theme', 'accent',
+    'provider', 'apiKey', 'baseUrl', 'model', 'reasoningLevel', 'language', 'theme', 'accent',
   ];
   for (const key of keys) {
     if (next[key] !== current[key]) fields.push(key);
