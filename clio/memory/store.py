@@ -275,7 +275,7 @@ class MemoryStore:
         vec = self.embedder.embed([summary])[0]
         ep_id = _new_id()
         body_json, sealed = await self._seal(dict(body or {}), "local")
-        await self.db.execute(
+        await self.db.execute_uncancelled(
             "INSERT INTO episodes (id, ts, thread_id, kind, summary, body, intention_id, importance, "
             "strength, half_life_h, last_access, access_count, status, embedding, scope, namespace_id, "
             "sealed_payload) "
@@ -519,7 +519,7 @@ class MemoryStore:
             namespace_id = None
         q_id = _new_id()
         vec = self.embedder.embed([text])[0]
-        await self.db.execute(
+        await self.db.execute_uncancelled(
             "INSERT INTO questions (id, text, origin_episode, priority, status, embedding, scope, namespace_id) "
             "VALUES ($1, $2, $3, $4, 'open', $5::vector, $6, $7)",
             q_id, text, origin_episode, float(priority), to_pgvector(vec), scope, namespace_id,

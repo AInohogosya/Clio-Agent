@@ -54,7 +54,7 @@ class ContinuityManager:
                     sealed = await self.envelope.seal(
                         json.dumps(payload["state"], default=str), "local", aad="checkpoint",
                     )
-                await self.db.execute(
+                await self.db.execute_uncancelled(
                     "INSERT INTO checkpoints (ts, thread_id, snapshot, sealed_payload) "
                     "VALUES (now(), $1, $2::jsonb, $3)",
                     state.get("thread_id", "self"),

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -16,6 +18,17 @@ from clio.schemas.memory import MemoryHit
 
 _K1 = 1.5
 _B = 0.75
+
+RECALL_TIMEOUT_S = 10.0
+"""Statement budget for one recall cosine search.
+
+A warm HNSW-backed search over the current table sizes runs in tens of
+milliseconds; ten seconds means the planner picked a pathological plan or
+the index is wedged. The recall class sheds the table and answers with
+what the other tables returned instead of parking the cycle for the
+pool-wide 30 s command timeout, per table, mid-cycle."""
+
+logger = logging.getLogger("clio.memory.retrieval")
 
 
 def tokenize(text: str) -> list[str]:
@@ -338,8 +351,21 @@ class HybridRetriever:
         allowed = scopes if scopes is not None else {"private", "project", "org"}
         hits: list[MemoryHit] = []
         raw: list[str] = []
+        # The recall class gets its own, statement-scoped budget: a warm
+        # cosine search over the HNSW index is tens of milliseconds, so a
+        # recall that outlives RECALL_TIMEOUT_S is a pathological planner
+        # decision or a wedged index, and the cycle must shed it rather
+        # than sit out the pool-wide 30 s per table.
         for sql in wanted.values():
-            rows = await self.db.fetch(sql, vec, k)
+            try:
+                rows = await self.db.fetch(sql, vec, k,
+                                           timeout_s=RECALL_TIMEOUT_S)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.warning("memory.recall_query_timed_out",
+                               exc_info=True)
+                continue
             for row in rows:
                 hit = self._row_to_hit(row, with_embedding=False)
                 scope = hit.extra.get("scope") or "private"

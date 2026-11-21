@@ -53,21 +53,73 @@ class Database:
     async def close(self) -> None:
         await self.pool.close()
 
-    async def execute(self, stmt: str, *args: Any) -> str:
+    async def execute(self, stmt: str, *args: Any,
+                      timeout_s: float | None = None) -> str:
         async with self.pool.acquire() as conn:
-            return await conn.execute(stmt, *args)
+            if timeout_s is None:
+                return await conn.execute(stmt, *args)
+            async with conn.transaction():
+                await self._set_local_timeout(conn, timeout_s)
+                return await conn.execute(stmt, *args)
 
-    async def fetch(self, stmt: str, *args: Any) -> list[asyncpg.Record]:
+    async def fetch(self, stmt: str, *args: Any,
+                    timeout_s: float | None = None) -> list[asyncpg.Record]:
         async with self.pool.acquire() as conn:
-            return await conn.fetch(stmt, *args)
+            if timeout_s is None:
+                return await conn.fetch(stmt, *args)
+            async with conn.transaction():
+                await self._set_local_timeout(conn, timeout_s)
+                return await conn.fetch(stmt, *args)
 
-    async def fetchrow(self, stmt: str, *args: Any) -> asyncpg.Record | None:
+    async def fetchrow(self, stmt: str, *args: Any,
+                       timeout_s: float | None = None) -> asyncpg.Record | None:
         async with self.pool.acquire() as conn:
-            return await conn.fetchrow(stmt, *args)
+            if timeout_s is None:
+                return await conn.fetchrow(stmt, *args)
+            async with conn.transaction():
+                await self._set_local_timeout(conn, timeout_s)
+                return await conn.fetchrow(stmt, *args)
 
-    async def fetchval(self, stmt: str, *args: Any) -> Any:
+    async def fetchval(self, stmt: str, *args: Any,
+                       timeout_s: float | None = None) -> Any:
         async with self.pool.acquire() as conn:
-            return await conn.fetchval(stmt, *args)
+            if timeout_s is None:
+                return await conn.fetchval(stmt, *args)
+            async with conn.transaction():
+                await self._set_local_timeout(conn, timeout_s)
+                return await conn.fetchval(stmt, *args)
+
+    @staticmethod
+    async def _set_local_timeout(conn: asyncpg.Connection,
+                                 timeout_s: float) -> None:
+        # Statement-scoped timeout for one query class. `SET LOCAL` holds
+        # only inside this transaction, so the pool's connections keep the
+        # pool-level `command_timeout` for everyone else. The value is
+        # interpolated as an int because SET does not accept bind params;
+        # the int() cast is the whole injection surface.
+        await conn.execute(f"SET LOCAL statement_timeout = {int(timeout_s * 1000)}")
+
+    async def execute_uncancelled(self, stmt: str, *args: Any) -> str:
+        """Run one durable write so the caller's cancellation cannot abort it.
+
+        A stop or a steer cancels the cycle task wherever it happens to be
+        - including inside an INSERT, which asyncpg escalates to a
+        server-side cancel. A memory record cut mid-insert is not a
+        cancelled intention, it is a hole in the journal the rest of the
+        system already reasoned from (the postgres log shows exactly these:
+        episodes/questions/checkpoints inserts dying as "canceling
+        statement due to user request"). The write is a single indexed
+        insert; letting it finish costs milliseconds and keeps the timeline
+        whole. Reads are re-runnable and stay cancellable.
+        """
+        inner = asyncio.ensure_future(self.execute(stmt, *args))
+        try:
+            return await asyncio.shield(inner)
+        except asyncio.CancelledError:
+            try:
+                return await inner
+            except asyncio.CancelledError:  # pragma: no cover - double cancel
+                raise
 
     def acquire(self) -> asyncpg.pool.PoolAcquireContext:
         return self.pool.acquire()

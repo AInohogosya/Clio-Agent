@@ -753,7 +753,7 @@ async def test_a_narrow_kind_asks_only_the_table_that_can_answer():
     queried: list[str] = []
 
     class _DB:
-        async def fetch(self, sql: str, *_: Any) -> list[Any]:
+        async def fetch(self, sql: str, *_: Any, **__: Any) -> list[Any]:
             queried.append(sql)
             return []
 
@@ -771,7 +771,7 @@ async def test_an_unfiltered_search_still_asks_all_four():
     queried: list[str] = []
 
     class _DB:
-        async def fetch(self, sql: str, *_: Any) -> list[Any]:
+        async def fetch(self, sql: str, *_: Any, **__: Any) -> list[Any]:
             queried.append(sql)
             return []
 

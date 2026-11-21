@@ -1051,9 +1051,13 @@ async def test_the_plan_request_is_degraded_after_repeated_failures(db, config, 
         assert last.model_dump(mode="json") != first.model_dump(mode="json"), (
             "the degraded request is the same bytes as the original"
         )
-        assert first.reasoning_budget is None, "the original asked for unbounded thinking"
+        assert first.reasoning_budget == config.gsl.reasoning_budget, (
+            "the original carries the ordinary thinking ceiling - the same "
+            "ceiling that lets a reasoning model bill its chain of thought "
+            "inside max_tokens without starving the answer"
+        )
         assert last.reasoning_budget == config.gsl.degraded_reasoning_budget, (
-            "and the degraded one bounds it"
+            "and the degraded one bounds it further"
         )
         assert last.tier.value == "T1" and first.tier.value == "T2", (
             "the tier drops too: a plan is not the hardest thing asked of a model, "
