@@ -304,6 +304,64 @@ async def test_two_conversations_get_two_isolated_workspaces_and_bindings(tmp_pa
     assert bound_one["project_id"] != bound_two["project_id"]
 
 
+async def test_guardian_allows_the_persons_own_paths_outside_the_lease(tmp_path, monkeypatch):
+    """A destination the person named (their Desktop) is reachable even though
+    the project's isolated workspace lives under ~/work/.projects.
+
+    The lease keeps one project out of another's root; it is not the wall
+    between the agent and the person's own files. A folder on the Desktop is
+    exactly the work a commission asks for, so it must not be refused as
+    "outside workspace lease" while the agent is carrying out that commission.
+    """
+    import clio.guardian.gate as gate_module
+
+    cfg = _make_config(tmp_path)
+    cfg.permissions.guardian.mode = "normal"
+    monkeypatch.setenv("CLIO_GUARDIAN_MODE", "normal")
+    home = tmp_path / "home"
+    monkeypatch.setattr(gate_module, "user_home", lambda: home)
+
+    leases = WorkspaceLeaseManager(cfg)
+    own_root = home / "work" / ".projects" / "p1"
+    other_root = home / "work" / ".projects" / "p2"
+    own_root.mkdir(parents=True)
+    other_root.mkdir(parents=True)
+    own = leases.acquire(target_path=own_root, kind="snapshot", allowed_paths=[])
+    own.root_path = own_root
+    other = leases.acquire(target_path=other_root, kind="snapshot", allowed_paths=[])
+    other.root_path = other_root
+
+    audit = ListAudit()
+    from tests.conftest import FakeRegistry, FakeVerifier, NoopControl, NoopSnapshots
+
+    gate = GuardianGate(
+        cfg, registry=FakeRegistry(), trash=object(), snapshots=NoopSnapshots(),
+        audit=audit, verifier=FakeVerifier(), control=NoopControl(), leases=leases,
+    )
+    desktop = home / "Desktop" / "physics-agent-cli"
+    allowed = await gate.review(
+        "fs.mkdir", {"path": str(desktop)}, reason="test",
+        thread_id="self", project_id="p1", workspace_lease_id=own.id,
+    )
+    assert allowed.allowed, allowed.reason
+    assert any("person's reach" in row["summary"] for row in audit.entries)
+
+    # The isolation guarantee still holds: another project's root is fenced.
+    crossed = await gate.review(
+        "fs.write", {"path": str(other_root / "a.txt")}, reason="test",
+        thread_id="self", project_id="p1", workspace_lease_id=own.id,
+    )
+    assert crossed.allowed is False
+    assert "lease" in crossed.reason
+
+    # A path outside the person's home is still not reachable.
+    outside = await gate.review(
+        "fs.write", {"path": str(tmp_path / "elsewhere.txt")}, reason="test",
+        thread_id="self", project_id="p1", workspace_lease_id=own.id,
+    )
+    assert outside.allowed is False
+
+
 async def test_tool_calls_stamp_project_on_journal_and_artifacts(tmp_path, db, embedder):
     """A tool call made while working on a project is journalled and registered
     against it — through the intention's own attribution when the context does

@@ -15,6 +15,7 @@ from clio.guardian.classifier import (
 )
 from clio.observability.logger import get_logger
 from clio.parse import parse_json_block
+from clio.paths import resolve, user_home
 
 logger = get_logger("clio.guardian.gate")
 
@@ -200,6 +201,51 @@ class GuardianGate:
             return None
         return None
 
+    @staticmethod
+    def _within(path: Path, root: Any) -> bool:
+        try:
+            path.relative_to(Path(str(root)))
+            return True
+        except (ValueError, OSError, TypeError):
+            return False
+
+    def _reachable_from_home(self, lease: Any, target: str) -> bool:
+        """Whether a path outside `lease` is still the person's own reach.
+
+        A lease is the isolation guarantee between projects: it keeps one
+        project out of another's workspace. It was never meant to be the wall
+        between the agent and the person's files. When the person names a
+        destination ("a new folder on my Desktop"), the agent writes there, and
+        the lease root — an isolated snapshot under `~/work/.projects/<id>` — is
+        not that directory. Rejecting every such write made the agent unable to
+        carry out the instruction it was given.
+
+        So a path outside the lease is allowed when it is inside the host user's
+        home and not inside any *other* lease's root. That keeps the guarantee
+        that two projects never collide while restoring the documented reach
+        (`clio.paths`: the agent's filesystem permissions are the host user's).
+        Paths inside the lease root are still governed by `allowed_paths`.
+        """
+        try:
+            path = resolve(str(target))
+        except (TypeError, ValueError, OSError):
+            return False
+        if self._within(path, lease.root_path):
+            return False
+        if not self._within(path, user_home()):
+            return False
+        others = getattr(self.leases, "leases", None)
+        if not isinstance(others, dict) and isinstance(self.leases, dict):
+            others = self.leases
+        if isinstance(others, dict):
+            for other in others.values():
+                if other is lease or getattr(other, "id", None) == getattr(lease, "id", None):
+                    continue
+                root = getattr(other, "root_path", None)
+                if root is not None and self._within(path, root):
+                    return False
+        return True
+
     async def _review_lease(
         self, tool: str, args: dict[str, Any],
         intention_id: str | None, thread_id: str,
@@ -224,24 +270,32 @@ class GuardianGate:
             from clio.threads.context import check_allowed_path
 
             for target in targets:
-                if not check_allowed_path(lease, target):
-                    reason = (
-                        f"path {target!r} is outside workspace lease {lease.id} "
-                        f"(allowed: {lease.allowed_paths or 'lease root'})"
-                    )
+                if check_allowed_path(lease, target):
+                    continue
+                if self._reachable_from_home(lease, target):
                     await self.audit.append(
                         actor=thread_id, category="guardian",
-                        summary=f"action blocked by workspace lease: {tool}",
+                        summary=f"path outside lease allowed as the person's reach: {tool}",
                         details={"lease_id": lease.id, "target": target, "args": _redacted(args)},
                     )
-                    if self._field_mode():
-                        await self.audit.append(
-                            actor=thread_id, category="guardian",
-                            summary="workspace-lease fence audited, allowed in field mode",
-                            details={"lease_id": lease.id},
-                        )
-                        return None
-                    return GateDecision(Verdict.REJECT, GatePath.BLOCKED, reason)
+                    continue
+                reason = (
+                    f"path {target!r} is outside workspace lease {lease.id} "
+                    f"(allowed: {lease.allowed_paths or 'lease root'})"
+                )
+                await self.audit.append(
+                    actor=thread_id, category="guardian",
+                    summary=f"action blocked by workspace lease: {tool}",
+                    details={"lease_id": lease.id, "target": target, "args": _redacted(args)},
+                )
+                if self._field_mode():
+                    await self.audit.append(
+                        actor=thread_id, category="guardian",
+                        summary="workspace-lease fence audited, allowed in field mode",
+                        details={"lease_id": lease.id},
+                    )
+                    return None
+                return GateDecision(Verdict.REJECT, GatePath.BLOCKED, reason)
             limit = getattr(lease, "budget_limit_usd", None)
             if limit is not None:
                 try:

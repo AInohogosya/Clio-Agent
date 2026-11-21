@@ -1,446 +1,367 @@
-# Safety theory: reversibility over refusal
+# 02 — Safety and the guardian
 
-Clio Agent runs on the user's machine, on their accounts, with their keys. The safety
-model is therefore built around a specific thesis, stated in the README and enacted in
+Clio Agent runs on the user's machine, on their accounts, with their keys. The safety model
+is therefore built around a specific thesis, stated in the README and enacted in
 `clio/guardian/`:
 
-> **Safe by reversibility where the code implements it, not by blanket refusal.**
-> Concrete deletions go to trash, destructive calls are journaled, snapshots provide
-> additional recovery, and a hash-chained audit trail provides evidence. Ordinary
-> writes are not preimage-backed, however, and not every destructive operation can be undone.
-> The six hard limits (H1–H6) are declared in the prompt and configuration; only
-> specific parts of them have mechanical enforcement.
+> **Safe by reversibility where the code implements it, not by blanket refusal.** Deletions
+> go to trash, destructive calls are journaled, snapshots and preimage backups provide
+> recovery, and a hash-chained audit trail provides evidence. Not every destructive
+> operation can be undone, and the six hard limits (H1–H6) are only partly enforced
+> mechanically. This document names exactly which parts.
+
+Sources: `clio/guardian/`, `clio/observability/audit.py`, `clio/core/control.py`,
+`clio/core/supervisor.py`, `deploy/oob/oob_guardian.py`, `config/permissions.yaml`.
 
 ## 1. Why reversibility is the primitive
 
-A purely refusal-based safety model has two structural problems for a resident agent:
+A purely refusal-based model has two structural problems for a resident:
 
-1. **It cannot scale to a life.** A resident that runs 24/7 pursuing goals makes
-   thousands of file and shell operations a day. A veto-based gate either floods the
-   user with approvals (the agent becomes unusable) or the gate erodes (the agent
-   becomes dangerous). Neither failure mode is acceptable under the golden rule.
-2. **It mis-teaches the agent.** An agent whose operations get refused with no account
-   of refusal learns one of three bad behaviours (`clio/prompts/identity.py:737-769`):
-   report refused work as done, retry refused calls, or **rephrase the action until it
-   slips past the classifier** — the one a hard limit exists to prevent.
+1. **It cannot scale to a life.** A resident running 24/7 makes thousands of file and shell
+   operations a day. A veto gate either floods the user with approvals (the agent becomes
+   unusable) or erodes (the agent becomes dangerous). Neither is acceptable under the golden
+   rule ([01](01-philosophy.md) §2).
+2. **It mis-teaches the agent.** An agent refused with no account of refusal learns one of
+   three behaviours (`clio/prompts/identity.py:737-771`): report refused work as done, retry
+   refused calls, or rephrase until it slips past the classifier — the one a hard limit
+   exists to prevent.
 
-Reversibility changes the default calculus. Guardian **field mode**
-(`CLIO_GUARDIAN_MODE`, with legacy `ETHOS_GUARDIAN_MODE` fallback) keeps the journal,
-trash, and snapshots, but changes the gate's vetoes into audit entries:
-`GuardianConfig.mode` has a class default of `"field"`
-(`clio/config.py:1195-1212`), while the checked-in deployment configuration sets
-`guardian.mode: normal` (`config/permissions.yaml:78-95`). In field mode:
+Reversibility changes the default calculus. What remains veto-worthy is the set
+reversibility cannot reliably repair: **money** (spent is spent), **credentials** (scope is
+privilege), **law** (some acts are not undoable), and **commissioned deliverables**
+(destroying another's requested work is not the agent's loss to absorb).
 
-- a concrete file deletion is rewritten into a trash move;
-- a protected or commissioned destructive action is moved to trash with long
-  retention, without the model-based due-process check;
-- a classifier hit, a capital-at-risk breach, and a workspace-lease fence are recorded
-  and the action proceeds.
+### 1.1 The two modes
 
-Field mode does **not** disable pause/preview, policy denial, safety-level approvals,
-or pre-execution approval cards for high-impact external effects. It is also
-independent of safety level 4: level 4 removes the safety-level approval wall, while
-field mode changes what the guardian vetoes.
+`GuardianConfig.mode` (`clio/config.py:1195-1213`):
 
-An ordinary overwrite is not protected by a preimage backup in the current code.
-`fs.write` and `fs.edit` write their targets directly; reversibility currently
-protects deletion and records side effects, not every byte written.
+- `"field"` — the **class default** (`config.py:1209`): the gate keeps its records and its
+  reversibility transforms (journal, trash, snapshots) and drops its vetoes. The
+  hard-limit pattern block, the capital-at-risk rejection and the due-process model check
+  become audit entries, and the action proceeds.
+- `"normal"` — the vetoing gate.
 
-What remains veto-worthy is the set that reversibility cannot reliably repair:
-**money** (spent is spent), **credentials** (scope is privilege), **law** (some acts
-are not undoable), and **commissioned deliverables** (destroying another's requested
-work is not the agent's loss to absorb). Those are the hard limits, but how strongly
-each is enforced depends on the control described below.
+The checked-in deployment config sets `guardian.mode: normal` (`config/permissions.yaml`,
+the `guardian:` block) with the comment that level-4-style unattended work makes the vetoing
+gate the compensating control. `CLIO_GUARDIAN_MODE` overrides the file
+(`clio/env.py`). Oversight (pause/stop, preview) is effective in **both** modes and is
+documented in §6.
 
-## 2. The six hard limits (H1–H6)
+Field mode does **not** disable: pause/preview (§6.1), CEL policy denial (§3.4),
+safety-level approvals (§7), or pre-execution approval cards for high-impact external
+effects (§3.4). It is also independent of safety level 4, which removes the level-based
+approval wall but does not switch the mode.
 
-The configuration fields are defined in `clio/config.py:1215-1247`; the prompt text
-is rendered from `clio/prompts/identity.py:727-769`:
+## 2. Filesystem reach — the fact the safety model starts from
 
-| # | Limit | Shipped value | Mechanical enforcement in this checkout |
-|---|---|---|---|
-| H1 | Oversight supremacy | `True` | Pause/preview reject tool calls; stop/pause/emergency files stop or hold the agent. Audit/snapshot immutability is a declaration, not a tool-level access restriction. |
-| H2 | Financial exposure caps | daily $20, monthly $400, capital-at-risk $100, money threshold $5 in `config/permissions.yaml` | Gateway spend windows are enforced by `SpendGuard` (`clio/gateway/cost.py:298-470`); when a tool call supplies `spend_usd`, the gate applies the capital-at-risk cap to that call. The class defaults leave the daily and monthly windows disabled (`None`), so the YAML values matter. |
-| H3 | Law and non-harm | `True` | Selected dangerous command patterns are blocked by the classifier in normal mode. The wider obligation has no single switch. |
-| H4 | Legal authority | `True` | No dedicated mechanical gate enforces contracts or AI-disclosure duties in this checkout. |
-| H5 | Commissioned-artifact due process | `True` | Normal mode consults `ModelDueProcessVerifier`; field mode skips the model check but still moves the artifact to trash. |
-| H6 | Credential scope | `True` | Selected credential-access and privilege patterns are blocked by the classifier in normal mode; secret-domain policy is enforced separately at runtime. |
+**The agent can read, write and list any directory its host user can.** There is no
+allowlist, no root prefix check, no `is_relative_to` guard, no chroot, no seatbelt profile
+and no sandbox between a tool call and the disk in the base deployment:
 
-`on_exceed: "block"` applies to the numeric H2 spend windows. It is not an
-on/off setting for H1, H3, H4, H5, or H6. In fact, the `H1_oversight_supremacy`,
-`H3_law_and_non_harm`, `H4_legal_authority`, `H5_commissioned_due_process`, and
-`H6_credential_scope` configuration fields are not read by the runtime; changing one
-to `false` does not change the corresponding behaviour.
+- `clio/paths.py:resolve` is the single place a path is interpreted: it expands `~` and
+  resolves relative names against the **user's home directory**, then returns whatever it
+  was given.
+- The eight `fs.*` tools in `clio/toolhost/tools/fs.py` all go through it and act;
+  `fs.write` creates parent directories anywhere it can write; `fs.list` enumerates `/etc`.
+- `shell.run`, `shell.job` and `code.exec` inherit the same reach through ordinary POSIX
+  bits; `shell.run`'s working directory defaults to the user's home.
+- The systemd units in `deploy/systemd/` carry no `ProtectHome`, no `ReadOnlyPaths`, no
+  `InaccessiblePaths`.
 
-### 2.1 The enforcement honesty clause
+Two limits are the operating system's and are not lifted: the account's own permissions
+(intended), and macOS TCC, which refuses directories the user can open in Finder because
+the grant belongs to the responsible process — `clio doctor` measures this with a real
+write/delete probe rather than trusting mode bits (`clio/__main__.py:1268-1323`).
 
-The repository README gives the most accurate account of what is and is not
-enforced (`README.md:1243-1284`):
+The agent is told this honestly in `REACH_NOTE` (`clio/prompts/identity.py:357-406`), as
+part of the cached identity prefix, so the judgement it is asked to make is "would I want
+this in the log", not "may I touch this."
 
-- **H1** has concrete control-plane effects: pause, preview, and emergency controls
-  stop tool execution, and the supervisor can terminate a wedged core. The stronger
-  claim that the audit log and snapshots are mechanically untouchable by every
-  possible host-user action is not enforced by the tool gate.
-- **H2** is mechanically enforced at the gateway for configured spend windows. The
-  guardian's capital-at-risk check is a per-action threshold, not an aggregate
-  exposure calculation. In field mode the guardian records that breach rather than
-  rejecting the call.
-- **H3 and H6** have mechanical pattern checks for some dangerous commands in normal
-  mode. Field mode records the classifier hit and allows the action.
-- **H4** has no dedicated mechanical enforcement in this checkout.
-- **H5** is mechanically represented by the artifact registry and due-process path.
-  The standalone toolhost constructs `ModelDueProcessVerifier` without a gateway
-  (`clio/__main__.py:322`), so there the model check is unavailable and fails closed:
-  the artifact is protected rather than destroyed.
-- The guardian operates on **tool calls and shell text**, not on arbitrary bytes the
-  agent may produce in prose. The interface, audit trail, and oversight are the
-  compensating controls for the prose channel.
-- With no API keys configured, gateway model calls fail loudly, but the toolhost's
-  journal and reflex rules can still run. The tool-level safety floor therefore does
-  not depend on model availability; the model-based due-process check fails closed.
+Project sandboxes ([10](10-sandboxes-steering-and-policy.md) §1) fence a *project's*
+workspace and egress when provisioned — they are opt-in per project, not a property of the
+agent as a whole.
 
 ## 3. The guardian gate
 
-`GuardianGate.review()` (`clio/guardian/gate.py:298-567`) sits between every tool
-call and its execution. Verdicts are `{allow, transform, reject}`; gate paths are
-`{normal, fast, due_process, blocked}` (`clio/guardian/gate.py:85-95`).
+`GuardianGate.review()` (`clio/guardian/gate.py:352-706`) sits between every tool call and
+its execution. Verdicts are `{allow, transform, reject}`; gate paths are
+`{normal, fast, due_process, blocked}` (`gate.py:86-95`). There is deliberately **no
+`home_dir` parameter**: the gate does not pretend to fence the filesystem (§2).
 
-The current review order is:
+Review order (first match wins):
 
-1. **Oversight pause → REJECT / BLOCKED** (H1).
-2. **Preview mode → REJECT / BLOCKED.** Preview is an owner-controlled mode, not a
-   safety-level decision.
-3. **Invalid, expired, or malformed `runAssertion` → REJECT / BLOCKED.**
-4. **Safety level 1 → REJECT** for every tool except the explicitly allowed
-   dialogue/internal-memory tools.
-5. **CEL policy evaluation.** A policy denial rejects the call, and an engine error
-   fails closed. A high-impact external side effect can create a pre-execution
-   approval card at any safety level, including level 4.
-6. **Classifier says `blocked` (H3/H6 pattern).** Normal mode rejects; field mode
-   audits and allows.
-7. **Money above capital-at-risk.** Normal mode rejects; field mode audits and
-   allows. The gateway spend guard separately enforces the configured H2 windows.
-8. **Workspace-lease and tool-manifest fences.** Normal mode rejects a path,
-   manifest, or budget violation; field mode records the fence and proceeds.
-9. **Safety-level approval.** Levels 2 and 3 can wait for the owner. An explicitly
-   allowlisted `http.request` or `browser.visit` host is exempt; shell commands
-   never qualify for that waiver.
-10. **Destructive review.** A protected artifact takes the due-process path. A
-    concrete agent-owned delete takes the fast trash path. Other irreversible
-    operations are audited and allowed.
-11. **Commissioned-write registration.** A successful commissioned write is added to
-    the artifact registry, making later due process possible.
+| # | Condition | Path | Effect |
+|---|---|---|---|
+| 1 | Oversight pause active (`pause_actions`) | `blocked` | **REJECT** (H1) — `gate.py` oversight check |
+| 2 | Preview mode on | `blocked` | **REJECT**; owner-controlled mode, not a safety level |
+| 3 | `runAssertion` supplied but invalid/expired/mismatched | `blocked` | **REJECT** (`gate.py:121-146` region) |
+| 4 | Safety level 1, non-dialogue tool | `blocked` | **REJECT** (`clio/guardian/safety.py:233-249`) |
+| 5 | CEL policy `deny`, or the engine itself failed | `blocked` | **REJECT** — fail closed; a high-impact external side effect may instead request a pre-execution approval card unless a policy pre-authorized it (`gate.py` policy section) |
+| 6 | Classifier verdict `blocked` (H3/H6 pattern) | `blocked` | **REJECT** in normal mode; audit + **ALLOW** in field mode |
+| 7 | Money above `H2_capital_at_risk_usd` | `blocked` | **REJECT** in normal mode; audit + **ALLOW** in field mode. The gateway's spend guard separately enforces the configured windows (§5) |
+| 8 | Workspace-lease fence or toolshed-manifest violation | `blocked` | **REJECT** in normal mode; audit + **ALLOW** in field mode (`_review_lease`, `gate.py:249-349`) |
+| 9 | Safety level 2/3 requires approval | `blocked` | Wait for the owner; an allowlisted `http.request`/`browser.visit` host is exempt; shell commands never qualify (`clio/guardian/safety.py:206-231`) |
+| 10 | Protected (commissioned/pinned) destructive action | `due_process` | Normal mode: `ModelDueProcessVerifier` (T2) must agree, else the artifact is protected. Field mode: trash 180 d + transform to `fs.read`, no model call (`_review_destructive`, `gate.py:709+`) |
+| 11 | Agent-owned concrete delete | `fast` | Trash 30 d + snapshot → **allow (transformed)** |
+| 12 | Commissioned write succeeds | `normal` | Register the artifact so later due process can find it (`auto_register_write`) |
 
-The classifier currently contains 81 command-table entries, 13 POSIX dangerous
-patterns, 20 Windows dangerous patterns, and 44 tool-category mappings
-(`clio/guardian/classifier.py:23-187,623-676`).
+`ModelDueProcessVerifier` (`gate.py:42-82`) makes a T2 model call that reviews a
+due-process destruction with the commission context. In the **standalone toolhost** the
+verifier is constructed without a gateway (`clio/__main__.py:322-328`), so the model check
+is unavailable and **fails closed**: the artifact is protected rather than destroyed. With
+no model keys at all, the toolhost's journal and reflex rules still run — the tool-level
+safety floor does not depend on model availability, but the model-based check fails closed.
+
+One honest behavioural note: the gate used to announce rejections to the owner as an
+outbound message. It does not any more — a sentence composed at the gate, in the first
+person, read as the agent having said it. The rejection is a fact about the gate, and the
+audit log is where it lives.
 
 ## 4. The reversibility stack
 
-Four cooperating subsystems make "undo" a property of the system where one exists,
-rather than a blanket promise.
+Four cooperating subsystems make "undo" a property where one exists, rather than a blanket
+promise.
 
 ### 4.1 Write-ahead journal (`clio/guardian/journal.py:67-289`)
 
-Every registered tool call gets a `begin` row before the gate runs and an `end` row
-afterwards. Journal statuses are `ok`, `failed`, `timeout`, `rejected`, and
-`interrupted`; the first four are decided terminal outcomes, while `interrupted`
-means the effect is unknown (`clio/guardian/journal.py:30-64`).
-
-Idempotency has three distinct outcomes (`clio/guardian/journal.py:44-64,171-202`;
-`clio/toolhost/server.py:241-409`):
-
-- a prior successful attempt is replayed from its journal row instead of being
-  executed again;
-- a decided non-success (`failed`, `timeout`, or `rejected`) releases the key so a
-  retry can proceed as a new attempt;
-- a `running` or `interrupted` attempt is not replayed or released, because its
-  effect may be unknown.
-
-On restart, `ContinuityManager.wake_up()` reconciles still-`running` journal rows to
-`interrupted` (`clio/memory/continuity.py:77-134`).
+- Every registered tool call gets a `begin` row **before** the gate runs and an `end` row
+  afterwards (`clio/toolhost/server.py:241-320`).
+- Terminal statuses: `ok`, `failed`, `timeout`, `rejected`, `interrupted`
+  (`journal.py:30-44`). `interrupted` means the effect is unknown.
+- **Replay requires `status == "ok"`** (`replayable`, `journal.py:44-64`): a prior success
+  is replayed from its row instead of re-executed; a decided non-success releases the
+  idempotency key; a `running`/`interrupted` row blocks a blind duplicate because its
+  effect is unknown.
+- On restart, `ContinuityManager.wake_up()` reconciles still-`running` rows to `interrupted`
+  (`clio/memory/continuity.py:77-145`).
 
 ### 4.2 Trash (`clio/guardian/trash.py:57-214`)
 
-`fs.delete` never calls `unlink`; it asks the trash store to move the target and
-returns the restore reference (`clio/toolhost/tools/fs.py:403-424`). Shell deletes
-with concrete existing targets are similarly rewritten into a trash move by the
-guardian.
-
-The layout is `trash/<id>/` plus `manifest.json`. Files receive a SHA-256
-fingerprint. Retention is configured as 30 days for the fast path and 180 days for
-the due-process path (`clio/config.py:1210-1211`). `TrashStore.purge_expired()` can
-remove expired entries, but no runtime scheduler or CLI command currently calls it;
-retention metadata does not itself purge anything.
+- Layout `trash/<id>/` + `manifest.json`; files get a SHA-256 fingerprint.
+- Retention: **30 days** (fast path) / **180 days** (due-process path)
+  (`GuardianConfig.fast_path_retention_days` / `due_process_retention_days`,
+  `config.py:1211-1212`).
+- `fs.delete` never calls `unlink`; it asks the trash store to move the target
+  (`clio/toolhost/tools/fs.py:416-424`). Concrete shell deletes are rewritten into trash
+  moves by the gate's fast path.
+- `restore()` (`trash.py:130-152`) is used by the guardian-undo path
+  (`clio/core/runner.py:352-368`).
+- **Gap:** `purge_expired()` (`trash.py:202+`) exists and is tested
+  (`tests/unit/test_guardian.py:167-171`) but **no runtime scheduler or CLI command calls
+  it**. Retention metadata does not itself purge anything; trash grows until an operator
+  intervenes.
 
 ### 4.3 Snapshots (`clio/guardian/snapshots.py:24-179`)
 
-`SnapshotManager` uses btrfs subvolumes where its backend probe succeeds and falls
-back to a hardlink/copy tree otherwise. The configured retention ladder is
-`15m × 4`, `hourly × 24`, and `daily × 7`.
+- btrfs subvolume snapshots where the backend probe succeeds; a hardlink/copy tree
+  otherwise (`_detect_backend`, `create`, `_tree_snapshot`).
+- Retention ladder `15m × 4, hourly × 24, daily × 7` (`_prune`, `:112-128`; config
+  `snapshot_policy`, `config.py:1213`).
+- The gate creates a snapshot on the fast-path destructive transform; **ordinary writes do
+  not get a pre-write snapshot.**
+- **Gap:** `restore()` (`:155-163`) has no runtime caller — it is not wired into
+  workspace-lease rollback, which uses the lease's own tree and trash entries
+  (`clio/threads/context.py:237-291`).
 
-The current gate creates a snapshot on the fast-path destructive transform
-(`clio/guardian/gate.py:786-830`); it does **not** create a pre-write snapshot for
-ordinary writes. `SnapshotManager.restore()` exists, but no runtime caller wires it
-to workspace-lease rollback. Lease rollback uses the lease's own root tree and trash
-entries (`clio/threads/context.py:237-263`).
+### 4.4 Preimage backups for overwrites (`clio/toolhost/tools/fs.py:60-68`)
 
-### 4.4 Hash-chained audit log (`clio/observability/audit.py:17-202`)
+An ordinary overwrite **is** preimage-backed, contrary to older accounts:
 
-`GENESIS_HASH` is 32 zero bytes. Every entry hashes the previous entry, producing a
-tamper-evident chain [D-33]. The Postgres sink serializes appends with advisory lock
-`918_273_645`; the file sink fsyncs each JSONL append. `verify_chain()` validates up
-to the most recent 1,000 entries (`clio/observability/audit.py:185-196`).
+- `fs.write` (`fs.py:214`) and `fs.edit` (`fs.py:289`) copy an existing target to
+  `paths.data_dir/backups/` (sha256-of-path + uuid naming) before writing, and return the
+  backup path as `undo_hint`.
+- A brand-new file has no preimage and gets `backup: None` — correctly, there is nothing to
+  back up.
+- **Gaps stated plainly:** the backup directory is a plain copy tree with **no retention,
+  pruning, or registry**; it is not integrated with trash or snapshots; nothing restores
+  from it automatically (`grep backups clio` finds only the writer); and there is no size
+  cap on what gets copied. It is a best-effort undo hint, not a managed recovery system.
 
-The core publishes the chain head and writes `anchor.json` every 600 seconds
-(`clio/core/runner.py:431-445`); the host-side OOB guardian can ingest that anchor
-into a log the agent cannot write. H1 declares the audit history off limits, but the
-tool gate has no separate ACL that makes the database table immutable to every
-possible host-user action.
+## 5. Money: the spend guard (the mechanical half of H2)
 
-## 5. Oversight paths in the runtime
+`SpendGuard` (`clio/gateway/cost.py:298-470`):
 
-H1 has three concrete runtime paths:
+- Windows: `per_minute`, `per_10_minutes`, `per_hour`, `per_5_hours` (trailing),
+  `daily`, `monthly` (UTC calendar) — each individually enableable; class defaults are
+  `None` = disabled (`clio/config.py:1230-1236`). The checked-in deployment enables
+  **daily $20** and **monthly $400** (`config/permissions.yaml`, `hard_limits`).
+- `on_exceed: "block"` (class default `config.py:1247`; YAML sets `block`) refuses the call
+  before it is made via the preflight at `clio/gateway/service.py:1017-1052`; `"warn"`
+  logs once per bucket per interval (`cost.py:457-470`).
+- `budget_unit` is `"usd"` or `"tokens"` for every window at once (`config.py:1223-1229`).
+- **Bucket split**: `commitment_reserve_pct = 0.50` (`config/gateway.budget`) — half of the
+  daily cap is reserved for commissioned work; discretionary ventures cannot starve owed
+  commitments (`cost.py:320-326`, `check` at `:390-455`).
+- Only `status='ok'` model-call rows count toward spend; failed calls are neither billed nor
+  counted (`cost.py:55-92` region).
+- **Capital-at-risk** (`H2_capital_at_risk_usd = 100.0`) is a **per-action threshold**
+  checked in the gate (§3 order item 7) — not an aggregate exposure calculation.
+- Every call is recorded into `model_calls` with token buckets, `cost_usd`, `price_source`,
+  latency and status (`cost.py:472-486`). What a dollar is, is decided in
+  `clio/pricing.py` + `config/pricing.yaml` — [07](07-gateway-and-toolhost.md) §4.
 
-1. **Control plane** (`clio/core/control.py:32-423`): the `env_entities` lifecycle
-   row is synchronized with `stop`, `paused`, and `emergency` files. The core
-   re-reads the row no more often than every `ROW_RECHECK_S = 30` seconds, while
-   file holds are read every cycle; SIGUSR1/SIGUSR2 map to pause/resume on POSIX. The design
-   comment is blunt: "files + bus state are truth [H1]". The standalone toolhost
-   loads the same row at startup and subscribes to `CONTROL_UPDATE` separately from
-   the core's percept chain (`clio/__main__.py:276-303`), so a bus-delivered pause
-   or preview reaches its gate.
-2. **Supervisor** (`clio/core/supervisor.py:56-96,440-509`): child heartbeats have
-   a 15-second fast window and a 1,800-second hard ceiling. A stale child is
-   terminated and restarted on the next sweep. `clio stop` sends SIGTERM on POSIX
-   and waits 20 seconds before reporting that the supervisor did not stop
-   (`clio/__main__.py:1015-1056`). On Windows it writes a stop-request file instead;
-   if that request is not honoured within 20 seconds, it forcibly stops the process
-   tree (`clio/__main__.py:1059-1103`, `clio/platform.py:300-323`).
-3. **Out-of-band watchdog** (`deploy/oob/oob_guardian.py:1-45`): an optional script
-   intended to run on the host, outside the agent's machine and trust boundary. It
-   watches spend and liveness, freezes sandboxes, revokes provider tokens, anchors
-   the audit head, and implements a host-side stop switch. The script exists in the
-   repository; running it is a deployment responsibility.
+## 6. Oversight paths (H1's mechanical half)
 
-## 6. Approvals and safety levels
+### 6.1 The control plane (`clio/core/control.py:32-200`)
 
-`clio safety show/set/reset` exposes four levels
-(`clio/__main__.py:739-771`):
+- `CONTROL_KEY "lifecycle"` (`:16`); the row is re-read every `ROW_RECHECK_S = 30` s
+  (`:19`) and on SIGUSR1/SIGUSR2. The bus event is the fast path; the re-read is the
+  backstop so a wedge cannot hide a pause.
+- **Two-way sync between the row and on-disk files** — `stop`, `paused`, `emergency` in
+  `run_dir` — "files + bus state are truth [H1]": either surface carries the command.
+- `pause_actions` rejects every tool call at the gate (§3 order 1); `preview` rejects all
+  tools (order 2) and is a mode, not an oversight hold — un-pausing does not clear it.
+- The core subscribes to `control.update` **separately** from the percept chain
+  (`clio/core/runner.py:301-310`), so oversight lands even if the percept path is wedged.
+- The standalone toolhost loads the same row at startup and subscribes to `CONTROL_UPDATE`
+  separately (`clio/__main__.py:274-333`, `owns_row=False` so its restarts never rewrite
+  the row).
+- **`clio safety set` writes the row directly and does not publish `CONTROL_UPDATE`**
+  (`clio/__main__.py:753-811`). The core notices within the 30-second recheck; the
+  standalone toolhost does not periodically re-read, so it updates only at startup or on a
+  bus event. A surface that publishes the event changes the toolhost immediately;
+  `clio safety set` alone does not guarantee all processes change level at once.
+- **`clio safety show` calls `effective_level(config, None)`** and therefore reports the
+  env/configured level, not the live row override (`__main__.py:739-751`).
 
-| Level | Meaning |
+### 6.2 The supervisor (`clio/core/supervisor.py:161-410`)
+
+- Dual-tier liveness: a fast window (`CLIO_FAST_HEARTBEAT_S`, 15 s) refreshed by a
+  background heartbeat task, and a 1800-second hard ceiling; a wedged child is terminated,
+  its activity leases transferred with the fence bumped (`:334-358`), and it is restarted.
+- Required children restart forever with `backoff_seconds`; the optional bridge is never
+  restarted (`:360-375`).
+- `clio stop` sends SIGTERM and waits 20 s before reporting the supervisor did not stop;
+  on Windows it writes a stop-request file and escalates to a forced stop
+  (`clio/__main__.py:1015-1105`, `clio/platform.py`).
+
+### 6.3 The out-of-band guardian (`deploy/oob/oob_guardian.py`)
+
+An optional script intended to run on the **hypervisor host**, outside the agent's machine
+and trust boundary: watches spend and liveness, freezes sandboxes, revokes provider tokens,
+anchors the audit head, and implements a host-side stop switch. **It exists in the
+repository; running it is a deployment responsibility — `clio up` does not start it.** Its
+suspend action only fires when `CLIO_SUSPEND_CMD` is set; without it, it logs and continues.
+
+## 7. Safety levels and approvals
+
+`clio safety show|set|reset` (`clio/__main__.py:739-771`):
+
+| Level | Meaning (`clio/guardian/safety.py:233-284`) |
 |---|---|
-| 1 | Dialogue/internal-memory tools only; commands and subagents are refused |
+| 1 | Dialogue/internal-memory tools only; commands and subagents refused |
 | 2 | Commands normally require approval; allowlisted HTTP/browser hosts and calls inside non-APEX subagents are exceptions |
-| 3 | Network-connected or download-like commands, plus APEX, normally require approval; allowlisted HTTP/browser hosts and calls inside non-APEX subagents are exceptions |
-| 4 | No safety-level approval; policy approvals, oversight, policy denials, and guardian limits still apply |
+| 3 | Network-connected or download-like commands, plus APEX, normally require approval; same exceptions |
+| 4 | No safety-level approval; policy approvals, oversight, policy denials and guardian limits still apply |
 
-Level 4 is **not recommended** for daily use. It removes the level-based approval
-wall, but it is not full autonomy: a high-impact external side effect can still wait
-for a pre-execution approval, and pause, preview, policy denial, and the guardian's
-normal-mode checks remain effective. Level 3 is the recommended ceiling for
-unattended running.
+- Level 4 is **not recommended** for daily use (the CLI help says so): it removes the
+  level-based wall, but a high-impact external side effect can still wait for a
+  pre-execution approval, and pause/preview/policy/mode checks remain.
+- Effective level order: live control-row override → `CLIO_SAFETY_LEVEL` (legacy
+  `ETHOS_SAFETY_LEVEL`) → `permissions.safety_level` → default `3`
+  (`safety.py:9,42-55`). The deployment sets `safety_level: 3`.
+- `DIALOGUE_TOOLS` (`safety.py:13-22`) is the level-1 allowlist.
+- Allowlisted hosts for the level 2/3 waiver come from
+  `permissions.network.allowed_hosts` (`config/permissions.yaml`: GitHub, PyPI, npm,
+  Wikipedia, …). A shell command that reaches the network is **never** exempt — the command
+  text names no host the gate can vouch for. Note this deployment also sets
+  `deny_private_ranges: false`, so the LAN is reachable without the waiver
+  (`config/permissions.yaml`, `network:` block).
+- Approvals: `ApprovalManager` (`clio/guardian/approval.py:43-130`) with code default
+  **300 s** and deployment value **21600 s** (6 h — "a step that dies at 300 s is a step
+  the agent has to re-earn from scratch"). Pending approvals are listed/approved/denied
+  through the toolhost HTTP surface with `clio approvals list|approve|deny`
+  (`__main__.py:813-852`).
 
-The effective level is selected in this order: live control-row override,
-`CLIO_SAFETY_LEVEL` (legacy `ETHOS_SAFETY_LEVEL`), `permissions.safety_level`, then
-the default `3` (`clio/guardian/safety.py:29-55`). Two operational details matter:
+## 8. The classifier
 
-- `clio safety set` writes the control row directly and does not publish a
-  `CONTROL_UPDATE` event (`clio/__main__.py:774-805`). The core notices such a row
-  change on a later cycle, within the 30-second row-recheck window, but the
-  standalone toolhost does not periodically re-read the row; it updates from its
-  startup load or from a bus event. A surface that publishes `CONTROL_UPDATE` can
-  therefore update the toolhost immediately, while `clio safety set` alone does not
-  guarantee that every process changes level at the same time.
-- `clio safety show` calls `effective_level(config, None)`, so it reports the
-  environment/configured level and does not read the live override from the control
-  row (`clio/__main__.py:739-750`).
+`clio/guardian/classifier.py` is the gate's pattern brain:
 
-Approvals are managed by `ApprovalManager`. Its code default is 300 seconds
-(`clio/guardian/approval.py:43-80`), while the checked-in deployment config sets
-`approval_timeout_s: 21600` (`config/permissions.yaml:16-19`). Pending approvals are
-listed, approved, or denied through the toolhost HTTP surface with
-`clio approvals list|approve|deny` (`clio/__main__.py:808-855`).
+- **`COMMAND_TABLE`** (`:23-121`): **81** command spellings → risk categories.
+- **`DANGEROUS_PATTERNS`** (`:131-146`): **13** POSIX regexes — `rm -rf /`, raw-device
+  writes, fork bombs, `chmod -R 777 /`, credential files (`/etc/shadow`, `root/.ssh`),
+  force pushes, hard resets — each tagged with the limit it enforces (H3/H6/irreversible).
+- **`WINDOWS_DANGEROUS_PATTERNS`** (`:164-190`): **20** case-insensitive Windows patterns
+  (`Remove-Item -Recurse/-Force`, `del /s`, `format`, `diskpart clean`, `cipher /w`,
+  registry persistence, encoded PowerShell, …). The two lists are separate because POSIX
+  matching is case-sensitive and Windows matching is not — a deliberate constraint, not
+  style.
+- **`_TEXT_ONLY_COMMANDS`** (`:361-363`): `echo, printf, test, [, [[, true, false, :` are
+  treated as text-only for path extraction. `grep`, `cat`, `wc` are **not** in the set.
+- **`classify_shell`** (`:537-610`): parses with **bashlex** and classifies segments,
+  subshells and redirections individually. If parsing fails it falls back to a token scan
+  rather than failing closed — an honest weakness: `shell.run` accepts an arbitrary shell
+  string, and the tool description recommends `&&` chaining but does not enforce it
+  (`clio/toolhost/tools/shell.py:108-136`).
+- **`TOOL_CATEGORIES`** (`:623-676`): **44** tool mappings; `subagent.*` is
+  **execute + write**, because spawning an agent is acting.
+- **`check_manifest_paths`** (`:708+`): checks a toolshed manifest's `allowed_paths` and
+  `allowed_hosts`. The manifest's `secret_scopes` are stored but **not enforced here**.
 
-## 7. The gate as teacher
+## 9. The audit chain (`clio/observability/audit.py`)
 
-The refusal contract given to the agent (`clio/prompts/identity.py:737-769`) makes
-the gate part of the agent's epistemology rather than an obstacle:
+- `GENESIS_HASH` = 32 zero bytes (`:17`); each entry hashes the previous — tamper-evident
+  by construction.
+- The Postgres sink appends under advisory lock `918_273_645` (`:18`, `:58-96`); the file
+  sink fsyncs each JSONL append (`:98-136`).
+- `verify_chain()` (`:185-196`) re-walks up to the most recent 1,000 entries.
+- The core anchors the chain head every 600 s: publishes `audit.anchor` on the bus and
+  writes `anchor.json` atomically (`clio/core/runner.py:431-445`); the OOB guardian can
+  ingest that anchor into a log the agent cannot write.
+- **Honest limit:** H1 *declares* the audit history off limits; there is no tool-level ACL
+  that makes the table immutable to every possible host-user action. The chain makes
+  tampering detectable, not impossible.
 
-> A call that comes back refused was a decision, not a malfunction: read the reason,
-> and do the nearest permitted thing instead — almost everything here is reversible
-> through trash, snapshots or the action journal, so a refusal is usually a different
-> route to the same work and sometimes the correct end of it.
+## 10. The artifact registry and the integrity scanner
 
-The tool catalog preamble says the same at the call level
-(`clio/prompts/identity.py:609-614`): an error that says a tool is unsafe, refused or
-not permitted "is the answer, not a malfunction — take it as written and do the
-permitted thing instead."
+- `ArtifactRegistry` (`clio/guardian/registry.py:32-160`): a successful write under an
+  active commission is auto-registered (`protection='commissioned'`);
+  `is_protected` (`:83-96`) matches by **path prefix or ancestor**, so a commissioned
+  deliverable is protected before anyone tries to delete it — which is what makes the
+  due-process path possible. Uncommissioned writes are not registered.
+- `IntegrityScanner` (`clio/guardian/integrity.py:13-72`): re-verifies artifact
+  fingerprints, checks trash entries still exist, counts snapshots, verifies the recent
+  audit chain. **`run_nightly()` is never instantiated or scheduled by the runtime** — it
+  is available code, not an active nightly control.
 
-This is the practical resolution of the golden rule's two demands: the agent stays
-capable (normal local work keeps flowing, and destructive work can be transformed to
-reversible forms), and the human stays sovereign (pause/kill work, the policy engine
-can deny, and the configured spend caps are numeric and external).
+## 11. What the guardian does not cover
 
-## Part II — The guardian: gate, classifier, and the reversibility stack
+Stated against this checkout, without softening:
 
-The guardian is the enforcement layer between intention and side effect. This part
-describes its components; the theory is in Part I above. Sources:
-`clio/guardian/`.
+1. **The guardian sees tool calls and shell text.** Prose the agent writes to a person is
+   not a tool call; compensating controls are the deliberation guardrail
+   ([05](05-social.md) §4), the audit trail, and oversight.
+2. **H1/H3/H4/H5/H6 booleans are declarations, not switches.**
+   `H1_oversight_supremacy`, `H3_law_and_non_harm`, `H4_legal_authority`,
+   `H5_commissioned_due_process`, `H6_credential_scope` are read **nowhere** in the
+   runtime; setting one to `false` changes nothing. Only the numeric H2 keys are enforced.
+3. **H4 has no dedicated mechanical gate** — no contract check, no AI-disclosure
+   enforcement. It lives in the prompt and in policy files an operator writes.
+4. **H2's capital-at-risk is per-action, not aggregate.** The gateway windows are the
+   aggregate control, and they are off unless configured (class defaults `None`).
+5. **Field mode converts vetoes into audit entries.** A deployment running `mode: field`
+   has a guardian that records rather than stops.
+6. **Trash purge and the integrity scanner are not scheduled**; snapshot restore is not
+   wired into lease rollback; preimage backups are unmanaged (§4.4).
+7. **`classify_shell` fails open on parse failure** (token scan fallback), and `shell.run`
+   accepts arbitrary shell text (§8).
+8. **The sandbox is opt-in per project.** The base agent has full user-level filesystem
+   reach (§2); the sandbox layer fences what a project provisioned a sandbox for
+   ([10](10-sandboxes-steering-and-policy.md) §1-§2).
+9. **Credential misuse is not a gate rejection.** Secret substitution is enforced when an
+   HTTP tool actually runs; `check_manifest_paths` stores but does not enforce
+   `secret_scopes` (§8).
+10. **With no API keys, gateway model calls fail loudly** — but the toolhost's journal and
+    reflex rules still run, so the tool-level floor does not depend on the model, while the
+    model-based due-process check fails closed (protective).
 
-## 1. `GuardianGate.review()`
+## 12. Summary table: claim vs mechanism
 
-`clio/guardian/gate.py:298-567`. Verdicts are `{allow, transform, reject}`; paths
-are `{normal, fast, due_process, blocked}` (`clio/guardian/gate.py:85-95`).
-
-| Order | Condition | Path | Action |
+| Limit | Declared | Mechanically present | Not mechanical |
 |---|---|---|---|
-| 1 | Oversight pause active | `blocked` | **REJECT** (H1) |
-| 2 | Preview mode active | `blocked` | **REJECT** |
-| 3 | Invalid/expired `runAssertion` | `blocked` | **REJECT** |
-| 4 | Safety level 1, non-dialogue tool | `blocked` | **REJECT** |
-| 5 | CEL policy denial or engine failure | `blocked` | **REJECT**; high-impact external effects may request a pre-execution approval |
-| 6 | Classifier verdict `blocked` (H3/H6 pattern) | `blocked` in normal mode | **REJECT** in normal mode; audit and **ALLOW** in field mode |
-| 7 | Money > `H2_capital_at_risk_usd` | `blocked` in normal mode | **REJECT** in normal mode; audit and **ALLOW** in field mode |
-| 8 | Workspace lease or tool-manifest violation | `blocked` in normal mode | **REJECT** in normal mode; audit and **ALLOW** in field mode |
-| 9 | Safety level requires approval | `blocked` | Wait for approval; allowlisted HTTP/browser hosts are exempt |
-| 10 | Protected (commissioned/pinned) destructive action | `due_process` | Field mode: trash 180 d + `TRANSFORM` → `fs.read`; normal mode: `ModelDueProcessVerifier` (T2) |
-| 11 | Agent-owned concrete delete | `fast` | Trash 30 d + snapshot → **allow (transformed)** |
-| 12 | Commissioned write | `normal` | Register the artifact after success so later due process can find it |
-
-`ModelDueProcessVerifier` (`clio/guardian/gate.py:42-82,655-784`) makes a T2 model
-call that reviews a due-process destruction with the commission context. In field
-mode the transform path skips that call. In the standalone toolhost the verifier is
-constructed without a gateway, so the check fails closed and protects the artifact.
-
-Safety-level approvals use `ApprovalManager` (code default 300 s), while policy
-approval cards are a separate mechanism and remain active at level 4.
-
-## 2. The action classifier
-
-`clio/guardian/classifier.py` is the pattern-matching brain of the gate:
-
-- **`COMMAND_TABLE`** (`:23-119`): 81 command spellings mapped to risk categories.
-- **`DANGEROUS_PATTERNS`** (`:131-145`): 13 POSIX regex patterns, including
-  `rm -rf /`, fork bombs, credential-file access, force pushes, and hard resets.
-- **`WINDOWS_DANGEROUS_PATTERNS`** (`:164-187`): 20 case-insensitive Windows
-  patterns.
-- **`_TEXT_ONLY_COMMANDS`** (`:361-363`): `echo`, `printf`, `test`, `[`, `[[`,
-  `true`, `false`, and `:` are treated as text-only for path extraction. `grep`,
-  `cat`, and `wc` are not in this set.
-- **`classify_shell`** (`:537-610`): parses with **bashlex** and classifies command
-  segments, subshells, and redirections individually. If parsing fails, it falls
-  back to a token scan rather than failing closed. `shell.run` accepts an arbitrary
-  shell command string; the tool description recommends `&&` chaining, but the tool
-  does not enforce that restriction.
-- **`TOOL_CATEGORIES`** (`:623-676`): 44 tool mappings; `subagent.*` is
-  **execute + write** because spawning an agent is acting.
-- **`check_manifest_paths`**: checks a toolshed manifest's `allowed_paths` and
-  `allowed_hosts`. The manifest's `secret_scopes` are stored by the toolshed, but
-  this checker does not enforce them. In normal mode a path/host violation rejects
-  the call; in field mode it is audited and the call proceeds.
-
-## 3. The write-ahead journal
-
-`clio/guardian/journal.py:67-289`:
-
-- Entries are `begin` → (`end` with status `ok / failed / timeout / rejected /
-  interrupted`).
-- **Replayable only when `status == "ok"`** (`journal.py:44-64`). The replay returns
-  the prior journal outcome, not the original tool payload.
-- A decided non-success releases the idempotency key for a new attempt, while a
-  `running`/`interrupted` row blocks a blind duplicate because its effect is unknown.
-- On restart, `wake_up()` reconciles still-`running` entries to `interrupted`
-  (`clio/memory/continuity.py:77-134`).
-
-## 4. Trash
-
-`clio/guardian/trash.py:57-214`:
-
-- Layout: `trash/<id>/` + `manifest.json`; files also have a SHA-256 fingerprint.
-- Retention: **30 days** (fast path) / **180 days** (due-process path), from the
-  guardian configuration.
-- `fs.delete` never calls `unlink` (`clio/toolhost/tools/fs.py:403-424`).
-- `purge_expired()` exists, but the current runtime does not schedule or invoke it.
-
-## 5. Snapshots
-
-`clio/guardian/snapshots.py:24-179`:
-
-- **btrfs subvolume** snapshots where the backend probe succeeds, else a
-  **hardlink/copy tree**.
-- Retention ladder: `15m × 4, hourly × 24, daily × 7` (`_prune`, `:112-128`).
-- The guardian invokes snapshot creation on the fast destructive path. Ordinary
-  writes do not receive a pre-write snapshot.
-- `restore()` exists but is not wired into workspace-lease rollback; lease rollback
-  uses the lease tree and trash directly.
-
-## 6. The artifact registry
-
-`clio/guardian/registry.py:32-161`:
-
-- A successful write is registered as an **artifact** when it belongs to a
-  commission (`path`, fingerprint when present, provenance, and `commissioned_by`).
-  Uncommissioned writes are not automatically registered.
-- `is_protected` computes protection by **path prefix or ancestor** — commissioned
-  deliverables and pinned paths are protected before anyone tries to delete them,
-  which is what makes H5's due-process path possible.
-- `integrity.py:13-72` provides an `IntegrityScanner` that re-verifies registered
-  artifact fingerprints, checks that trash entries still exist, counts snapshots,
-  and verifies the recent audit chain. The current runtime does not instantiate or
-  schedule `run_nightly()`, so this is available code rather than an active nightly
-  control.
-
-## 7. The audit chain
-
-`clio/observability/audit.py:17-202`:
-
-- **`GENESIS_HASH`** = 32 zero bytes (`:17`); each entry's hash covers the previous
-  entry — a tamper-evident chain [D-33].
-- The Postgres sink appends under **advisory lock `918_273_645`** (`:58-70`); the
-  file sink fsyncs (`:121-130`).
-- `verify_chain` (`:185-196`) validates up to the latest 1,000 entries; the core
-  publishes and stores the chain head every 600 s (`clio/core/runner.py:431-445`).
-- H1 declares the chain off limits to the agent, and the OOB guardian can keep a
-  host-side copy of the head. There is no separate tool-level ACL that makes the
-  chain immutable against every possible host-user action.
-
-## 8. Safety levels in force
-
-| Level | Gate behaviour |
-|---|---|
-| 1 | Dialogue/internal-memory tools only; commands and subagents are refused |
-| 2 | Commands normally require approval; allowlisted HTTP/browser hosts and calls inside non-APEX subagents are exceptions |
-| 3 | Network-connected or download-like commands, plus APEX, normally require approval; allowlisted HTTP/browser hosts and calls inside non-APEX subagents are exceptions |
-| 4 | No safety-level approval; policy approvals, oversight, policy denials, and guardian limits still apply |
-
-For calls tagged `inside_subagent`, levels 2 and 3 allow non-APEX subagent work
-unless the call targets APEX; calls inside APEX require approval at both levels
-(`clio/guardian/safety.py:233-277`). Level 4 is independent of
-`guardian.mode`: it removes the level-based approval wall but does not switch the
-guardian into field mode.
-
-The core reads the control-row override on a later cycle, within the 30-second
-recheck window. The standalone toolhost reads it at startup and from
-`CONTROL_UPDATE` bus events; `clio safety set` writes the row without publishing
-that event, so the CLI path does not guarantee an immediate toolhost change.
-
-## 9. What the guardian does not cover
-
-Stated honestly against the current code:
-
-- The guardian sees **tool calls and shell text**. Prose the agent writes to a
-  person is not a tool call; the compensating controls are the deliberation
-  guardrail ([05-social.md](05-social.md) §4), the audit trail, and oversight.
-- H1's pause/preview controls, H2's configured spend windows, selected H3/H6
-  classifier patterns, and H5's registry/due-process path have mechanical effects.
-  H4 has no dedicated mechanical enforcement, and field mode softens several
-  guardian vetoes into audit entries.
-- The H1/H3/H4/H5/H6 boolean configuration fields are declarations; the runtime does
-  not read them as switches.
-- With no model keys, gateway calls fail loudly but the toolhost's journal and
-  reflex rules can still run. The model-based due-process check fails closed.
-- Ordinary writes are not preimage-backed. Trash purge and the integrity scanner
-  exist but are not scheduled, and snapshot restore is not wired into workspace-lease
-  rollback. The reversible path is therefore strongest for trash-backed deletions,
-  not universal for every side effect.
+| H1 oversight | prompt + config | pause/preview/emergency files+row; supervisor recycle; OOB stop | "audit/snapshots untouchable" is a declaration; no ACL |
+| H2 money | prompt + config | spend windows (when configured), reserve split, per-action capital-at-risk | aggregate exposure beyond windows; booleans not switches |
+| H3 law/non-harm | prompt + config | 13 POSIX + 20 Windows patterns (normal mode) | the wider obligation; field mode records instead |
+| H4 legal authority | prompt + config | — (nothing) | everything |
+| H5 due process | prompt + config | registry, trash 180 d, model verifier (normal mode), fail-closed without gateway | field mode skips the model check |
+| H6 credentials | prompt + config | credential-file patterns (normal mode); secret-domain policy; redaction | `secret_scopes` in manifests; misuse at runtime |
